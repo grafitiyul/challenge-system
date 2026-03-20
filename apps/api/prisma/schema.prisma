@@ -1,0 +1,306 @@
+// =============================================================================
+// Challenge System — V1 Database Schema
+// =============================================================================
+// Principles:
+//   - No hardcoded business logic (statuses, types, sources use ID references)
+//   - Every config value is admin-editable without code changes
+//   - Participants can belong to multiple groups via many-to-many
+//   - AI facts stored as natural sentences, not key-value pairs
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================================
+// CONFIGURATION TABLES
+// All display values live here. System logic references IDs only — never names.
+// =============================================================================
+
+model ChallengeType {
+  id          String      @id @default(cuid())
+  name        String
+  description String?
+  isActive    Boolean     @default(true)
+  sortOrder   Int         @default(0)
+  challenges  Challenge[]
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@map("challenge_types")
+}
+
+model SignupSource {
+  id            String         @id @default(cuid())
+  name          String
+  isActive      Boolean        @default(true)
+  sortOrder     Int            @default(0)
+  registrations Registration[]
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@map("signup_sources")
+}
+
+model Gender {
+  id            String         @id @default(cuid())
+  name          String
+  isActive      Boolean        @default(true)
+  sortOrder     Int            @default(0)
+  registrations Registration[]
+  participants  Participant[]
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@map("genders")
+}
+
+// =============================================================================
+// REGISTRATION TABLE
+// Entry point into the system. Created on form submission.
+// A Participant record is created only after they join the WhatsApp group.
+// =============================================================================
+
+model Registration {
+  id                String       @id @default(cuid())
+  fullName          String
+  phoneNumber       String
+  genderId          String
+  gender            Gender       @relation(fields: [genderId], references: [id])
+  signupSourceId    String
+  signupSource      SignupSource @relation(fields: [signupSourceId], references: [id])
+  registeredAt      DateTime     @default(now())
+  assignedGroupId   String?
+  assignedGroup     Group?       @relation(fields: [assignedGroupId], references: [id])
+  hasJoinedWhatsapp Boolean      @default(false)
+  joinedWhatsappAt  DateTime?
+
+  participant       Participant?
+
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  @@map("registrations")
+}
+
+// =============================================================================
+// CORE TABLES
+// =============================================================================
+
+model Challenge {
+  id              String        @id @default(cuid())
+  name            String
+  challengeTypeId String
+  challengeType   ChallengeType @relation(fields: [challengeTypeId], references: [id])
+  startDate       DateTime
+  endDate         DateTime
+  isActive        Boolean       @default(true)
+  groups          Group[]
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@map("challenges")
+}
+
+model Group {
+  id                  String               @id @default(cuid())
+  name                String
+  challengeId         String
+  challenge           Challenge            @relation(fields: [challengeId], references: [id])
+  whatsappGroupId     String?
+  startDate           DateTime
+  endDate             DateTime
+  isActive            Boolean              @default(true)
+  registrations       Registration[]
+  participantGroups   ParticipantGroup[]
+  messages            Message[]
+  dailyActivities     DailyActivity[]
+  aiGroupSummaries    AiGroupSummary[]
+  participantInsights ParticipantInsight[]
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  @@map("groups")
+}
+
+model Participant {
+  id          String  @id @default(cuid())
+  fullName    String
+  phoneNumber String  @unique
+  genderId    String
+  gender      Gender  @relation(fields: [genderId], references: [id])
+  isActive    Boolean @default(true)
+
+  // Optional — null when participant is added directly by admin (no registration flow)
+  registrationId String?       @unique
+  registration   Registration? @relation(fields: [registrationId], references: [id])
+
+  joinedAt            DateTime             @default(now())
+  participantGroups   ParticipantGroup[]
+  messages            Message[]
+  dailyActivities     DailyActivity[]
+  participantInsights ParticipantInsight[]
+  suggestedResponses  SuggestedResponse[]
+  profile             ParticipantProfile?
+  facts               ParticipantFact[]
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  @@map("participants")
+}
+
+// Many-to-many bridge: one participant can belong to multiple groups
+model ParticipantGroup {
+  id            String      @id @default(cuid())
+  participantId String
+  participant   Participant @relation(fields: [participantId], references: [id])
+  groupId       String
+  group         Group       @relation(fields: [groupId], references: [id])
+  joinedAt      DateTime    @default(now())
+  leftAt        DateTime?
+  isActive      Boolean     @default(true)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  // A participant can only have one active record per group
+  @@unique([participantId, groupId])
+  @@map("participant_groups")
+}
+
+model Message {
+  id            String      @id @default(cuid())
+  participantId String
+  participant   Participant @relation(fields: [participantId], references: [id])
+  groupId       String
+  group         Group       @relation(fields: [groupId], references: [id])
+  content       String
+  sentAt        DateTime
+  createdAt     DateTime    @default(now())
+
+  @@map("messages")
+}
+
+model DailyActivity {
+  id            String      @id @default(cuid())
+  participantId String
+  participant   Participant @relation(fields: [participantId], references: [id])
+  groupId       String
+  group         Group       @relation(fields: [groupId], references: [id])
+  date          DateTime    @db.Date
+  messageCount  Int         @default(0)
+  didSubmit     Boolean     @default(false)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  // One record per participant per group per day
+  @@unique([participantId, groupId, date])
+  @@map("daily_activities")
+}
+
+model AiGroupSummary {
+  id                String   @id @default(cuid())
+  groupId           String
+  group             Group    @relation(fields: [groupId], references: [id])
+  date              DateTime @db.Date
+  totalParticipants Int
+  activeCount       Int
+  inactiveCount     Int
+  summaryText       String
+  recommendations   String?
+  createdAt         DateTime @default(now())
+
+  // One summary per group per day
+  @@unique([groupId, date])
+  @@map("ai_group_summaries")
+}
+
+model ParticipantInsight {
+  id                 String              @id @default(cuid())
+  participantId      String
+  participant        Participant         @relation(fields: [participantId], references: [id])
+  groupId            String
+  group              Group               @relation(fields: [groupId], references: [id])
+  date               DateTime            @db.Date
+  description        String
+  // "ai" or "admin" — no hardcoded enum, stays flexible for future sources
+  createdBy          String
+  suggestedResponses SuggestedResponse[]
+  createdAt          DateTime            @default(now())
+
+  @@map("participant_insights")
+}
+
+model SuggestedResponse {
+  id            String             @id @default(cuid())
+  participantId String
+  participant   Participant        @relation(fields: [participantId], references: [id])
+  insightId     String
+  insight       ParticipantInsight @relation(fields: [insightId], references: [id])
+  suggestedText String
+  isUsed        Boolean            @default(false)
+  createdAt     DateTime           @default(now())
+
+  @@map("suggested_responses")
+}
+
+// =============================================================================
+// AI PROFILE TABLES
+// Facts are stored as natural sentences, not key-value pairs.
+// The profile summary is rebuilt from active facts periodically.
+// =============================================================================
+
+model ParticipantProfile {
+  id            String      @id @default(cuid())
+  participantId String      @unique
+  participant   Participant @relation(fields: [participantId], references: [id])
+  summaryText   String
+  lastUpdatedAt DateTime    @default(now())
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  @@map("participant_profiles")
+}
+
+model ParticipantFact {
+  id              String            @id @default(cuid())
+  participantId   String
+  participant     Participant       @relation(fields: [participantId], references: [id])
+  // Optional classification for display/filtering — no logic depends on this value
+  category        String?
+  // Human-readable sentence: "She has two children" not "children=2"
+  fullSentence    String
+  // 0.0–1.0 — how confident the AI is in this fact
+  confidenceScore Float?
+  // "ai" or "admin"
+  source          String
+  // false when superseded by a newer/refined fact
+  isActive        Boolean           @default(true)
+  // Self-referencing chain: points to the fact that replaced this one
+  supersededById  String?
+  supersededBy    ParticipantFact?  @relation("FactSupersession", fields: [supersededById], references: [id])
+  supersedes      ParticipantFact[] @relation("FactSupersession")
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@map("participant_facts")
+}
+
+// =============================================================================
+// ADMIN / SYSTEM USERS
+// =============================================================================
+
+model AdminUser {
+  id        String   @id @default(cuid())
+  fullName  String
+  email     String   @unique
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("admin_users")
+}
