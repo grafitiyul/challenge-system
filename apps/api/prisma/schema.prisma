@@ -122,6 +122,7 @@ model Group {
   dailyActivities     DailyActivity[]
   aiGroupSummaries    AiGroupSummary[]
   participantInsights ParticipantInsight[]
+  chatLinks           GroupChatLink[]
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
 
@@ -152,6 +153,7 @@ model Participant {
   suggestedResponses  SuggestedResponse[]
   profile             ParticipantProfile?
   facts               ParticipantFact[]
+  chatLinks           GroupChatLink[]
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
 
@@ -308,6 +310,7 @@ model WhatsAppChat {
   phoneNumber    String?
   lastMessageAt  DateTime?
   messages       WhatsAppMessage[]
+  groupLinks     GroupChatLink[]
   createdAt      DateTime          @default(now())
   updatedAt      DateTime          @updatedAt
 
@@ -332,6 +335,27 @@ model WhatsAppMessage {
   createdAt         DateTime     @default(now())
 
   @@map("whatsapp_messages")
+}
+
+// Manual link between an internal Group and a WhatsApp chat.
+// linkType = "group_chat"              → the group's WhatsApp group chat
+// linkType = "private_participant_chat" → a private chat with one participant
+model GroupChatLink {
+  id             String       @id @default(cuid())
+  groupId        String
+  group          Group        @relation(fields: [groupId], references: [id])
+  whatsappChatId String
+  whatsappChat   WhatsAppChat @relation(fields: [whatsappChatId], references: [id])
+  // "group_chat" | "private_participant_chat"
+  linkType       String
+  // null unless linkType = "private_participant_chat"
+  participantId  String?
+  participant    Participant? @relation(fields: [participantId], references: [id])
+  createdAt      DateTime     @default(now())
+
+  // Each WhatsApp chat can only be linked once per group
+  @@unique([groupId, whatsappChatId])
+  @@map("group_chat_links")
 }
 
 // =============================================================================

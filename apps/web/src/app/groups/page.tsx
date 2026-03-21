@@ -127,8 +127,12 @@ export default function GroupsPage() {
               </tr>
             )}
             {filtered.map((g) => (
-              <tr key={g.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
-                <td style={{ padding: '12px 16px', fontWeight: 500, color: '#0f172a' }}>{g.name}</td>
+              <tr
+                key={g.id}
+                style={{ borderBottom: '1px solid #f1f5f9', cursor: 'pointer' }}
+                onClick={() => { window.location.href = `/groups/${g.id}`; }}
+              >
+                <td style={{ padding: '12px 16px', fontWeight: 500, color: '#2563eb' }}>{g.name}</td>
                 <td style={{ padding: '12px 16px', color: '#374151' }}>{g.challenge?.name ?? '—'}</td>
                 <td style={{ padding: '12px 16px', color: '#374151' }}>{formatDate(g.startDate)}</td>
                 <td style={{ padding: '12px 16px', color: '#374151' }}>{formatDate(g.endDate)}</td>
