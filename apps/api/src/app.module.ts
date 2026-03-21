@@ -4,6 +4,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { HealthController } from './health.controller';
 import { WassengerController } from './wassenger.controller';
 import { WassengerService } from './wassenger.service';
+import { SeederService } from './seeder.service';
 import { ChallengesModule } from './modules/challenges/challenges.module';
 import { ChallengeTypesModule } from './modules/challenge-types/challenge-types.module';
 import { GroupsModule } from './modules/groups/groups.module';
@@ -23,6 +24,6 @@ import { ParticipantsModule } from './modules/participants/participants.module';
     ParticipantsModule,
   ],
   controllers: [HealthController, WassengerController],
-  providers: [WassengerService],
+  providers: [WassengerService, SeederService],
 })
 export class AppModule {}
