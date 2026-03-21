@@ -1,8 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-
-const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
+import { BASE_URL } from '@lib/api';
 
 interface ChallengeType {
   id: string;
@@ -44,6 +43,7 @@ interface Participant {
   fullName: string;
   phoneNumber: string;
   gender: Gender;
+  isMock: boolean;
 }
 
 interface GroupFormState {
@@ -94,7 +94,8 @@ export default function ChallengesPage() {
 
   const fetchGroupsForChallenge = async (challengeId: string) => {
     try {
-      const res = await fetch(`${API}/api/groups?challengeId=${challengeId}`);
+      console.log('[API] GET', `${BASE_URL}/groups?challengeId=${challengeId}`);
+      const res = await fetch(`${BASE_URL}/groups?challengeId=${challengeId}`);
       const data: unknown = await res.json();
       const groupList = Array.isArray(data) ? (data as Group[]) : [];
       setGroups((prev) => ({ ...prev, [challengeId]: groupList }));
@@ -106,7 +107,9 @@ export default function ChallengesPage() {
 
   const fetchParticipantsForGroup = async (groupId: string) => {
     try {
-      const res = await fetch(`${API}/api/participants?groupId=${groupId}`);
+      const includeMock = localStorage.getItem('showMockParticipants') === 'true';
+      console.log('[API] GET', `${BASE_URL}/participants?groupId=${groupId}&includeMock=${includeMock}`);
+      const res = await fetch(`${BASE_URL}/participants?groupId=${groupId}&includeMock=${includeMock}`);
       const data: unknown = await res.json();
       setParticipants((prev) => ({ ...prev, [groupId]: Array.isArray(data) ? (data as Participant[]) : [] }));
     } catch {
@@ -117,10 +120,11 @@ export default function ChallengesPage() {
   useEffect(() => {
     const init = async () => {
       try {
+        console.log('[API] GET', `${BASE_URL}/challenges`, `${BASE_URL}/challenge-types`, `${BASE_URL}/genders`);
         const [challengesRes, typesRes, gendersRes] = await Promise.all([
-          fetch(`${API}/api/challenges`),
-          fetch(`${API}/api/challenge-types`),
-          fetch(`${API}/api/genders`),
+          fetch(`${BASE_URL}/challenges`),
+          fetch(`${BASE_URL}/challenge-types`),
+          fetch(`${BASE_URL}/genders`),
         ]);
         const [challengesData, typesData, gendersData]: [Challenge[], ChallengeType[], Gender[]] = await Promise.all([
           challengesRes.json(),
@@ -148,7 +152,8 @@ export default function ChallengesPage() {
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch(`${API}/api/challenges`, {
+      console.log('[API] POST', `${BASE_URL}/challenges`);
+      const res = await fetch(`${BASE_URL}/challenges`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(challengeForm),
@@ -174,7 +179,8 @@ export default function ChallengesPage() {
     setGroupSubmitting(true);
     setGroupError(null);
     try {
-      const res = await fetch(`${API}/api/groups`, {
+      console.log('[API] POST', `${BASE_URL}/groups`);
+      const res = await fetch(`${BASE_URL}/groups`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...form, challengeId }),
@@ -216,7 +222,8 @@ export default function ChallengesPage() {
     setParticipantSubmitting(true);
     setParticipantError(null);
     try {
-      const res = await fetch(`${API}/api/participants`, {
+      console.log('[API] POST', `${BASE_URL}/participants`);
+      const res = await fetch(`${BASE_URL}/participants`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...form, groupId }),
@@ -436,8 +443,15 @@ export default function ChallengesPage() {
                                 </thead>
                                 <tbody>
                                   {groupParticipants.map((p) => (
-                                    <tr key={p.id} style={{ borderTop: '1px solid #f3f4f6' }}>
-                                      <td style={groupTdStyle}>{p.fullName}</td>
+                                    <tr key={p.id} style={{ borderTop: '1px solid #f3f4f6', background: p.isMock ? '#fffdf5' : 'transparent' }}>
+                                      <td style={groupTdStyle}>
+                                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                                          {p.fullName}
+                                          {p.isMock && (
+                                            <span style={{ background: '#fef3c7', color: '#92400e', fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 8, border: '1px solid #fde68a' }}>פיקטיבי</span>
+                                          )}
+                                        </span>
+                                      </td>
                                       <td style={groupTdStyle}>{p.phoneNumber}</td>
                                       <td style={groupTdStyle}>{p.gender.name}</td>
                                     </tr>

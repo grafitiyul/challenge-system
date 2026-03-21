@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { PrismaModule } from './prisma/prisma.module';
 import { HealthController } from './health.controller';
+import { WassengerController } from './wassenger.controller';
 import { ChallengesModule } from './modules/challenges/challenges.module';
 import { ChallengeTypesModule } from './modules/challenge-types/challenge-types.module';
 import { GroupsModule } from './modules/groups/groups.module';
@@ -20,6 +21,6 @@ import { ParticipantsModule } from './modules/participants/participants.module';
     GendersModule,
     ParticipantsModule,
   ],
-  controllers: [HealthController],
+  controllers: [HealthController, WassengerController],
 })
 export class AppModule {}

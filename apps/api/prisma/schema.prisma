@@ -132,9 +132,13 @@ model Participant {
   id          String  @id @default(cuid())
   fullName    String
   phoneNumber String  @unique
+  email       String?
   genderId    String
   gender      Gender  @relation(fields: [genderId], references: [id])
-  isActive    Boolean @default(true)
+  isActive    Boolean   @default(true)
+  isMock      Boolean   @default(false)
+  birthDate   DateTime?
+  source      String?
 
   // Optional — null when participant is added directly by admin (no registration flow)
   registrationId String?       @unique

@@ -1,4 +1,4 @@
-import { IsString } from 'class-validator';
+import { IsDateString, IsEmail, IsOptional, IsString } from 'class-validator';
 
 export class CreateParticipantDto {
   @IsString()
@@ -7,9 +7,23 @@ export class CreateParticipantDto {
   @IsString()
   phoneNumber: string;
 
+  // Frontend sends genderName; backend resolves to ID (find-or-create)
   @IsString()
-  genderId: string;
+  genderName: string;
 
+  @IsOptional()
+  @IsEmail()
+  email?: string;
+
+  @IsOptional()
+  @IsDateString()
+  birthDate?: string;
+
+  @IsOptional()
   @IsString()
-  groupId: string;
+  source?: string;
+
+  @IsOptional()
+  @IsString()
+  groupId?: string;
 }

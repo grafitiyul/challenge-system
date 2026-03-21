@@ -9,6 +9,7 @@ export class GroupsService {
   findAll(challengeId?: string) {
     return this.prisma.group.findMany({
       where: challengeId ? { challengeId } : undefined,
+      include: { challenge: true },
       orderBy: { createdAt: 'asc' },
     });
   }
