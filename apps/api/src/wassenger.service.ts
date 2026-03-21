@@ -40,28 +40,29 @@ interface WassengerPayload {
 }
 
 // ─── Wassenger REST API types (used by backfill) ──────────────────────────────
-
-interface WassengerApiChat {
-  id: string;
-  type?: string;   // "group" | "private" | "channel"
-  name?: string;
-  phone?: string;  // clean phone for private chats
-  timestamp?: number;
-  [key: string]: unknown;
-}
+// Source: Wassenger OpenAPI spec at https://app.wassenger.com/docs/specification
+//
+// Key differences from webhook payload field names:
+//   wid        → WhatsApp ID (chat or message), not "id"
+//   kind       → chat/message type ("user"|"group"|"channel" for chats; "text"|"image"|... for messages)
+//   flow       → "in" | "out" (not fromMe boolean)
+//   date       → ISO date string (not unix timestamp)
+//   chatWid    → chat WhatsApp ID on a message object
 
 interface WassengerApiMessage {
-  id?: string;
-  type?: string;   // "chat"(text) | "image" | "audio" | "ptt" | "video" | "document" | ...
-  body?: string;
-  from?: string;
-  author?: string;
-  fromMe?: boolean;
-  timestamp?: number;
+  wid?: string;           // WhatsApp message ID
+  chatWid?: string;       // WhatsApp ID of the chat this message belongs to
+  flow?: string;          // "in" (incoming) | "out" (outgoing)
+  body?: string;          // text content
+  date?: string;          // ISO date string e.g. "2026-03-21T10:00:00.000Z"
+  kind?: string;          // "text" | "image" | "audio" | "ptt" | "video" | "document" | ...
+  from?: string;          // sender WID (group ID for group msgs — use author for actual sender)
+  author?: string;        // actual sender WID in group messages
   meta?: { notifyName?: string };
   contact?: WassengerContact;
   fromContact?: WassengerContact;
-  chat?: { id?: string; name?: string; type?: string };
+  // chat sub-object may use wid OR id depending on API version
+  chat?: { wid?: string; id?: string; name?: string; kind?: string; type?: string };
   media?: { url?: string; filename?: string; mimetype?: string; size?: number };
   [key: string]: unknown;
 }
@@ -236,163 +237,233 @@ export class WassengerService {
       errors: 0,
     };
 
-    const fromTs = Math.floor(Date.now() / 1000) - daysBack * 86_400;
-    console.log(`[Backfill] Starting. daysBack=${daysBack}, fromTs=${fromTs} (${new Date(fromTs * 1000).toISOString()})`);
+    const deviceId = process.env['WASSENGER_DEVICE_ID'];
+    if (!deviceId) {
+      throw new Error('WASSENGER_DEVICE_ID environment variable is not set.');
+    }
 
-    // 1. Fetch all chats
-    const chats = await this.fetchAllChats(apiKey);
-    stats.chatsScanned = chats.length;
-    console.log(`[Backfill] ${chats.length} chats found.`);
+    const afterIso = new Date(Date.now() - daysBack * 86_400_000).toISOString();
+    console.log(`[Backfill] Starting. daysBack=${daysBack}, after=${afterIso}, deviceId=${deviceId}`);
 
-    // 2. Process each chat sequentially to avoid DB contention
-    for (const apiChat of chats) {
+    // Strategy: messages-first.
+    //   /chat/{deviceId}/chats → 404 on this account.
+    //   Working endpoints confirmed from device response:
+    //     GET /v1/messages?devices={deviceId}        — all messages (paginated)
+    //     GET /v1/devices/{deviceId}/groups          — group metadata
+    //   We fetch all messages, derive chats from each message's embedded chat object,
+    //   upsert chats on the fly, then store the messages.
+
+    // 1. Enrich group names from /devices/{deviceId}/groups (best-effort)
+    const groupNameMap = await this.fetchGroupNames(apiKey, deviceId);
+    console.log(`[Backfill] Group metadata loaded: ${groupNameMap.size} groups.`);
+
+    // 2. Fetch all messages in the time window
+    const messages = await this.fetchAllMessages(apiKey, deviceId, afterIso);
+    stats.messagesScanned = messages.length;
+    console.log(`[Backfill] ${messages.length} messages fetched. Processing...`);
+
+    // 3. Process messages — upsert chats on the fly, store messages
+    const chatCache = new Map<string, string>(); // externalChatId → internal DB id
+
+    for (const msg of messages) {
       try {
-        await this.backfillOneChat(apiKey, apiChat, fromTs, stats);
+        await this.processBackfillMessage(msg, groupNameMap, chatCache, stats);
       } catch (err) {
-        console.error(`[Backfill] Error on chat ${apiChat.id}:`, err);
+        console.error(`[Backfill] Error processing message:`, err);
         stats.errors++;
       }
     }
 
+    stats.chatsScanned = chatCache.size;
     const durationMs = Date.now() - startedAt;
     console.log(`[Backfill] Done in ${durationMs}ms.`, stats);
     return { ...stats, durationMs };
   }
 
-  private async fetchAllChats(apiKey: string): Promise<WassengerApiChat[]> {
-    const all: WassengerApiChat[] = [];
-    let page = 0;
-    const LIMIT = 100;
-
-    while (true) {
-      const url = `${WASSENGER_API}/chats?limit=${LIMIT}&page=${page}&order=desc`;
-      const res = await fetch(url, { headers: { token: apiKey } });
-      if (!res.ok) {
-        console.error(`[Backfill] GET /chats page=${page} → HTTP ${res.status}`);
-        break;
+  // Fetch group name metadata from /v1/devices/{deviceId}/groups
+  // Returns map of groupWid → name. Failures are non-fatal.
+  private async fetchGroupNames(apiKey: string, deviceId: string): Promise<Map<string, string>> {
+    const map = new Map<string, string>();
+    try {
+      const url = `${WASSENGER_API}/devices/${deviceId}/groups`;
+      console.log(`[Backfill] GET ${url}`);
+      const res = await fetch(url, { headers: { Token: apiKey } });
+      const rawText = await res.text();
+      console.log(`[Backfill] groups → HTTP ${res.status}, count: ${rawText.slice(0, 120)}`);
+      if (!res.ok) return map;
+      const data = JSON.parse(rawText) as unknown;
+      const rows = Array.isArray(data) ? data : [];
+      for (const g of rows) {
+        const rec = g as Record<string, unknown>;
+        const gid = (rec['wid'] ?? rec['id'] ?? rec['_id']) as string | undefined;
+        const name = rec['name'] as string | undefined;
+        if (gid && name) map.set(gid, name);
       }
-      const data = (await res.json()) as unknown;
-      const rows = Array.isArray(data) ? (data as WassengerApiChat[]) : [];
-      if (rows.length === 0) break;
-      all.push(...rows);
-      if (rows.length < LIMIT) break;
-      page++;
+    } catch (err) {
+      console.warn('[Backfill] fetchGroupNames failed (non-fatal):', err);
     }
-    return all;
+    return map;
   }
 
-  private async backfillOneChat(
+  // Paginated fetch from /v1/messages?devices={deviceId}&createdAfter={iso}
+  private async fetchAllMessages(
     apiKey: string,
-    apiChat: WassengerApiChat,
-    fromTs: number,
-    stats: BackfillStats,
-  ): Promise<void> {
-    const chatType = apiChat.type ?? (apiChat.id.endsWith('@g.us') ? 'group' : 'private');
-
-    // Upsert chat record
-    const chat = await this.prisma.whatsAppChat.upsert({
-      where: { externalChatId: apiChat.id },
-      create: {
-        externalChatId: apiChat.id,
-        type: chatType,
-        name: apiChat.name ?? null,
-        phoneNumber: chatType === 'private' ? (apiChat.phone ?? null) : null,
-        lastMessageAt: apiChat.timestamp ? new Date(apiChat.timestamp * 1000) : null,
-      },
-      update: {
-        ...(apiChat.name ? { name: apiChat.name } : {}),
-        ...(apiChat.timestamp ? { lastMessageAt: new Date(apiChat.timestamp * 1000) } : {}),
-      },
-    });
-
-    // Fetch messages for this chat from daysBack ago
-    const messages = await this.fetchChatMessages(apiKey, apiChat.id, fromTs);
-    stats.messagesScanned += messages.length;
-
-    for (const msg of messages) {
-      if (msg.media?.url || msg.media?.filename) stats.mediaFound++;
-
-      // Deduplicate by externalMessageId
-      if (msg.id) {
-        const exists = await this.prisma.whatsAppMessage.findUnique({
-          where: { externalMessageId: msg.id },
-          select: { id: true },
-        });
-        if (exists) {
-          stats.duplicatesSkipped++;
-          continue;
-        }
-      }
-
-      const msgTs = msg.timestamp ? new Date(msg.timestamp * 1000) : new Date();
-      const direction = msg.fromMe === true ? 'outgoing' : 'incoming';
-      const msgType = normalizeMessageType(msg.type);
-
-      // Build a WassengerData-shaped object to reuse the extraction helpers
-      const dataLike: WassengerData = {
-        id: msg.id,
-        from: msg.from,
-        author: msg.author,
-        meta: msg.meta,
-        contact: msg.contact,
-        fromContact: msg.fromContact,
-        chat: msg.chat ?? { id: apiChat.id, name: apiChat.name, type: apiChat.type },
-      };
-
-      try {
-        await this.prisma.whatsAppMessage.create({
-          data: {
-            ...(msg.id ? { externalMessageId: msg.id } : {}),
-            chatId: chat.id,
-            direction,
-            senderName: extractSenderName(dataLike),
-            senderPhone: extractSenderPhone(dataLike),
-            messageType: msgType,
-            textContent: msg.body ?? null,
-            mediaUrl: msg.media?.url ?? null,
-            timestampFromSource: msgTs,
-            // Store full API message object as raw payload
-            rawPayload: msg as object,
-          },
-        });
-        stats.messagesImported++;
-      } catch (err) {
-        console.error(`[Backfill] Failed to insert message ${msg.id ?? '(no id)'}:`, err);
-        stats.errors++;
-      }
-    }
-  }
-
-  private async fetchChatMessages(
-    apiKey: string,
-    chatId: string,
-    fromTs: number,
+    deviceId: string,
+    afterIso: string,
   ): Promise<WassengerApiMessage[]> {
     const all: WassengerApiMessage[] = [];
     let page = 0;
-    const LIMIT = 100;
+    const SIZE = 100;
 
     while (true) {
-      // Wassenger uses 'from' (unix seconds) to filter messages after a timestamp
       const url =
-        `${WASSENGER_API}/chats/${encodeURIComponent(chatId)}/messages` +
-        `?limit=${LIMIT}&page=${page}&order=asc&from=${fromTs}`;
+        `${WASSENGER_API}/messages` +
+        `?devices=${deviceId}&createdAfter=${encodeURIComponent(afterIso)}` +
+        `&page=${page}&size=${SIZE}`;
 
-      const res = await fetch(url, { headers: { token: apiKey } });
-      if (!res.ok) {
-        if (res.status !== 404) {
-          console.warn(`[Backfill] messages for ${chatId} page=${page} → HTTP ${res.status}`);
-        }
+      console.log(`[Backfill] GET ${url}`);
+      const res = await fetch(url, { headers: { Token: apiKey } });
+      const rawText = await res.text();
+      console.log(`[Backfill] messages page=${page} → HTTP ${res.status}, body[0..300]: ${rawText.slice(0, 300)}`);
+
+      if (!res.ok) break;
+      let data: unknown;
+      try { data = JSON.parse(rawText); } catch { break; }
+
+      // Response may be a root array OR { data: [...], total: N }
+      let rows: WassengerApiMessage[];
+      if (Array.isArray(data)) {
+        rows = data as WassengerApiMessage[];
+      } else if (data && typeof data === 'object' && Array.isArray((data as Record<string, unknown>)['data'])) {
+        rows = (data as Record<string, unknown>)['data'] as WassengerApiMessage[];
+      } else {
+        console.warn('[Backfill] Unexpected messages response shape:', JSON.stringify(data).slice(0, 200));
         break;
       }
-      const data = (await res.json()) as unknown;
-      const rows = Array.isArray(data) ? (data as WassengerApiMessage[]) : [];
+
       if (rows.length === 0) break;
+      // Log first item on first page so we can see actual field names
+      if (page === 0) {
+        console.log('[Backfill] First message sample:', JSON.stringify(rows[0]).slice(0, 600));
+      }
       all.push(...rows);
-      if (rows.length < LIMIT) break;
+      if (rows.length < SIZE) break;
       page++;
     }
     return all;
+  }
+
+  // Upsert chat and store one message, derived entirely from the message object itself
+  private async processBackfillMessage(
+    msg: WassengerApiMessage,
+    groupNameMap: Map<string, string>,
+    chatCache: Map<string, string>,
+    stats: BackfillStats,
+  ): Promise<void> {
+    if (msg.media?.url || msg.media?.filename) stats.mediaFound++;
+
+    // Extract chat identity — API may use wid, id, chat.wid, chat.id, chatId, conversation
+    const raw = msg as Record<string, unknown>;
+    const chatWid: string | null =
+      msg.chat?.wid ??
+      msg.chat?.id ??
+      (raw['chatId'] as string | undefined) ??
+      (raw['chatWid'] as string | undefined) ??
+      (raw['conversation'] as string | undefined) ??
+      null;
+
+    if (!chatWid) {
+      console.warn('[Backfill] message has no chat identifier, skipping:', JSON.stringify(msg).slice(0, 200));
+      return;
+    }
+
+    // Upsert chat (use cache to avoid DB round-trips for repeated chat IDs)
+    let dbChatId = chatCache.get(chatWid);
+    if (!dbChatId) {
+      const isGroup = chatWid.endsWith('@g.us');
+      const chatType = isGroup ? 'group' : 'private';
+      const chatName =
+        msg.chat?.name ??
+        (isGroup ? groupNameMap.get(chatWid) : null) ??
+        null;
+      const senderPhone = extractSenderPhone(msg as unknown as WassengerData);
+
+      const dbChat = await this.prisma.whatsAppChat.upsert({
+        where: { externalChatId: chatWid },
+        create: {
+          externalChatId: chatWid,
+          type: chatType,
+          name: chatName,
+          phoneNumber: chatType === 'private' ? senderPhone : null,
+          lastMessageAt: msg.date ? new Date(msg.date) : null,
+        },
+        update: {
+          ...(chatName ? { name: chatName } : {}),
+          ...(msg.date ? { lastMessageAt: new Date(msg.date) } : {}),
+        },
+      });
+      dbChatId = dbChat.id;
+      chatCache.set(chatWid, dbChatId);
+    }
+
+    // Deduplicate — message wid may be in wid, id, or _id
+    const externalMsgId: string | null =
+      msg.wid ??
+      (raw['id'] as string | undefined) ??
+      (raw['_id'] as string | undefined) ??
+      null;
+
+    if (externalMsgId) {
+      const exists = await this.prisma.whatsAppMessage.findUnique({
+        where: { externalMessageId: externalMsgId },
+        select: { id: true },
+      });
+      if (exists) { stats.duplicatesSkipped++; return; }
+    }
+
+    // direction: flow "out"|"in", or fromMe boolean, or event name
+    const direction =
+      msg.flow === 'out' ? 'outgoing' :
+      msg.flow === 'in'  ? 'incoming' :
+      (raw['fromMe'] === true) ? 'outgoing' : 'incoming';
+
+    // timestamp: date (ISO), timestamp (unix seconds), createdAt (ISO)
+    const msgTs =
+      msg.date              ? new Date(msg.date) :
+      msg.wid               ? new Date() :
+      (raw['timestamp'] as number | undefined) ? new Date((raw['timestamp'] as number) * 1000) :
+      (raw['createdAt'] as string | undefined)  ? new Date(raw['createdAt'] as string) :
+      new Date();
+
+    // type: kind, type (chat=text, ptt=audio)
+    const msgType = normalizeMessageType(
+      msg.kind ?? (raw['type'] as string | undefined),
+    );
+
+    const dataLike: WassengerData = {
+      from:        msg.from        ?? (raw['from'] as string | undefined),
+      author:      msg.author      ?? (raw['author'] as string | undefined),
+      meta:        msg.meta        ?? (raw['meta'] as WassengerData['meta'] | undefined),
+      contact:     msg.contact,
+      fromContact: msg.fromContact,
+      chat:        msg.chat ? { id: msg.chat.wid ?? msg.chat.id, name: msg.chat.name } : { id: chatWid },
+    };
+
+    await this.prisma.whatsAppMessage.create({
+      data: {
+        externalMessageId: externalMsgId ?? undefined,
+        chatId: dbChatId,
+        direction,
+        senderName:  extractSenderName(dataLike),
+        senderPhone: extractSenderPhone(dataLike),
+        messageType: msgType,
+        textContent: msg.body ?? (raw['body'] as string | undefined) ?? null,
+        mediaUrl:    msg.media?.url ?? null,
+        timestampFromSource: msgTs,
+        rawPayload:  msg as object,
+      },
+    });
+    stats.messagesImported++;
   }
 
   // ── Raw events (audit trail) ───────────────────────────────────────────────
