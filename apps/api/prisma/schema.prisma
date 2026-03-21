@@ -295,6 +295,38 @@ model ParticipantFact {
 }
 
 // =============================================================================
+// WHATSAPP EVENTS (raw inbound webhooks from Wassenger)
+// Every POST to /wassenger is stored here in full for later processing.
+// =============================================================================
+
+model WhatsAppEvent {
+  id                  String   @id @default(cuid())
+  createdAt           DateTime @default(now())
+
+  // Top-level event type from Wassenger (e.g. "message:in:new")
+  eventType           String?
+
+  // Full raw payload — always stored regardless of parsing success
+  rawPayload          Json
+
+  // Extracted sender / chat fields (best-effort, may be null)
+  phoneNumber         String?
+  senderName          String?
+  chatId              String?
+  chatName            String?
+
+  // Message content fields
+  messageText         String?
+  messageType         String?   // "text", "image", "audio", etc.
+  mediaUrl            String?
+
+  // Unix timestamp as reported by Wassenger source
+  timestampFromSource BigInt?
+
+  @@map("whatsapp_events")
+}
+
+// =============================================================================
 // ADMIN / SYSTEM USERS
 // =============================================================================
 
