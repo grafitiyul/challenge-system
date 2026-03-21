@@ -72,6 +72,7 @@ export interface BackfillStats {
   messagesScanned: number;
   messagesImported: number;
   duplicatesSkipped: number;
+  noChatSkipped: number;
   mediaFound: number;
   errors: number;
 }
@@ -233,6 +234,7 @@ export class WassengerService {
       messagesScanned: 0,
       messagesImported: 0,
       duplicatesSkipped: 0,
+      noChatSkipped: 0,
       mediaFound: 0,
       errors: 0,
     };
@@ -362,18 +364,41 @@ export class WassengerService {
   ): Promise<void> {
     if (msg.media?.url || msg.media?.filename) stats.mediaFound++;
 
-    // Extract chat identity — API may use wid, id, chat.wid, chat.id, chatId, conversation
     const raw = msg as Record<string, unknown>;
+
+    // Diagnostic: log first 5 messages so we can see actual field names from the API
+    if (stats.messagesScanned < 5) {
+      console.log('[Backfill][diag] top-level keys:', Object.keys(raw).join(', '));
+      console.log('[Backfill][diag] chat fields:', JSON.stringify(raw['chat']));
+      console.log('[Backfill][diag] chatWid/chatId:', raw['chatWid'], '/', raw['chatId']);
+      console.log('[Backfill][diag] from/to:', raw['from'], '/', raw['to']);
+      console.log('[Backfill][diag] author:', raw['author']);
+      console.log('[Backfill][diag] timestamp/date:', raw['timestamp'], '/', raw['date']);
+      console.log('[Backfill][diag] wid/id/_id:', raw['wid'], '/', raw['id'], '/', raw['_id']);
+      console.log('[Backfill][diag] flow/fromMe:', raw['flow'], '/', raw['fromMe']);
+    }
+
+    // Extract chat identity.
+    // Priority: typed chatWid → chat sub-object → raw overrides → from/to fallback.
+    // For group messages, msg.from == group@g.us == the chat ID.
+    // For private outgoing, msg.to == contact@c.us == the chat ID.
+    const isOutgoing =
+      msg.flow === 'out' || (raw['fromMe'] as boolean | undefined) === true;
+
     const chatWid: string | null =
+      msg.chatWid ??
       msg.chat?.wid ??
       msg.chat?.id ??
       (raw['chatId'] as string | undefined) ??
-      (raw['chatWid'] as string | undefined) ??
       (raw['conversation'] as string | undefined) ??
+      (isOutgoing
+        ? ((raw['to'] as string | undefined) ?? null)
+        : ((raw['from'] as string | undefined) ?? null)) ??
       null;
 
     if (!chatWid) {
-      console.warn('[Backfill] message has no chat identifier, skipping:', JSON.stringify(msg).slice(0, 200));
+      console.warn('[Backfill] no chat identifier found, skipping. Raw:', JSON.stringify(msg).slice(0, 300));
+      stats.noChatSkipped++;
       return;
     }
 
@@ -421,11 +446,7 @@ export class WassengerService {
       if (exists) { stats.duplicatesSkipped++; return; }
     }
 
-    // direction: flow "out"|"in", or fromMe boolean, or event name
-    const direction =
-      msg.flow === 'out' ? 'outgoing' :
-      msg.flow === 'in'  ? 'incoming' :
-      (raw['fromMe'] === true) ? 'outgoing' : 'incoming';
+    const direction = isOutgoing ? 'outgoing' : 'incoming';
 
     // timestamp: date (ISO), timestamp (unix seconds), createdAt (ISO)
     const msgTs =
