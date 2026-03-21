@@ -385,7 +385,9 @@ export class WassengerService {
     const isOutgoing =
       msg.flow === 'out' || (raw['fromMe'] as boolean | undefined) === true;
 
+    // wid from the /v1/messages endpoint IS the chat JID (e.g. "972...@g.us" or "972...@c.us")
     const chatWid: string | null =
+      (raw['wid'] as string | undefined) ??
       msg.chatWid ??
       msg.chat?.wid ??
       msg.chat?.id ??
@@ -431,9 +433,8 @@ export class WassengerService {
       chatCache.set(chatWid, dbChatId);
     }
 
-    // Deduplicate — message wid may be in wid, id, or _id
+    // Deduplicate by message ID — NOT wid (wid = chat JID, not message ID)
     const externalMsgId: string | null =
-      msg.wid ??
       (raw['id'] as string | undefined) ??
       (raw['_id'] as string | undefined) ??
       null;
