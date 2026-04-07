@@ -12,6 +12,14 @@ export class CreateActionDto {
   @IsString()
   inputType?: string; // "boolean" | "number" | "select"
 
+  @IsOptional()
+  @IsString()
+  aggregationMode?: string; // "none" | "latest_value" | "incremental_sum"
+
+  @IsOptional()
+  @IsString()
+  unit?: string; // e.g. "steps", "floors", "minutes"
+
   @IsInt()
   @Min(0)
   points: number;
@@ -34,6 +42,14 @@ export class UpdateActionDto {
   @IsOptional()
   @IsString()
   inputType?: string;
+
+  @IsOptional()
+  @IsString()
+  aggregationMode?: string;
+
+  @IsOptional()
+  @IsString()
+  unit?: string;
 
   @IsOptional()
   @IsInt()

@@ -618,7 +618,14 @@ model GameAction {
   name        String
   description String?
   // "boolean" | "number" | "select"
-  inputType   String   @default("boolean")
+  inputType       String   @default("boolean")
+  // "none" | "latest_value" | "incremental_sum"
+  // none          → flat points per submission (boolean / select actions)
+  // latest_value  → participant reports their running total; each new value replaces previous; must not decrease
+  // incremental_sum → participant reports what they added now; system sums all submissions for the day
+  aggregationMode String   @default("none")
+  // Optional display unit, e.g. "steps", "floors", "minutes"
+  unit            String?
   points      Int      @default(0)
   maxPerDay   Int?
   isActive    Boolean  @default(true)

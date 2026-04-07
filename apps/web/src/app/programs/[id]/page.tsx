@@ -284,6 +284,8 @@ interface GameAction {
   name: string;
   description: string | null;
   inputType: string | null;
+  aggregationMode: string | null;
+  unit: string | null;
   points: number;
   maxPerDay: number | null;
   isActive: boolean;
@@ -323,8 +325,12 @@ function ruleDescription(rule: GameRule, actions: GameAction[]): string {
   }
   if (rule.type === 'conditional') {
     const actionId = condition?.['actionId'] as string | undefined;
+    const threshold = condition?.['threshold'] as number | undefined;
     const action = actions.find((a) => a.id === actionId);
-    return action ? `${ptsStr} כאשר מדווחים על "${action.name}"` : `${ptsStr} בהתקיים תנאי`;
+    const thresholdStr = threshold !== undefined
+      ? ` (סף: ${threshold}${action?.unit ? ' ' + action.unit : ''})`
+      : '';
+    return action ? `${ptsStr} כאשר "${action.name}"${thresholdStr}` : `${ptsStr} בהתקיים תנאי`;
   }
   return ptsStr;
 }
@@ -428,6 +434,8 @@ function ActionModal({
     name: action?.name ?? '',
     description: action?.description ?? '',
     inputType: action?.inputType ?? 'boolean',
+    aggregationMode: action?.aggregationMode ?? 'none',
+    unit: action?.unit ?? '',
     points: String(action?.points ?? 10),
     maxPerDay: String(action?.maxPerDay ?? ''),
   });
@@ -445,6 +453,8 @@ function ActionModal({
         name: form.name.trim(),
         description: form.description.trim() || undefined,
         inputType: form.inputType,
+        aggregationMode: form.inputType === 'number' ? form.aggregationMode : 'none',
+        unit: form.inputType === 'number' ? (form.unit.trim() || undefined) : undefined,
         points: pts,
         maxPerDay: form.maxPerDay ? parseInt(form.maxPerDay) : undefined,
       };
@@ -496,10 +506,38 @@ function ActionModal({
               </select>
               <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>
                 {form.inputType === 'boolean' && 'המשתתפת מאשרת ביצוע — כן/לא'}
-                {form.inputType === 'number' && 'המשתתפת מזינה מספר (שלבים, כוסות מים...)'}
+                {form.inputType === 'number' && 'המשתתפת מזינה מספר (שלבים, קומות, דקות...)'}
                 {form.inputType === 'select' && 'המשתתפת בוחרת מתוך רשימת אפשרויות'}
               </div>
             </div>
+
+            {/* Aggregation mode + unit — numeric actions only */}
+            {form.inputType === 'number' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12, borderTop: '1px solid #e2e8f0', paddingTop: 12 }}>
+                <div>
+                  <label style={labelStyle}>אופן חישוב ערך יומי</label>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
+                    {([
+                      { value: 'latest_value',    label: 'ערך שוטף — סה״כ עד עכשיו', desc: 'המשתתפת מדווחת על הכמות הכוללת שלה. כל דיווח חדש מחליף את הקודם. הערך לא יכול לרדת.' },
+                      { value: 'incremental_sum', label: 'הוספה מצטברת — כמה עכשיו',  desc: 'כל דיווח מוסיף לסכום היומי. המשתתפת מדווחת רק על מה שעשתה ברגע זה.' },
+                    ] as const).map((opt) => (
+                      <label key={opt.value} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer', padding: '8px 10px', border: `1.5px solid ${form.aggregationMode === opt.value ? '#2563eb' : '#e2e8f0'}`, borderRadius: 7, background: form.aggregationMode === opt.value ? '#eff6ff' : '#fff' }}>
+                        <input type="radio" name="aggregationMode" value={opt.value} checked={form.aggregationMode === opt.value} onChange={() => setForm((p) => ({ ...p, aggregationMode: opt.value }))} style={{ marginTop: 3, flexShrink: 0 }} />
+                        <div>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a' }}>{opt.label}</div>
+                          <div style={{ fontSize: 11, color: '#64748b', marginTop: 2, lineHeight: 1.5 }}>{opt.desc}</div>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <label style={labelStyle}>יחידת מידה (אופציונלי)</label>
+                  <input style={inputStyle} value={form.unit} onChange={(e) => setForm((p) => ({ ...p, unit: e.target.value }))} placeholder="לדוגמה: צעדים, קומות, דקות, כוסות" />
+                  <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>מוצג בחוקי הסף לנוחות המנהל</div>
+                </div>
+              </div>
+            )}
           </div>
           {error && <div style={{ color: '#dc2626', fontSize: 13, background: '#fef2f2', padding: '8px 12px', borderRadius: 7 }}>{error}</div>}
           <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
@@ -537,6 +575,7 @@ function RuleModal({
   const [rewardPoints, setRewardPoints] = useState(String(initReward?.['points'] ?? 10));
   const [minStreak, setMinStreak] = useState(String(initCondition?.['minStreak'] ?? '7'));
   const [conditionActionId, setConditionActionId] = useState(String(initCondition?.['actionId'] ?? ''));
+  const [threshold, setThreshold] = useState(String(initCondition?.['threshold'] ?? ''));
   const [advancedMode, setAdvancedMode] = useState(false);
   const [conditionJson, setConditionJson] = useState(rule?.conditionJson ? JSON.stringify(rule.conditionJson, null, 2) : '{}');
   const [rewardJson, setRewardJson] = useState(rule?.rewardJson ? JSON.stringify(rule.rewardJson, null, 2) : '{"points":10}');
@@ -549,7 +588,14 @@ function RuleModal({
     const reward = { points: pts };
     let cond: Record<string, unknown> = {};
     if (type === 'streak') cond = { minStreak: parseInt(minStreak) || 7 };
-    if (type === 'conditional') cond = { actionId: conditionActionId };
+    if (type === 'conditional') {
+      cond = { actionId: conditionActionId };
+      const selectedAction = actions.find((a) => a.id === conditionActionId);
+      if (threshold && selectedAction?.inputType === 'number') {
+        const t = parseInt(threshold);
+        if (!isNaN(t) && t > 0) cond.threshold = t;
+      }
+    }
     return { cond, reward };
   }
 
@@ -653,22 +699,50 @@ function RuleModal({
                 </div>
               )}
 
-              {type === 'conditional' && (
-                <div>
-                  <label style={labelStyle}>פעולה מפעילה</label>
-                  {actions.length === 0 ? (
-                    <div style={{ fontSize: 13, color: '#94a3b8', fontStyle: 'italic' }}>יש להוסיף פעולות תחילה</div>
-                  ) : (
-                    <select style={inputStyle} value={conditionActionId} onChange={(e) => setConditionActionId(e.target.value)}>
-                      <option value="">— בחרי פעולה —</option>
-                      {actions.filter((a) => a.isActive).map((a) => (
-                        <option key={a.id} value={a.id}>{a.name} ({a.points} נק׳)</option>
-                      ))}
-                    </select>
-                  )}
-                  <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>הבונוס יינתן בכל דיווח על הפעולה הנבחרת</div>
-                </div>
-              )}
+              {type === 'conditional' && (() => {
+                const selectedAction = actions.find((a) => a.id === conditionActionId);
+                const isNumeric = selectedAction?.inputType === 'number';
+                return (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    <div>
+                      <label style={labelStyle}>פעולה מפעילה</label>
+                      {actions.length === 0 ? (
+                        <div style={{ fontSize: 13, color: '#94a3b8', fontStyle: 'italic' }}>יש להוסיף פעולות תחילה</div>
+                      ) : (
+                        <select style={inputStyle} value={conditionActionId} onChange={(e) => { setConditionActionId(e.target.value); setThreshold(''); }}>
+                          <option value="">— בחרי פעולה —</option>
+                          {actions.filter((a) => a.isActive).map((a) => (
+                            <option key={a.id} value={a.id}>{a.name}{a.unit ? ` (${a.unit})` : ''}</option>
+                          ))}
+                        </select>
+                      )}
+                      <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>
+                        {isNumeric ? 'פעולה מספרית — ניתן להגדיר סף ערך יומי למטה' : 'הבונוס יינתן פעם אחת ביום בכל דיווח על הפעולה הנבחרת'}
+                      </div>
+                    </div>
+
+                    {isNumeric && (
+                      <div>
+                        <label style={labelStyle}>סף ערך יומי (אופציונלי)</label>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <input
+                            type="number" min={1}
+                            style={{ ...inputStyle, width: 120, direction: 'ltr' }}
+                            value={threshold}
+                            onChange={(e) => setThreshold(e.target.value)}
+                            placeholder="למשל: 5000"
+                          />
+                          {selectedAction?.unit && <span style={{ fontSize: 14, color: '#64748b' }}>{selectedAction.unit}</span>}
+                        </div>
+                        <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4, lineHeight: 1.5 }}>
+                          אם מוגדר, הבונוס יופעל רק כשהסה״כ היומי מגיע לסף. צור כמה חוקים עם סף עולה לסולם תגמול.
+                          הנקודות שתגדיר הן <strong style={{ color: '#374151' }}>הסה״כ לרמה זו</strong> — המערכת תעניק רק את ההפרש מעל מה שכבר הוענק.
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
               {/* Reward points */}
               <div>
@@ -838,6 +912,9 @@ function GameEngineTab({ programId }: { programId: string }) {
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
                     {badge(`${a.points} נקודות`, 'green')}
                     {badge(ACTION_INPUT_TYPES.find((t) => t.value === a.inputType)?.label ?? a.inputType ?? 'כן/לא', 'blue')}
+                    {a.inputType === 'number' && a.aggregationMode === 'latest_value' && badge('ערך שוטף', 'blue')}
+                    {a.inputType === 'number' && a.aggregationMode === 'incremental_sum' && badge('הוספה מצטברת', 'blue')}
+                    {a.unit && badge(a.unit, 'gray')}
                     {a.maxPerDay ? badge(`מקס׳ ${a.maxPerDay} פעם/יום`, 'orange') : badge('ללא הגבלה יומית', 'gray')}
                   </div>
                   {a.description && <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>{a.description}</div>}

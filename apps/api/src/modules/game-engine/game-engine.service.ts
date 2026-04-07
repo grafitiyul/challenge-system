@@ -27,6 +27,8 @@ export class GameEngineService {
         name: dto.name,
         description: dto.description ?? null,
         inputType: dto.inputType ?? 'boolean',
+        aggregationMode: dto.aggregationMode ?? 'none',
+        unit: dto.unit ?? null,
         points: dto.points,
         maxPerDay: dto.maxPerDay ?? null,
       },
@@ -49,6 +51,8 @@ export class GameEngineService {
         ...(dto.name !== undefined ? { name: dto.name } : {}),
         ...(dto.description !== undefined ? { description: dto.description } : {}),
         ...(dto.inputType !== undefined ? { inputType: dto.inputType } : {}),
+        ...(dto.aggregationMode !== undefined ? { aggregationMode: dto.aggregationMode } : {}),
+        ...(dto.unit !== undefined ? { unit: dto.unit } : {}),
         ...(dto.points !== undefined ? { points: dto.points } : {}),
         ...(dto.maxPerDay !== undefined ? { maxPerDay: dto.maxPerDay } : {}),
         ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
@@ -129,6 +133,26 @@ export class GameEngineService {
       }
     }
 
+    // For latest_value numeric actions: enforce monotonic daily increase.
+    // Participant reports their CURRENT running total — it cannot go down within a day.
+    if (action.inputType === 'number' && action.aggregationMode === 'latest_value') {
+      const numericValue = parseFloat(dto.value ?? '');
+      if (isNaN(numericValue) || numericValue < 0) {
+        throw new BadRequestException('ערך מספרי חוקי נדרש עבור פעולה זו');
+      }
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      const currentEffective = await this.getEffectiveDailyValue(
+        dto.participantId, dto.programId, dto.actionId, todayStart,
+      );
+      if (numericValue < currentEffective) {
+        throw new BadRequestException(
+          `הערך ${numericValue} נמוך מהסה"כ היומי הנוכחי (${currentEffective}). ` +
+          `עבור פעולות "ערך שוטף", יש לדווח על הסה"כ הנוכחי — הערך לא יכול לרדת.`,
+        );
+      }
+    }
+
     const now = new Date();
 
     // 1. Create the log entry
@@ -185,9 +209,27 @@ export class GameEngineService {
   // ─── Rule evaluation ───────────────────────────────────────────────────────
 
   async evaluateRules(dto: EvaluateRulesDto) {
-    const rules = await this.prisma.gameRule.findMany({
+    const allRules = await this.prisma.gameRule.findMany({
       where: { programId: dto.programId, isActive: true },
     });
+
+    // Sort threshold-bearing conditional rules for the same action ascending by threshold.
+    // This guarantees that within a single evaluateRules call, lower thresholds are always
+    // committed to the DB before higher ones. The ladder-delta query then sees earlier
+    // firings correctly, regardless of how the admin defined the rules.
+    const rules = [...allRules].sort((a, b) => {
+      if (a.type !== 'conditional' || b.type !== 'conditional') return 0;
+      const ca = a.conditionJson as Record<string, unknown>;
+      const cb = b.conditionJson as Record<string, unknown>;
+      const ta = typeof ca['threshold'] === 'number' ? (ca['threshold'] as number) : null;
+      const tb = typeof cb['threshold'] === 'number' ? (cb['threshold'] as number) : null;
+      if (ta !== null && tb !== null && ca['actionId'] === cb['actionId']) return ta - tb;
+      return 0;
+    });
+
+    // Single todayStart for the entire evaluation — consistent across all rule checks.
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
 
     const groupDay = dto.groupId ? await this.getGroupDay(dto.groupId) : null;
     const state = await this.getOrCreateParticipantState(dto.participantId, dto.programId);
@@ -222,10 +264,11 @@ export class GameEngineService {
       const rewardPoints = typeof reward['points'] === 'number' ? reward['points'] : 0;
 
       let conditionMet = false;
+      // pointsToAward defaults to full rewardPoints; overridden for threshold-ladder rules
+      let pointsToAward = rewardPoints;
 
       if (rule.type === 'daily_bonus') {
-        // Fires once per day for active participants
-        const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+        // Fires once per day for any participant who submitted an action
         const alreadyGiven = await this.prisma.scoreEvent.count({
           where: {
             participantId: dto.participantId,
@@ -240,9 +283,8 @@ export class GameEngineService {
       } else if (rule.type === 'streak') {
         const minStreak = typeof condition['minStreak'] === 'number' ? condition['minStreak'] : 1;
         conditionMet = state.currentStreak >= minStreak;
-        // Only award once per streak milestone (check today)
+        // Award at most once per day per streak milestone
         if (conditionMet) {
-          const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
           const alreadyGiven = await this.prisma.scoreEvent.count({
             where: {
               participantId: dto.participantId,
@@ -256,19 +298,92 @@ export class GameEngineService {
         }
 
       } else if (rule.type === 'conditional') {
-        // Flexible: checks if participant logged a specific action today
         const requiredActionId = typeof condition['actionId'] === 'string' ? condition['actionId'] : null;
         if (requiredActionId) {
-          const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
-          const logged = await this.prisma.userActionLog.count({
-            where: {
-              participantId: dto.participantId,
-              programId: dto.programId,
-              actionId: requiredActionId,
-              createdAt: { gte: todayStart },
-            },
-          });
-          conditionMet = logged > 0;
+          const threshold =
+            typeof condition['threshold'] === 'number' ? (condition['threshold'] as number) : null;
+
+          if (threshold !== null) {
+            // ── Threshold mode ───────────────────────────────────────────
+            // Compare the participant's effective daily value against the threshold.
+            // "effective daily value" depends on the action's aggregationMode:
+            //   latest_value    → max of all submitted values today
+            //   incremental_sum → sum of all submitted values today
+            const effectiveValue = await this.getEffectiveDailyValue(
+              dto.participantId, dto.programId, requiredActionId, todayStart,
+            );
+            conditionMet = effectiveValue >= threshold;
+          } else {
+            // ── Presence mode (original behavior) ───────────────────────
+            // Fires when the participant has logged the action at least once today.
+            const logged = await this.prisma.userActionLog.count({
+              where: {
+                participantId: dto.participantId,
+                programId: dto.programId,
+                actionId: requiredActionId,
+                createdAt: { gte: todayStart },
+              },
+            });
+            conditionMet = logged > 0;
+          }
+
+          // Dedup: fire at most once per day per rule (applies to both threshold and presence).
+          // This was missing for conditional rules before — it is now enforced consistently.
+          if (conditionMet) {
+            const alreadyFired = await this.prisma.scoreEvent.count({
+              where: {
+                participantId: dto.participantId,
+                programId: dto.programId,
+                sourceType: 'rule',
+                sourceId: rule.id,
+                createdAt: { gte: todayStart },
+              },
+            });
+            if (alreadyFired > 0) conditionMet = false;
+          }
+
+          // ── Ladder delta for threshold rules ─────────────────────────
+          // rewardJson.points is the CUMULATIVE total deserved at this threshold level.
+          // To prevent double-awarding across the ladder, award only the delta above
+          // what has already been earned from ALL threshold rules for the same action today.
+          //
+          // Example ladder: 3000→10pts, 5000→20pts, 10000→40pts
+          //   submit 3000: alreadyEarned=0, delta=10-0=10  ✓
+          //   submit 5000: alreadyEarned=10, delta=20-10=10 ✓
+          //   submit 10000: alreadyEarned=20, delta=40-20=20 ✓
+          if (conditionMet && threshold !== null) {
+            const ladderRuleIds = rules
+              .filter(r => {
+                if (r.type !== 'conditional') return false;
+                const c = r.conditionJson as Record<string, unknown>;
+                return (
+                  typeof c['actionId'] === 'string' &&
+                  c['actionId'] === requiredActionId &&
+                  typeof c['threshold'] === 'number'
+                );
+              })
+              .map(r => r.id);
+
+            const earned = await this.prisma.scoreEvent.aggregate({
+              _sum: { points: true },
+              where: {
+                participantId: dto.participantId,
+                programId: dto.programId,
+                sourceType: 'rule',
+                sourceId: { in: ladderRuleIds },
+                createdAt: { gte: todayStart },
+              },
+            });
+
+            const alreadyEarned = earned._sum.points ?? 0;
+            const delta = rewardPoints - alreadyEarned;
+
+            if (delta <= 0) {
+              conditionMet = false; // nothing new to award at this level
+            } else {
+              pointsToAward = delta; // award only the marginal difference
+            }
+          }
         }
       }
 
@@ -285,12 +400,12 @@ export class GameEngineService {
           groupId: dto.groupId ?? null,
           sourceType: 'rule',
           sourceId: rule.id,
-          points: rewardPoints,
+          points: pointsToAward,
           metadata: { ruleName: rule.name, ruleType: rule.type },
         },
       });
 
-      if (dto.groupId && rewardPoints > 0) {
+      if (dto.groupId && pointsToAward > 0) {
         await this.prisma.feedEvent.create({
           data: {
             participantId: dto.participantId,
@@ -298,13 +413,13 @@ export class GameEngineService {
             programId: dto.programId,
             type: 'rare',
             message: `קיבלה בונוס: ${rule.name}`,
-            points: rewardPoints,
+            points: pointsToAward,
             isPublic: true,
           },
         });
       }
 
-      results.push({ ruleId: rule.id, fired: true, points: rewardPoints });
+      results.push({ ruleId: rule.id, fired: true, points: pointsToAward });
     }
 
     return results;
@@ -603,6 +718,46 @@ export class GameEngineService {
   }
 
   // ─── Private helpers ────────────────────────────────────────────────────────
+
+  // ─── Effective daily value ──────────────────────────────────────────────────
+
+  /**
+   * Returns the effective daily value for a numeric action.
+   *
+   * latest_value    → maximum of all values submitted today (participant reports running total)
+   * incremental_sum → sum of all values submitted today (participant reports what they added now)
+   * none / non-numeric → 0 (not applicable)
+   *
+   * This is the value that threshold rules evaluate against. It is also used by logAction
+   * to enforce the monotonic-increase constraint for latest_value actions.
+   */
+  private async getEffectiveDailyValue(
+    participantId: string,
+    programId: string,
+    actionId: string,
+    todayStart: Date,
+  ): Promise<number> {
+    const action = await this.prisma.gameAction.findUnique({ where: { id: actionId } });
+    if (!action || action.inputType !== 'number') return 0;
+
+    const logs = await this.prisma.userActionLog.findMany({
+      where: { participantId, programId, actionId, createdAt: { gte: todayStart } },
+    });
+
+    const values = logs
+      .map(l => parseFloat(l.value))
+      .filter(v => !isNaN(v) && v >= 0);
+
+    if (values.length === 0) return 0;
+
+    if (action.aggregationMode === 'latest_value') {
+      return Math.max(...values);
+    }
+    if (action.aggregationMode === 'incremental_sum') {
+      return values.reduce((sum, v) => sum + v, 0);
+    }
+    return 0; // 'none' mode — no meaningful daily total
+  }
 
   private async getGroupDay(groupId: string): Promise<number | null> {
     const state = await this.getGroupState(groupId);
