@@ -98,7 +98,7 @@ function IconMenu() {
 
 const NAV_MAIN: NavItemDef[] = [
   { href: '/dashboard', label: 'דשבורד', icon: <IconGrid /> },
-  { href: '/challenges', label: 'אתגרים', icon: <IconZap /> },
+  { href: '/programs', label: 'תוכניות', icon: <IconZap /> },
   { href: '/groups', label: 'קבוצות', icon: <IconUsers /> },
   { href: '/participants', label: 'משתתפות', icon: <IconUser /> },
   { href: '/chats', label: "צ'אטים", icon: <IconMessageCircle /> },

@@ -10,7 +10,11 @@ export class GroupsService {
   findAll(challengeId?: string) {
     return this.prisma.group.findMany({
       where: challengeId ? { challengeId } : undefined,
-      include: { challenge: true },
+      include: {
+        challenge: true,
+        program: { select: { id: true, name: true, type: true } },
+        _count: { select: { participantGroups: { where: { isActive: true } } } },
+      },
       orderBy: { createdAt: 'asc' },
     });
   }

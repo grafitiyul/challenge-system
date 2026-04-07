@@ -12,6 +12,7 @@ import { GendersModule } from './modules/genders/genders.module';
 import { ParticipantsModule } from './modules/participants/participants.module';
 import { QuestionnairesModule } from './modules/questionnaires/questionnaires.module';
 import { UploadModule } from './modules/upload/upload.module';
+import { ProgramsModule } from './modules/programs/programs.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { UploadModule } from './modules/upload/upload.module';
     ParticipantsModule,
     QuestionnairesModule,
     UploadModule,
+    ProgramsModule,
   ],
   controllers: [HealthController, WassengerController],
   providers: [WassengerService, SeederService],
