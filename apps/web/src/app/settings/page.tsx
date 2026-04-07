@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { BASE_URL } from '@lib/api';
+import { BASE_URL, apiFetch } from '@lib/api';
 
 interface NamedItem {
   id: string;
@@ -82,8 +82,7 @@ export default function SettingsPage() {
         const results = await Promise.all(
           SECTIONS.map((s) => {
             console.log('[API] GET', `${BASE_URL}${s.endpoint}`);
-            return fetch(`${BASE_URL}${s.endpoint}`)
-              .then((r) => r.json())
+            return apiFetch(`${BASE_URL}${s.endpoint}`)
               .then((d: unknown) => [s.key, Array.isArray(d) ? d : []] as [string, NamedItem[]]);
           }),
         );

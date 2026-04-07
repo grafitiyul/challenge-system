@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { BASE_URL } from '@lib/api';
+import { BASE_URL, apiFetch } from '@lib/api';
 
 interface Challenge {
   id: string;
@@ -35,12 +35,11 @@ export default function DashboardPage() {
       try {
         const includeMock = localStorage.getItem('showMockParticipants') === 'true';
         console.log('[API] GET', `${BASE_URL}/challenges`, `${BASE_URL}/groups`, `${BASE_URL}/participants?includeMock=${includeMock}`);
-        const [cRes, gRes, pRes] = await Promise.all([
-          fetch(`${BASE_URL}/challenges`),
-          fetch(`${BASE_URL}/groups`),
-          fetch(`${BASE_URL}/participants?includeMock=${includeMock}`),
+        const [cData, gData, pData] = await Promise.all([
+          apiFetch(`${BASE_URL}/challenges`),
+          apiFetch(`${BASE_URL}/groups`),
+          apiFetch(`${BASE_URL}/participants?includeMock=${includeMock}`),
         ]);
-        const [cData, gData, pData] = await Promise.all([cRes.json(), gRes.json(), pRes.json()]);
         setChallenges(Array.isArray(cData) ? (cData as Challenge[]) : []);
         setGroups(Array.isArray(gData) ? (gData as Group[]) : []);
         setParticipants(Array.isArray(pData) ? (pData as Participant[]) : []);

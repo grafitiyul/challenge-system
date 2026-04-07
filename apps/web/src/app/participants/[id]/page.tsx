@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { use } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { BASE_URL } from '@lib/api';
+import { BASE_URL, apiFetch } from '@lib/api';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -490,16 +490,19 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
 
   // Load participant
   useEffect(() => {
-    fetch(`${BASE_URL}/participants/${id}`)
-      .then((r) => { if (!r.ok) { setNotFound(true); return null; } return r.json(); })
+    apiFetch(`${BASE_URL}/participants/${id}`)
       .then((data: unknown) => {
-        if (data) {
-          const p = data as Participant;
-          setParticipant(p);
-          setForm({ firstName: p.firstName, lastName: p.lastName ?? '', phoneNumber: p.phoneNumber, email: p.email ?? '', birthDate: p.birthDate ? p.birthDate.slice(0, 10) : '', city: p.city ?? '', status: p.status ?? '', notes: p.notes ?? '', nextAction: p.nextAction ?? '', source: p.source ?? '' });
+        const p = data as Participant;
+        setParticipant(p);
+        setForm({ firstName: p.firstName, lastName: p.lastName ?? '', phoneNumber: p.phoneNumber, email: p.email ?? '', birthDate: p.birthDate ? p.birthDate.slice(0, 10) : '', city: p.city ?? '', status: p.status ?? '', notes: p.notes ?? '', nextAction: p.nextAction ?? '', source: p.source ?? '' });
+      })
+      .catch((err: unknown) => {
+        if (err && typeof err === 'object' && 'status' in err && (err as { status: number }).status === 404) {
+          setNotFound(true);
+        } else {
+          setNotFound(true);
         }
       })
-      .catch(() => setNotFound(true))
       .finally(() => setLoading(false));
   }, [id]);
 
@@ -508,8 +511,7 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
   useEffect(() => {
     if (submissionsLoaded) return;
     setSubmissionsLoading(true);
-    fetch(`${BASE_URL}/submissions/by-participant/${id}`)
-      .then((r) => r.json())
+    apiFetch(`${BASE_URL}/submissions/by-participant/${id}`)
       .then((data: unknown) => { setSubmissions(data as Submission[]); setSubmissionsLoaded(true); })
       .catch(() => setSubmissions([]))
       .finally(() => setSubmissionsLoading(false));
@@ -518,7 +520,7 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
   async function openPickModal() {
     setPickModalOpen(true);
     if (templates.length > 0) return;
-    const data = await fetch(`${BASE_URL}/questionnaires`).then((r) => r.json()) as QuestionnaireTemplate[];
+    const data = await apiFetch(`${BASE_URL}/questionnaires`) as QuestionnaireTemplate[];
     setTemplates(data.filter((t) => t.isActive));
   }
 
@@ -534,9 +536,8 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
     setSaving(true);
     setSaveError('');
     try {
-      const res = await fetch(`${BASE_URL}/participants/${id}`, {
+      const updated = await apiFetch(`${BASE_URL}/participants/${id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           firstName: form.firstName,
           lastName: form.lastName || undefined,
@@ -550,8 +551,6 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
           source: form.source || undefined,
         }),
       });
-      if (!res.ok) { setSaveError('שגיאה בשמירה — נסי שוב'); return; }
-      const updated = await res.json();
       setParticipant(updated as Participant);
       setEditOpen(false);
     } catch { setSaveError('שגיאת רשת — נסי שוב'); }
@@ -591,16 +590,11 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
     try {
       const fd = new FormData();
       fd.append('file', file);
-      const res = await fetch(`${API_BASE}/api/upload`, { method: 'POST', body: fd });
-      if (!res.ok) return;
-      const { url } = await res.json() as { url: string };
-      const patchRes = await fetch(`${BASE_URL}/participants/${id}`, {
+      const { url } = await apiFetch(`${BASE_URL}/upload`, { method: 'POST', body: fd }) as { url: string };
+      const updated = await apiFetch(`${BASE_URL}/participants/${id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ profileImageUrl: url }),
       });
-      if (!patchRes.ok) return;
-      const updated = await patchRes.json();
       setParticipant(updated as Participant);
     } finally {
       setUploadingImage(false);

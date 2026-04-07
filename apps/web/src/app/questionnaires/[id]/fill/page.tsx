@@ -3,7 +3,7 @@
 import { useEffect, useState, useRef, use } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import { BASE_URL } from '@lib/api';
+import { BASE_URL, apiFetch } from '@lib/api';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -83,9 +83,7 @@ function ImageUploadField({ value, onChange }: { value: string; onChange: (v: st
     try {
       const fd = new FormData();
       fd.append('file', file);
-      const res = await fetch(`${BASE_URL}/upload`, { method: 'POST', body: fd });
-      if (!res.ok) { setError('שגיאה בהעלאה'); return; }
-      const data = await res.json() as { url: string };
+      const data = await apiFetch(`${BASE_URL}/upload`, { method: 'POST', body: fd }) as { url: string };
       const apiHost = BASE_URL.replace(/\/api$/, '');
       onChange(data.url.startsWith('http') ? data.url : `${apiHost}${data.url}`);
     } catch { setError('שגיאת רשת — לא ניתן להעלות קובץ'); }
@@ -485,13 +483,12 @@ export default function InternalFillPage({ params }: { params: Promise<{ id: str
   const questionElems = useRef<Map<string, HTMLDivElement | null>>(new Map());
 
   useEffect(() => {
-    const fetchTemplate = fetch(`${BASE_URL}/questionnaires/${id}`, { cache: 'no-store' })
-      .then((r) => { if (!r.ok) { setNotFound(true); return null; } return r.json(); })
-      .then((data: unknown) => { if (data) setTemplate(data as Template); });
+    const fetchTemplate = apiFetch(`${BASE_URL}/questionnaires/${id}`, { cache: 'no-store' })
+      .then((data: unknown) => setTemplate(data as Template))
+      .catch(() => setNotFound(true));
 
     const fetchParticipant = participantId
-      ? fetch(`${BASE_URL}/participants/${participantId}`, { cache: 'no-store' })
-        .then((r) => r.json())
+      ? apiFetch(`${BASE_URL}/participants/${participantId}`, { cache: 'no-store' })
         .then((data: unknown) => setParticipant(data as Participant))
         .catch(() => {})
       : Promise.resolve();
@@ -580,24 +577,18 @@ export default function InternalFillPage({ params }: { params: Promise<{ id: str
         body.newParticipant = { firstName: newFirstName.trim(), lastName: newLastName.trim() || undefined, phoneNumber: newPhone.trim() };
       }
 
-      const res = await fetch(`${BASE_URL}/questionnaires/${id}/submissions`, {
+      const submission = await apiFetch(`${BASE_URL}/questionnaires/${id}/submissions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
-      });
-
-      if (!res.ok) {
-        setSubmitError('שגיאה בשליחת השאלון');
-        return;
-      }
-
-      const submission = await res.json() as { participantId?: string };
+      }) as { participantId?: string };
       const targetId = participantId ?? submission.participantId;
       if (targetId) {
         router.push(`/participants/${targetId}?tab=questionnaires`);
       } else {
         router.push('/questionnaires');
       }
+    } catch {
+      setSubmitError('שגיאה בשליחת השאלון');
     } finally {
       setSubmitting(false);
     }

@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -sv https://challenge-systemapi-production.up.railway.app/api/health)",
+      "Bash(curl -s https://challenge-systemapi-production.up.railway.app/api/questionnaires)"
+    ]
+  }
+}

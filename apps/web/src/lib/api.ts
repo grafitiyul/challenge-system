@@ -3,3 +3,5 @@
 // No NEXT_PUBLIC_* variable needed — no build-time baking — works on all devices.
 // To configure production: set API_URL in Railway service Variables (runtime env).
 export const BASE_URL = '/api-proxy/api';
+
+export { apiFetch } from './apiFetch';

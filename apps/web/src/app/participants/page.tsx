@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { BASE_URL } from '@lib/api';
+import { BASE_URL, apiFetch } from '@lib/api';
 
 const MOCK_SETTING_KEY = 'showMockParticipants';
 
@@ -99,8 +99,7 @@ export default function ParticipantsPage() {
   const fetchParticipants = (includeMock: boolean) => {
     setLoading(true);
     console.log('[API] GET', `${BASE_URL}/participants?includeMock=${includeMock}`);
-    fetch(`${BASE_URL}/participants?includeMock=${includeMock}`)
-      .then((r) => r.json())
+    apiFetch(`${BASE_URL}/participants?includeMock=${includeMock}`)
       .then((data: unknown) => setParticipants(Array.isArray(data) ? (data as Participant[]) : []))
       .catch(() => setParticipants([]))
       .finally(() => setLoading(false));
@@ -159,15 +158,10 @@ export default function ParticipantsPage() {
       if (form.source.trim()) body.source = form.source.trim();
 
       console.log('[API] POST', `${BASE_URL}/participants`);
-      const res = await fetch(`${BASE_URL}/participants`, {
+      await apiFetch(`${BASE_URL}/participants`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error((err as { message?: string }).message ?? 'שגיאה ביצירת משתתפת');
-      }
       closeModal();
       fetchParticipants(showMock);
     } catch (err) {
@@ -183,12 +177,7 @@ export default function ParticipantsPage() {
     setMockMessage(null);
     try {
       console.log('[API] POST', `${BASE_URL}/participants/mock?count=${count}`);
-      const res = await fetch(`${BASE_URL}/participants/mock?count=${count}`, { method: 'POST' });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error((err as { message?: string }).message ?? 'שגיאה ביצירת משתתפת פיקטיבית');
-      }
-      const created = (await res.json()) as unknown[];
+      const created = await apiFetch(`${BASE_URL}/participants/mock?count=${count}`, { method: 'POST' }) as unknown[];
       localStorage.setItem(MOCK_SETTING_KEY, 'true');
       setShowMock(true);
       fetchParticipants(true);

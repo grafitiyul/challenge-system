@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { BASE_URL } from '@lib/api';
+import { BASE_URL, apiFetch } from '@lib/api';
 
 type GroupStatus = 'active' | 'inactive';
 type ProgramType = 'challenge' | 'game' | 'group_coaching' | 'personal_coaching';
@@ -36,8 +36,7 @@ export default function GroupsPage() {
   const [search, setSearch] = useState('');
 
   useEffect(() => {
-    fetch(`${BASE_URL}/groups`, { cache: 'no-store' })
-      .then((r) => r.json())
+    apiFetch(`${BASE_URL}/groups`, { cache: 'no-store' })
       .then((data: unknown) => setGroups(Array.isArray(data) ? (data as Group[]) : []))
       .catch(() => setGroups([]))
       .finally(() => setLoading(false));

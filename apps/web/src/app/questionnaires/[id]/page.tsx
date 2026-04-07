@@ -4,7 +4,7 @@ import { useEffect, useState, useRef } from 'react';
 import { use } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import { BASE_URL } from '@lib/api';
+import { BASE_URL, apiFetch } from '@lib/api';
 import dynamic from 'next/dynamic';
 
 const RichTextEditor = dynamic(() => import('@components/rich-text-editor'), { ssr: false });
@@ -230,13 +230,10 @@ function SettingsTab({ template, onSaved }: { template: Template; onSaved: (t: T
     setError('');
     setSaving(true);
     try {
-      const res = await fetch(`${BASE_URL}/questionnaires/${template.id}`, {
+      const updated = await apiFetch(`${BASE_URL}/questionnaires/${template.id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(form),
       });
-      if (!res.ok) { setError('שגיאה בשמירה'); return; }
-      const updated = await res.json();
       onSaved(updated);
       setSaved(true);
     } finally {
@@ -434,13 +431,10 @@ function ModalOptionsEditor({
     try {
       if (questionId) {
         // Edit mode — persist immediately
-        const res = await fetch(`${BASE_URL}/questionnaires/${templateId}/questions/${questionId}/options`, {
+        const opt = await apiFetch(`${BASE_URL}/questionnaires/${templateId}/questions/${questionId}/options`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ label: newLabel.trim(), value: newLabel.trim() }),
-        });
-        if (!res.ok) return;
-        const opt = await res.json() as { id: string; label: string };
+        }) as { id: string; label: string };
         onOptionsChange([...options, opt]);
       } else {
         // Add mode — local pending list with temp id
@@ -453,11 +447,10 @@ function ModalOptionsEditor({
 
   async function removeOption(optId: string) {
     if (questionId && !optId.startsWith('__pending_')) {
-      const res = await fetch(
+      await apiFetch(
         `${BASE_URL}/questionnaires/${templateId}/questions/${questionId}/options/${optId}`,
         { method: 'DELETE' },
       );
-      if (!res.ok) return;
     }
     onOptionsChange(options.filter((o) => o.id !== optId));
   }
@@ -686,21 +679,17 @@ function OptionsPanel({ templateId, question, onChange }: { templateId: string; 
     if (!newLabel.trim()) return;
     setAdding(true);
     try {
-      const res = await fetch(`${BASE_URL}/questionnaires/${templateId}/questions/${question.id}/options`, {
+      const opt = await apiFetch(`${BASE_URL}/questionnaires/${templateId}/questions/${question.id}/options`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ label: newLabel.trim(), value: newLabel.trim() }),
-      });
-      if (!res.ok) return;
-      const opt = await res.json() as QuestionOption;
+      }) as QuestionOption;
       onChange({ ...question, options: [...question.options, opt] });
       setNewLabel('');
     } finally { setAdding(false); }
   }
 
   async function deleteOption(optId: string) {
-    const res = await fetch(`${BASE_URL}/questionnaires/${templateId}/questions/${question.id}/options/${optId}`, { method: 'DELETE' });
-    if (!res.ok) return;
+    await apiFetch(`${BASE_URL}/questionnaires/${templateId}/questions/${question.id}/options/${optId}`, { method: 'DELETE' });
     onChange({ ...question, options: question.options.filter((o) => o.id !== optId) });
   }
 
@@ -869,28 +858,23 @@ function QuestionsTab({ template, onTemplateChange }: { template: Template; onTe
   }
 
   async function toggleRequired(q: Question) {
-    const res = await fetch(`${BASE_URL}/questionnaires/${template.id}/questions/${q.id}`, {
+    await apiFetch(`${BASE_URL}/questionnaires/${template.id}/questions/${q.id}`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ isRequired: !q.isRequired }),
     });
-    if (!res.ok) return;
     updateQuestions(questions.map((x) => x.id === q.id ? { ...x, isRequired: !x.isRequired } : x));
   }
 
   async function toggleAllowOther(q: Question) {
-    const res = await fetch(`${BASE_URL}/questionnaires/${template.id}/questions/${q.id}`, {
+    await apiFetch(`${BASE_URL}/questionnaires/${template.id}/questions/${q.id}`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ allowOther: !q.allowOther }),
     });
-    if (!res.ok) return;
     updateQuestions(questions.map((x) => x.id === q.id ? { ...x, allowOther: !x.allowOther } : x));
   }
 
   async function confirmDeleteQuestion(q: Question) {
-    const res = await fetch(`${BASE_URL}/questionnaires/${template.id}/questions/${q.id}`, { method: 'DELETE' });
-    if (!res.ok) return;
+    await apiFetch(`${BASE_URL}/questionnaires/${template.id}/questions/${q.id}`, { method: 'DELETE' });
     updateQuestions(questions.filter((x) => x.id !== q.id));
     setConfirmDelete(null);
   }
@@ -914,9 +898,8 @@ function QuestionsTab({ template, onTemplateChange }: { template: Template; onTe
     reordered.splice(idx, 0, moved);
     const items = reordered.map((x, i) => ({ id: x.id, sortOrder: (i + 1) * 10 }));
     updateQuestions(reordered.map((x, i) => ({ ...x, sortOrder: (i + 1) * 10 })));
-    await fetch(`${BASE_URL}/questionnaires/${template.id}/questions/reorder`, {
+    await apiFetch(`${BASE_URL}/questionnaires/${template.id}/questions/reorder`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ items }),
     });
   }
@@ -935,40 +918,33 @@ function QuestionsTab({ template, onTemplateChange }: { template: Template; onTe
   async function commitInlineEdit(q: Question) {
     setInlineEditing(null);
     if (!inlineValue.trim() || inlineValue === q.label) return;
-    const res = await fetch(`${BASE_URL}/questionnaires/${template.id}/questions/${q.id}`, {
+    await apiFetch(`${BASE_URL}/questionnaires/${template.id}/questions/${q.id}`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ label: inlineValue.trim() }),
     });
-    if (!res.ok) return;
     updateQuestions(questions.map((x) => x.id === q.id ? { ...x, label: inlineValue.trim() } : x));
   }
 
   async function handleAddQuestion(form: QuestionFormState, pendingOptions: { label: string }[]) {
-    const res = await fetch(`${BASE_URL}/questionnaires/${template.id}/questions`, {
+    const q = await apiFetch(`${BASE_URL}/questionnaires/${template.id}/questions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         ...form,
         helperText: form.helperText || undefined,
         fieldSize: form.fieldSize || defaultFieldSize(form.questionType),
       }),
-    });
-    if (!res.ok) throw new Error('failed');
-    const q = await res.json() as Question;
+    }) as Question;
     // Flush any pending options that were added inside the modal before save
     let finalOptions: QuestionOption[] = q.options ?? [];
     if (pendingOptions.length > 0) {
       for (const opt of pendingOptions) {
-        const optRes = await fetch(`${BASE_URL}/questionnaires/${template.id}/questions/${q.id}/options`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ label: opt.label, value: opt.label }),
-        });
-        if (optRes.ok) {
-          const created = await optRes.json() as QuestionOption;
+        try {
+          const created = await apiFetch(`${BASE_URL}/questionnaires/${template.id}/questions/${q.id}/options`, {
+            method: 'POST',
+            body: JSON.stringify({ label: opt.label, value: opt.label }),
+          }) as QuestionOption;
           finalOptions = [...finalOptions, created];
-        }
+        } catch { /* skip failed option */ }
       }
     }
     updateQuestions([...questions, { ...q, options: finalOptions }]);
@@ -976,9 +952,8 @@ function QuestionsTab({ template, onTemplateChange }: { template: Template; onTe
   }
 
   async function handleAddSystemField(field: SystemFieldDef, customLabel: string, isRequired: boolean) {
-    const res = await fetch(`${BASE_URL}/questionnaires/${template.id}/questions`, {
+    const q = await apiFetch(`${BASE_URL}/questionnaires/${template.id}/questions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         label: customLabel,
         internalKey: field.key,
@@ -987,9 +962,7 @@ function QuestionsTab({ template, onTemplateChange }: { template: Template; onTe
         isSystemField: true,
         fieldSize: defaultFieldSize(field.questionType),
       }),
-    });
-    if (!res.ok) throw new Error('failed');
-    const q = await res.json() as Question;
+    }) as Question;
     updateQuestions([...questions, q]);
     setSystemFieldModalOpen(false);
   }
@@ -998,17 +971,14 @@ function QuestionsTab({ template, onTemplateChange }: { template: Template; onTe
 
   async function handleEditQuestion(form: QuestionFormState) {
     if (!editModal) return;
-    const res = await fetch(`${BASE_URL}/questionnaires/${template.id}/questions/${editModal.id}`, {
+    const updated = await apiFetch(`${BASE_URL}/questionnaires/${template.id}/questions/${editModal.id}`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         ...form,
         helperText: form.helperText || undefined,
         fieldSize: form.fieldSize || defaultFieldSize(form.questionType),
       }),
-    });
-    if (!res.ok) throw new Error('failed');
-    const updated = await res.json() as Question;
+    }) as Question;
     // Re-fetch fresh options from API (edit modal manages them live, so just use current state)
     const currentQuestion = questions.find((x) => x.id === editModal.id);
     updateQuestions(questions.map((x) => x.id === updated.id ? { ...updated, options: currentQuestion?.options ?? x.options } : x));
@@ -1259,8 +1229,7 @@ function LinksTab({ template }: { template: Template }) {
   const [confirmDeleteLink, setConfirmDeleteLink] = useState<ExternalLink | null>(null);
 
   useEffect(() => {
-    fetch(`${BASE_URL}/questionnaires/${template.id}/links`, { cache: 'no-store' })
-      .then((r) => r.json())
+    apiFetch(`${BASE_URL}/questionnaires/${template.id}/links`, { cache: 'no-store' })
       .then((data: unknown) => setLinks(data as ExternalLink[]))
       .catch(() => setLinks([]))
       .finally(() => setLoading(false));
@@ -1276,9 +1245,8 @@ function LinksTab({ template }: { template: Template }) {
     setFormError('');
     setSaving(true);
     try {
-      const res = await fetch(`${BASE_URL}/questionnaires/${template.id}/links`, {
+      const link = await apiFetch(`${BASE_URL}/questionnaires/${template.id}/links`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           internalName: form.internalName,
           ...(form.utmSource && { utmSource: form.utmSource }),
@@ -1287,9 +1255,7 @@ function LinksTab({ template }: { template: Template }) {
           ...(form.utmContent && { utmContent: form.utmContent }),
           ...(form.utmTerm && { utmTerm: form.utmTerm }),
         }),
-      });
-      if (!res.ok) { setFormError('שגיאה ביצירת הלינק'); return; }
-      const link = await res.json() as ExternalLink;
+      }) as ExternalLink;
       setLinks((prev) => [link, ...prev]);
       setModalOpen(false);
       setForm(EMPTY_LINK_FORM);
@@ -1297,23 +1263,19 @@ function LinksTab({ template }: { template: Template }) {
   }
 
   async function toggleActive(link: ExternalLink) {
-    const res = await fetch(`${BASE_URL}/questionnaires/${template.id}/links/${link.id}`, {
+    await apiFetch(`${BASE_URL}/questionnaires/${template.id}/links/${link.id}`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ isActive: !link.isActive }),
     });
-    if (!res.ok) return;
     setLinks((prev) => prev.map((l) => l.id === link.id ? { ...l, isActive: !l.isActive } : l));
   }
 
   async function confirmDeleteLinkFn(link: ExternalLink) {
     // Soft delete — isActive: false. Submissions referencing this link remain intact.
-    const res = await fetch(`${BASE_URL}/questionnaires/${template.id}/links/${link.id}`, {
+    await apiFetch(`${BASE_URL}/questionnaires/${template.id}/links/${link.id}`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ isActive: false }),
     });
-    if (!res.ok) return;
     setLinks((prev) => prev.filter((l) => l.id !== link.id));
     setConfirmDeleteLink(null);
   }
@@ -1496,8 +1458,7 @@ function SubmissionsTab({ template }: { template: Template }) {
   const [detail, setDetail] = useState<TemplateSubmission | null>(null);
 
   useEffect(() => {
-    fetch(`${BASE_URL}/questionnaires/${template.id}/submissions`, { cache: 'no-store' })
-      .then((r) => r.json())
+    apiFetch(`${BASE_URL}/questionnaires/${template.id}/submissions`, { cache: 'no-store' })
       .then((data: unknown) => setSubmissions(data as TemplateSubmission[]))
       .catch(() => setSubmissions([]))
       .finally(() => setLoading(false));
@@ -1631,7 +1592,7 @@ export default function TemplateEditorPage({ params }: { params: Promise<{ id: s
   async function handleDeleteTemplate() {
     setDeleting(true);
     try {
-      await fetch(`${BASE_URL}/questionnaires/${id}`, { method: 'DELETE' });
+      await apiFetch(`${BASE_URL}/questionnaires/${id}`, { method: 'DELETE' });
       router.push('/questionnaires');
     } finally {
       setDeleting(false);
@@ -1639,14 +1600,10 @@ export default function TemplateEditorPage({ params }: { params: Promise<{ id: s
   }
 
   useEffect(() => {
-    fetch(`${BASE_URL}/questionnaires/${id}`, { cache: 'no-store' })
-      .then((r) => { if (!r.ok) { setNotFound(true); return null; } return r.json(); })
+    apiFetch(`${BASE_URL}/questionnaires/${id}`, { cache: 'no-store' })
       .then((data: unknown) => {
-        if (data) {
-          const t = data as Template;
-          // Guard: questions must always be an array
-          setTemplate({ ...t, questions: t.questions ?? [] });
-        }
+        const t = data as Template;
+        setTemplate({ ...t, questions: t.questions ?? [] });
       })
       .catch(() => setNotFound(true))
       .finally(() => setLoading(false));

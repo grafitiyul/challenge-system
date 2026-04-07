@@ -3,7 +3,7 @@
 import { Suspense, use, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { BASE_URL } from '@lib/api';
+import { BASE_URL, apiFetch } from '@lib/api';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -94,14 +94,11 @@ function SettingsTab({ program, onSaved }: { program: Program; onSaved: (p: Prog
     if (!form.name.trim()) { setError('שם הוא שדה חובה'); return; }
     setSaving(true); setError('');
     try {
-      const res = await fetch(`${BASE_URL}/programs/${program.id}`, {
+      const updated = await apiFetch(`${BASE_URL}/programs/${program.id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
         cache: 'no-store',
         body: JSON.stringify({ name: form.name.trim(), description: form.description.trim() || undefined, isActive: form.isActive }),
-      });
-      if (!res.ok) { setError('שגיאה בשמירה'); return; }
-      const updated = await res.json() as Program;
+      }) as Program;
       onSaved({ ...program, ...updated });
       setSaved(true);
     } finally { setSaving(false); }
@@ -161,14 +158,11 @@ function CreateGroupModal({ programId, onCreated, onClose }: {
     if (!name.trim()) { setError('שם הקבוצה הוא שדה חובה'); return; }
     setSaving(true); setError('');
     try {
-      const res = await fetch(`${BASE_URL}/programs/${programId}/groups`, {
+      const created = await apiFetch(`${BASE_URL}/programs/${programId}/groups`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         cache: 'no-store',
         body: JSON.stringify({ name: name.trim(), startDate: startDate || undefined, endDate: endDate || undefined, status }),
-      });
-      if (!res.ok) { setError('שגיאה ביצירת הקבוצה'); return; }
-      const created = await res.json() as Group;
+      }) as Group;
       onCreated(created);
     } finally { setSaving(false); }
   }
@@ -457,14 +451,11 @@ function ActionModal({
       const url = action
         ? `${BASE_URL}/game/programs/${programId}/actions/${action.id}`
         : `${BASE_URL}/game/programs/${programId}/actions`;
-      const res = await fetch(url, {
+      onSaved(await apiFetch(url, {
         method: action ? 'PATCH' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
         cache: 'no-store',
         body: JSON.stringify(body),
-      });
-      if (!res.ok) { setError('שגיאה בשמירה'); return; }
-      onSaved(await res.json() as GameAction);
+      }) as GameAction);
     } finally { setSaving(false); }
   }
 
@@ -592,14 +583,11 @@ function RuleModal({
       const url = rule
         ? `${BASE_URL}/game/programs/${programId}/rules/${rule.id}`
         : `${BASE_URL}/game/programs/${programId}/rules`;
-      const res = await fetch(url, {
+      onSaved(await apiFetch(url, {
         method: rule ? 'PATCH' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
         cache: 'no-store',
         body: JSON.stringify(body),
-      });
-      if (!res.ok) { setError('שגיאה בשמירה'); return; }
-      onSaved(await res.json() as GameRule);
+      }) as GameRule);
     } finally { setSaving(false); }
   }
 
@@ -778,8 +766,8 @@ function GameEngineTab({ programId }: { programId: string }) {
 
   useEffect(() => {
     Promise.all([
-      fetch(`${BASE_URL}/game/programs/${programId}/actions`, { cache: 'no-store' }).then((r) => r.json()),
-      fetch(`${BASE_URL}/game/programs/${programId}/rules`, { cache: 'no-store' }).then((r) => r.json()),
+      apiFetch(`${BASE_URL}/game/programs/${programId}/actions`, { cache: 'no-store' }),
+      apiFetch(`${BASE_URL}/game/programs/${programId}/rules`, { cache: 'no-store' }),
     ]).then(([a, r]) => {
       setActions((a as GameAction[]).filter((x) => x.isActive));
       setRules((r as GameRule[]).filter((x) => x.isActive));
@@ -789,7 +777,7 @@ function GameEngineTab({ programId }: { programId: string }) {
   async function handleDeleteAction(a: GameAction) {
     setDeleting(true);
     try {
-      await fetch(`${BASE_URL}/game/programs/${programId}/actions/${a.id}`, { method: 'DELETE', cache: 'no-store' });
+      await apiFetch(`${BASE_URL}/game/programs/${programId}/actions/${a.id}`, { method: 'DELETE', cache: 'no-store' });
       setActions((prev) => prev.filter((x) => x.id !== a.id));
       setDeleteAction(null);
     } finally { setDeleting(false); }
@@ -798,7 +786,7 @@ function GameEngineTab({ programId }: { programId: string }) {
   async function handleDeleteRule(r: GameRule) {
     setDeleting(true);
     try {
-      await fetch(`${BASE_URL}/game/programs/${programId}/rules/${r.id}`, { method: 'DELETE', cache: 'no-store' });
+      await apiFetch(`${BASE_URL}/game/programs/${programId}/rules/${r.id}`, { method: 'DELETE', cache: 'no-store' });
       setRules((prev) => prev.filter((x) => x.id !== r.id));
       setDeleteRule(null);
     } finally { setDeleting(false); }
@@ -1046,15 +1034,13 @@ function LeaderboardTab({ program, onVisibilityChange }: {
   // Load group ranking and summary on mount
   useEffect(() => {
     setLoadingGroups(true);
-    fetch(`${BASE_URL}/game/leaderboard/program/${program.id}/groups`, { cache: 'no-store' })
-      .then((r) => r.json())
+    apiFetch(`${BASE_URL}/game/leaderboard/program/${program.id}/groups`, { cache: 'no-store' })
       .then((d: unknown) => setGroupRanks(d as GroupRankRow[]))
       .catch(() => {})
       .finally(() => setLoadingGroups(false));
 
     setLoadingSummary(true);
-    fetch(`${BASE_URL}/game/leaderboard/program/${program.id}/summary`, { cache: 'no-store' })
-      .then((r) => r.json())
+    apiFetch(`${BASE_URL}/game/leaderboard/program/${program.id}/summary`, { cache: 'no-store' })
       .then((d: unknown) => setSummary(d as ProgramSummary))
       .catch(() => {})
       .finally(() => setLoadingSummary(false));
@@ -1064,8 +1050,7 @@ function LeaderboardTab({ program, onVisibilityChange }: {
   useEffect(() => {
     if (!selectedGroupId) { setParticipantRanks([]); return; }
     setLoadingParticipants(true);
-    fetch(`${BASE_URL}/game/leaderboard/group/${selectedGroupId}`, { cache: 'no-store' })
-      .then((r) => r.json())
+    apiFetch(`${BASE_URL}/game/leaderboard/group/${selectedGroupId}`, { cache: 'no-store' })
       .then((d: unknown) => setParticipantRanks(d as ParticipantRankRow[]))
       .catch(() => {})
       .finally(() => setLoadingParticipants(false));
@@ -1074,14 +1059,11 @@ function LeaderboardTab({ program, onVisibilityChange }: {
   async function saveVisibility() {
     setSavingVis(true); setVisSaved(false);
     try {
-      const res = await fetch(`${BASE_URL}/programs/${program.id}`, {
+      const updated = await apiFetch(`${BASE_URL}/programs/${program.id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
         cache: 'no-store',
         body: JSON.stringify(vis),
-      });
-      if (!res.ok) return;
-      const updated = await res.json() as Program;
+      }) as Program;
       onVisibilityChange(updated);
       setVisSaved(true);
     } finally { setSavingVis(false); }
@@ -1089,8 +1071,7 @@ function LeaderboardTab({ program, onVisibilityChange }: {
 
   function refreshGroupRanks() {
     setLoadingGroups(true);
-    fetch(`${BASE_URL}/game/leaderboard/program/${program.id}/groups`, { cache: 'no-store' })
-      .then((r) => r.json())
+    apiFetch(`${BASE_URL}/game/leaderboard/program/${program.id}/groups`, { cache: 'no-store' })
       .then((d: unknown) => setGroupRanks(d as GroupRankRow[]))
       .catch(() => {})
       .finally(() => setLoadingGroups(false));
@@ -1099,8 +1080,7 @@ function LeaderboardTab({ program, onVisibilityChange }: {
   function refreshParticipantRanks() {
     if (!selectedGroupId) return;
     setLoadingParticipants(true);
-    fetch(`${BASE_URL}/game/leaderboard/group/${selectedGroupId}`, { cache: 'no-store' })
-      .then((r) => r.json())
+    apiFetch(`${BASE_URL}/game/leaderboard/group/${selectedGroupId}`, { cache: 'no-store' })
       .then((d: unknown) => setParticipantRanks(d as ParticipantRankRow[]))
       .catch(() => {})
       .finally(() => setLoadingParticipants(false));
@@ -1336,9 +1316,8 @@ function ProgramPageInner({ params }: { params: Promise<{ id: string }> }) {
   const [notFound, setNotFound] = useState(false);
 
   useEffect(() => {
-    fetch(`${BASE_URL}/programs/${id}`, { cache: 'no-store' })
-      .then((r) => { if (!r.ok) { setNotFound(true); return null; } return r.json(); })
-      .then((data: unknown) => { if (data) setProgram(data as Program); })
+    apiFetch(`${BASE_URL}/programs/${id}`, { cache: 'no-store' })
+      .then((data: unknown) => setProgram(data as Program))
       .catch(() => setNotFound(true))
       .finally(() => setLoading(false));
   }, [id]);

@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
-import { BASE_URL } from '@lib/api';
+import { BASE_URL, apiFetch } from '@lib/api';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -92,8 +92,8 @@ export default function GroupDetailPage() {
   useEffect(() => {
     if (!id) return;
     Promise.all([
-      fetch(`${BASE_URL}/groups/${id}`).then((r) => r.json()),
-      fetch(`${BASE_URL}/groups/${id}/chat-links`).then((r) => r.json()),
+      apiFetch(`${BASE_URL}/groups/${id}`),
+      apiFetch(`${BASE_URL}/groups/${id}/chat-links`),
     ])
       .then(([groupData, linksData]: [unknown, unknown]) => {
         setGroup(groupData as Group);
@@ -112,8 +112,7 @@ export default function GroupDetailPage() {
     setSubmitError(null);
     if (availableChats.length > 0) return;
     setChatsLoading(true);
-    fetch(`${BASE_URL}/wassenger/chats`)
-      .then((r) => r.json())
+    apiFetch(`${BASE_URL}/wassenger/chats`)
       .then((data: unknown) => setAvailableChats(Array.isArray(data) ? (data as WhatsAppChat[]) : []))
       .catch(() => setAvailableChats([]))
       .finally(() => setChatsLoading(false));
@@ -135,16 +134,10 @@ export default function GroupDetailPage() {
       if (selectedLinkType === 'private_participant_chat' && selectedParticipantId) {
         body['participantId'] = selectedParticipantId;
       }
-      const res = await fetch(`${BASE_URL}/groups/${id}/chat-links`, {
+      const newLink = await apiFetch(`${BASE_URL}/groups/${id}/chat-links`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({})) as Record<string, unknown>;
-        throw new Error((err['message'] as string | undefined) ?? 'שגיאה בקישור');
-      }
-      const newLink = await res.json() as ChatLink;
+      }) as ChatLink;
       setLinks((prev) => [...prev, newLink]);
       setModalOpen(false);
     } catch (err) {
@@ -156,7 +149,7 @@ export default function GroupDetailPage() {
 
   async function deleteLink(linkId: string) {
     if (!confirm('למחוק קישור זה?')) return;
-    await fetch(`${BASE_URL}/groups/${id}/chat-links/${linkId}`, { method: 'DELETE' });
+    await apiFetch(`${BASE_URL}/groups/${id}/chat-links/${linkId}`, { method: 'DELETE' });
     setLinks((prev) => prev.filter((l) => l.id !== linkId));
   }
 

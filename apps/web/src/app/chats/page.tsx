@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { BASE_URL } from '@lib/api';
+import { BASE_URL, apiFetch } from '@lib/api';
 
 interface LastMessage {
   textContent: string | null;
@@ -51,8 +51,7 @@ export default function ChatsPage() {
   const [search, setSearch] = useState('');
 
   useEffect(() => {
-    fetch(`${BASE_URL}/wassenger/chats`)
-      .then((r) => r.json())
+    apiFetch(`${BASE_URL}/wassenger/chats`)
       .then((data: unknown) => setChats(Array.isArray(data) ? (data as Chat[]) : []))
       .catch(() => setChats([]))
       .finally(() => setLoading(false));

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { BASE_URL } from '@lib/api';
+import { BASE_URL, apiFetch } from '@lib/api';
 
 interface QuestionnaireTemplate {
   id: string;
@@ -111,23 +111,18 @@ export default function QuestionnairesPage() {
   const [deleteTarget, setDeleteTarget] = useState<QuestionnaireTemplate | null>(null);
 
   async function handleDelete(t: QuestionnaireTemplate) {
-    await fetch(`${BASE_URL}/questionnaires/${t.id}`, {
-      method: 'DELETE',
-    });
+    await apiFetch(`${BASE_URL}/questionnaires/${t.id}`, { method: 'DELETE' });
     setTemplates((prev) => prev.filter((x) => x.id !== t.id));
     setDeleteTarget(null);
   }
 
   useEffect(() => {
     setFetchError('');
-    fetch(`${BASE_URL}/questionnaires`, { cache: 'no-store' })
-      .then((r) => {
-        if (!r.ok) throw new Error(`שגיאת שרת: ${r.status}`);
-        return r.json();
-      })
+    apiFetch(`${BASE_URL}/questionnaires`, { cache: 'no-store' })
       .then((data: unknown) => setTemplates(data as QuestionnaireTemplate[]))
       .catch((err: unknown) => {
-        setFetchError(err instanceof Error ? err.message : 'שגיאה בטעינת השאלונים');
+        const msg = (err as { message?: string })?.message;
+        setFetchError(msg ?? 'שגיאה בטעינת השאלונים');
         setTemplates([]);
       })
       .finally(() => setLoading(false));
@@ -154,13 +149,10 @@ export default function QuestionnairesPage() {
     setFormError('');
     setSubmitting(true);
     try {
-      const res = await fetch(`${BASE_URL}/questionnaires`, {
+      const created = await apiFetch(`${BASE_URL}/questionnaires`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(form),
-      });
-      if (!res.ok) { setFormError('שגיאה ביצירת השאלון'); return; }
-      const created = await res.json() as QuestionnaireTemplate;
+      }) as QuestionnaireTemplate;
       router.push(`/questionnaires/${created.id}`);
     } finally {
       setSubmitting(false);
@@ -208,7 +200,7 @@ export default function QuestionnairesPage() {
             <div style={{ color: '#dc2626', fontSize: 15, fontWeight: 600, marginBottom: 6 }}>לא ניתן לטעון שאלונים</div>
             <div style={{ color: '#94a3b8', fontSize: 13, marginBottom: 16 }}>{fetchError}</div>
             <button
-              onClick={() => { setLoading(true); setFetchError(''); fetch(`${BASE_URL}/questionnaires`, { cache: 'no-store' }).then((r) => { if (!r.ok) throw new Error(`שגיאת שרת: ${r.status}`); return r.json(); }).then((d: unknown) => setTemplates(d as QuestionnaireTemplate[])).catch((e: unknown) => setFetchError(e instanceof Error ? e.message : 'שגיאה')).finally(() => setLoading(false)); }}
+              onClick={() => { setLoading(true); setFetchError(''); apiFetch(`${BASE_URL}/questionnaires`, { cache: 'no-store' }).then((d: unknown) => setTemplates(d as QuestionnaireTemplate[])).catch((e: unknown) => setFetchError((e as { message?: string })?.message ?? 'שגיאה')).finally(() => setLoading(false)); }}
               style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '9px 20px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
             >
               נסי שוב

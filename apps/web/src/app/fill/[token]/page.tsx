@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, use } from 'react';
-import { BASE_URL } from '@lib/api';
+import { BASE_URL, apiFetch } from '@lib/api';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -496,9 +496,7 @@ function ImageUploadInput({ value, onChange }: { value: string; onChange: (v: st
       const fd = new FormData();
       fd.append('file', file);
       // BASE_URL ends with "/api" — use it directly for the upload endpoint
-      const res = await fetch(`${BASE_URL}/upload`, { method: 'POST', body: fd });
-      if (!res.ok) { setError('שגיאה בהעלאת התמונה'); return; }
-      const data = await res.json() as { url: string };
+      const data = await apiFetch(`${BASE_URL}/upload`, { method: 'POST', body: fd }) as { url: string };
       // Returned url is relative (/uploads/...) — prefix with API host
       const apiHost = BASE_URL.replace(/\/api$/, '');
       onChange(data.url.startsWith('http') ? data.url : `${apiHost}${data.url}`);
@@ -643,15 +641,9 @@ export default function PublicFillPage({ params }: { params: Promise<{ token: st
 
   // ── Load template + link ──
   useEffect(() => {
-    fetch(`${BASE_URL}/public/q/${token}`)
-      .then(async (r) => {
-        if (!r.ok) {
-          const body = await r.json().catch(() => ({})) as { message?: string };
-          setErrorMsg(body.message ?? 'הלינק אינו פעיל או לא קיים');
-          setPageState('error');
-          return;
-        }
-        const data = await r.json() as { link: LinkData; template: Template };
+    apiFetch(`${BASE_URL}/public/q/${token}`)
+      .then((raw: unknown) => {
+        const data = raw as { link: LinkData; template: Template };
         setLink(data.link);
         setTemplate(data.template);
         // If questionnaire has no phone_number system field, skip the identity gate
@@ -670,8 +662,11 @@ export default function PublicFillPage({ params }: { params: Promise<{ token: st
         }
         setPageState('fill');
       })
-      .catch(() => {
-        setErrorMsg('אירעה שגיאה בטעינת השאלון');
+      .catch((err: unknown) => {
+        const msg = err && typeof err === 'object' && 'message' in err
+          ? String((err as { message: unknown }).message)
+          : 'אירעה שגיאה בטעינת השאלון';
+        setErrorMsg(msg);
         setPageState('error');
       });
   }, [token]);
@@ -693,13 +688,8 @@ export default function PublicFillPage({ params }: { params: Promise<{ token: st
     setPhoneError('');
     setLookingUp(true);
     try {
-      const res = await fetch(`${BASE_URL}/public/q/lookup-participant?phone=${encodeURIComponent(cleaned)}`);
-      if (res.ok) {
-        const data = await res.json() as IdentifiedParticipant | null;
-        setIdentifiedParticipant(data);
-      } else {
-        setIdentifiedParticipant(null);
-      }
+      const data = await apiFetch(`${BASE_URL}/public/q/lookup-participant?phone=${encodeURIComponent(cleaned)}`) as IdentifiedParticipant | null;
+      setIdentifiedParticipant(data);
     } catch {
       setIdentifiedParticipant(null);
     } finally {
@@ -784,18 +774,17 @@ export default function PublicFillPage({ params }: { params: Promise<{ token: st
     if (!template || !link) return;
     setSubmitting(true);
     try {
-      const res = await fetch(`${BASE_URL}/public/q/${token}/submit`, {
+      await apiFetch(`${BASE_URL}/public/q/${token}/submit`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ submittedByMode: 'external', answers: buildPayload(visibleQuestions) }),
       });
-      if (!res.ok) {
-        const errBody = await res.json().catch(() => ({})) as { message?: string };
-        setFieldError(typeof errBody.message === 'string' ? errBody.message : 'שגיאה בשליחת השאלון. אנא נסי שוב.');
-        return;
-      }
       clearDraft(token);
       setPageState('done');
+    } catch (err: unknown) {
+      const msg = err && typeof err === 'object' && 'message' in err
+        ? String((err as { message: unknown }).message)
+        : 'שגיאה בשליחת השאלון. אנא נסי שוב.';
+      setFieldError(msg);
     } finally {
       setSubmitting(false);
     }
@@ -946,18 +935,17 @@ export default function PublicFillPage({ params }: { params: Promise<{ token: st
       if (!template || !link) return;
       setSubmitting(true);
       try {
-        const res = await fetch(`${BASE_URL}/public/q/${token}/submit`, {
+        await apiFetch(`${BASE_URL}/public/q/${token}/submit`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ submittedByMode: 'external', answers: buildPayload(visibleQuestions) }),
         });
-        if (!res.ok) {
-          const errBody = await res.json().catch(() => ({})) as { message?: string };
-          setFieldError(typeof errBody.message === 'string' ? errBody.message : 'שגיאה בשליחת השאלון');
-          return;
-        }
         clearDraft(token);
         setPageState('done');
+      } catch (err: unknown) {
+        const msg = err && typeof err === 'object' && 'message' in err
+          ? String((err as { message: unknown }).message)
+          : 'שגיאה בשליחת השאלון';
+        setFieldError(msg);
       } finally {
         setSubmitting(false);
       }

@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import { BASE_URL } from '@lib/api';
+import { BASE_URL, apiFetch } from '@lib/api';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -91,13 +91,10 @@ function CreateProgramModal({ defaultType, onCreated, onClose }: {
     setSaving(true);
     setError('');
     try {
-      const res = await fetch(`${BASE_URL}/programs`, {
+      const created = await apiFetch(`${BASE_URL}/programs`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: name.trim(), type: defaultType, description: description.trim() || undefined }),
-      });
-      if (!res.ok) { setError(`שגיאה ביצירת ה${TYPE_SINGULAR[defaultType]}`); return; }
-      const created = await res.json() as Program;
+      }) as Program;
       onCreated(created);
     } catch {
       setError(`שגיאה ביצירת ה${TYPE_SINGULAR[defaultType]} — בדקי חיבור לשרת`);
@@ -176,8 +173,7 @@ function ProgramsPageInner() {
   useEffect(() => {
     if (!selectedType) return;
     setLoading(true);
-    fetch(`${BASE_URL}/programs?type=${selectedType}`, { cache: 'no-store' })
-      .then((r) => r.json())
+    apiFetch(`${BASE_URL}/programs?type=${selectedType}`, { cache: 'no-store' })
       .then((data: unknown) => setPrograms(Array.isArray(data) ? data as Program[] : []))
       .catch(() => setPrograms([]))
       .finally(() => setLoading(false));

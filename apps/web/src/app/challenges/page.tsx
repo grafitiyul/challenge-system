@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { BASE_URL } from '@lib/api';
+import { BASE_URL, apiFetch } from '@lib/api';
 
 interface ChallengeType {
   id: string;
@@ -101,8 +101,7 @@ export default function ChallengesPage() {
   const fetchGroupsForChallenge = async (challengeId: string) => {
     try {
       console.log('[API] GET', `${BASE_URL}/groups?challengeId=${challengeId}`);
-      const res = await fetch(`${BASE_URL}/groups?challengeId=${challengeId}`);
-      const data: unknown = await res.json();
+      const data: unknown = await apiFetch(`${BASE_URL}/groups?challengeId=${challengeId}`);
       const groupList = Array.isArray(data) ? (data as Group[]) : [];
       setGroups((prev) => ({ ...prev, [challengeId]: groupList }));
       await Promise.all(groupList.map((g) => fetchParticipantsForGroup(g.id)));
@@ -115,8 +114,7 @@ export default function ChallengesPage() {
     try {
       const includeMock = localStorage.getItem('showMockParticipants') === 'true';
       console.log('[API] GET', `${BASE_URL}/participants?groupId=${groupId}&includeMock=${includeMock}`);
-      const res = await fetch(`${BASE_URL}/participants?groupId=${groupId}&includeMock=${includeMock}`);
-      const data: unknown = await res.json();
+      const data: unknown = await apiFetch(`${BASE_URL}/participants?groupId=${groupId}&includeMock=${includeMock}`);
       setParticipants((prev) => ({ ...prev, [groupId]: Array.isArray(data) ? (data as Participant[]) : [] }));
     } catch {
       setParticipants((prev) => ({ ...prev, [groupId]: [] }));
@@ -127,16 +125,11 @@ export default function ChallengesPage() {
     const init = async () => {
       try {
         console.log('[API] GET', `${BASE_URL}/challenges`, `${BASE_URL}/challenge-types`, `${BASE_URL}/genders`);
-        const [challengesRes, typesRes, gendersRes] = await Promise.all([
-          fetch(`${BASE_URL}/challenges`),
-          fetch(`${BASE_URL}/challenge-types`),
-          fetch(`${BASE_URL}/genders`),
-        ]);
-        const [challengesData, typesData, gendersData]: [Challenge[], ChallengeType[], Gender[]] = await Promise.all([
-          challengesRes.json(),
-          typesRes.json(),
-          gendersRes.json(),
-        ]);
+        const [challengesData, typesData, gendersData] = await Promise.all([
+          apiFetch(`${BASE_URL}/challenges`),
+          apiFetch(`${BASE_URL}/challenge-types`),
+          apiFetch(`${BASE_URL}/genders`),
+        ]) as [Challenge[], ChallengeType[], Gender[]];
         setChallenges(challengesData);
         setChallengeTypes(typesData);
         setGenders(Array.isArray(gendersData) ? gendersData : []);
@@ -159,16 +152,10 @@ export default function ChallengesPage() {
     setError(null);
     try {
       console.log('[API] POST', `${BASE_URL}/challenges`);
-      const res = await fetch(`${BASE_URL}/challenges`, {
+      const newChallenge = await apiFetch(`${BASE_URL}/challenges`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(challengeForm),
-      });
-      if (!res.ok) {
-        const body = await res.json();
-        throw new Error(body.message ?? 'שגיאה ביצירת האתגר');
-      }
-      const newChallenge: Challenge = await res.json();
+      }) as Challenge;
       setChallengeForm({ ...emptyChallengeForm, challengeTypeId: challengeForm.challengeTypeId });
       setChallenges((prev) => [newChallenge, ...prev]);
       setGroups((prev) => ({ ...prev, [newChallenge.id]: [] }));
@@ -186,15 +173,10 @@ export default function ChallengesPage() {
     setGroupError(null);
     try {
       console.log('[API] POST', `${BASE_URL}/groups`);
-      const res = await fetch(`${BASE_URL}/groups`, {
+      await apiFetch(`${BASE_URL}/groups`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...form, challengeId }),
       });
-      if (!res.ok) {
-        const body = await res.json();
-        throw new Error(body.message ?? 'שגיאה ביצירת הקבוצה');
-      }
       setGroupForms((prev) => ({ ...prev, [challengeId]: emptyGroupForm }));
       setOpenGroupFormId(null);
       await fetchGroupsForChallenge(challengeId);
@@ -229,15 +211,10 @@ export default function ChallengesPage() {
     setParticipantError(null);
     try {
       console.log('[API] POST', `${BASE_URL}/participants`);
-      const res = await fetch(`${BASE_URL}/participants`, {
+      await apiFetch(`${BASE_URL}/participants`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...form, groupId }),
       });
-      if (!res.ok) {
-        const body = await res.json();
-        throw new Error(body.message ?? 'שגיאה בהוספת המשתתפת');
-      }
       const defaultGenderId = genders.length > 0 ? genders[0].id : '';
       setParticipantForms((prev) => ({ ...prev, [groupId]: { ...emptyParticipantForm, genderId: defaultGenderId } }));
       setOpenParticipantFormId(null);

@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
-import { BASE_URL } from '@lib/api';
+import { BASE_URL, apiFetch } from '@lib/api';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -221,13 +221,15 @@ export default function ChatDetailPage() {
 
   useEffect(() => {
     if (!id) return;
-    fetch(`${BASE_URL}/wassenger/chats/${id}`)
-      .then((r) => {
-        if (r.status === 404) { setNotFound(true); return null; }
-        return r.json();
+    apiFetch(`${BASE_URL}/wassenger/chats/${id}`)
+      .then((data: unknown) => { setChat(data as Chat); })
+      .catch((err: unknown) => {
+        if (err && typeof err === 'object' && 'status' in err && (err as { status: number }).status === 404) {
+          setNotFound(true);
+        } else {
+          setNotFound(true);
+        }
       })
-      .then((data: unknown) => { if (data) setChat(data as Chat); })
-      .catch(() => setNotFound(true))
       .finally(() => setLoading(false));
   }, [id]);
 
