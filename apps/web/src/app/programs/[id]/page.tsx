@@ -9,7 +9,7 @@ import { BASE_URL } from '@lib/api';
 
 type ProgramType = 'challenge' | 'game' | 'group_coaching' | 'personal_coaching';
 type GroupStatus = 'active' | 'inactive';
-type TabKey = 'settings' | 'groups';
+type TabKey = 'settings' | 'groups' | 'game';
 
 interface Group {
   id: string;
@@ -71,7 +71,7 @@ const labelStyle: React.CSSProperties = {
   fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 6, display: 'block',
 };
 
-const VALID_TABS: TabKey[] = ['settings', 'groups'];
+const VALID_TABS: TabKey[] = ['settings', 'groups', 'game'];
 
 function formatDate(iso: string | null) {
   if (!iso) return '—';
@@ -279,6 +279,384 @@ function GroupsTab({ program }: { program: Program }) {
   );
 }
 
+// ─── Game Engine Tab ──────────────────────────────────────────────────────────
+
+interface GameAction {
+  id: string;
+  name: string;
+  description: string | null;
+  inputType: string | null;
+  points: number;
+  maxPerDay: number | null;
+  isActive: boolean;
+}
+
+interface GameRule {
+  id: string;
+  name: string;
+  type: string;
+  activationType: string | null;
+  activationDays: number | null;
+  requiresAdminApproval: boolean;
+  conditionJson: Record<string, unknown> | null;
+  rewardJson: Record<string, unknown> | null;
+  isActive: boolean;
+}
+
+const ACTION_INPUT_TYPES = [
+  { value: 'boolean', label: 'כן/לא' },
+  { value: 'number', label: 'מספר' },
+  { value: 'select', label: 'בחירה' },
+];
+
+const RULE_TYPES = [
+  { value: 'daily_bonus', label: 'בונוס יומי' },
+  { value: 'streak', label: 'רצף' },
+  { value: 'conditional', label: 'תנאי' },
+];
+
+const ACTIVATION_TYPES = [
+  { value: 'immediate', label: 'מיידי' },
+  { value: 'after_days', label: 'אחרי ימים' },
+  { value: 'admin_unlock', label: 'פתיחת מנהל' },
+];
+
+function ActionModal({
+  programId, action, onSaved, onClose,
+}: {
+  programId: string;
+  action: GameAction | null;
+  onSaved: (a: GameAction) => void;
+  onClose: () => void;
+}) {
+  const [form, setForm] = useState({
+    name: action?.name ?? '',
+    description: action?.description ?? '',
+    inputType: action?.inputType ?? 'boolean',
+    points: String(action?.points ?? 10),
+    maxPerDay: String(action?.maxPerDay ?? ''),
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!form.name.trim()) { setError('שם הוא שדה חובה'); return; }
+    const pts = parseInt(form.points);
+    if (isNaN(pts) || pts < 0) { setError('נקודות חייב להיות מספר חיובי'); return; }
+    setSaving(true); setError('');
+    try {
+      const body: Record<string, unknown> = {
+        name: form.name.trim(),
+        description: form.description.trim() || undefined,
+        inputType: form.inputType,
+        points: pts,
+        maxPerDay: form.maxPerDay ? parseInt(form.maxPerDay) : undefined,
+      };
+      const url = action
+        ? `${BASE_URL}/game/programs/${programId}/actions/${action.id}`
+        : `${BASE_URL}/game/programs/${programId}/actions`;
+      const res = await fetch(url, {
+        method: action ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        cache: 'no-store',
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) { setError('שגיאה בשמירה'); return; }
+      const saved = await res.json() as GameAction;
+      onSaved(saved);
+    } finally { setSaving(false); }
+  }
+
+  return (
+    <div onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 20 }}>
+      <div style={{ background: '#fff', borderRadius: 14, padding: 28, width: '100%', maxWidth: 440, boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+          <h2 style={{ fontSize: 17, fontWeight: 700, color: '#0f172a', margin: 0 }}>{action ? 'עריכת פעולה' : 'פעולה חדשה'}</h2>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: '#94a3b8' }}>×</button>
+        </div>
+        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div>
+            <label style={labelStyle}>שם *</label>
+            <input style={inputStyle} value={form.name} onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))} autoFocus placeholder="לדוגמה: צ׳ק-אין יומי" />
+          </div>
+          <div>
+            <label style={labelStyle}>תיאור</label>
+            <input style={inputStyle} value={form.description} onChange={(e) => setForm((p) => ({ ...p, description: e.target.value }))} placeholder="תיאור קצר..." />
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div>
+              <label style={labelStyle}>סוג קלט</label>
+              <select style={inputStyle} value={form.inputType} onChange={(e) => setForm((p) => ({ ...p, inputType: e.target.value }))}>
+                {ACTION_INPUT_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={labelStyle}>נקודות *</label>
+              <input type="number" min={0} style={{ ...inputStyle, direction: 'ltr' }} value={form.points} onChange={(e) => setForm((p) => ({ ...p, points: e.target.value }))} />
+            </div>
+          </div>
+          <div>
+            <label style={labelStyle}>מקסימום ביום</label>
+            <input type="number" min={1} style={{ ...inputStyle, direction: 'ltr', width: '50%' }} value={form.maxPerDay} onChange={(e) => setForm((p) => ({ ...p, maxPerDay: e.target.value }))} placeholder="ללא הגבלה" />
+          </div>
+          {error && <div style={{ color: '#dc2626', fontSize: 13 }}>{error}</div>}
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 4 }}>
+            <button type="button" onClick={onClose} style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 7, padding: '8px 16px', fontSize: 13, cursor: 'pointer' }}>ביטול</button>
+            <button type="submit" disabled={saving} style={{ background: saving ? '#93c5fd' : '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '8px 20px', fontSize: 13, fontWeight: 600, cursor: saving ? 'not-allowed' : 'pointer' }}>
+              {saving ? 'שומר...' : 'שמירה'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function RuleModal({
+  programId, rule, onSaved, onClose,
+}: {
+  programId: string;
+  rule: GameRule | null;
+  onSaved: (r: GameRule) => void;
+  onClose: () => void;
+}) {
+  const [form, setForm] = useState({
+    name: rule?.name ?? '',
+    type: rule?.type ?? 'daily_bonus',
+    activationType: rule?.activationType ?? 'immediate',
+    activationDays: String(rule?.activationDays ?? ''),
+    requiresAdminApproval: rule?.requiresAdminApproval ?? false,
+    conditionJson: rule?.conditionJson ? JSON.stringify(rule.conditionJson, null, 2) : '{}',
+    rewardJson: rule?.rewardJson ? JSON.stringify(rule.rewardJson, null, 2) : '{}',
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!form.name.trim()) { setError('שם הוא שדה חובה'); return; }
+    let conditionJson: Record<string, unknown> = {};
+    let rewardJson: Record<string, unknown> = {};
+    try { conditionJson = JSON.parse(form.conditionJson); } catch { setError('תנאי JSON שגוי'); return; }
+    try { rewardJson = JSON.parse(form.rewardJson); } catch { setError('פרס JSON שגוי'); return; }
+    setSaving(true); setError('');
+    try {
+      const body: Record<string, unknown> = {
+        name: form.name.trim(),
+        type: form.type,
+        activationType: form.activationType,
+        activationDays: form.activationDays ? parseInt(form.activationDays) : undefined,
+        requiresAdminApproval: form.requiresAdminApproval,
+        conditionJson,
+        rewardJson,
+      };
+      const url = rule
+        ? `${BASE_URL}/game/programs/${programId}/rules/${rule.id}`
+        : `${BASE_URL}/game/programs/${programId}/rules`;
+      const res = await fetch(url, {
+        method: rule ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        cache: 'no-store',
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) { setError('שגיאה בשמירה'); return; }
+      const saved = await res.json() as GameRule;
+      onSaved(saved);
+    } finally { setSaving(false); }
+  }
+
+  return (
+    <div onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 20 }}>
+      <div style={{ background: '#fff', borderRadius: 14, padding: 28, width: '100%', maxWidth: 480, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+          <h2 style={{ fontSize: 17, fontWeight: 700, color: '#0f172a', margin: 0 }}>{rule ? 'עריכת חוק' : 'חוק חדש'}</h2>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: '#94a3b8' }}>×</button>
+        </div>
+        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div>
+            <label style={labelStyle}>שם *</label>
+            <input style={inputStyle} value={form.name} onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))} autoFocus placeholder="לדוגמה: בונוס צ׳ק-אין 7 ימים" />
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div>
+              <label style={labelStyle}>סוג חוק</label>
+              <select style={inputStyle} value={form.type} onChange={(e) => setForm((p) => ({ ...p, type: e.target.value }))}>
+                {RULE_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={labelStyle}>אופן הפעלה</label>
+              <select style={inputStyle} value={form.activationType} onChange={(e) => setForm((p) => ({ ...p, activationType: e.target.value }))}>
+                {ACTIVATION_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+              </select>
+            </div>
+          </div>
+          {form.activationType === 'after_days' && (
+            <div>
+              <label style={labelStyle}>אחרי כמה ימים</label>
+              <input type="number" min={1} style={{ ...inputStyle, direction: 'ltr', width: '50%' }} value={form.activationDays} onChange={(e) => setForm((p) => ({ ...p, activationDays: e.target.value }))} />
+            </div>
+          )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <input type="checkbox" id="req-approval" checked={form.requiresAdminApproval} onChange={(e) => setForm((p) => ({ ...p, requiresAdminApproval: e.target.checked }))} style={{ width: 16, height: 16, cursor: 'pointer' }} />
+            <label htmlFor="req-approval" style={{ ...labelStyle, margin: 0, cursor: 'pointer' }}>דורש אישור מנהל</label>
+          </div>
+          <div>
+            <label style={labelStyle}>תנאי (JSON)</label>
+            <textarea rows={3} style={{ ...inputStyle, direction: 'ltr', fontFamily: 'monospace', fontSize: 13, resize: 'vertical' }} value={form.conditionJson} onChange={(e) => setForm((p) => ({ ...p, conditionJson: e.target.value }))} />
+          </div>
+          <div>
+            <label style={labelStyle}>פרס (JSON)</label>
+            <textarea rows={3} style={{ ...inputStyle, direction: 'ltr', fontFamily: 'monospace', fontSize: 13, resize: 'vertical' }} value={form.rewardJson} onChange={(e) => setForm((p) => ({ ...p, rewardJson: e.target.value }))} />
+          </div>
+          {error && <div style={{ color: '#dc2626', fontSize: 13 }}>{error}</div>}
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 4 }}>
+            <button type="button" onClick={onClose} style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 7, padding: '8px 16px', fontSize: 13, cursor: 'pointer' }}>ביטול</button>
+            <button type="submit" disabled={saving} style={{ background: saving ? '#93c5fd' : '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '8px 20px', fontSize: 13, fontWeight: 600, cursor: saving ? 'not-allowed' : 'pointer' }}>
+              {saving ? 'שומר...' : 'שמירה'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function GameEngineTab({ programId }: { programId: string }) {
+  const [actions, setActions] = useState<GameAction[]>([]);
+  const [rules, setRules] = useState<GameRule[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [actionModal, setActionModal] = useState<{ open: boolean; action: GameAction | null }>({ open: false, action: null });
+  const [ruleModal, setRuleModal] = useState<{ open: boolean; rule: GameRule | null }>({ open: false, rule: null });
+
+  useEffect(() => {
+    Promise.all([
+      fetch(`${BASE_URL}/game/programs/${programId}/actions`, { cache: 'no-store' }).then((r) => r.json()),
+      fetch(`${BASE_URL}/game/programs/${programId}/rules`, { cache: 'no-store' }).then((r) => r.json()),
+    ]).then(([a, r]) => {
+      setActions(a as GameAction[]);
+      setRules(r as GameRule[]);
+    }).finally(() => setLoading(false));
+  }, [programId]);
+
+  const badgeStyle = (color: string): React.CSSProperties => ({
+    background: color === 'blue' ? '#eff6ff' : color === 'green' ? '#f0fdf4' : '#f8fafc',
+    color: color === 'blue' ? '#1d4ed8' : color === 'green' ? '#15803d' : '#475569',
+    fontSize: 11, padding: '2px 8px', borderRadius: 20, fontWeight: 500,
+  });
+
+  if (loading) return <div style={{ color: '#94a3b8', textAlign: 'center', padding: 40 }}>טוען...</div>;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 32 }}>
+
+      {/* Actions Section */}
+      <div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+          <h3 style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', margin: 0 }}>פעולות ({actions.length})</h3>
+          <button onClick={() => setActionModal({ open: true, action: null })}
+            style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '7px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+            + פעולה חדשה
+          </button>
+        </div>
+        {actions.length === 0 ? (
+          <div style={{ padding: '32px 20px', textAlign: 'center', border: '2px dashed #e2e8f0', borderRadius: 10, color: '#94a3b8', fontSize: 14 }}>
+            אין פעולות עדיין — הוסיפי פעולה ראשונה
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {actions.map((a) => (
+              <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 12, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '12px 16px' }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 14, fontWeight: 600, color: '#0f172a' }}>{a.name}</span>
+                    {!a.isActive && <span style={badgeStyle('gray')}>לא פעיל</span>}
+                    <span style={badgeStyle('blue')}>{ACTION_INPUT_TYPES.find((t) => t.value === a.inputType)?.label ?? a.inputType}</span>
+                    <span style={badgeStyle('green')}>{a.points} נק׳</span>
+                    {a.maxPerDay && <span style={badgeStyle('gray')}>מקס׳ {a.maxPerDay}/יום</span>}
+                  </div>
+                  {a.description && <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 2 }}>{a.description}</div>}
+                </div>
+                <button onClick={() => setActionModal({ open: true, action: a })}
+                  style={{ background: 'none', border: '1px solid #e2e8f0', borderRadius: 6, padding: '5px 12px', fontSize: 12, color: '#374151', cursor: 'pointer' }}>
+                  ערוך
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Rules Section */}
+      <div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+          <h3 style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', margin: 0 }}>חוקים ({rules.length})</h3>
+          <button onClick={() => setRuleModal({ open: true, rule: null })}
+            style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '7px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+            + חוק חדש
+          </button>
+        </div>
+        {rules.length === 0 ? (
+          <div style={{ padding: '32px 20px', textAlign: 'center', border: '2px dashed #e2e8f0', borderRadius: 10, color: '#94a3b8', fontSize: 14 }}>
+            אין חוקים עדיין — הוסיפי חוק ראשון
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {rules.map((r) => (
+              <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 12, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '12px 16px' }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 14, fontWeight: 600, color: '#0f172a' }}>{r.name}</span>
+                    {!r.isActive && <span style={badgeStyle('gray')}>לא פעיל</span>}
+                    <span style={badgeStyle('blue')}>{RULE_TYPES.find((t) => t.value === r.type)?.label ?? r.type}</span>
+                    <span style={badgeStyle('gray')}>{ACTIVATION_TYPES.find((t) => t.value === r.activationType)?.label ?? r.activationType}</span>
+                    {r.requiresAdminApproval && <span style={badgeStyle('gray')}>אישור מנהל</span>}
+                  </div>
+                </div>
+                <button onClick={() => setRuleModal({ open: true, rule: r })}
+                  style={{ background: 'none', border: '1px solid #e2e8f0', borderRadius: 6, padding: '5px 12px', fontSize: 12, color: '#374151', cursor: 'pointer' }}>
+                  ערוך
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {actionModal.open && (
+        <ActionModal
+          programId={programId}
+          action={actionModal.action}
+          onSaved={(saved) => {
+            setActions((prev) => actionModal.action
+              ? prev.map((a) => a.id === saved.id ? saved : a)
+              : [saved, ...prev]);
+            setActionModal({ open: false, action: null });
+          }}
+          onClose={() => setActionModal({ open: false, action: null })}
+        />
+      )}
+
+      {ruleModal.open && (
+        <RuleModal
+          programId={programId}
+          rule={ruleModal.rule}
+          onSaved={(saved) => {
+            setRules((prev) => ruleModal.rule
+              ? prev.map((r) => r.id === saved.id ? saved : r)
+              : [saved, ...prev]);
+            setRuleModal({ open: false, rule: null });
+          }}
+          onClose={() => setRuleModal({ open: false, rule: null })}
+        />
+      )}
+    </div>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 function ProgramPageInner({ params }: { params: Promise<{ id: string }> }) {
@@ -316,6 +694,7 @@ function ProgramPageInner({ params }: { params: Promise<{ id: string }> }) {
 
   const tabs: { key: TabKey; label: string }[] = [
     { key: 'groups', label: 'קבוצות' },
+    ...(program.type === 'game' ? [{ key: 'game' as TabKey, label: 'מנוע משחק' }] : []),
     { key: 'settings', label: 'הגדרות' },
   ];
 
@@ -360,6 +739,7 @@ function ProgramPageInner({ params }: { params: Promise<{ id: string }> }) {
       <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderTop: 'none', borderRadius: '0 0 10px 10px', padding: 24 }}>
         {activeTab === 'settings' && <SettingsTab program={program} onSaved={(updated) => setProgram(updated)} />}
         {activeTab === 'groups' && <GroupsTab program={program} />}
+        {activeTab === 'game' && <GameEngineTab programId={program.id} />}
       </div>
     </div>
   );
