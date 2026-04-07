@@ -83,14 +83,12 @@ function ImageUploadField({ value, onChange }: { value: string; onChange: (v: st
     try {
       const fd = new FormData();
       fd.append('file', file);
-      const apiBase = typeof window !== 'undefined'
-        ? window.location.origin.replace(':3000', ':3001')
-        : 'http://localhost:3001';
-      const res = await fetch(`${apiBase}/api/upload`, { method: 'POST', body: fd });
+      const res = await fetch(`${BASE_URL}/upload`, { method: 'POST', body: fd });
       if (!res.ok) { setError('שגיאה בהעלאה'); return; }
-      const { url } = await res.json() as { url: string };
-      onChange(url);
-    } catch { setError('שגיאת רשת'); }
+      const data = await res.json() as { url: string };
+      const apiHost = BASE_URL.replace(/\/api$/, '');
+      onChange(data.url.startsWith('http') ? data.url : `${apiHost}${data.url}`);
+    } catch { setError('שגיאת רשת — לא ניתן להעלות קובץ'); }
     finally { setUploading(false); }
   }
 

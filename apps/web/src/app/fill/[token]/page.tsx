@@ -495,14 +495,14 @@ function ImageUploadInput({ value, onChange }: { value: string; onChange: (v: st
     try {
       const fd = new FormData();
       fd.append('file', file);
-      const apiBase = typeof window !== 'undefined'
-        ? window.location.origin.replace(':3000', ':3001')
-        : 'http://localhost:3001';
-      const res = await fetch(`${apiBase}/api/upload`, { method: 'POST', body: fd });
+      // BASE_URL ends with "/api" — use it directly for the upload endpoint
+      const res = await fetch(`${BASE_URL}/upload`, { method: 'POST', body: fd });
       if (!res.ok) { setError('שגיאה בהעלאת התמונה'); return; }
-      const { url } = await res.json() as { url: string };
-      onChange(url);
-    } catch { setError('שגיאת רשת'); }
+      const data = await res.json() as { url: string };
+      // Returned url is relative (/uploads/...) — prefix with API host
+      const apiHost = BASE_URL.replace(/\/api$/, '');
+      onChange(data.url.startsWith('http') ? data.url : `${apiHost}${data.url}`);
+    } catch { setError('שגיאת רשת — לא ניתן להעלות תמונה'); }
     finally { setUploading(false); }
   }
 

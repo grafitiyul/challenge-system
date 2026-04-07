@@ -410,23 +410,122 @@ function generateUniqueKey(label: string, existingKeys: string[], fallbackIndex:
   return candidate;
 }
 
+// ─── Inline options editor for use inside QuestionModal ──────────────────────
+
+// For edit mode: calls real API immediately.
+// For add mode (no questionId): manages a local pending list.
+function ModalOptionsEditor({
+  templateId,
+  questionId,
+  options,
+  onOptionsChange,
+}: {
+  templateId: string;
+  questionId: string | null;  // null = new question, not yet saved
+  options: { id: string; label: string }[];
+  onOptionsChange: (opts: { id: string; label: string }[]) => void;
+}) {
+  const [newLabel, setNewLabel] = useState('');
+  const [adding, setAdding] = useState(false);
+
+  async function addOption() {
+    if (!newLabel.trim()) return;
+    setAdding(true);
+    try {
+      if (questionId) {
+        // Edit mode — persist immediately
+        const res = await fetch(`${BASE_URL}/questionnaires/${templateId}/questions/${questionId}/options`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ label: newLabel.trim(), value: newLabel.trim() }),
+        });
+        if (!res.ok) return;
+        const opt = await res.json() as { id: string; label: string };
+        onOptionsChange([...options, opt]);
+      } else {
+        // Add mode — local pending list with temp id
+        const tempId = `__pending_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+        onOptionsChange([...options, { id: tempId, label: newLabel.trim() }]);
+      }
+      setNewLabel('');
+    } finally { setAdding(false); }
+  }
+
+  async function removeOption(optId: string) {
+    if (questionId && !optId.startsWith('__pending_')) {
+      const res = await fetch(
+        `${BASE_URL}/questionnaires/${templateId}/questions/${questionId}/options/${optId}`,
+        { method: 'DELETE' },
+      );
+      if (!res.ok) return;
+    }
+    onOptionsChange(options.filter((o) => o.id !== optId));
+  }
+
+  return (
+    <div style={{ marginTop: 4, padding: '10px 14px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, color: '#64748b', marginBottom: 8 }}>
+        אפשרויות ({options.length})
+        {!questionId && options.length > 0 && (
+          <span style={{ fontWeight: 400, color: '#94a3b8', marginRight: 6 }}>· יישמרו עם השאלה</span>
+        )}
+      </div>
+      {options.map((opt) => (
+        <div key={opt.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 0' }}>
+          <span style={{ flex: 1, fontSize: 13, color: '#374151' }}>⚪ {opt.label}</span>
+          <button
+            type="button"
+            onClick={() => removeOption(opt.id)}
+            style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: '0 4px' }}
+          >×</button>
+        </div>
+      ))}
+      <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+        <input
+          style={{ ...inputStyle, flex: 1, padding: '6px 10px', fontSize: 13 }}
+          value={newLabel}
+          onChange={(e) => setNewLabel(e.target.value)}
+          placeholder="אפשרות חדשה..."
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addOption(); } }}
+        />
+        <button
+          type="button"
+          onClick={addOption}
+          disabled={adding}
+          style={{ background: '#eff6ff', color: '#2563eb', border: '1px solid #bfdbfe', borderRadius: 7, padding: '6px 12px', fontSize: 13, cursor: 'pointer' }}
+        >
+          + הוסף
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function QuestionModal({
   title,
   initial,
   existingKeys,
+  questionId,
+  initialOptions,
+  templateId,
   onSave,
   onClose,
 }: {
   title: string;
   initial: QuestionFormState;
   existingKeys: string[];
-  onSave: (form: QuestionFormState) => Promise<void>;
+  questionId?: string;       // only for edit mode
+  initialOptions?: { id: string; label: string }[];  // only for edit mode
+  templateId: string;
+  onSave: (form: QuestionFormState, pendingOptions: { label: string }[]) => Promise<void>;
   onClose: () => void;
 }) {
   const [form, setForm] = useState<QuestionFormState>(initial);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
+  // Options state (for modal-inline editing)
+  const [modalOptions, setModalOptions] = useState<{ id: string; label: string }[]>(initialOptions ?? []);
   // Track whether admin has manually overridden the key
   const [keyManuallySet, setKeyManuallySet] = useState(!!initial.internalKey);
 
@@ -465,14 +564,19 @@ function QuestionModal({
     if (!form.label.trim()) { setError('תווית השאלה היא שדה חובה'); return; }
     const finalKey = form.internalKey.trim() || generateUniqueKey(form.label, existingKeys, existingKeys.length + 1);
     const finalForm: QuestionFormState = { ...form, internalKey: finalKey };
+    // Pending options: only those with temp ids (add mode)
+    const pending = modalOptions
+      .filter((o) => o.id.startsWith('__pending_'))
+      .map((o) => ({ label: o.label }));
     setError('');
     setSaving(true);
-    try { await onSave(finalForm); }
+    try { await onSave(finalForm, pending); }
     catch { setError('שגיאה בשמירה'); }
     finally { setSaving(false); }
   }
 
   const showAllowOther = OPTION_TYPES.includes(form.questionType);
+  const showOptionsEditor = OPTION_TYPES.includes(form.questionType);
   const previewKey = form.internalKey || generateUniqueKey(form.label, existingKeys, existingKeys.length + 1);
 
   return (
@@ -510,6 +614,16 @@ function QuestionModal({
               </label>
             )}
           </div>
+        )}
+
+        {/* Options editor — shown immediately when type is choice/multi/dropdown */}
+        {showOptionsEditor && (
+          <ModalOptionsEditor
+            templateId={templateId}
+            questionId={questionId ?? null}
+            options={modalOptions}
+            onOptionsChange={setModalOptions}
+          />
         )}
 
         {/* Advanced settings */}
@@ -830,7 +944,7 @@ function QuestionsTab({ template, onTemplateChange }: { template: Template; onTe
     updateQuestions(questions.map((x) => x.id === q.id ? { ...x, label: inlineValue.trim() } : x));
   }
 
-  async function handleAddQuestion(form: QuestionFormState) {
+  async function handleAddQuestion(form: QuestionFormState, pendingOptions: { label: string }[]) {
     const res = await fetch(`${BASE_URL}/questionnaires/${template.id}/questions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -842,7 +956,22 @@ function QuestionsTab({ template, onTemplateChange }: { template: Template; onTe
     });
     if (!res.ok) throw new Error('failed');
     const q = await res.json() as Question;
-    updateQuestions([...questions, q]);
+    // Flush any pending options that were added inside the modal before save
+    let finalOptions: QuestionOption[] = q.options ?? [];
+    if (pendingOptions.length > 0) {
+      for (const opt of pendingOptions) {
+        const optRes = await fetch(`${BASE_URL}/questionnaires/${template.id}/questions/${q.id}/options`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ label: opt.label, value: opt.label }),
+        });
+        if (optRes.ok) {
+          const created = await optRes.json() as QuestionOption;
+          finalOptions = [...finalOptions, created];
+        }
+      }
+    }
+    updateQuestions([...questions, { ...q, options: finalOptions }]);
     setAddModalOpen(false);
   }
 
@@ -880,7 +1009,9 @@ function QuestionsTab({ template, onTemplateChange }: { template: Template; onTe
     });
     if (!res.ok) throw new Error('failed');
     const updated = await res.json() as Question;
-    updateQuestions(questions.map((x) => x.id === updated.id ? { ...updated, options: x.options } : x));
+    // Re-fetch fresh options from API (edit modal manages them live, so just use current state)
+    const currentQuestion = questions.find((x) => x.id === editModal.id);
+    updateQuestions(questions.map((x) => x.id === updated.id ? { ...updated, options: currentQuestion?.options ?? x.options } : x));
     setEditModal(null);
   }
 
@@ -1052,6 +1183,7 @@ function QuestionsTab({ template, onTemplateChange }: { template: Template; onTe
           title="שאלה חדשה"
           initial={{ ...EMPTY_Q_FORM, fieldSize: defaultFieldSize('text') }}
           existingKeys={existingKeys}
+          templateId={template.id}
           onSave={handleAddQuestion}
           onClose={() => setAddModalOpen(false)}
         />
@@ -1070,7 +1202,10 @@ function QuestionsTab({ template, onTemplateChange }: { template: Template; onTe
             fieldSize: editModal.fieldSize ?? defaultFieldSize(editModal.questionType),
           }}
           existingKeys={existingKeys.filter((k) => k !== editModal.internalKey)}
-          onSave={handleEditQuestion}
+          templateId={template.id}
+          questionId={editModal.id}
+          initialOptions={editModal.options.map((o) => ({ id: o.id, label: o.label }))}
+          onSave={(form) => handleEditQuestion(form)}
           onClose={() => setEditModal(null)}
         />
       )}
