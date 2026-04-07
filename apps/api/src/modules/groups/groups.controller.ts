@@ -22,6 +22,23 @@ export class GroupsController {
     return this.groupsService.findById(id);
   }
 
+  // ── Questionnaires ──────────────────────────────────────────────────────────
+
+  @Get(':id/questionnaires')
+  listQuestionnaires(@Param('id') id: string) {
+    return this.groupsService.listQuestionnaires(id);
+  }
+
+  // ── Participant management ──────────────────────────────────────────────────
+
+  @Post(':id/participants')
+  addParticipant(
+    @Param('id') id: string,
+    @Body() body: { participantId: string },
+  ) {
+    return this.groupsService.addParticipant(id, body.participantId);
+  }
+
   // ── Chat links ──────────────────────────────────────────────────────────────
 
   @Get(':id/chat-links')

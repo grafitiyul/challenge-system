@@ -1,4 +1,5 @@
-import { Body, Controller, DefaultValuePipe, Get, HttpCode, HttpException, HttpStatus, Param, ParseIntPipe, Post, Query } from '@nestjs/common';
+import { Body, Controller, DefaultValuePipe, Get, HttpCode, HttpException, HttpStatus, Param, ParseIntPipe, Post, Query, BadRequestException } from '@nestjs/common';
+import { IsString } from 'class-validator';
 import { WassengerService } from './wassenger.service';
 
 @Controller('wassenger')
@@ -37,6 +38,22 @@ export class WassengerController {
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Backfill failed';
       throw new HttpException(message, HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  // ── Send message ─────────────────────────────────────────────────────────
+  // POST /api/wassenger/send  { phone: "972...", message: "..." }
+  @Post('send')
+  async sendMessage(@Body() body: { phone?: string; message?: string }) {
+    if (!body.phone || !body.message) {
+      throw new BadRequestException('phone and message are required');
+    }
+    try {
+      await this.wassengerService.sendMessage(body.phone, body.message);
+      return { ok: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to send';
+      throw new HttpException(msg, HttpStatus.BAD_GATEWAY);
     }
   }
 

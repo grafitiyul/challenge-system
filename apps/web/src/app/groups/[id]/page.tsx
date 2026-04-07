@@ -1,11 +1,11 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { BASE_URL, apiFetch } from '@lib/api';
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ─── Types ───────────────────────────────────────────────────────────────────
 
 interface Participant {
   id: string;
@@ -14,18 +14,37 @@ interface Participant {
   phoneNumber: string;
 }
 
-function displayName(p: { firstName: string; lastName?: string | null }): string {
-  return [p.firstName, p.lastName].filter(Boolean).join(' ');
+interface ParticipantGroupRow {
+  id: string;
+  participantId: string;
+  accessToken: string | null;
+  participant: Participant;
 }
 
 interface Group {
   id: string;
   name: string;
-  challenge: { id: string; name: string };
-  startDate: string;
-  endDate: string;
   isActive: boolean;
-  participantGroups: { participant: Participant }[];
+  programId: string | null;
+  program: { id: string; name: string; isActive: boolean } | null;
+  startDate: string | null;
+  endDate: string | null;
+  challenge: { id: string; name: string };
+  participantGroups: ParticipantGroupRow[];
+}
+
+interface ExternalLink {
+  id: string;
+  internalName: string;
+  slugOrToken: string;
+  isActive: boolean;
+}
+
+interface QTemplate {
+  id: string;
+  internalName: string;
+  publicTitle: string;
+  externalLinks: ExternalLink[];
 }
 
 interface WhatsAppChat {
@@ -34,8 +53,6 @@ interface WhatsAppChat {
   type: string;
   name: string | null;
   phoneNumber: string | null;
-  lastMessageAt: string | null;
-  messages?: { textContent: string | null; messageType: string }[];
 }
 
 interface ChatLink {
@@ -49,101 +66,216 @@ interface ChatLink {
   createdAt: string;
 }
 
-type FilterType = 'all' | 'group_chat' | 'private_participant_chat';
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+function displayName(p: { firstName: string; lastName?: string | null }): string {
+  return [p.firstName, p.lastName].filter(Boolean).join(' ');
+}
 
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString('he-IL');
+function formatDate(iso: string | null): string {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleDateString('he-IL', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
 function chatDisplayName(chat: WhatsAppChat): string {
   return chat.name ?? chat.phoneNumber ?? chat.externalChatId;
 }
 
-// ─── Link type labels ─────────────────────────────────────────────────────────
-
-const LINK_TYPE_LABEL: Record<string, string> = {
-  group_chat: 'קבוצת וואטסאפ',
-  private_participant_chat: 'צ׳אט פרטי',
-};
-
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function GroupDetailPage() {
   const { id } = useParams<{ id: string }>();
 
+  // Core data
   const [group, setGroup] = useState<Group | null>(null);
   const [links, setLinks] = useState<ChatLink[]>([]);
+  const [questionnaires, setQuestionnaires] = useState<QTemplate[]>([]);
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState<FilterType>('all');
 
-  // Modal state
-  const [modalOpen, setModalOpen] = useState(false);
+  // Group message modal
+  const [msgModalOpen, setMsgModalOpen] = useState(false);
+  const [msgText, setMsgText] = useState('');
+  const [msgSending, setMsgSending] = useState(false);
+  const [msgError, setMsgError] = useState('');
+  const [msgSuccess, setMsgSuccess] = useState(false);
+
+  // Add participant modal
+  const [addParticipantOpen, setAddParticipantOpen] = useState(false);
+  const [allParticipants, setAllParticipants] = useState<Participant[]>([]);
+  const [participantSearch, setParticipantSearch] = useState('');
+  const [addingParticipantId, setAddingParticipantId] = useState('');
+  const [participantsLoading, setParticipantsLoading] = useState(false);
+
+  // Link chat modal (existing)
+  const [linkModalOpen, setLinkModalOpen] = useState(false);
   const [availableChats, setAvailableChats] = useState<WhatsAppChat[]>([]);
   const [chatsLoading, setChatsLoading] = useState(false);
   const [selectedChatId, setSelectedChatId] = useState('');
   const [selectedLinkType, setSelectedLinkType] = useState<'group_chat' | 'private_participant_chat'>('group_chat');
   const [selectedParticipantId, setSelectedParticipantId] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [linkSubmitting, setLinkSubmitting] = useState(false);
+  const [linkError, setLinkError] = useState<string | null>(null);
 
-  // Initial load
-  useEffect(() => {
+  // Token generation
+  const [generatingTokenFor, setGeneratingTokenFor] = useState<string | null>(null);
+
+  // Copy feedback
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  // ─── Initial load ──────────────────────────────────────────────────────────
+
+  const loadGroup = useCallback(() => {
     if (!id) return;
+    setLoading(true);
     Promise.all([
-      apiFetch(`${BASE_URL}/groups/${id}`),
-      apiFetch(`${BASE_URL}/groups/${id}/chat-links`),
+      apiFetch<Group>(`${BASE_URL}/groups/${id}`, { cache: 'no-store' }),
+      apiFetch<ChatLink[]>(`${BASE_URL}/groups/${id}/chat-links`, { cache: 'no-store' }),
+      apiFetch<QTemplate[]>(`${BASE_URL}/groups/${id}/questionnaires`, { cache: 'no-store' }),
     ])
-      .then(([groupData, linksData]: [unknown, unknown]) => {
-        setGroup(groupData as Group);
-        setLinks(Array.isArray(linksData) ? (linksData as ChatLink[]) : []);
+      .then(([groupData, linksData, qData]) => {
+        setGroup(groupData);
+        setLinks(Array.isArray(linksData) ? linksData : []);
+        setQuestionnaires(Array.isArray(qData) ? qData : []);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [id]);
 
-  // Load available chats when modal opens
-  function openModal() {
-    setModalOpen(true);
+  useEffect(() => { loadGroup(); }, [loadGroup]);
+
+  // ─── Copy helper ──────────────────────────────────────────────────────────
+
+  function copyText(text: string, feedbackId: string) {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopiedId(feedbackId);
+      setTimeout(() => setCopiedId(null), 1800);
+    });
+  }
+
+  function getAccessUrl(token: string): string {
+    return `${window.location.origin}/t/${token}`;
+  }
+
+  // ─── Group message ─────────────────────────────────────────────────────────
+
+  const groupChatLink = links.find((l) => l.linkType === 'group_chat');
+
+  async function sendGroupMessage() {
+    if (!msgText.trim()) return;
+    if (!groupChatLink) { setMsgError('לא קושרה קבוצת וואטסאפ'); return; }
+    setMsgSending(true);
+    setMsgError('');
+    try {
+      await apiFetch(`${BASE_URL}/wassenger/send`, {
+        method: 'POST',
+        body: JSON.stringify({ phone: groupChatLink.whatsappChat.externalChatId, message: msgText.trim() }),
+      });
+      setMsgSuccess(true);
+      setMsgText('');
+      setTimeout(() => { setMsgSuccess(false); setMsgModalOpen(false); }, 1800);
+    } catch (err) {
+      const msg = typeof err === 'object' && err !== null && 'message' in err
+        ? String((err as { message: string }).message) : 'שגיאה בשליחה';
+      setMsgError(msg);
+    } finally {
+      setMsgSending(false);
+    }
+  }
+
+  // ─── Add participant ───────────────────────────────────────────────────────
+
+  function openAddParticipant() {
+    setAddParticipantOpen(true);
+    setParticipantSearch('');
+    if (allParticipants.length > 0) return;
+    setParticipantsLoading(true);
+    apiFetch<Participant[]>(`${BASE_URL}/participants`)
+      .then((data) => setAllParticipants(Array.isArray(data) ? data : []))
+      .catch(() => setAllParticipants([]))
+      .finally(() => setParticipantsLoading(false));
+  }
+
+  async function addParticipant(participantId: string) {
+    if (addingParticipantId) return;
+    setAddingParticipantId(participantId);
+    try {
+      await apiFetch(`${BASE_URL}/groups/${id}/participants`, {
+        method: 'POST',
+        body: JSON.stringify({ participantId }),
+      });
+      setAddParticipantOpen(false);
+      loadGroup(); // refresh full group data to show new participant + token
+    } catch (err) {
+      const msg = typeof err === 'object' && err !== null && 'message' in err
+        ? String((err as { message: string }).message) : 'שגיאה';
+      alert(msg);
+    } finally {
+      setAddingParticipantId('');
+    }
+  }
+
+  // ─── Token generation ──────────────────────────────────────────────────────
+
+  async function generateToken(participantId: string, groupId: string) {
+    setGeneratingTokenFor(participantId);
+    try {
+      const res = await apiFetch<{ token: string }>(
+        `${BASE_URL}/participants/${participantId}/groups/${groupId}/token`,
+        { method: 'POST' },
+      );
+      // Update the local participant group row with the new token
+      setGroup((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          participantGroups: prev.participantGroups.map((pg) =>
+            pg.participantId === participantId ? { ...pg, accessToken: res.token } : pg,
+          ),
+        };
+      });
+    } catch { /* ignore */ } finally {
+      setGeneratingTokenFor(null);
+    }
+  }
+
+  // ─── Link chat modal ───────────────────────────────────────────────────────
+
+  function openLinkModal() {
+    setLinkModalOpen(true);
     setSelectedChatId('');
     setSelectedLinkType('group_chat');
     setSelectedParticipantId('');
-    setSubmitError(null);
+    setLinkError(null);
     if (availableChats.length > 0) return;
     setChatsLoading(true);
-    apiFetch(`${BASE_URL}/wassenger/chats`)
-      .then((data: unknown) => setAvailableChats(Array.isArray(data) ? (data as WhatsAppChat[]) : []))
+    apiFetch<WhatsAppChat[]>(`${BASE_URL}/wassenger/chats`)
+      .then((data) => setAvailableChats(Array.isArray(data) ? data : []))
       .catch(() => setAvailableChats([]))
       .finally(() => setChatsLoading(false));
   }
 
   async function submitLink() {
-    if (!selectedChatId) { setSubmitError('בחר/י צ׳אט'); return; }
+    if (!selectedChatId) { setLinkError('בחר/י צ׳אט'); return; }
     if (selectedLinkType === 'private_participant_chat' && !selectedParticipantId) {
-      setSubmitError('בחר/י משתתף/ת לצ׳אט פרטי');
+      setLinkError('בחר/י משתתף/ת לצ׳אט פרטי');
       return;
     }
-    setSubmitting(true);
-    setSubmitError(null);
+    setLinkSubmitting(true);
+    setLinkError(null);
     try {
-      const body: Record<string, string> = {
-        whatsappChatId: selectedChatId,
-        linkType: selectedLinkType,
-      };
+      const body: Record<string, string> = { whatsappChatId: selectedChatId, linkType: selectedLinkType };
       if (selectedLinkType === 'private_participant_chat' && selectedParticipantId) {
         body['participantId'] = selectedParticipantId;
       }
-      const newLink = await apiFetch(`${BASE_URL}/groups/${id}/chat-links`, {
-        method: 'POST',
-        body: JSON.stringify(body),
-      }) as ChatLink;
+      const newLink = await apiFetch<ChatLink>(`${BASE_URL}/groups/${id}/chat-links`, {
+        method: 'POST', body: JSON.stringify(body),
+      });
       setLinks((prev) => [...prev, newLink]);
-      setModalOpen(false);
+      setLinkModalOpen(false);
     } catch (err) {
-      setSubmitError(err instanceof Error ? err.message : 'שגיאה');
+      setLinkError(err instanceof Error ? err.message : 'שגיאה');
     } finally {
-      setSubmitting(false);
+      setLinkSubmitting(false);
     }
   }
 
@@ -153,14 +285,31 @@ export default function GroupDetailPage() {
     setLinks((prev) => prev.filter((l) => l.id !== linkId));
   }
 
-  // Filtered links
-  const filteredLinks = links.filter((l) => filter === 'all' || l.linkType === filter);
+  // ─── Derived ──────────────────────────────────────────────────────────────
 
-  // Chats already linked (exclude from picker)
+  const participants = group?.participantGroups ?? [];
+  const inGroupIds = new Set(participants.map((pg) => pg.participantId));
   const linkedChatIds = new Set(links.map((l) => l.whatsappChatId));
   const pickableChats = availableChats.filter((c) => !linkedChatIds.has(c.id));
 
-  const participants = group?.participantGroups.map((pg) => pg.participant) ?? [];
+  const searchTerm = participantSearch.trim().toLowerCase();
+  const filteredAll = allParticipants.filter((p) => {
+    if (inGroupIds.has(p.id)) return false; // already in group
+    if (!searchTerm) return true;
+    return (
+      p.firstName.toLowerCase().includes(searchTerm) ||
+      (p.lastName ?? '').toLowerCase().includes(searchTerm) ||
+      p.phoneNumber.includes(searchTerm)
+    );
+  });
+
+  // Map participantId → private chat link (if any)
+  const privateChatByParticipant = new Map<string, ChatLink>(
+    links.filter((l) => l.linkType === 'private_participant_chat' && l.participantId)
+      .map((l) => [l.participantId!, l]),
+  );
+
+  // ─── Loading / not found ───────────────────────────────────────────────────
 
   if (loading) {
     return (
@@ -179,273 +328,649 @@ export default function GroupDetailPage() {
     );
   }
 
+  // ─── Render ───────────────────────────────────────────────────────────────
+
   return (
-    <div style={{ maxWidth: 840, margin: '0 auto', padding: '28px 20px' }}>
+    <div style={{ maxWidth: 900, margin: '0 auto', padding: '24px 20px' }}>
 
       {/* ── Back ── */}
       <Link href="/groups" style={{ color: '#64748b', fontSize: 14, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 4, marginBottom: 20 }}>
         ← חזרה לקבוצות
       </Link>
 
-      {/* ── Header ── */}
-      <div style={{ marginBottom: 28 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <h1 style={{ fontSize: 24, fontWeight: 700, color: '#0f172a', margin: 0 }}>{group.name}</h1>
-          <span style={{
-            background: group.isActive ? '#dcfce7' : '#f1f5f9',
-            color: group.isActive ? '#16a34a' : '#64748b',
-            padding: '2px 10px', borderRadius: 20, fontSize: 12, fontWeight: 500,
-          }}>
-            {group.isActive ? 'פעילה' : 'לא פעילה'}
-          </span>
-        </div>
-        <p style={{ color: '#64748b', fontSize: 14, marginTop: 6, marginBottom: 0 }}>
-          {group.challenge.name} · {formatDate(group.startDate)} – {formatDate(group.endDate)} · {participants.length} משתתפים
-        </p>
-      </div>
+      {/* ══════════════════════════════════════════════════════════════════════
+          SECTION 1 — TOP SUMMARY + PRIMARY ACTIONS
+      ══════════════════════════════════════════════════════════════════════ */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', marginBottom: 28 }}>
 
-      {/* ── WhatsApp Section ── */}
-      <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 12, overflow: 'hidden' }}>
-
-        {/* Section header */}
-        <div style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          padding: '16px 20px', borderBottom: '1px solid #e2e8f0', flexWrap: 'wrap', gap: 10,
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontSize: 18 }}>💬</span>
-            <h2 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', margin: 0 }}>WhatsApp / צ׳אטים</h2>
-            <span style={{ background: '#f1f5f9', color: '#64748b', padding: '1px 8px', borderRadius: 10, fontSize: 12 }}>
-              {links.length}
+        {/* Left: name + meta */}
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 6 }}>
+            <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0f172a', margin: 0 }}>{group.name}</h1>
+            <span style={{
+              background: group.isActive ? '#dcfce7' : '#f1f5f9',
+              color: group.isActive ? '#16a34a' : '#64748b',
+              padding: '2px 10px', borderRadius: 20, fontSize: 12, fontWeight: 600,
+            }}>
+              {group.isActive ? 'פעילה' : 'לא פעילה'}
             </span>
+            {group.program && (
+              <Link href={`/programs/${group.program.id}`} style={{ textDecoration: 'none' }}>
+                <span style={{
+                  background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe',
+                  padding: '2px 10px', borderRadius: 20, fontSize: 12, fontWeight: 600,
+                }}>
+                  {group.program.name}
+                </span>
+              </Link>
+            )}
           </div>
+          <p style={{ color: '#64748b', fontSize: 13, margin: 0 }}>
+            {group.challenge.name}
+            {(group.startDate || group.endDate) && (
+              <> · {formatDate(group.startDate)} – {formatDate(group.endDate)}</>
+            )}
+            {' · '}
+            <strong style={{ color: '#0f172a' }}>{participants.length}</strong> משתתפות
+          </p>
+        </div>
+
+        {/* Right: primary actions */}
+        <div style={{ display: 'flex', gap: 10, flexShrink: 0, flexWrap: 'wrap' }}>
           <button
-            onClick={openModal}
+            onClick={() => { setMsgModalOpen(true); setMsgText(''); setMsgError(''); setMsgSuccess(false); }}
             style={{
-              background: '#2563eb', color: '#fff', border: 'none', borderRadius: 7,
-              padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+              display: 'flex', alignItems: 'center', gap: 6,
+              background: groupChatLink ? '#16a34a' : '#94a3b8',
+              color: '#fff', border: 'none', borderRadius: 8, padding: '9px 16px',
+              fontSize: 13, fontWeight: 600, cursor: groupChatLink ? 'pointer' : 'not-allowed',
+            }}
+            title={groupChatLink ? undefined : 'אין קבוצת וואטסאפ מקושרת'}
+          >
+            <span>💬</span> הודעה לקבוצה
+          </button>
+          <button
+            onClick={openLinkModal}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              background: '#fff', color: '#374151', border: '1px solid #d1d5db',
+              borderRadius: 8, padding: '9px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer',
             }}
           >
-            + קשרי צ׳אט קיים
+            <span>🔗</span> קשרי צ׳אט
           </button>
         </div>
+      </div>
 
-        {/* Filter tabs */}
-        <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid #e2e8f0', padding: '0 20px' }}>
-          {([
-            ['all', 'הכל'],
-            ['group_chat', 'קבוצת וואטסאפ'],
-            ['private_participant_chat', 'פרטיים'],
-          ] as const).map(([val, label]) => (
-            <button
-              key={val}
-              onClick={() => setFilter(val)}
+      {/* ══════════════════════════════════════════════════════════════════════
+          SECTION 2 — LINKED PROGRAM
+      ══════════════════════════════════════════════════════════════════════ */}
+      <Section title="תוכנית משויכת" icon="⚡">
+        {group.program ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 600, fontSize: 15, color: '#0f172a' }}>{group.program.name}</div>
+              <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>
+                {group.program.isActive ? 'פעילה' : 'לא פעילה'}
+              </div>
+            </div>
+            <Link
+              href={`/programs/${group.program.id}`}
               style={{
-                background: 'none', border: 'none', cursor: 'pointer',
-                padding: '10px 14px', fontSize: 13, fontWeight: filter === val ? 700 : 400,
-                color: filter === val ? '#2563eb' : '#64748b',
-                borderBottom: filter === val ? '2px solid #2563eb' : '2px solid transparent',
-                marginBottom: -1,
+                padding: '6px 14px', borderRadius: 7, border: '1px solid #bfdbfe',
+                color: '#1d4ed8', fontSize: 13, fontWeight: 500, textDecoration: 'none',
+                background: '#eff6ff',
               }}
             >
-              {label}
-            </button>
-          ))}
-        </div>
-
-        {/* Links list */}
-        {filteredLinks.length === 0 ? (
-          <div style={{ padding: 40, textAlign: 'center' }}>
-            <div style={{ fontSize: 32, marginBottom: 10 }}>📭</div>
-            <p style={{ color: '#64748b', fontSize: 14, margin: 0 }}>
-              {links.length === 0
-                ? 'לא קושרו צ׳אטים עדיין. לחץ על "קשרי צ׳אט קיים" כדי להתחיל.'
-                : 'אין צ׳אטים בקטגוריה זו.'}
-            </p>
+              פתח תוכנית ↗
+            </Link>
           </div>
         ) : (
-          <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
-            {filteredLinks.map((link, idx) => (
-              <li
-                key={link.id}
+          <p style={{ color: '#94a3b8', fontSize: 14, margin: 0 }}>לא שויכה תוכנית לקבוצה זו.</p>
+        )}
+      </Section>
+
+      {/* ══════════════════════════════════════════════════════════════════════
+          SECTION 3 — RELATED QUESTIONNAIRES
+      ══════════════════════════════════════════════════════════════════════ */}
+      <Section title="שאלונים רלוונטיים" icon="📋" count={questionnaires.length}>
+        {!group.programId ? (
+          <p style={{ color: '#94a3b8', fontSize: 14, margin: 0 }}>שייכי תוכנית לקבוצה כדי לראות שאלונים רלוונטיים.</p>
+        ) : questionnaires.length === 0 ? (
+          <p style={{ color: '#94a3b8', fontSize: 14, margin: 0 }}>
+            אין שאלונים משויכים לתוכנית זו. שייכי שאלון לתוכנית <strong>{group.program?.name}</strong> בעורך השאלון.
+          </p>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+            {questionnaires.map((q, idx) => (
+              <div
+                key={q.id}
                 style={{
-                  display: 'flex', alignItems: 'center', gap: 14,
-                  padding: '14px 20px',
-                  borderBottom: idx < filteredLinks.length - 1 ? '1px solid #f1f5f9' : 'none',
+                  padding: '13px 0',
+                  borderBottom: idx < questionnaires.length - 1 ? '1px solid #f1f5f9' : 'none',
                 }}
               >
-                {/* Avatar */}
+                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, fontSize: 14, color: '#0f172a' }}>{q.internalName}</div>
+                    <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>{q.publicTitle}</div>
+                  </div>
+                  <Link
+                    href={`/questionnaires/${q.id}`}
+                    style={{ fontSize: 12, color: '#6b7280', padding: '3px 8px', flexShrink: 0, textDecoration: 'none' }}
+                  >
+                    ערוך ↗
+                  </Link>
+                </div>
+                {/* External links */}
+                {q.externalLinks.length > 0 && (
+                  <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {q.externalLinks.map((link) => (
+                      <div
+                        key={link.id}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 6,
+                          background: '#f8fafc', border: '1px solid #e2e8f0',
+                          borderRadius: 6, padding: '5px 10px', fontSize: 12,
+                        }}
+                      >
+                        <span style={{ color: '#374151' }}>{link.internalName}</span>
+                        <button
+                          onClick={() => copyText(`${window.location.origin}/fill/${link.slugOrToken}`, `link-${link.id}`)}
+                          style={{
+                            background: copiedId === `link-${link.id}` ? '#dcfce7' : '#eff6ff',
+                            color: copiedId === `link-${link.id}` ? '#16a34a' : '#1d4ed8',
+                            border: 'none', borderRadius: 5, padding: '2px 8px',
+                            fontSize: 11, cursor: 'pointer', fontWeight: 600,
+                          }}
+                        >
+                          {copiedId === `link-${link.id}` ? '✓ הועתק' : 'העתק קישור'}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {q.externalLinks.length === 0 && (
+                  <div style={{ marginTop: 6, fontSize: 12, color: '#94a3b8' }}>
+                    אין לינקים חיצוניים — <Link href={`/questionnaires/${q.id}`} style={{ color: '#1d4ed8' }}>צור לינק בעורך</Link>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </Section>
+
+      {/* ══════════════════════════════════════════════════════════════════════
+          SECTION 4 — PARTICIPANTS
+      ══════════════════════════════════════════════════════════════════════ */}
+      <Section
+        title="משתתפות"
+        icon="👥"
+        count={participants.length}
+        action={
+          <button
+            onClick={openAddParticipant}
+            style={{
+              background: '#2563eb', color: '#fff', border: 'none', borderRadius: 7,
+              padding: '7px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+            }}
+          >
+            + הוסף משתתפת
+          </button>
+        }
+      >
+        {participants.length === 0 ? (
+          <p style={{ color: '#94a3b8', fontSize: 14, margin: 0 }}>
+            אין משתתפות בקבוצה זו. לחצי &ldquo;+ הוסף משתתפת&rdquo; כדי להתחיל.
+          </p>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+            {participants.map((pg, idx) => {
+              const p = pg.participant;
+              const privateChat = privateChatByParticipant.get(p.id);
+              const hasToken = !!pg.accessToken;
+
+              return (
+                <div
+                  key={pg.id}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0',
+                    borderBottom: idx < participants.length - 1 ? '1px solid #f1f5f9' : 'none',
+                  }}
+                >
+                  {/* Avatar */}
+                  <div style={{
+                    width: 36, height: 36, borderRadius: '50%', flexShrink: 0,
+                    background: '#eff6ff', color: '#1d4ed8', display: 'flex',
+                    alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 14,
+                  }}>
+                    {p.firstName.charAt(0)}
+                  </div>
+
+                  {/* Name + phone */}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <Link
+                      href={`/participants/${p.id}`}
+                      style={{ fontWeight: 600, fontSize: 14, color: '#0f172a', textDecoration: 'none' }}
+                    >
+                      {displayName(p)}
+                    </Link>
+                    <div style={{ fontSize: 12, color: '#6b7280', marginTop: 1, direction: 'ltr', textAlign: 'right' }}>
+                      {p.phoneNumber}
+                    </div>
+                  </div>
+
+                  {/* Actions */}
+                  <div style={{ display: 'flex', gap: 6, flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+
+                    {/* Personal chat button */}
+                    {privateChat ? (
+                      <Link
+                        href={`/chats/${privateChat.whatsappChatId}`}
+                        style={{
+                          padding: '5px 10px', borderRadius: 6, border: '1px solid #bbf7d0',
+                          color: '#16a34a', fontSize: 12, fontWeight: 500, textDecoration: 'none',
+                          background: '#f0fdf4', display: 'flex', alignItems: 'center', gap: 4,
+                        }}
+                      >
+                        💬 צ׳אט
+                      </Link>
+                    ) : (
+                      <a
+                        href={`https://wa.me/${p.phoneNumber.replace(/\D/g, '')}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{
+                          padding: '5px 10px', borderRadius: 6, border: '1px solid #d1fae5',
+                          color: '#059669', fontSize: 12, fontWeight: 500, textDecoration: 'none',
+                          background: '#f0fdf4', display: 'flex', alignItems: 'center', gap: 4,
+                        }}
+                        title="פתח בוואטסאפ"
+                      >
+                        WA
+                      </a>
+                    )}
+
+                    {/* Access link */}
+                    {hasToken ? (
+                      <button
+                        onClick={() => copyText(getAccessUrl(pg.accessToken!), `token-${pg.id}`)}
+                        style={{
+                          padding: '5px 10px', borderRadius: 6,
+                          border: `1px solid ${copiedId === `token-${pg.id}` ? '#bbf7d0' : '#bfdbfe'}`,
+                          color: copiedId === `token-${pg.id}` ? '#16a34a' : '#1d4ed8',
+                          background: copiedId === `token-${pg.id}` ? '#f0fdf4' : '#eff6ff',
+                          fontSize: 12, fontWeight: 500, cursor: 'pointer',
+                        }}
+                      >
+                        {copiedId === `token-${pg.id}` ? '✓ הועתק' : '🔗 קישור אישי'}
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => generateToken(p.id, id)}
+                        disabled={generatingTokenFor === p.id}
+                        style={{
+                          padding: '5px 10px', borderRadius: 6, border: '1px solid #e2e8f0',
+                          color: '#64748b', background: '#f8fafc', fontSize: 12,
+                          cursor: generatingTokenFor === p.id ? 'not-allowed' : 'pointer',
+                        }}
+                      >
+                        {generatingTokenFor === p.id ? '...' : 'צור קישור'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Section>
+
+      {/* ══════════════════════════════════════════════════════════════════════
+          SECTION 5 — WHATSAPP / CHAT LINKS
+      ══════════════════════════════════════════════════════════════════════ */}
+      <Section title="קישורי WhatsApp" icon="💬" count={links.length}>
+        {links.length === 0 ? (
+          <p style={{ color: '#94a3b8', fontSize: 14, margin: 0 }}>
+            לא קושרו צ׳אטים עדיין. לחצי &ldquo;קשרי צ׳אט&rdquo; למעלה כדי להוסיף.
+          </p>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+            {links.map((link, idx) => (
+              <div
+                key={link.id}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 14, padding: '12px 0',
+                  borderBottom: idx < links.length - 1 ? '1px solid #f1f5f9' : 'none',
+                }}
+              >
                 <div style={{
-                  width: 40, height: 40, borderRadius: '50%', flexShrink: 0,
+                  width: 36, height: 36, borderRadius: '50%', flexShrink: 0,
                   background: link.linkType === 'group_chat' ? '#dbeafe' : '#f0fdf4',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16,
                 }}>
                   {link.linkType === 'group_chat' ? '👥' : '👤'}
                 </div>
-
-                {/* Info */}
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontWeight: 600, fontSize: 14, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {chatDisplayName(link.whatsappChat)}
                   </div>
-                  <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
+                  <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>
                     <span style={{
                       background: link.linkType === 'group_chat' ? '#dbeafe' : '#f0fdf4',
                       color: link.linkType === 'group_chat' ? '#1d4ed8' : '#16a34a',
-                      padding: '1px 7px', borderRadius: 8, fontWeight: 500, marginLeft: 6,
+                      padding: '1px 7px', borderRadius: 8, fontWeight: 600,
                     }}>
-                      {LINK_TYPE_LABEL[link.linkType]}
+                      {link.linkType === 'group_chat' ? 'קבוצת וואטסאפ' : 'צ׳אט פרטי'}
                     </span>
                     {link.participant && (
-                      <span style={{ color: '#94a3b8' }}>משתתף/ת: {displayName(link.participant)}</span>
+                      <span style={{ marginRight: 6, color: '#94a3b8' }}>— {displayName(link.participant)}</span>
                     )}
                   </div>
                 </div>
-
-                {/* Actions */}
-                <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
                   <Link
                     href={`/chats/${link.whatsappChatId}`}
-                    style={{ fontSize: 12, color: '#2563eb', padding: '4px 10px', border: '1px solid #bfdbfe', borderRadius: 6, textDecoration: 'none', whiteSpace: 'nowrap' }}
+                    style={{ fontSize: 12, color: '#2563eb', padding: '4px 10px', border: '1px solid #bfdbfe', borderRadius: 6, textDecoration: 'none' }}
                   >
                     פתח ↗
                   </Link>
                   <button
                     onClick={() => deleteLink(link.id)}
-                    style={{ fontSize: 12, color: '#ef4444', padding: '4px 10px', border: '1px solid #fecaca', borderRadius: 6, background: 'none', cursor: 'pointer', whiteSpace: 'nowrap' }}
+                    style={{ fontSize: 12, color: '#ef4444', padding: '4px 10px', border: '1px solid #fecaca', borderRadius: 6, background: 'none', cursor: 'pointer' }}
                   >
                     הסר
                   </button>
                 </div>
-              </li>
+              </div>
             ))}
-          </ul>
+          </div>
         )}
-      </div>
+      </Section>
 
-      {/* ── Modal ── */}
-      {modalOpen && (
-        <div
-          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}
-          onClick={(e) => { if (e.target === e.currentTarget) setModalOpen(false); }}
-        >
-          <div style={{ background: '#fff', borderRadius: 14, width: '100%', maxWidth: 480, padding: 28, boxShadow: '0 20px 60px rgba(0,0,0,0.25)' }}>
-            <h3 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', margin: '0 0 20px' }}>קשרי צ׳אט קיים</h3>
+      {/* ══════════════════════════════════════════════════════════════════════
+          MODAL — GROUP MESSAGE COMPOSER
+      ══════════════════════════════════════════════════════════════════════ */}
+      {msgModalOpen && (
+        <Modal onClose={() => setMsgModalOpen(false)}>
+          <h3 style={S.modalTitle}>הודעה לקבוצה</h3>
+          {groupChatLink ? (
+            <p style={{ fontSize: 13, color: '#6b7280', margin: '0 0 16px' }}>
+              שולחת ל: <strong>{chatDisplayName(groupChatLink.whatsappChat)}</strong>
+            </p>
+          ) : (
+            <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '10px 14px', marginBottom: 16, fontSize: 13, color: '#dc2626' }}>
+              לא קושרה קבוצת וואטסאפ. לחצי &ldquo;קשרי צ׳אט&rdquo; ובחרי קישור מסוג &ldquo;קבוצת וואטסאפ&rdquo;.
+            </div>
+          )}
+          <textarea
+            value={msgText}
+            onChange={(e) => setMsgText(e.target.value)}
+            placeholder="הקלידי את תוכן ההודעה..."
+            disabled={!groupChatLink}
+            style={{
+              width: '100%', minHeight: 120, padding: '10px 12px',
+              border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 14,
+              fontFamily: 'inherit', resize: 'vertical', boxSizing: 'border-box',
+              direction: 'rtl',
+            }}
+          />
+          {msgError && <p style={{ color: '#ef4444', fontSize: 13, margin: '8px 0 0' }}>{msgError}</p>}
+          {msgSuccess && <p style={{ color: '#16a34a', fontSize: 13, margin: '8px 0 0', fontWeight: 600 }}>ההודעה נשלחה!</p>}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 16 }}>
+            <button onClick={() => setMsgModalOpen(false)} style={S.btnSecondary}>ביטול</button>
+            <button
+              onClick={sendGroupMessage}
+              disabled={msgSending || !groupChatLink || !msgText.trim()}
+              style={{
+                ...S.btnPrimary,
+                ...(msgSending || !groupChatLink || !msgText.trim() ? S.btnDisabled : {}),
+              }}
+            >
+              {msgSending ? 'שולח...' : 'שלח'}
+            </button>
+          </div>
+        </Modal>
+      )}
 
-            {/* Chat picker */}
+      {/* ══════════════════════════════════════════════════════════════════════
+          MODAL — ADD PARTICIPANT
+      ══════════════════════════════════════════════════════════════════════ */}
+      {addParticipantOpen && (
+        <Modal onClose={() => setAddParticipantOpen(false)}>
+          <h3 style={S.modalTitle}>הוסף משתתפת לקבוצה</h3>
+          <input
+            type="text"
+            placeholder="חיפוש לפי שם או טלפון..."
+            value={participantSearch}
+            onChange={(e) => setParticipantSearch(e.target.value)}
+            style={{ ...S.input, marginBottom: 12 }}
+            autoFocus
+          />
+          {participantsLoading ? (
+            <p style={{ color: '#94a3b8', fontSize: 14 }}>טוען...</p>
+          ) : filteredAll.length === 0 ? (
+            <p style={{ color: '#94a3b8', fontSize: 14 }}>
+              {searchTerm ? 'לא נמצאו משתתפות' : 'כל המשתתפות כבר בקבוצה'}
+            </p>
+          ) : (
+            <div style={{ maxHeight: 280, overflowY: 'auto', border: '1px solid #e2e8f0', borderRadius: 8 }}>
+              {filteredAll.slice(0, 50).map((p, idx) => (
+                <button
+                  key={p.id}
+                  onClick={() => addParticipant(p.id)}
+                  disabled={addingParticipantId === p.id}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 12, width: '100%',
+                    padding: '11px 14px', background: 'none', border: 'none', cursor: 'pointer',
+                    borderBottom: idx < Math.min(filteredAll.length, 50) - 1 ? '1px solid #f1f5f9' : 'none',
+                    textAlign: 'right',
+                  }}
+                >
+                  <div style={{
+                    width: 32, height: 32, borderRadius: '50%', background: '#eff6ff',
+                    color: '#1d4ed8', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontWeight: 700, fontSize: 13, flexShrink: 0,
+                  }}>
+                    {p.firstName.charAt(0)}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, fontSize: 14, color: '#0f172a' }}>{displayName(p)}</div>
+                    <div style={{ fontSize: 12, color: '#6b7280', direction: 'ltr', textAlign: 'right' }}>{p.phoneNumber}</div>
+                  </div>
+                  <span style={{ fontSize: 12, color: '#2563eb', fontWeight: 600 }}>
+                    {addingParticipantId === p.id ? '...' : '+ הוסף'}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+          <div style={{ marginTop: 14, textAlign: 'left' }}>
+            <button onClick={() => setAddParticipantOpen(false)} style={S.btnSecondary}>סגור</button>
+          </div>
+        </Modal>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════════════
+          MODAL — LINK CHAT (existing, preserved)
+      ══════════════════════════════════════════════════════════════════════ */}
+      {linkModalOpen && (
+        <Modal onClose={() => setLinkModalOpen(false)}>
+          <h3 style={S.modalTitle}>קשרי צ׳אט קיים</h3>
+
+          <div style={{ marginBottom: 16 }}>
+            <label style={S.fieldLabel}>בחר/י צ׳אט</label>
+            {chatsLoading ? (
+              <p style={{ color: '#94a3b8', fontSize: 13 }}>טוען צ׳אטים...</p>
+            ) : pickableChats.length === 0 ? (
+              <p style={{ color: '#94a3b8', fontSize: 13 }}>
+                {availableChats.length === 0 ? 'אין צ׳אטים זמינים (הרץ backfill תחילה)' : 'כל הצ׳אטים כבר מקושרים.'}
+              </p>
+            ) : (
+              <select
+                value={selectedChatId}
+                onChange={(e) => setSelectedChatId(e.target.value)}
+                style={S.select}
+              >
+                <option value="">-- בחר/י צ׳אט --</option>
+                {pickableChats.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {chatDisplayName(c)} ({c.type === 'group' ? 'קבוצה' : 'פרטי'})
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+
+          <div style={{ marginBottom: 16 }}>
+            <label style={S.fieldLabel}>סוג קישור</label>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              {([
+                ['group_chat', '👥 קבוצת וואטסאפ'],
+                ['private_participant_chat', '👤 צ׳אט פרטי'],
+              ] as const).map(([val, label]) => (
+                <label
+                  key={val}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer',
+                    padding: '7px 12px', borderRadius: 8, border: '1px solid',
+                    borderColor: selectedLinkType === val ? '#2563eb' : '#e2e8f0',
+                    background: selectedLinkType === val ? '#eff6ff' : '#fff',
+                    fontSize: 13, fontWeight: selectedLinkType === val ? 600 : 400,
+                  }}
+                >
+                  <input
+                    type="radio" name="linkType" value={val}
+                    checked={selectedLinkType === val}
+                    onChange={() => { setSelectedLinkType(val); setSelectedParticipantId(''); }}
+                    style={{ display: 'none' }}
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {selectedLinkType === 'private_participant_chat' && (
             <div style={{ marginBottom: 16 }}>
-              <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 6 }}>
-                בחר/י צ׳אט
-              </label>
-              {chatsLoading ? (
-                <p style={{ color: '#94a3b8', fontSize: 13 }}>טוען צ׳אטים...</p>
-              ) : pickableChats.length === 0 ? (
-                <p style={{ color: '#94a3b8', fontSize: 13 }}>
-                  {availableChats.length === 0 ? 'אין צ׳אטים זמינים (הרץ backfill תחילה)' : 'כל הצ׳אטים כבר מקושרים לקבוצה זו.'}
-                </p>
+              <label style={S.fieldLabel}>משתתף/ת</label>
+              {participants.length === 0 ? (
+                <p style={{ color: '#94a3b8', fontSize: 13 }}>אין משתתפות פעילות בקבוצה זו.</p>
               ) : (
                 <select
-                  value={selectedChatId}
-                  onChange={(e) => setSelectedChatId(e.target.value)}
-                  style={{ width: '100%', padding: '9px 12px', border: '1px solid #e2e8f0', borderRadius: 7, fontSize: 14, color: '#0f172a', background: '#fff' }}
+                  value={selectedParticipantId}
+                  onChange={(e) => setSelectedParticipantId(e.target.value)}
+                  style={S.select}
                 >
-                  <option value="">-- בחר/י צ׳אט --</option>
-                  {pickableChats.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {chatDisplayName(c)} ({c.type === 'group' ? 'קבוצה' : 'פרטי'})
+                  <option value="">-- בחר/י משתתף/ת --</option>
+                  {participants.map((pg) => (
+                    <option key={pg.participant.id} value={pg.participant.id}>
+                      {displayName(pg.participant)} · {pg.participant.phoneNumber}
                     </option>
                   ))}
                 </select>
               )}
             </div>
+          )}
 
-            {/* Link type */}
-            <div style={{ marginBottom: 16 }}>
-              <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 8 }}>
-                סוג קישור
-              </label>
-              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                {([
-                  ['group_chat', '👥 קבוצת וואטסאפ'],
-                  ['private_participant_chat', '👤 צ׳אט פרטי'],
-                ] as const).map(([val, label]) => (
-                  <label
-                    key={val}
-                    style={{
-                      display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer',
-                      padding: '7px 12px', borderRadius: 8, border: '1px solid',
-                      borderColor: selectedLinkType === val ? '#2563eb' : '#e2e8f0',
-                      background: selectedLinkType === val ? '#eff6ff' : '#fff',
-                      fontSize: 13, fontWeight: selectedLinkType === val ? 600 : 400,
-                    }}
-                  >
-                    <input
-                      type="radio"
-                      name="linkType"
-                      value={val}
-                      checked={selectedLinkType === val}
-                      onChange={() => { setSelectedLinkType(val); setSelectedParticipantId(''); }}
-                      style={{ display: 'none' }}
-                    />
-                    {label}
-                  </label>
-                ))}
-              </div>
-            </div>
-
-            {/* Participant picker — only for private chats */}
-            {selectedLinkType === 'private_participant_chat' && (
-              <div style={{ marginBottom: 16 }}>
-                <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 6 }}>
-                  משתתף/ת
-                </label>
-                {participants.length === 0 ? (
-                  <p style={{ color: '#94a3b8', fontSize: 13 }}>אין משתתפים פעילים בקבוצה זו.</p>
-                ) : (
-                  <select
-                    value={selectedParticipantId}
-                    onChange={(e) => setSelectedParticipantId(e.target.value)}
-                    style={{ width: '100%', padding: '9px 12px', border: '1px solid #e2e8f0', borderRadius: 7, fontSize: 14, color: '#0f172a', background: '#fff' }}
-                  >
-                    <option value="">-- בחר/י משתתף/ת --</option>
-                    {participants.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {displayName(p)} · {p.phoneNumber}
-                      </option>
-                    ))}
-                  </select>
-                )}
-              </div>
-            )}
-
-            {/* Error */}
-            {submitError && (
-              <p style={{ color: '#ef4444', fontSize: 13, marginBottom: 12 }}>{submitError}</p>
-            )}
-
-            {/* Actions */}
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 8 }}>
-              <button
-                onClick={() => setModalOpen(false)}
-                style={{ padding: '8px 18px', borderRadius: 7, border: '1px solid #e2e8f0', background: '#fff', fontSize: 14, cursor: 'pointer', color: '#374151' }}
-              >
-                ביטול
-              </button>
-              <button
-                onClick={submitting ? undefined : submitLink}
-                disabled={submitting}
-                style={{
-                  padding: '8px 18px', borderRadius: 7, border: 'none',
-                  background: submitting ? '#93c5fd' : '#2563eb',
-                  color: '#fff', fontSize: 14, fontWeight: 600, cursor: submitting ? 'default' : 'pointer',
-                }}
-              >
-                {submitting ? 'שומר...' : 'קשרי'}
-              </button>
-            </div>
+          {linkError && <p style={{ color: '#ef4444', fontSize: 13, marginBottom: 12 }}>{linkError}</p>}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+            <button onClick={() => setLinkModalOpen(false)} style={S.btnSecondary}>ביטול</button>
+            <button
+              onClick={linkSubmitting ? undefined : submitLink}
+              disabled={linkSubmitting}
+              style={{ ...S.btnPrimary, ...(linkSubmitting ? S.btnDisabled : {}) }}
+            >
+              {linkSubmitting ? 'שומר...' : 'קשרי'}
+            </button>
           </div>
-        </div>
+        </Modal>
       )}
     </div>
   );
 }
+
+// ─── Section wrapper component ─────────────────────────────────────────────
+
+function Section({
+  title, icon, count, children, action,
+}: {
+  title: string;
+  icon: string;
+  count?: number;
+  children: React.ReactNode;
+  action?: React.ReactNode;
+}) {
+  return (
+    <div style={{
+      background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 12,
+      overflow: 'hidden', marginBottom: 16,
+    }}>
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '14px 20px', borderBottom: '1px solid #e2e8f0', gap: 10, flexWrap: 'wrap',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 16 }}>{icon}</span>
+          <h2 style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', margin: 0 }}>{title}</h2>
+          {count !== undefined && (
+            <span style={{
+              background: '#f1f5f9', color: '#64748b', padding: '1px 8px', borderRadius: 10, fontSize: 12,
+            }}>
+              {count}
+            </span>
+          )}
+        </div>
+        {action}
+      </div>
+      <div style={{ padding: '16px 20px' }}>{children}</div>
+    </div>
+  );
+}
+
+// ─── Modal wrapper component ───────────────────────────────────────────────
+
+function Modal({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)',
+        zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16,
+      }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div style={{
+        background: '#fff', borderRadius: 14, width: '100%', maxWidth: 480,
+        padding: 28, boxShadow: '0 20px 60px rgba(0,0,0,0.2)', maxHeight: '90vh', overflowY: 'auto',
+      }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// ─── Shared style tokens ───────────────────────────────────────────────────
+
+const S = {
+  modalTitle: { fontSize: 16, fontWeight: 700, color: '#0f172a', margin: '0 0 18px' } as React.CSSProperties,
+  fieldLabel: { display: 'block', fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 6 } as React.CSSProperties,
+  input: {
+    width: '100%', padding: '9px 12px', border: '1px solid #e2e8f0', borderRadius: 7,
+    fontSize: 14, color: '#0f172a', background: '#fff', boxSizing: 'border-box' as const,
+    outline: 'none', direction: 'rtl' as const,
+  } as React.CSSProperties,
+  select: {
+    width: '100%', padding: '9px 12px', border: '1px solid #e2e8f0', borderRadius: 7,
+    fontSize: 14, color: '#0f172a', background: '#fff',
+  } as React.CSSProperties,
+  btnPrimary: {
+    padding: '8px 18px', borderRadius: 7, border: 'none',
+    background: '#2563eb', color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer',
+  } as React.CSSProperties,
+  btnSecondary: {
+    padding: '8px 18px', borderRadius: 7, border: '1px solid #e2e8f0',
+    background: '#fff', fontSize: 14, cursor: 'pointer', color: '#374151',
+  } as React.CSSProperties,
+  btnDisabled: { background: '#93c5fd', cursor: 'not-allowed' } as React.CSSProperties,
+};

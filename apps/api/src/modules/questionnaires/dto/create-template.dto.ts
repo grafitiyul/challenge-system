@@ -26,4 +26,8 @@ export class CreateTemplateDto {
   @IsOptional()
   @IsString()
   postIdentificationGreeting?: string;
+
+  @IsOptional()
+  @IsString()
+  programId?: string;
 }

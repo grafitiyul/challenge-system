@@ -3,6 +3,15 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { CreateGroupDto } from './dto/create-group.dto';
 import { CreateGroupChatLinkDto } from './dto/create-group-chat-link.dto';
 
+function randomAlphanumeric(length: number): string {
+  const chars = 'abcdefghijkmnpqrstuvwxyz23456789';
+  let result = '';
+  for (let i = 0; i < length; i++) {
+    result += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return result;
+}
+
 @Injectable()
 export class GroupsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -24,6 +33,7 @@ export class GroupsService {
       where: { id },
       include: {
         challenge: true,
+        program: { select: { id: true, name: true, isActive: true } },
         participantGroups: {
           where: { isActive: true },
           include: { participant: { select: { id: true, firstName: true, lastName: true, phoneNumber: true } } },
@@ -33,6 +43,68 @@ export class GroupsService {
     });
     if (!group) throw new NotFoundException(`Group ${id} not found`);
     return group;
+  }
+
+  // Returns active questionnaire templates that are linked to the same program as this group.
+  // Returns empty array if the group has no program or no questionnaires are linked.
+  async listQuestionnaires(groupId: string) {
+    const group = await this.prisma.group.findUnique({
+      where: { id: groupId },
+      select: { programId: true },
+    });
+    if (!group) throw new NotFoundException(`Group ${groupId} not found`);
+    if (!group.programId) return [];
+
+    return this.prisma.questionnaireTemplate.findMany({
+      where: { programId: group.programId, isActive: true },
+      include: {
+        externalLinks: {
+          where: { isActive: true },
+          orderBy: { createdAt: 'desc' },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  // Add an existing participant to this group (idempotent).
+  // Also ensures the participant has an access token for the portal.
+  async addParticipant(groupId: string, participantId: string) {
+    const [group, participant] = await Promise.all([
+      this.prisma.group.findUnique({ where: { id: groupId }, select: { id: true } }),
+      this.prisma.participant.findUnique({ where: { id: participantId }, select: { id: true } }),
+    ]);
+    if (!group) throw new NotFoundException(`Group ${groupId} not found`);
+    if (!participant) throw new NotFoundException(`Participant ${participantId} not found`);
+
+    // Upsert the membership
+    const pg = await this.prisma.participantGroup.upsert({
+      where: { participantId_groupId: { participantId, groupId } },
+      create: { participantId, groupId },
+      update: { isActive: true, leftAt: null },
+    });
+
+    // Ensure an access token exists
+    if (!pg.accessToken) {
+      let token: string;
+      let attempts = 0;
+      do {
+        token = randomAlphanumeric(12);
+        const existing = await this.prisma.participantGroup.findUnique({ where: { accessToken: token } });
+        if (!existing) break;
+        attempts++;
+      } while (attempts < 10);
+
+      await this.prisma.participantGroup.update({
+        where: { participantId_groupId: { participantId, groupId } },
+        data: { accessToken: token! },
+      });
+    }
+
+    return this.prisma.participantGroup.findUnique({
+      where: { participantId_groupId: { participantId, groupId } },
+      include: { participant: { select: { id: true, firstName: true, lastName: true, phoneNumber: true } } },
+    });
   }
 
   create(dto: CreateGroupDto) {

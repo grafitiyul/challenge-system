@@ -101,6 +101,7 @@ export class QuestionnairesService {
         submitBehavior: dto.submitBehavior ?? 'none',
         displayMode: dto.displayMode ?? 'step_by_step',
         postIdentificationGreeting: dto.postIdentificationGreeting ?? null,
+        programId: dto.programId ?? null,
       },
     });
   }
@@ -118,6 +119,7 @@ export class QuestionnairesService {
         ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
         ...(dto.displayMode !== undefined ? { displayMode: dto.displayMode } : {}),
         ...(dto.postIdentificationGreeting !== undefined ? { postIdentificationGreeting: dto.postIdentificationGreeting || null } : {}),
+        ...(dto.programId !== undefined ? { programId: dto.programId ?? null } : {}),
       },
     });
   }

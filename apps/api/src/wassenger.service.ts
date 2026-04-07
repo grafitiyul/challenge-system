@@ -204,6 +204,27 @@ export class WassengerService {
 
   // ── Queries ────────────────────────────────────────────────────────────────
 
+  // ── Outbound message ──────────────────────────────────────────────────────
+
+  async sendMessage(phone: string, message: string): Promise<void> {
+    const apiKey = process.env['WASSENGER_API_KEY'];
+    const deviceId = process.env['WASSENGER_DEVICE_ID'];
+    if (!apiKey || !deviceId) {
+      throw new Error('WASSENGER_API_KEY or WASSENGER_DEVICE_ID not configured');
+    }
+
+    const res = await fetch(`${WASSENGER_API}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Token': apiKey },
+      body: JSON.stringify({ device: deviceId, phone, message }),
+    });
+
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Wassenger send failed ${res.status}: ${body}`);
+    }
+  }
+
   async getChats() {
     return this.prisma.whatsAppChat.findMany({
       orderBy: { lastMessageAt: 'desc' },

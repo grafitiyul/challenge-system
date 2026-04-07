@@ -32,4 +32,8 @@ export class UpdateTemplateDto {
   @IsOptional()
   @IsString()
   postIdentificationGreeting?: string;
+
+  @IsOptional()
+  @IsString()
+  programId?: string | null;
 }

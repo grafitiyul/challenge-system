@@ -58,6 +58,8 @@ model Program {
   showOtherGroupsCharts        Boolean @default(true)
   showOtherGroupsMemberDetails Boolean @default(false)
 
+  questionnaireTemplates QuestionnaireTemplate[]
+
   @@map("programs")
 }
 
@@ -499,6 +501,10 @@ model QuestionnaireTemplate {
   // Shown after phone identification in public fill. Supports {firstName} placeholder.
   // Falls back to "נעבור לכמה שאלות קצרות:" when empty.
   postIdentificationGreeting String?
+
+  // Optional program association — used to show related questionnaires on the group screen
+  programId String?
+  program   Program? @relation(fields: [programId], references: [id])
 
   questions     QuestionnaireQuestion[]
   submissions   QuestionnaireSubmission[]
