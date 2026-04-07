@@ -144,8 +144,8 @@ export function SidebarLayout({ children }: { children: React.ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const pathname = usePathname();
 
-  // Public fill pages must render without any admin chrome
-  if (pathname.startsWith('/fill/')) {
+  // Public pages (fill flow, participant portal) must render without admin chrome
+  if (pathname.startsWith('/fill/') || pathname.startsWith('/t/')) {
     return <>{children}</>;
   }
 

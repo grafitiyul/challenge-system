@@ -5,10 +5,12 @@ import {
   GameEngineController,
 } from './game-engine.controller';
 import { GameEngineService } from './game-engine.service';
+import { ParticipantPortalController } from './participant-portal.controller';
+import { ParticipantPortalService } from './participant-portal.service';
 
 @Module({
-  controllers: [GameActionsController, GameRulesController, GameEngineController],
-  providers: [GameEngineService],
+  controllers: [GameActionsController, GameRulesController, GameEngineController, ParticipantPortalController],
+  providers: [GameEngineService, ParticipantPortalService],
   exports: [GameEngineService],
 })
 export class GameEngineModule {}

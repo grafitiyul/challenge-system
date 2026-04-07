@@ -1,7 +1,16 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateParticipantDto } from './dto/create-participant.dto';
 import { UpdateParticipantDto } from './dto/update-participant.dto';
+
+function randomAlphanumeric(length: number): string {
+  const chars = 'abcdefghijkmnpqrstuvwxyz23456789';
+  let result = '';
+  for (let i = 0; i < length; i++) {
+    result += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return result;
+}
 
 const MOCK_DATA = [
   { firstName: 'שרה', lastName: 'כהן' },
@@ -172,5 +181,34 @@ export class ParticipantsService {
     return results
       .filter((r) => r.status === 'fulfilled')
       .map((r) => (r as PromiseFulfilledResult<unknown>).value);
+  }
+
+  // ─── Participant portal token ───────────────────────────────────────────────
+
+  async generateAccessToken(participantId: string, groupId: string): Promise<{ token: string }> {
+    const pg = await this.prisma.participantGroup.findUnique({
+      where: { participantId_groupId: { participantId, groupId } },
+    });
+    if (!pg) throw new NotFoundException('Participant is not a member of this group');
+
+    // Return existing token if already generated
+    if (pg.accessToken) return { token: pg.accessToken };
+
+    // Generate a new unique 12-char token
+    let token: string;
+    let attempts = 0;
+    do {
+      token = randomAlphanumeric(12);
+      const existing = await this.prisma.participantGroup.findUnique({ where: { accessToken: token } });
+      if (!existing) break;
+      attempts++;
+    } while (attempts < 10);
+
+    await this.prisma.participantGroup.update({
+      where: { participantId_groupId: { participantId, groupId } },
+      data: { accessToken: token! },
+    });
+
+    return { token: token! };
   }
 }

@@ -42,4 +42,14 @@ export class ParticipantsController {
   update(@Param('id') id: string, @Body() dto: UpdateParticipantDto) {
     return this.participantsService.update(id, dto);
   }
+
+  // POST /api/participants/:participantId/groups/:groupId/token
+  // Generates (idempotent) a personal access token for the participant portal link
+  @Post(':participantId/groups/:groupId/token')
+  generateAccessToken(
+    @Param('participantId') participantId: string,
+    @Param('groupId') groupId: string,
+  ) {
+    return this.participantsService.generateAccessToken(participantId, groupId);
+  }
 }
