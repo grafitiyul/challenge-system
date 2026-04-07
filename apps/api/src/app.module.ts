@@ -13,6 +13,7 @@ import { ParticipantsModule } from './modules/participants/participants.module';
 import { QuestionnairesModule } from './modules/questionnaires/questionnaires.module';
 import { UploadModule } from './modules/upload/upload.module';
 import { ProgramsModule } from './modules/programs/programs.module';
+import { GameEngineModule } from './modules/game-engine/game-engine.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { ProgramsModule } from './modules/programs/programs.module';
     QuestionnairesModule,
     UploadModule,
     ProgramsModule,
+    GameEngineModule,
   ],
   controllers: [HealthController, WassengerController],
   providers: [WassengerService, SeederService],

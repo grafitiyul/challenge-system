@@ -1,0 +1,115 @@
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+} from '@nestjs/common';
+import { GameEngineService } from './game-engine.service';
+import { CreateActionDto, UpdateActionDto } from './dto/create-action.dto';
+import { CreateRuleDto, UpdateRuleDto } from './dto/create-rule.dto';
+import { LogActionDto } from './dto/log-action.dto';
+import { EvaluateRulesDto } from './dto/evaluate-rules.dto';
+import { UnlockRuleDto } from './dto/unlock-rule.dto';
+import { InitGroupStateDto } from './dto/init-group-state.dto';
+
+// ─── Actions ─────────────────────────────────────────────────────────────────
+
+@Controller('game/programs/:programId/actions')
+export class GameActionsController {
+  constructor(private readonly svc: GameEngineService) {}
+
+  @Get()
+  list(@Param('programId') programId: string) {
+    return this.svc.listActions(programId);
+  }
+
+  @Post()
+  create(@Param('programId') programId: string, @Body() dto: CreateActionDto) {
+    return this.svc.createAction(programId, dto);
+  }
+
+  @Patch(':actionId')
+  update(@Param('actionId') actionId: string, @Body() dto: UpdateActionDto) {
+    return this.svc.updateAction(actionId, dto);
+  }
+}
+
+// ─── Rules ────────────────────────────────────────────────────────────────────
+
+@Controller('game/programs/:programId/rules')
+export class GameRulesController {
+  constructor(private readonly svc: GameEngineService) {}
+
+  @Get()
+  list(@Param('programId') programId: string) {
+    return this.svc.listRules(programId);
+  }
+
+  @Post()
+  create(@Param('programId') programId: string, @Body() dto: CreateRuleDto) {
+    return this.svc.createRule(programId, dto);
+  }
+
+  @Patch(':ruleId')
+  update(@Param('ruleId') ruleId: string, @Body() dto: UpdateRuleDto) {
+    return this.svc.updateRule(ruleId, dto);
+  }
+}
+
+// ─── Core game operations ─────────────────────────────────────────────────────
+
+@Controller('game')
+export class GameEngineController {
+  constructor(private readonly svc: GameEngineService) {}
+
+  // POST /api/game/actions/log
+  @Post('actions/log')
+  logAction(@Body() dto: LogActionDto) {
+    return this.svc.logAction(dto);
+  }
+
+  // POST /api/game/rules/evaluate
+  @Post('rules/evaluate')
+  evaluateRules(@Body() dto: EvaluateRulesDto) {
+    return this.svc.evaluateRules(dto);
+  }
+
+  // GET /api/game/score/summary?participantId=&programId=
+  @Get('score/summary')
+  scoreSummary(
+    @Query('participantId') participantId: string,
+    @Query('programId') programId: string,
+  ) {
+    return this.svc.getScoreSummary(participantId, programId);
+  }
+
+  // GET /api/game/feed?groupId=&limit=
+  @Get('feed')
+  feed(
+    @Query('groupId') groupId: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.svc.getFeed(groupId, limit ? parseInt(limit) : 20);
+  }
+
+  // POST /api/game/admin/unlock-rule
+  @Post('admin/unlock-rule')
+  unlockRule(@Body() dto: UnlockRuleDto) {
+    return this.svc.unlockRule(dto);
+  }
+
+  // POST /api/game/groups/init-state
+  @Post('groups/init-state')
+  initGroupState(@Body() dto: InitGroupStateDto) {
+    return this.svc.initGroupState(dto);
+  }
+
+  // GET /api/game/groups/:groupId/state
+  @Get('groups/:groupId/state')
+  getGroupState(@Param('groupId') groupId: string) {
+    return this.svc.getGroupState(groupId);
+  }
+}

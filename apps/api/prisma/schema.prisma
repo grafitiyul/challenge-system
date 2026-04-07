@@ -44,6 +44,14 @@ model Program {
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
 
+  // Game engine
+  gameActions          GameAction[]
+  userActionLogs       UserActionLog[]
+  scoreEvents          ScoreEvent[]
+  gameRules            GameRule[]
+  participantGameStates ParticipantGameState[]
+  feedEvents           FeedEvent[]
+
   @@map("programs")
 }
 
@@ -156,6 +164,13 @@ model Group {
   aiGroupSummaries    AiGroupSummary[]
   participantInsights ParticipantInsight[]
   chatLinks           GroupChatLink[]
+
+  // Game engine
+  scoreEvents      ScoreEvent[]
+  groupGameState   GroupGameState?
+  groupRuleUnlocks GroupRuleUnlock[]
+  feedEvents       FeedEvent[]
+
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
 
@@ -194,6 +209,13 @@ model Participant {
   facts                     ParticipantFact[]
   chatLinks                 GroupChatLink[]
   questionnaireSubmissions  QuestionnaireSubmission[]
+
+  // Game engine
+  userActionLogs        UserActionLog[]
+  scoreEvents           ScoreEvent[]
+  participantGameStates ParticipantGameState[]
+  feedEvents            FeedEvent[]
+
   createdAt                 DateTime                  @default(now())
   updatedAt                 DateTime                  @updatedAt
 
@@ -574,6 +596,166 @@ model QuestionnaireAnswer {
   @@index([submissionId])
   @@index([questionId])
   @@map("questionnaire_answers")
+}
+
+// =============================================================================
+// GAME ENGINE
+// Data-driven scoring, rule evaluation, ledger, and social feed.
+// Every point earned creates an immutable ScoreEvent — no overwrites.
+// =============================================================================
+
+// Actions an admin defines for a game program (drink water, walk steps, etc.)
+model GameAction {
+  id          String   @id @default(cuid())
+  programId   String
+  program     Program  @relation(fields: [programId], references: [id])
+  name        String
+  description String?
+  // "boolean" | "number" | "select"
+  inputType   String   @default("boolean")
+  points      Int      @default(0)
+  maxPerDay   Int?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  logs        UserActionLog[]
+
+  @@index([programId])
+  @@map("game_actions")
+}
+
+// One record per participant action report
+model UserActionLog {
+  id            String      @id @default(cuid())
+  participantId String
+  participant   Participant @relation(fields: [participantId], references: [id])
+  programId     String
+  program       Program     @relation(fields: [programId], references: [id])
+  actionId      String
+  action        GameAction  @relation(fields: [actionId], references: [id])
+  // Raw reported value: "true", "5000", "option_a", etc.
+  value         String      @default("true")
+  createdAt     DateTime    @default(now())
+
+  @@index([participantId, programId])
+  @@index([actionId])
+  @@map("user_action_logs")
+}
+
+// Immutable ledger — one row per point-earning event. Never updated, never deleted.
+model ScoreEvent {
+  id            String      @id @default(cuid())
+  participantId String
+  participant   Participant @relation(fields: [participantId], references: [id])
+  programId     String
+  program       Program     @relation(fields: [programId], references: [id])
+  groupId       String?
+  group         Group?      @relation(fields: [groupId], references: [id])
+  // "action" | "rule" | "bonus" | "admin"
+  sourceType    String
+  // actionId or ruleId; null for bonus/admin
+  sourceId      String?
+  points        Int
+  metadata      Json?
+  createdAt     DateTime    @default(now())
+
+  @@index([participantId, programId])
+  @@index([groupId])
+  @@map("score_events")
+}
+
+// Admin-defined rules that fire automatically based on conditions
+model GameRule {
+  id                    String   @id @default(cuid())
+  programId             String
+  program               Program  @relation(fields: [programId], references: [id])
+  name                  String
+  // "daily_bonus" | "streak" | "conditional"
+  type                  String
+  // JSON — condition definition (flexible, not hardcoded)
+  conditionJson         Json     @default("{}")
+  // JSON — reward definition, e.g. { "points": 10 }
+  rewardJson            Json     @default("{\"points\":0}")
+  // "immediate" | "after_days" | "admin_unlock"
+  activationType        String   @default("immediate")
+  activationDays        Int?
+  requiresAdminApproval Boolean  @default(false)
+  isActive              Boolean  @default(true)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  groupUnlocks GroupRuleUnlock[]
+
+  @@index([programId])
+  @@map("game_rules")
+}
+
+// Tracks per-group admin unlock for rules requiring approval
+model GroupRuleUnlock {
+  id          String    @id @default(cuid())
+  groupId     String
+  group       Group     @relation(fields: [groupId], references: [id])
+  ruleId      String
+  rule        GameRule  @relation(fields: [ruleId], references: [id])
+  unlockedAt  DateTime  @default(now())
+  unlockedBy  String?   // admin identifier (free-text for now)
+
+  @@unique([groupId, ruleId])
+  @@map("group_rule_unlocks")
+}
+
+// Tracks the current "day" counter for a group's game instance
+model GroupGameState {
+  id         String   @id @default(cuid())
+  groupId    String   @unique
+  group      Group    @relation(fields: [groupId], references: [id])
+  currentDay Int      @default(1)
+  startDate  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@map("group_game_states")
+}
+
+// Per-participant game state for streak tracking and shields
+model ParticipantGameState {
+  id              String      @id @default(cuid())
+  participantId   String
+  participant     Participant @relation(fields: [participantId], references: [id])
+  programId       String
+  program         Program     @relation(fields: [programId], references: [id])
+  currentStreak   Int         @default(0)
+  bestStreak      Int         @default(0)
+  lastActionDate  DateTime?
+  shieldsRemaining Int        @default(0)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  @@unique([participantId, programId])
+  @@index([programId])
+  @@map("participant_game_states")
+}
+
+// Social feed events visible inside a group
+model FeedEvent {
+  id            String      @id @default(cuid())
+  participantId String
+  participant   Participant @relation(fields: [participantId], references: [id])
+  groupId       String
+  group         Group       @relation(fields: [groupId], references: [id])
+  programId     String
+  program       Program     @relation(fields: [programId], references: [id])
+  // "action" | "rare" | "system"
+  type          String
+  message       String
+  points        Int         @default(0)
+  isPublic      Boolean     @default(true)
+  createdAt     DateTime    @default(now())
+
+  @@index([groupId])
+  @@index([programId])
+  @@map("feed_events")
 }
 
 model QuestionnaireExternalLink {
