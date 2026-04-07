@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
@@ -35,6 +36,11 @@ export class GameActionsController {
   update(@Param('actionId') actionId: string, @Body() dto: UpdateActionDto) {
     return this.svc.updateAction(actionId, dto);
   }
+
+  @Delete(':actionId')
+  delete(@Param('actionId') actionId: string) {
+    return this.svc.deleteAction(actionId);
+  }
 }
 
 // ─── Rules ────────────────────────────────────────────────────────────────────
@@ -56,6 +62,11 @@ export class GameRulesController {
   @Patch(':ruleId')
   update(@Param('ruleId') ruleId: string, @Body() dto: UpdateRuleDto) {
     return this.svc.updateRule(ruleId, dto);
+  }
+
+  @Delete(':ruleId')
+  delete(@Param('ruleId') ruleId: string) {
+    return this.svc.deleteRule(ruleId);
   }
 }
 

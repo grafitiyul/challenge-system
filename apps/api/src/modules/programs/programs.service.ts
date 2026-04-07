@@ -60,6 +60,14 @@ export class ProgramsService {
     });
   }
 
+  async deactivate(id: string) {
+    await this.findById(id);
+    return this.prisma.program.update({
+      where: { id },
+      data: { isActive: false },
+    });
+  }
+
   async createGroup(programId: string, dto: CreateProgramGroupDto) {
     await this.findById(programId);
     return this.prisma.group.create({

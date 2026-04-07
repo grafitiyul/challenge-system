@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { ProgramsService } from './programs.service';
 import { CreateProgramDto } from './dto/create-program.dto';
 import { UpdateProgramDto } from './dto/update-program.dto';
@@ -27,6 +27,11 @@ export class ProgramsController {
   @Patch(':id')
   update(@Param('id') id: string, @Body() dto: UpdateProgramDto) {
     return this.svc.update(id, dto);
+  }
+
+  @Delete(':id')
+  deactivate(@Param('id') id: string) {
+    return this.svc.deactivate(id);
   }
 
   @Post(':id/groups')

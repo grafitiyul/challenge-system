@@ -33,6 +33,13 @@ export class GameEngineService {
     });
   }
 
+  async deleteAction(actionId: string) {
+    const action = await this.prisma.gameAction.findUnique({ where: { id: actionId } });
+    if (!action) throw new NotFoundException(`Action ${actionId} not found`);
+    // Soft-delete: logs/score-events reference this action
+    return this.prisma.gameAction.update({ where: { id: actionId }, data: { isActive: false } });
+  }
+
   async updateAction(actionId: string, dto: UpdateActionDto) {
     const action = await this.prisma.gameAction.findUnique({ where: { id: actionId } });
     if (!action) throw new NotFoundException(`Action ${actionId} not found`);
@@ -71,6 +78,13 @@ export class GameEngineService {
         requiresAdminApproval: dto.requiresAdminApproval ?? false,
       },
     });
+  }
+
+  async deleteRule(ruleId: string) {
+    const rule = await this.prisma.gameRule.findUnique({ where: { id: ruleId } });
+    if (!rule) throw new NotFoundException(`Rule ${ruleId} not found`);
+    // Soft-delete: score-events reference this rule
+    return this.prisma.gameRule.update({ where: { id: ruleId }, data: { isActive: false } });
   }
 
   async updateRule(ruleId: string, dto: UpdateRuleDto) {
