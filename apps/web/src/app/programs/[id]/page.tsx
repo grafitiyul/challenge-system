@@ -38,14 +38,37 @@ const TYPE_LABEL: Record<ProgramType, string> = {
   personal_coaching: 'ליווי אישי',
 };
 
+const TYPE_NAME_LABEL: Record<ProgramType, string> = {
+  challenge:         'שם האתגר',
+  game:              'שם המשחק',
+  group_coaching:    'שם הליווי הקבוצתי',
+  personal_coaching: 'שם הליווי האישי',
+};
+
+const TYPE_DESC_PLACEHOLDER: Record<ProgramType, string> = {
+  challenge:         'תיאור קצר של האתגר...',
+  game:              'תיאור קצר של המשחק...',
+  group_coaching:    'תיאור קצר של הליווי הקבוצתי...',
+  personal_coaching: 'תיאור קצר של הליווי האישי...',
+};
+
 const STATUS_LABEL: Record<GroupStatus, string> = { active: 'פעיל', inactive: 'לא פעיל' };
 
 const inputStyle: React.CSSProperties = {
-  width: '100%', padding: '9px 12px', border: '1px solid #cbd5e1',
-  borderRadius: 7, fontSize: 14, color: '#0f172a', background: '#ffffff', boxSizing: 'border-box',
+  width: '100%',
+  padding: '10px 14px',
+  border: '1px solid #cbd5e1',
+  borderRadius: 8,
+  fontSize: 15,
+  color: '#0f172a',
+  background: '#ffffff',
+  boxSizing: 'border-box',
+  fontFamily: 'inherit',
+  lineHeight: 1.5,
+  outline: 'none',
 };
 const labelStyle: React.CSSProperties = {
-  fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 5, display: 'block',
+  fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 6, display: 'block',
 };
 
 const VALID_TABS: TabKey[] = ['settings', 'groups'];
@@ -81,21 +104,27 @@ function SettingsTab({ program, onSaved }: { program: Program; onSaved: (p: Prog
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 18, maxWidth: 520 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20, maxWidth: 520 }}>
       <div>
-        <label style={labelStyle}>סוג תוכנית</label>
-        <div style={{ fontSize: 14, color: '#374151', padding: '8px 0' }}>{TYPE_LABEL[program.type]}</div>
+        <label style={labelStyle}>סוג</label>
+        <div style={{ fontSize: 14, color: '#374151', padding: '6px 0' }}>{TYPE_LABEL[program.type]}</div>
       </div>
       <div>
-        <label style={labelStyle}>שם התוכנית *</label>
+        <label style={labelStyle}>{TYPE_NAME_LABEL[program.type]} *</label>
         <input style={inputStyle} value={form.name} onChange={(e) => { setForm((p) => ({ ...p, name: e.target.value })); setSaved(false); }} />
       </div>
       <div>
         <label style={labelStyle}>תיאור</label>
-        <textarea rows={3} style={{ ...inputStyle, resize: 'vertical' }} value={form.description} onChange={(e) => { setForm((p) => ({ ...p, description: e.target.value })); setSaved(false); }} placeholder="תיאור קצר של התוכנית..." />
+        <textarea
+          rows={3}
+          style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.6, minHeight: 88 }}
+          value={form.description}
+          onChange={(e) => { setForm((p) => ({ ...p, description: e.target.value })); setSaved(false); }}
+          placeholder={TYPE_DESC_PLACEHOLDER[program.type]}
+        />
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <label style={{ ...labelStyle, margin: 0 }}>תוכנית פעילה</label>
+        <label style={{ ...labelStyle, margin: 0 }}>{TYPE_LABEL[program.type]} פעיל</label>
         <input type="checkbox" checked={form.isActive} onChange={(e) => { setForm((p) => ({ ...p, isActive: e.target.checked })); setSaved(false); }} style={{ width: 16, height: 16, cursor: 'pointer' }} />
       </div>
       {error && <div style={{ color: '#dc2626', fontSize: 13 }}>{error}</div>}
@@ -153,7 +182,7 @@ function CreateGroupModal({ programId, onCreated, onClose }: {
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div>
             <label style={labelStyle}>שם הקבוצה *</label>
-            <input style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+            <input style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} autoFocus placeholder="לדוגמה: קבוצה א׳" />
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <div>
