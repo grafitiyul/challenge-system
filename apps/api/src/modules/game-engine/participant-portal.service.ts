@@ -2,7 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { PrismaService } from '../../prisma/prisma.service';
 import { GameEngineService } from './game-engine.service';
 
-interface PortalContext {
+export interface PortalContext {
   participant: { id: string; firstName: string; lastName: string | null };
   group: { id: string; name: string; startDate: Date | null; endDate: Date | null };
   program: { id: string; name: string; isActive: boolean };
