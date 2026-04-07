@@ -230,7 +230,7 @@ function SettingsTab({ template, onSaved }: { template: Template; onSaved: (t: T
     setError('');
     setSaving(true);
     try {
-      const updated = await apiFetch(`${BASE_URL}/questionnaires/${template.id}`, {
+      const updated = await apiFetch<Template>(`${BASE_URL}/questionnaires/${template.id}`, {
         method: 'PATCH',
         body: JSON.stringify(form),
       });

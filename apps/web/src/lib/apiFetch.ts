@@ -7,7 +7,7 @@ export interface ApiError {
   message: string;
 }
 
-export async function apiFetch(path: string, options?: RequestInit): Promise<unknown> {
+export async function apiFetch<T = unknown>(path: string, options?: RequestInit): Promise<T> {
   if (path.startsWith('http')) {
     throw new Error(
       `apiFetch: path must be relative, got "${path}". Use /api-proxy/... paths only.`,
