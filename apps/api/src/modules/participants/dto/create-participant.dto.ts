@@ -2,7 +2,11 @@ import { IsDateString, IsEmail, IsOptional, IsString } from 'class-validator';
 
 export class CreateParticipantDto {
   @IsString()
-  fullName: string;
+  firstName: string;
+
+  @IsOptional()
+  @IsString()
+  lastName?: string;
 
   @IsString()
   phoneNumber: string;
@@ -18,6 +22,10 @@ export class CreateParticipantDto {
   @IsOptional()
   @IsDateString()
   birthDate?: string;
+
+  @IsOptional()
+  @IsString()
+  city?: string;
 
   @IsOptional()
   @IsString()

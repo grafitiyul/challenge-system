@@ -9,8 +9,13 @@ import { BASE_URL } from '@lib/api';
 
 interface Participant {
   id: string;
-  fullName: string;
+  firstName: string;
+  lastName?: string | null;
   phoneNumber: string;
+}
+
+function displayName(p: { firstName: string; lastName?: string | null }): string {
+  return [p.firstName, p.lastName].filter(Boolean).join(' ');
 }
 
 interface Group {
@@ -299,7 +304,7 @@ export default function GroupDetailPage() {
                       {LINK_TYPE_LABEL[link.linkType]}
                     </span>
                     {link.participant && (
-                      <span style={{ color: '#94a3b8' }}>משתתף/ת: {link.participant.fullName}</span>
+                      <span style={{ color: '#94a3b8' }}>משתתף/ת: {displayName(link.participant)}</span>
                     )}
                   </div>
                 </div>
@@ -412,7 +417,7 @@ export default function GroupDetailPage() {
                     <option value="">-- בחר/י משתתף/ת --</option>
                     {participants.map((p) => (
                       <option key={p.id} value={p.id}>
-                        {p.fullName} · {p.phoneNumber}
+                        {displayName(p)} · {p.phoneNumber}
                       </option>
                     ))}
                   </select>

@@ -144,6 +144,11 @@ export function SidebarLayout({ children }: { children: React.ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const pathname = usePathname();
 
+  // Public fill pages must render without any admin chrome
+  if (pathname.startsWith('/fill/')) {
+    return <>{children}</>;
+  }
+
   function isActive(href: string): boolean {
     return pathname === href || (href.length > 1 && pathname.startsWith(href + '/'));
   }

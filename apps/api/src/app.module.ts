@@ -10,6 +10,8 @@ import { ChallengeTypesModule } from './modules/challenge-types/challenge-types.
 import { GroupsModule } from './modules/groups/groups.module';
 import { GendersModule } from './modules/genders/genders.module';
 import { ParticipantsModule } from './modules/participants/participants.module';
+import { QuestionnairesModule } from './modules/questionnaires/questionnaires.module';
+import { UploadModule } from './modules/upload/upload.module';
 
 @Module({
   imports: [
@@ -22,6 +24,8 @@ import { ParticipantsModule } from './modules/participants/participants.module';
     GroupsModule,
     GendersModule,
     ParticipantsModule,
+    QuestionnairesModule,
+    UploadModule,
   ],
   controllers: [HealthController, WassengerController],
   providers: [WassengerService, SeederService],

@@ -1,0 +1,26 @@
+import { IsOptional, IsString } from 'class-validator';
+
+export class CreateExternalLinkDto {
+  @IsString()
+  internalName: string;
+
+  @IsOptional()
+  @IsString()
+  utmSource?: string;
+
+  @IsOptional()
+  @IsString()
+  utmMedium?: string;
+
+  @IsOptional()
+  @IsString()
+  utmCampaign?: string;
+
+  @IsOptional()
+  @IsString()
+  utmContent?: string;
+
+  @IsOptional()
+  @IsString()
+  utmTerm?: string;
+}

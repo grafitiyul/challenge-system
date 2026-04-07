@@ -40,10 +40,15 @@ interface Gender {
 
 interface Participant {
   id: string;
-  fullName: string;
+  firstName: string;
+  lastName?: string | null;
   phoneNumber: string;
   gender: Gender;
   isMock: boolean;
+}
+
+function displayName(p: { firstName: string; lastName?: string | null }): string {
+  return [p.firstName, p.lastName].filter(Boolean).join(' ');
 }
 
 interface GroupFormState {
@@ -53,7 +58,8 @@ interface GroupFormState {
 }
 
 interface ParticipantFormState {
-  fullName: string;
+  firstName: string;
+  lastName: string;
   phoneNumber: string;
   genderId: string;
 }
@@ -67,7 +73,7 @@ const emptyChallengeForm: ChallengeFormState = {
 };
 
 const emptyGroupForm: GroupFormState = { name: '', startDate: '', endDate: '' };
-const emptyParticipantForm: ParticipantFormState = { fullName: '', phoneNumber: '', genderId: '' };
+const emptyParticipantForm: ParticipantFormState = { firstName: '', lastName: '', phoneNumber: '', genderId: '' };
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString('he-IL');
@@ -396,10 +402,10 @@ export default function ChallengesPage() {
                               <form onSubmit={(e) => handleParticipantSubmit(g.id, e)}>
                                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, alignItems: 'end' }}>
                                   <label style={labelStyle}>
-                                    שם מלא
-                                    <input style={inputStyle} type="text" value={pForm.fullName} required
-                                      onChange={(e) => setParticipantForms((prev) => ({ ...prev, [g.id]: { ...pForm, fullName: e.target.value } }))}
-                                      placeholder="שם מלא" />
+                                    שם פרטי
+                                    <input style={inputStyle} type="text" value={pForm.firstName} required
+                                      onChange={(e) => setParticipantForms((prev) => ({ ...prev, [g.id]: { ...pForm, firstName: e.target.value } }))}
+                                      placeholder="שם פרטי" />
                                   </label>
                                   <label style={labelStyle}>
                                     טלפון
@@ -446,7 +452,7 @@ export default function ChallengesPage() {
                                     <tr key={p.id} style={{ borderTop: '1px solid #f3f4f6', background: p.isMock ? '#fffdf5' : 'transparent' }}>
                                       <td style={groupTdStyle}>
                                         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                                          {p.fullName}
+                                          {displayName(p)}
                                           {p.isMock && (
                                             <span style={{ background: '#fef3c7', color: '#92400e', fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 8, border: '1px solid #fde68a' }}>פיקטיבי</span>
                                           )}

@@ -1,18 +1,19 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateParticipantDto } from './dto/create-participant.dto';
+import { UpdateParticipantDto } from './dto/update-participant.dto';
 
-const MOCK_NAMES = [
-  'שרה כהן',
-  'מיכל לוי',
-  'רחל ישראלי',
-  'דבורה אביב',
-  'רות מזרחי',
-  'חנה גולן',
-  'אסתר שמיר',
-  'רבקה אדלר',
-  'יעל ברק',
-  'נועה כרמי',
+const MOCK_DATA = [
+  { firstName: 'שרה', lastName: 'כהן' },
+  { firstName: 'מיכל', lastName: 'לוי' },
+  { firstName: 'רחל', lastName: 'ישראלי' },
+  { firstName: 'דבורה', lastName: 'אביב' },
+  { firstName: 'רות', lastName: 'מזרחי' },
+  { firstName: 'חנה', lastName: 'גולן' },
+  { firstName: 'אסתר', lastName: 'שמיר' },
+  { firstName: 'רבקה', lastName: 'אדלר' },
+  { firstName: 'יעל', lastName: 'ברק' },
+  { firstName: 'נועה', lastName: 'כרמי' },
 ];
 
 // Default genders used when DB has none seeded yet
@@ -37,6 +38,7 @@ export class ParticipantsService {
         isActive: true,
         ...(includeMock ? {} : { isMock: false }),
       },
+      relationLoadStrategy: 'join',
       include: { gender: true },
       orderBy: { createdAt: 'desc' },
     });
@@ -45,6 +47,7 @@ export class ParticipantsService {
   async findById(id: string) {
     return this.prisma.participant.findUnique({
       where: { id },
+      relationLoadStrategy: 'join',
       include: {
         gender: true,
         participantGroups: {
@@ -87,11 +90,13 @@ export class ParticipantsService {
     if (!participant) {
       participant = await this.prisma.participant.create({
         data: {
-          fullName: dto.fullName,
+          firstName: dto.firstName,
+          lastName: dto.lastName ?? null,
           phoneNumber: dto.phoneNumber,
           genderId,
           ...(dto.email ? { email: dto.email } : {}),
           ...(dto.birthDate ? { birthDate: new Date(dto.birthDate) } : {}),
+          ...(dto.city ? { city: dto.city } : {}),
           ...(dto.source ? { source: dto.source } : {}),
         },
       });
@@ -116,23 +121,44 @@ export class ParticipantsService {
     });
   }
 
+  async update(id: string, dto: UpdateParticipantDto) {
+    return this.prisma.participant.update({
+      where: { id },
+      data: {
+        ...(dto.firstName !== undefined ? { firstName: dto.firstName } : {}),
+        ...(dto.lastName !== undefined ? { lastName: dto.lastName || null } : {}),
+        ...(dto.phoneNumber !== undefined ? { phoneNumber: dto.phoneNumber } : {}),
+        ...(dto.email !== undefined ? { email: dto.email || null } : {}),
+        ...(dto.status !== undefined ? { status: dto.status || null } : {}),
+        ...(dto.notes !== undefined ? { notes: dto.notes || null } : {}),
+        ...(dto.nextAction !== undefined ? { nextAction: dto.nextAction || null } : {}),
+        ...(dto.city !== undefined ? { city: dto.city || null } : {}),
+        ...(dto.profileImageUrl !== undefined ? { profileImageUrl: dto.profileImageUrl || null } : {}),
+        ...(dto.source !== undefined ? { source: dto.source || null } : {}),
+        ...(dto.birthDate !== undefined ? { birthDate: dto.birthDate ? new Date(dto.birthDate) : null } : {}),
+      },
+      include: { gender: true },
+    });
+  }
+
   async createMock(count: number = 10) {
     // Ensure default genders exist — no dependency on seed
     const genderIds = await Promise.all(
       DEFAULT_GENDERS.map((name) => this.resolveGenderId(name)),
     );
 
-    const names = MOCK_NAMES.slice(0, Math.min(count, MOCK_NAMES.length));
+    const data = MOCK_DATA.slice(0, Math.min(count, MOCK_DATA.length));
     // Unique phone suffix per invocation — last 4 digits of timestamp + 3-digit index
     const ts = String(Date.now()).slice(-4);
 
     const results = await Promise.allSettled(
-      names.map((name, i) => {
+      data.map((entry, i) => {
         const phoneNumber = `055${ts}${String(i).padStart(3, '0')}`;
         return this.prisma.participant.upsert({
           where: { phoneNumber },
           create: {
-            fullName: name,
+            firstName: entry.firstName,
+            lastName: entry.lastName,
             phoneNumber,
             genderId: genderIds[i % genderIds.length],
             isMock: true,

@@ -9,7 +9,8 @@
 // =============================================================================
 
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  previewFeatures = ["relationJoins"]
 }
 
 datasource db {
@@ -131,31 +132,38 @@ model Group {
 
 model Participant {
   id          String  @id @default(cuid())
-  fullName    String
+  firstName   String
+  lastName    String?
   phoneNumber String  @unique
   email       String?
   genderId    String
   gender      Gender  @relation(fields: [genderId], references: [id])
-  isActive    Boolean   @default(true)
-  isMock      Boolean   @default(false)
-  birthDate   DateTime?
-  source      String?
+  isActive         Boolean   @default(true)
+  isMock           Boolean   @default(false)
+  birthDate        DateTime?
+  city             String?
+  profileImageUrl  String?
+  source           String?
+  status           String?
+  notes            String?
+  nextAction       String?
 
   // Optional — null when participant is added directly by admin (no registration flow)
   registrationId String?       @unique
   registration   Registration? @relation(fields: [registrationId], references: [id])
 
-  joinedAt            DateTime             @default(now())
-  participantGroups   ParticipantGroup[]
-  messages            Message[]
-  dailyActivities     DailyActivity[]
-  participantInsights ParticipantInsight[]
-  suggestedResponses  SuggestedResponse[]
-  profile             ParticipantProfile?
-  facts               ParticipantFact[]
-  chatLinks           GroupChatLink[]
-  createdAt           DateTime             @default(now())
-  updatedAt           DateTime             @updatedAt
+  joinedAt                  DateTime                  @default(now())
+  participantGroups         ParticipantGroup[]
+  messages                  Message[]
+  dailyActivities           DailyActivity[]
+  participantInsights       ParticipantInsight[]
+  suggestedResponses        SuggestedResponse[]
+  profile                   ParticipantProfile?
+  facts                     ParticipantFact[]
+  chatLinks                 GroupChatLink[]
+  questionnaireSubmissions  QuestionnaireSubmission[]
+  createdAt                 DateTime                  @default(now())
+  updatedAt                 DateTime                  @updatedAt
 
   @@map("participants")
 }
@@ -175,6 +183,7 @@ model ParticipantGroup {
 
   // A participant can only have one active record per group
   @@unique([participantId, groupId])
+  @@index([groupId])
   @@map("participant_groups")
 }
 
@@ -403,4 +412,158 @@ model AdminUser {
   updatedAt DateTime @updatedAt
 
   @@map("admin_users")
+}
+
+// =============================================================================
+// QUESTIONNAIRE ENGINE
+// Dynamic admin-controlled questionnaire system.
+// Templates → Questions → Options (config)
+// External tracked links per template (one template, many links with UTMs)
+// Submissions → Answers (data)
+// Answers store a snapshot of the question at submission time for historical safety.
+// =============================================================================
+
+model QuestionnaireTemplate {
+  id             String   @id @default(cuid())
+  internalName   String
+  publicTitle    String
+  introRichText  String?
+  // "internal" | "external" | "both"
+  usageType      String   @default("both")
+  isActive       Boolean  @default(true)
+  // "none" | "create_new_participant" | "attach_or_create"
+  submitBehavior String   @default("none")
+  // "step_by_step" | "full_list" — controls public fill page layout
+  displayMode    String   @default("step_by_step")
+  // Shown after phone identification in public fill. Supports {firstName} placeholder.
+  // Falls back to "נעבור לכמה שאלות קצרות:" when empty.
+  postIdentificationGreeting String?
+
+  questions     QuestionnaireQuestion[]
+  submissions   QuestionnaireSubmission[]
+  externalLinks QuestionnaireExternalLink[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("questionnaire_templates")
+}
+
+model QuestionnaireQuestion {
+  id           String                @id @default(cuid())
+  templateId   String
+  template     QuestionnaireTemplate @relation(fields: [templateId], references: [id])
+  internalKey  String
+  label        String
+  helperText   String?
+  // "text" | "number" | "choice" | "multi" | "scale" | "date" | "yesno"
+  questionType String
+  sortOrder    Int     @default(0)
+  isRequired   Boolean @default(false)
+  allowOther   Boolean @default(false)
+  // "sm" | "md" | "lg" — controls input rendering size
+  fieldSize    String? @default("md")
+  // true when this question maps to a built-in participant field (first_name, phone_number, etc.)
+  isSystemField Boolean @default(false)
+  // false = soft-deleted; answers still reference this record via snapshot
+  isActive     Boolean @default(true)
+
+  options QuestionnaireQuestionOption[]
+  answers QuestionnaireAnswer[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([templateId])
+  @@map("questionnaire_questions")
+}
+
+model QuestionnaireQuestionOption {
+  id         String                @id @default(cuid())
+  questionId String
+  question   QuestionnaireQuestion @relation(fields: [questionId], references: [id])
+  label      String
+  value      String
+  sortOrder  Int      @default(0)
+
+  createdAt DateTime @default(now())
+
+  @@map("questionnaire_question_options")
+}
+
+model QuestionnaireSubmission {
+  id              String   @id @default(cuid())
+  templateId      String
+  template        QuestionnaireTemplate      @relation(fields: [templateId], references: [id])
+  participantId   String?
+  participant     Participant?               @relation(fields: [participantId], references: [id])
+  // "internal" | "external"
+  submittedByMode String
+  // "draft" | "completed"
+  status          String   @default("draft")
+  // Set when status transitions to "completed"
+  submittedAt     DateTime?
+  // Explicit link reference — kept even if link is later deactivated
+  externalLinkId  String?
+  externalLink    QuestionnaireExternalLink? @relation(fields: [externalLinkId], references: [id])
+  // Denormalized UTM values from the link at time of submission — for reporting
+  utmSource       String?
+  utmMedium       String?
+  utmCampaign     String?
+  utmContent      String?
+  utmTerm         String?
+
+  answers QuestionnaireAnswer[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([templateId])
+  @@index([participantId])
+  @@index([externalLinkId])
+  @@map("questionnaire_submissions")
+}
+
+model QuestionnaireAnswer {
+  id           String                  @id @default(cuid())
+  submissionId String
+  submission   QuestionnaireSubmission @relation(fields: [submissionId], references: [id])
+  questionId   String
+  question     QuestionnaireQuestion   @relation(fields: [questionId], references: [id])
+  // Unified answer value: string, number, string[] (multi), null
+  value        Json?
+  // Captured at submission time: { label, questionType, helperText, internalKey }
+  // Allows reading old submissions even after template/question edits or soft-delete
+  questionSnapshot Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([submissionId])
+  @@index([questionId])
+  @@map("questionnaire_answers")
+}
+
+model QuestionnaireExternalLink {
+  id           String                @id @default(cuid())
+  templateId   String
+  template     QuestionnaireTemplate @relation(fields: [templateId], references: [id])
+  internalName String
+  // Unique URL token — auto-generated in service as 8-char alphanumeric
+  slugOrToken  String                @unique
+  utmSource    String?
+  utmMedium    String?
+  utmCampaign  String?
+  utmContent   String?
+  utmTerm      String?
+  // false = soft-deleted; submissions still reference this record
+  isActive     Boolean @default(true)
+
+  submissions QuestionnaireSubmission[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([templateId])
+  @@map("questionnaire_external_links")
 }

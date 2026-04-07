@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { BASE_URL } from '@lib/api';
 
 const MOCK_SETTING_KEY = 'showMockParticipants';
@@ -16,7 +17,8 @@ interface Gender {
 
 interface Participant {
   id: string;
-  fullName: string;
+  firstName: string;
+  lastName?: string | null;
   phoneNumber: string;
   email?: string;
   gender: Gender;
@@ -25,8 +27,13 @@ interface Participant {
   isMock: boolean;
 }
 
+function displayName(p: { firstName: string; lastName?: string | null }): string {
+  return [p.firstName, p.lastName].filter(Boolean).join(' ');
+}
+
 interface CreateForm {
-  fullName: string;
+  firstName: string;
+  lastName: string;
   phoneNumber: string;
   genderName: string;
   email: string;
@@ -35,7 +42,8 @@ interface CreateForm {
 }
 
 const EMPTY_FORM: CreateForm = {
-  fullName: '',
+  firstName: '',
+  lastName: '',
   phoneNumber: '',
   genderName: '',
   email: '',
@@ -69,6 +77,7 @@ function FieldError({ msg }: { msg: string | null }) {
 }
 
 export default function ParticipantsPage() {
+  const router = useRouter();
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -120,7 +129,7 @@ export default function ParticipantsPage() {
 
   const validateForm = (): boolean => {
     const errors: Partial<CreateForm> = {};
-    if (!form.fullName.trim()) errors.fullName = 'שם מלא הוא שדה חובה';
+    if (!form.firstName.trim()) errors.firstName = 'שם פרטי הוא שדה חובה';
     if (!form.phoneNumber.trim()) {
       errors.phoneNumber = 'מספר טלפון הוא שדה חובה';
     } else if (!/^0\d{9}$/.test(form.phoneNumber.replace(/[-\s]/g, ''))) {
@@ -140,10 +149,11 @@ export default function ParticipantsPage() {
     setSubmitError(null);
     try {
       const body: Record<string, string> = {
-        fullName: form.fullName.trim(),
+        firstName: form.firstName.trim(),
         phoneNumber: form.phoneNumber.replace(/[-\s]/g, ''),
         genderName: form.genderName,
       };
+      if (form.lastName.trim()) body.lastName = form.lastName.trim();
       if (form.email.trim()) body.email = form.email.trim();
       if (form.birthDate) body.birthDate = form.birthDate;
       if (form.source.trim()) body.source = form.source.trim();
@@ -195,7 +205,7 @@ export default function ParticipantsPage() {
 
   const filtered = participants.filter(
     (p) =>
-      p.fullName.toLowerCase().includes(search.toLowerCase()) ||
+      displayName(p).toLowerCase().includes(search.toLowerCase()) ||
       p.phoneNumber.includes(search),
   );
 
@@ -327,10 +337,21 @@ export default function ParticipantsPage() {
               </tr>
             )}
             {filtered.map((p) => (
-              <tr key={p.id} style={{ borderBottom: '1px solid #f1f5f9', background: p.isMock ? '#fffdf5' : 'transparent' }}>
+              <tr
+                key={p.id}
+                onClick={() => router.push(`/participants/${p.id}`)}
+                style={{
+                  borderBottom: '1px solid #f1f5f9',
+                  background: p.isMock ? '#fffdf5' : 'transparent',
+                  cursor: 'pointer',
+                  transition: 'background 0.1s',
+                }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLTableRowElement).style.background = p.isMock ? '#fff8e1' : '#f8fafc'; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLTableRowElement).style.background = p.isMock ? '#fffdf5' : 'transparent'; }}
+              >
                 <td style={{ padding: '12px 16px', fontWeight: 500, color: '#0f172a' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    {p.fullName}
+                    {displayName(p)}
                     {p.isMock && <MockBadge />}
                   </div>
                 </td>
@@ -344,7 +365,7 @@ export default function ParticipantsPage() {
                     {p.isActive ? 'פעילה' : 'לא פעילה'}
                   </span>
                 </td>
-                <td style={{ padding: '12px 16px' }}>
+                <td style={{ padding: '12px 16px' }} onClick={(e) => e.stopPropagation()}>
                   <Link href={`/participants/${p.id}`} style={{ color: '#2563eb', fontSize: 13 }}>פרופיל →</Link>
                 </td>
               </tr>
@@ -412,17 +433,28 @@ export default function ParticipantsPage() {
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
 
-              {/* Full name */}
-              <div>
-                <label style={labelStyle}>שם מלא *</label>
-                <input
-                  ref={firstInputRef}
-                  style={{ ...inputStyle, borderColor: formErrors.fullName ? '#fca5a5' : '#e2e8f0' }}
-                  placeholder="לדוגמה: רחל כהן"
-                  value={form.fullName}
-                  onChange={(e) => setForm((f) => ({ ...f, fullName: e.target.value }))}
-                />
-                <FieldError msg={formErrors.fullName ?? null} />
+              {/* Name fields */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <div>
+                  <label style={labelStyle}>שם פרטי *</label>
+                  <input
+                    ref={firstInputRef}
+                    style={{ ...inputStyle, borderColor: formErrors.firstName ? '#fca5a5' : '#e2e8f0' }}
+                    placeholder="רחל"
+                    value={form.firstName}
+                    onChange={(e) => setForm((f) => ({ ...f, firstName: e.target.value }))}
+                  />
+                  <FieldError msg={formErrors.firstName ?? null} />
+                </div>
+                <div>
+                  <label style={labelStyle}>שם משפחה</label>
+                  <input
+                    style={inputStyle}
+                    placeholder="כהן"
+                    value={form.lastName}
+                    onChange={(e) => setForm((f) => ({ ...f, lastName: e.target.value }))}
+                  />
+                </div>
               </div>
 
               {/* Phone */}

@@ -1,6 +1,7 @@
-import { Controller, Get, Post, Body, Query, Param, DefaultValuePipe, ParseIntPipe } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Body, Query, Param, DefaultValuePipe, ParseIntPipe } from '@nestjs/common';
 import { ParticipantsService } from './participants.service';
 import { CreateParticipantDto } from './dto/create-participant.dto';
+import { UpdateParticipantDto } from './dto/update-participant.dto';
 
 @Controller('participants')
 export class ParticipantsController {
@@ -35,5 +36,10 @@ export class ParticipantsController {
   @Post()
   create(@Body() dto: CreateParticipantDto) {
     return this.participantsService.create(dto);
+  }
+
+  @Patch(':id')
+  update(@Param('id') id: string, @Body() dto: UpdateParticipantDto) {
+    return this.participantsService.update(id, dto);
   }
 }

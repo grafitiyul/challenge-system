@@ -22,7 +22,7 @@ export class GroupsService {
         challenge: true,
         participantGroups: {
           where: { isActive: true },
-          include: { participant: { select: { id: true, fullName: true, phoneNumber: true } } },
+          include: { participant: { select: { id: true, firstName: true, lastName: true, phoneNumber: true } } },
           orderBy: { joinedAt: 'asc' },
         },
       },
@@ -49,7 +49,7 @@ export class GroupsService {
       where: { groupId },
       include: {
         whatsappChat: true,
-        participant: { select: { id: true, fullName: true, phoneNumber: true } },
+        participant: { select: { id: true, firstName: true, lastName: true, phoneNumber: true } },
       },
       orderBy: { createdAt: 'asc' },
     });
@@ -65,7 +65,7 @@ export class GroupsService {
       },
       include: {
         whatsappChat: true,
-        participant: { select: { id: true, fullName: true, phoneNumber: true } },
+        participant: { select: { id: true, firstName: true, lastName: true, phoneNumber: true } },
       },
     });
   }
