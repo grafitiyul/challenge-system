@@ -46,7 +46,7 @@ export async function apiFetch<T = unknown>(path: string, options?: RequestInit)
 
   const contentType = res.headers.get('content-type') ?? '';
   if (contentType.includes('application/json')) {
-    return res.json();
+    return (await res.json()) as T;
   }
-  return res.text();
+  return (await res.text()) as T;
 }
