@@ -23,8 +23,28 @@ async function bootstrap(): Promise<void> {
     }),
   );
 
+  // Accept any *.railway.app origin so deployment works without FRONTEND_URL env var.
+  // For stricter envs, set FRONTEND_URL to an exact origin (e.g. https://web.railway.app).
   app.enableCors({
-    origin: process.env['FRONTEND_URL'] ?? 'http://localhost:3000',
+    origin: (incomingOrigin, callback) => {
+      if (!incomingOrigin) {
+        // Same-origin requests, server-to-server, curl — allow
+        return callback(null, true);
+      }
+      const configured = process.env['FRONTEND_URL'];
+      const allowed = [
+        configured,
+        'http://localhost:3000',
+        'http://localhost:3001',
+      ].filter(Boolean) as string[];
+
+      const isAllowed =
+        allowed.includes(incomingOrigin) ||
+        incomingOrigin.endsWith('.railway.app') ||
+        incomingOrigin.endsWith('.up.railway.app');
+
+      callback(null, isAllowed);
+    },
     credentials: true,
   });
 

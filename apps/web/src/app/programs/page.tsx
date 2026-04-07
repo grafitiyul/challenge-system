@@ -99,6 +99,8 @@ function CreateProgramModal({ defaultType, onCreated, onClose }: {
       if (!res.ok) { setError(`שגיאה ביצירת ה${TYPE_SINGULAR[defaultType]}`); return; }
       const created = await res.json() as Program;
       onCreated(created);
+    } catch {
+      setError(`שגיאה ביצירת ה${TYPE_SINGULAR[defaultType]} — בדקי חיבור לשרת`);
     } finally {
       setSaving(false);
     }
