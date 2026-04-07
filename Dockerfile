@@ -6,11 +6,12 @@ COPY . .
 
 RUN npm install
 
-# Build both API and web
-RUN npm run build --workspace=@challenge-system/api
 RUN npm run build --workspace=@challenge-system/web
 
-# Start API on port 3001 (API_PORT), then web on Railway's assigned PORT.
-# API_URL tells Next.js rewrites where to proxy /api-proxy/* requests.
-# Set API_PORT=3001 and API_URL=http://localhost:3001 in Railway Variables.
-CMD sh -c "API_PORT=${API_PORT:-3001} npm run start --workspace=@challenge-system/api & sleep 5 && npm run start --workspace=@challenge-system/web"
+# API_URL is a server-side runtime variable set in Railway Variables.
+# It tells Next.js rewrites where to proxy /api-proxy/* requests.
+# Set it to your Railway API service URL, e.g.:
+#   API_URL=https://your-api-service.up.railway.app
+# or the Railway internal URL if both services are in the same project:
+#   API_URL=http://api.railway.internal:PORT
+CMD ["npm", "run", "start", "--workspace=@challenge-system/web"]
