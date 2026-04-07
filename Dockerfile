@@ -6,13 +6,11 @@ COPY . .
 
 RUN npm install
 
-# NEXT_PUBLIC_* variables are baked into the bundle at build time.
-# Railway must pass NEXT_PUBLIC_API_URL as a build variable (not just a runtime variable).
-# In Railway dashboard → web service → Variables → add NEXT_PUBLIC_API_URL=<your-api-url>
-# Railway automatically forwards all service Variables as Docker build args.
-ARG NEXT_PUBLIC_API_URL
-ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
-
+# Build both API and web
+RUN npm run build --workspace=@challenge-system/api
 RUN npm run build --workspace=@challenge-system/web
 
-CMD ["npm", "run", "start", "--workspace=@challenge-system/web"]
+# Start API on port 3001 (API_PORT), then web on Railway's assigned PORT.
+# API_URL tells Next.js rewrites where to proxy /api-proxy/* requests.
+# Set API_PORT=3001 and API_URL=http://localhost:3001 in Railway Variables.
+CMD sh -c "API_PORT=${API_PORT:-3001} npm run start --workspace=@challenge-system/api & sleep 5 && npm run start --workspace=@challenge-system/web"
