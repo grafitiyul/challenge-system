@@ -48,10 +48,9 @@ async function bootstrap(): Promise<void> {
     credentials: true,
   });
 
-  // API always binds to API_PORT (default 3001).
-  // Do NOT use PORT here — in the combined Railway container, PORT is reserved
-  // for the Next.js web server (Railway routes external traffic to PORT).
-  const port = process.env['API_PORT'] ?? 3001;
+  // Railway injects PORT at runtime — the app must listen on it.
+  // Fallback to API_PORT for local dev, then 3001.
+  const port = process.env['PORT'] ?? process.env['API_PORT'] ?? 3001;
   await app.listen(port);
 
   console.log(`API running on port ${port}`);
