@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { BASE_URL } from '@lib/api';
@@ -111,7 +111,7 @@ function CreateProgramModal({ defaultType, onCreated, onClose }: {
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
-export default function ProgramsPage() {
+function ProgramsPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const selectedType = searchParams.get('type') as ProgramType | null;
@@ -252,5 +252,13 @@ export default function ProgramsPage() {
         />
       )}
     </div>
+  );
+}
+
+export default function ProgramsPage() {
+  return (
+    <Suspense>
+      <ProgramsPageInner />
+    </Suspense>
   );
 }

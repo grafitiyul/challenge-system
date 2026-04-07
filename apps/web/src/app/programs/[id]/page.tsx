@@ -1,6 +1,6 @@
 'use client';
 
-import { use, useEffect, useState } from 'react';
+import { Suspense, use, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { BASE_URL } from '@lib/api';
@@ -252,7 +252,7 @@ function GroupsTab({ program }: { program: Program }) {
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
-export default function ProgramPage({ params }: { params: Promise<{ id: string }> }) {
+function ProgramPageInner({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const searchParams = useSearchParams();
   const rawTab = searchParams.get('tab') as TabKey | null;
@@ -333,5 +333,13 @@ export default function ProgramPage({ params }: { params: Promise<{ id: string }
         {activeTab === 'groups' && <GroupsTab program={program} />}
       </div>
     </div>
+  );
+}
+
+export default function ProgramPage({ params }: { params: Promise<{ id: string }> }) {
+  return (
+    <Suspense>
+      <ProgramPageInner params={params} />
+    </Suspense>
   );
 }
