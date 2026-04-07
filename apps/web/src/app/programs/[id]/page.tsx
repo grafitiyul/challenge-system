@@ -9,7 +9,7 @@ import { BASE_URL } from '@lib/api';
 
 type ProgramType = 'challenge' | 'game' | 'group_coaching' | 'personal_coaching';
 type GroupStatus = 'active' | 'inactive';
-type TabKey = 'settings' | 'groups' | 'game';
+type TabKey = 'settings' | 'groups' | 'game' | 'leaderboard';
 
 interface Group {
   id: string;
@@ -27,6 +27,10 @@ interface Program {
   description: string | null;
   isActive: boolean;
   groups: Group[];
+  showIndividualLeaderboard: boolean;
+  showGroupComparison: boolean;
+  showOtherGroupsCharts: boolean;
+  showOtherGroupsMemberDetails: boolean;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -71,7 +75,7 @@ const labelStyle: React.CSSProperties = {
   fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 6, display: 'block',
 };
 
-const VALID_TABS: TabKey[] = ['settings', 'groups', 'game'];
+const VALID_TABS: TabKey[] = ['settings', 'groups', 'game', 'leaderboard'];
 
 function formatDate(iso: string | null) {
   if (!iso) return '—';
@@ -985,6 +989,339 @@ function GameEngineTab({ programId }: { programId: string }) {
   );
 }
 
+// ─── Leaderboard Tab ──────────────────────────────────────────────────────────
+
+interface GroupRankRow {
+  groupId: string;
+  groupName: string;
+  totalScore: number;
+  todayScore: number;
+  weekScore: number;
+  participantCount: number;
+  averageScorePerParticipant: number;
+  rank: number;
+}
+
+interface ParticipantRankRow {
+  participantId: string;
+  firstName: string;
+  lastName: string | null;
+  totalScore: number;
+  todayScore: number;
+  weekScore: number;
+  currentStreak: number;
+  rank: number;
+}
+
+interface ProgramSummary {
+  totalGroups: number;
+  totalParticipants: number;
+  totalScoreEvents: number;
+  highestScoringGroup: { groupId: string | null; groupName: string | null; totalScore: number };
+  highestScoringParticipant: { participantId: string | null; firstName: string | null; totalScore: number };
+  averageScorePerGroup: number;
+  averageScorePerParticipant: number;
+}
+
+function LeaderboardTab({ program, onVisibilityChange }: {
+  program: Program;
+  onVisibilityChange: (updated: Program) => void;
+}) {
+  const [groupRanks, setGroupRanks] = useState<GroupRankRow[]>([]);
+  const [participantRanks, setParticipantRanks] = useState<ParticipantRankRow[]>([]);
+  const [summary, setSummary] = useState<ProgramSummary | null>(null);
+  const [selectedGroupId, setSelectedGroupId] = useState<string>('');
+  const [loadingGroups, setLoadingGroups] = useState(false);
+  const [loadingParticipants, setLoadingParticipants] = useState(false);
+  const [loadingSummary, setLoadingSummary] = useState(false);
+  const [savingVis, setSavingVis] = useState(false);
+  const [visSaved, setVisSaved] = useState(false);
+  const [vis, setVis] = useState({
+    showIndividualLeaderboard: program.showIndividualLeaderboard,
+    showGroupComparison: program.showGroupComparison,
+    showOtherGroupsCharts: program.showOtherGroupsCharts,
+    showOtherGroupsMemberDetails: program.showOtherGroupsMemberDetails,
+  });
+
+  // Load group ranking and summary on mount
+  useEffect(() => {
+    setLoadingGroups(true);
+    fetch(`${BASE_URL}/game/leaderboard/program/${program.id}/groups`, { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((d: unknown) => setGroupRanks(d as GroupRankRow[]))
+      .catch(() => {})
+      .finally(() => setLoadingGroups(false));
+
+    setLoadingSummary(true);
+    fetch(`${BASE_URL}/game/leaderboard/program/${program.id}/summary`, { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((d: unknown) => setSummary(d as ProgramSummary))
+      .catch(() => {})
+      .finally(() => setLoadingSummary(false));
+  }, [program.id]);
+
+  // Load participant ranking when group changes
+  useEffect(() => {
+    if (!selectedGroupId) { setParticipantRanks([]); return; }
+    setLoadingParticipants(true);
+    fetch(`${BASE_URL}/game/leaderboard/group/${selectedGroupId}`, { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((d: unknown) => setParticipantRanks(d as ParticipantRankRow[]))
+      .catch(() => {})
+      .finally(() => setLoadingParticipants(false));
+  }, [selectedGroupId]);
+
+  async function saveVisibility() {
+    setSavingVis(true); setVisSaved(false);
+    try {
+      const res = await fetch(`${BASE_URL}/programs/${program.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        cache: 'no-store',
+        body: JSON.stringify(vis),
+      });
+      if (!res.ok) return;
+      const updated = await res.json() as Program;
+      onVisibilityChange(updated);
+      setVisSaved(true);
+    } finally { setSavingVis(false); }
+  }
+
+  function refreshGroupRanks() {
+    setLoadingGroups(true);
+    fetch(`${BASE_URL}/game/leaderboard/program/${program.id}/groups`, { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((d: unknown) => setGroupRanks(d as GroupRankRow[]))
+      .catch(() => {})
+      .finally(() => setLoadingGroups(false));
+  }
+
+  function refreshParticipantRanks() {
+    if (!selectedGroupId) return;
+    setLoadingParticipants(true);
+    fetch(`${BASE_URL}/game/leaderboard/group/${selectedGroupId}`, { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((d: unknown) => setParticipantRanks(d as ParticipantRankRow[]))
+      .catch(() => {})
+      .finally(() => setLoadingParticipants(false));
+  }
+
+  const medalColor = (rank: number) => rank === 1 ? '#f59e0b' : rank === 2 ? '#94a3b8' : rank === 3 ? '#b45309' : '#e2e8f0';
+  const medalText = (rank: number) => rank === 1 ? '#fff' : rank === 2 ? '#fff' : rank === 3 ? '#fff' : '#64748b';
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 32 }}>
+
+      {/* ── Summary stats ── */}
+      {summary && (
+        <section>
+          <h3 style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', margin: '0 0 14px' }}>סיכום תוכנית</h3>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 10 }}>
+            {[
+              { label: 'קבוצות', value: summary.totalGroups },
+              { label: 'משתתפות', value: summary.totalParticipants },
+              { label: 'אירועי ניקוד', value: summary.totalScoreEvents },
+              { label: 'ממוצע לקבוצה', value: summary.averageScorePerGroup + ' נק׳' },
+              { label: 'ממוצע למשתתפת', value: summary.averageScorePerParticipant + ' נק׳' },
+            ].map((s) => (
+              <div key={s.label} style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10, padding: '14px 16px' }}>
+                <div style={{ fontSize: 22, fontWeight: 700, color: '#0f172a', lineHeight: 1 }}>{s.value}</div>
+                <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>{s.label}</div>
+              </div>
+            ))}
+            {summary.highestScoringGroup.groupName && (
+              <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 10, padding: '14px 16px' }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#92400e', lineHeight: 1.3 }}>{summary.highestScoringGroup.groupName}</div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: '#b45309' }}>{summary.highestScoringGroup.totalScore} נק׳</div>
+                <div style={{ fontSize: 11, color: '#a16207', marginTop: 2 }}>קבוצה מובילה</div>
+              </div>
+            )}
+            {summary.highestScoringParticipant.firstName && (
+              <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 10, padding: '14px 16px' }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#14532d', lineHeight: 1.3 }}>{summary.highestScoringParticipant.firstName}</div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: '#15803d' }}>{summary.highestScoringParticipant.totalScore} נק׳</div>
+                <div style={{ fontSize: 11, color: '#166534', marginTop: 2 }}>משתתפת מובילה</div>
+              </div>
+            )}
+          </div>
+        </section>
+      )}
+      {loadingSummary && <div style={{ color: '#94a3b8', fontSize: 13 }}>טוען סיכום...</div>}
+
+      {/* ── Group ranking ── */}
+      <section>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+          <h3 style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', margin: 0 }}>דירוג קבוצות</h3>
+          <button
+            onClick={refreshGroupRanks}
+            style={{ background: '#f1f5f9', border: '1px solid #e2e8f0', borderRadius: 6, padding: '6px 12px', fontSize: 12, color: '#374151', cursor: 'pointer' }}
+          >
+            ↻ רענן
+          </button>
+        </div>
+
+        {loadingGroups && <div style={{ color: '#94a3b8', fontSize: 13 }}>טוען דירוג קבוצות...</div>}
+        {!loadingGroups && groupRanks.length === 0 && (
+          <div style={{ padding: '32px 24px', textAlign: 'center', border: '2px dashed #e2e8f0', borderRadius: 10, color: '#94a3b8', fontSize: 13 }}>
+            אין נתוני ניקוד לקבוצות עדיין
+          </div>
+        )}
+        {!loadingGroups && groupRanks.length > 0 && (
+          <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead>
+                <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
+                  <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b', width: 40 }}>#</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b' }}>קבוצה</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b' }}>סה״כ</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b' }}>השבוע</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b' }}>היום</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b' }}>משתתפות</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b' }}>ממוצע</th>
+                </tr>
+              </thead>
+              <tbody>
+                {groupRanks.map((g) => (
+                  <tr key={g.groupId} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                    <td style={{ padding: '11px 14px' }}>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 26, height: 26, borderRadius: '50%', background: medalColor(g.rank), color: medalText(g.rank), fontSize: 12, fontWeight: 700 }}>
+                        {g.rank}
+                      </span>
+                    </td>
+                    <td style={{ padding: '11px 14px', fontWeight: 600, color: '#0f172a' }}>{g.groupName}</td>
+                    <td style={{ padding: '11px 14px', fontWeight: 700, color: '#2563eb' }}>{g.totalScore}</td>
+                    <td style={{ padding: '11px 14px', color: '#374151' }}>{g.weekScore}</td>
+                    <td style={{ padding: '11px 14px', color: '#374151' }}>{g.todayScore}</td>
+                    <td style={{ padding: '11px 14px', color: '#374151' }}>{g.participantCount}</td>
+                    <td style={{ padding: '11px 14px', color: '#374151' }}>{g.averageScorePerParticipant}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      {/* ── Participant ranking ── */}
+      <section>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
+          <h3 style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', margin: 0 }}>דירוג משתתפות בקבוצה</h3>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <select
+              style={{ ...inputStyle, width: 'auto', minWidth: 160, fontSize: 13, padding: '7px 12px' }}
+              value={selectedGroupId}
+              onChange={(e) => setSelectedGroupId(e.target.value)}
+            >
+              <option value="">— בחרי קבוצה —</option>
+              {program.groups.map((g) => (
+                <option key={g.id} value={g.id}>{g.name}</option>
+              ))}
+            </select>
+            {selectedGroupId && (
+              <button
+                onClick={refreshParticipantRanks}
+                style={{ background: '#f1f5f9', border: '1px solid #e2e8f0', borderRadius: 6, padding: '6px 12px', fontSize: 12, color: '#374151', cursor: 'pointer' }}
+              >
+                ↻ רענן
+              </button>
+            )}
+          </div>
+        </div>
+
+        {!selectedGroupId && (
+          <div style={{ padding: '32px 24px', textAlign: 'center', border: '2px dashed #e2e8f0', borderRadius: 10, color: '#94a3b8', fontSize: 13 }}>
+            בחרי קבוצה כדי לראות את הדירוג הפנימי
+          </div>
+        )}
+        {selectedGroupId && loadingParticipants && <div style={{ color: '#94a3b8', fontSize: 13 }}>טוען דירוג משתתפות...</div>}
+        {selectedGroupId && !loadingParticipants && participantRanks.length === 0 && (
+          <div style={{ padding: '32px 24px', textAlign: 'center', border: '2px dashed #e2e8f0', borderRadius: 10, color: '#94a3b8', fontSize: 13 }}>
+            אין נתוני ניקוד לקבוצה זו עדיין
+          </div>
+        )}
+        {selectedGroupId && !loadingParticipants && participantRanks.length > 0 && (
+          <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead>
+                <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
+                  <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b', width: 40 }}>#</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b' }}>שם</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b' }}>סה״כ</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b' }}>השבוע</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b' }}>היום</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b' }}>רצף</th>
+                </tr>
+              </thead>
+              <tbody>
+                {participantRanks.map((p) => (
+                  <tr key={p.participantId} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                    <td style={{ padding: '11px 14px' }}>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 26, height: 26, borderRadius: '50%', background: medalColor(p.rank), color: medalText(p.rank), fontSize: 12, fontWeight: 700 }}>
+                        {p.rank}
+                      </span>
+                    </td>
+                    <td style={{ padding: '11px 14px', fontWeight: 600, color: '#0f172a' }}>
+                      {p.firstName}{p.lastName ? ' ' + p.lastName : ''}
+                    </td>
+                    <td style={{ padding: '11px 14px', fontWeight: 700, color: '#2563eb' }}>{p.totalScore}</td>
+                    <td style={{ padding: '11px 14px', color: '#374151' }}>{p.weekScore}</td>
+                    <td style={{ padding: '11px 14px', color: '#374151' }}>{p.todayScore}</td>
+                    <td style={{ padding: '11px 14px' }}>
+                      {p.currentStreak > 0
+                        ? <span style={{ background: '#fff7ed', color: '#c2410c', fontSize: 12, padding: '2px 8px', borderRadius: 20 }}>🔥 {p.currentStreak}</span>
+                        : <span style={{ color: '#94a3b8' }}>—</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      {/* ── Visibility settings ── */}
+      <section style={{ borderTop: '1px solid #e2e8f0', paddingTop: 28 }}>
+        <h3 style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', margin: '0 0 6px' }}>הגדרות חשיפה למשתתפות</h3>
+        <p style={{ fontSize: 13, color: '#64748b', margin: '0 0 18px', lineHeight: 1.5 }}>
+          שלטי הצגה אלו יקבעו מה רואות המשתתפות בממשק שלהן. המנהל תמיד רואה הכל.
+        </p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {([
+            { key: 'showIndividualLeaderboard', label: 'הצגת דירוג אישי', desc: 'המשתתפת רואה את מיקומה ואת שאר חברות הקבוצה' },
+            { key: 'showGroupComparison', label: 'הצגת השוואת קבוצות', desc: 'המשתתפת רואה את ציון הקבוצה שלה מול קבוצות אחרות' },
+            { key: 'showOtherGroupsCharts', label: 'הצגת גרפים של קבוצות אחרות', desc: 'אפשרי רק כאשר השוואת קבוצות פעילה' },
+            { key: 'showOtherGroupsMemberDetails', label: 'הצגת חברות קבוצות אחרות', desc: 'המשתתפת רואה שמות ודירוג מקבוצות אחרות' },
+          ] as { key: keyof typeof vis; label: string; desc: string }[]).map((item) => (
+            <div key={item.key} style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+              <input
+                type="checkbox"
+                id={`vis-${item.key}`}
+                checked={vis[item.key]}
+                onChange={(e) => { setVis((p) => ({ ...p, [item.key]: e.target.checked })); setVisSaved(false); }}
+                style={{ width: 16, height: 16, marginTop: 2, cursor: 'pointer', flexShrink: 0 }}
+              />
+              <label htmlFor={`vis-${item.key}`} style={{ cursor: 'pointer' }}>
+                <div style={{ fontSize: 14, fontWeight: 500, color: '#0f172a' }}>{item.label}</div>
+                <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>{item.desc}</div>
+              </label>
+            </div>
+          ))}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 18 }}>
+          <button
+            onClick={saveVisibility}
+            disabled={savingVis}
+            style={{ background: savingVis ? '#93c5fd' : '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '9px 20px', fontSize: 13, fontWeight: 600, cursor: savingVis ? 'not-allowed' : 'pointer' }}
+          >
+            {savingVis ? 'שומר...' : 'שמור הגדרות'}
+          </button>
+          {visSaved && <span style={{ color: '#16a34a', fontSize: 13 }}>✓ נשמר</span>}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 function ProgramPageInner({ params }: { params: Promise<{ id: string }> }) {
@@ -1022,7 +1359,10 @@ function ProgramPageInner({ params }: { params: Promise<{ id: string }> }) {
 
   const tabs: { key: TabKey; label: string }[] = [
     { key: 'groups', label: 'קבוצות' },
-    ...(program.type === 'game' ? [{ key: 'game' as TabKey, label: 'מנוע משחק' }] : []),
+    ...(program.type === 'game' ? [
+      { key: 'game' as TabKey, label: 'מנוע משחק' },
+      { key: 'leaderboard' as TabKey, label: 'דירוגים' },
+    ] : []),
     { key: 'settings', label: 'הגדרות' },
   ];
 
@@ -1068,6 +1408,12 @@ function ProgramPageInner({ params }: { params: Promise<{ id: string }> }) {
         {activeTab === 'settings' && <SettingsTab program={program} onSaved={(updated) => setProgram(updated)} />}
         {activeTab === 'groups' && <GroupsTab program={program} />}
         {activeTab === 'game' && <GameEngineTab programId={program.id} />}
+        {activeTab === 'leaderboard' && (
+          <LeaderboardTab
+            program={program}
+            onVisibilityChange={(updated) => setProgram((p) => p ? { ...p, ...updated } : p)}
+          />
+        )}
       </div>
     </div>
   );

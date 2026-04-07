@@ -411,6 +411,197 @@ export class GameEngineService {
     return { ...state, currentDay };
   }
 
+  // ─── Leaderboard ──────────────────────────────────────────────────────────────
+
+  async getGroupLeaderboard(groupId: string) {
+    const group = await this.prisma.group.findUnique({
+      where: { id: groupId },
+      select: { programId: true },
+    });
+    if (!group) throw new NotFoundException(`Group ${groupId} not found`);
+
+    const now = new Date();
+    const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
+    const weekStart = new Date(now); weekStart.setDate(now.getDate() - now.getDay()); weekStart.setHours(0, 0, 0, 0);
+
+    const members = await this.prisma.participantGroup.findMany({
+      where: { groupId, isActive: true },
+      include: { participant: { select: { id: true, firstName: true, lastName: true } } },
+    });
+
+    if (members.length === 0) return [];
+
+    const participantIds = members.map((m) => m.participantId);
+
+    const [totals, todayTotals, weekTotals, streaks] = await Promise.all([
+      this.prisma.scoreEvent.groupBy({
+        by: ['participantId'],
+        where: { groupId, participantId: { in: participantIds } },
+        _sum: { points: true },
+      }),
+      this.prisma.scoreEvent.groupBy({
+        by: ['participantId'],
+        where: { groupId, participantId: { in: participantIds }, createdAt: { gte: todayStart } },
+        _sum: { points: true },
+      }),
+      this.prisma.scoreEvent.groupBy({
+        by: ['participantId'],
+        where: { groupId, participantId: { in: participantIds }, createdAt: { gte: weekStart } },
+        _sum: { points: true },
+      }),
+      group.programId
+        ? this.prisma.participantGameState.findMany({
+            where: { programId: group.programId, participantId: { in: participantIds } },
+            select: { participantId: true, currentStreak: true },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const totalsMap = Object.fromEntries(totals.map((r) => [r.participantId, r._sum.points ?? 0]));
+    const todayMap = Object.fromEntries(todayTotals.map((r) => [r.participantId, r._sum.points ?? 0]));
+    const weekMap = Object.fromEntries(weekTotals.map((r) => [r.participantId, r._sum.points ?? 0]));
+    const streakMap = Object.fromEntries((streaks as { participantId: string; currentStreak: number }[]).map((r) => [r.participantId, r.currentStreak]));
+
+    const rows = members.map((m) => ({
+      participantId: m.participantId,
+      firstName: m.participant.firstName,
+      lastName: m.participant.lastName ?? null,
+      totalScore: totalsMap[m.participantId] ?? 0,
+      todayScore: todayMap[m.participantId] ?? 0,
+      weekScore: weekMap[m.participantId] ?? 0,
+      currentStreak: streakMap[m.participantId] ?? 0,
+    }));
+
+    rows.sort((a, b) => b.totalScore - a.totalScore);
+    return rows.map((r, i) => ({ ...r, rank: i + 1 }));
+  }
+
+  async getProgramGroupRanking(programId: string) {
+    const program = await this.prisma.program.findUnique({
+      where: { id: programId },
+      select: { id: true },
+    });
+    if (!program) throw new NotFoundException(`Program ${programId} not found`);
+
+    const now = new Date();
+    const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
+    const weekStart = new Date(now); weekStart.setDate(now.getDate() - now.getDay()); weekStart.setHours(0, 0, 0, 0);
+
+    const groups = await this.prisma.group.findMany({
+      where: { programId, isActive: true },
+      select: { id: true, name: true },
+    });
+
+    if (groups.length === 0) return [];
+
+    const groupIds = groups.map((g) => g.id);
+
+    const [totals, todayTotals, weekTotals, memberCounts] = await Promise.all([
+      this.prisma.scoreEvent.groupBy({
+        by: ['groupId'],
+        where: { groupId: { in: groupIds } },
+        _sum: { points: true },
+      }),
+      this.prisma.scoreEvent.groupBy({
+        by: ['groupId'],
+        where: { groupId: { in: groupIds }, createdAt: { gte: todayStart } },
+        _sum: { points: true },
+      }),
+      this.prisma.scoreEvent.groupBy({
+        by: ['groupId'],
+        where: { groupId: { in: groupIds }, createdAt: { gte: weekStart } },
+        _sum: { points: true },
+      }),
+      this.prisma.participantGroup.groupBy({
+        by: ['groupId'],
+        where: { groupId: { in: groupIds }, isActive: true },
+        _count: { participantId: true },
+      }),
+    ]);
+
+    const totalsMap = Object.fromEntries(totals.map((r) => [r.groupId as string, r._sum.points ?? 0]));
+    const todayMap = Object.fromEntries(todayTotals.map((r) => [r.groupId as string, r._sum.points ?? 0]));
+    const weekMap = Object.fromEntries(weekTotals.map((r) => [r.groupId as string, r._sum.points ?? 0]));
+    const countMap = Object.fromEntries(memberCounts.map((r) => [r.groupId, r._count.participantId]));
+
+    const rows = groups.map((g) => {
+      const total = totalsMap[g.id] ?? 0;
+      const count = countMap[g.id] ?? 0;
+      return {
+        groupId: g.id,
+        groupName: g.name,
+        totalScore: total,
+        todayScore: todayMap[g.id] ?? 0,
+        weekScore: weekMap[g.id] ?? 0,
+        participantCount: count,
+        averageScorePerParticipant: count > 0 ? Math.round(total / count) : 0,
+      };
+    });
+
+    rows.sort((a, b) => b.totalScore - a.totalScore);
+    return rows.map((r, i) => ({ ...r, rank: i + 1 }));
+  }
+
+  async getProgramSummary(programId: string) {
+    const program = await this.prisma.program.findUnique({
+      where: { id: programId },
+      select: { id: true },
+    });
+    if (!program) throw new NotFoundException(`Program ${programId} not found`);
+
+    const [groupCount, participantCount, eventCount, groupTotals, participantTotals] = await Promise.all([
+      this.prisma.group.count({ where: { programId, isActive: true } }),
+      this.prisma.participantGameState.count({ where: { programId } }),
+      this.prisma.scoreEvent.count({ where: { programId } }),
+      // Group-level totals (only events with a groupId)
+      this.prisma.scoreEvent.groupBy({
+        by: ['groupId'],
+        where: { programId, groupId: { not: null } },
+        _sum: { points: true },
+      }),
+      // Participant-level totals
+      this.prisma.scoreEvent.groupBy({
+        by: ['participantId'],
+        where: { programId },
+        _sum: { points: true },
+      }),
+    ]);
+
+    // Highest scoring group
+    let highestScoringGroup: { groupId: string | null; groupName: string | null; totalScore: number } = {
+      groupId: null, groupName: null, totalScore: 0,
+    };
+    if (groupTotals.length > 0) {
+      const best = groupTotals.reduce((a, b) => (b._sum.points ?? 0) > (a._sum.points ?? 0) ? b : a);
+      if (best.groupId) {
+        const grp = await this.prisma.group.findUnique({ where: { id: best.groupId }, select: { name: true } });
+        highestScoringGroup = { groupId: best.groupId, groupName: grp?.name ?? null, totalScore: best._sum.points ?? 0 };
+      }
+    }
+
+    // Highest scoring participant
+    let highestScoringParticipant: { participantId: string | null; firstName: string | null; totalScore: number } = {
+      participantId: null, firstName: null, totalScore: 0,
+    };
+    if (participantTotals.length > 0) {
+      const best = participantTotals.reduce((a, b) => (b._sum.points ?? 0) > (a._sum.points ?? 0) ? b : a);
+      const p = await this.prisma.participant.findUnique({ where: { id: best.participantId }, select: { firstName: true } });
+      highestScoringParticipant = { participantId: best.participantId, firstName: p?.firstName ?? null, totalScore: best._sum.points ?? 0 };
+    }
+
+    const totalScoreAll = participantTotals.reduce((s, r) => s + (r._sum.points ?? 0), 0);
+
+    return {
+      totalGroups: groupCount,
+      totalParticipants: participantCount,
+      totalScoreEvents: eventCount,
+      highestScoringGroup,
+      highestScoringParticipant,
+      averageScorePerGroup: groupCount > 0 ? Math.round(totalScoreAll / groupCount) : 0,
+      averageScorePerParticipant: participantCount > 0 ? Math.round(totalScoreAll / participantCount) : 0,
+    };
+  }
+
   // ─── Private helpers ────────────────────────────────────────────────────────
 
   private async getGroupDay(groupId: string): Promise<number | null> {

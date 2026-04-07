@@ -12,4 +12,20 @@ export class UpdateProgramDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  showIndividualLeaderboard?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  showGroupComparison?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  showOtherGroupsCharts?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  showOtherGroupsMemberDetails?: boolean;
 }

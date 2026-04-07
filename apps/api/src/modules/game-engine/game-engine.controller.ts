@@ -123,4 +123,22 @@ export class GameEngineController {
   getGroupState(@Param('groupId') groupId: string) {
     return this.svc.getGroupState(groupId);
   }
+
+  // GET /api/game/leaderboard/group/:groupId
+  @Get('leaderboard/group/:groupId')
+  groupLeaderboard(@Param('groupId') groupId: string) {
+    return this.svc.getGroupLeaderboard(groupId);
+  }
+
+  // GET /api/game/leaderboard/program/:programId/groups
+  @Get('leaderboard/program/:programId/groups')
+  programGroupRanking(@Param('programId') programId: string) {
+    return this.svc.getProgramGroupRanking(programId);
+  }
+
+  // GET /api/game/leaderboard/program/:programId/summary
+  @Get('leaderboard/program/:programId/summary')
+  programSummary(@Param('programId') programId: string) {
+    return this.svc.getProgramSummary(programId);
+  }
 }

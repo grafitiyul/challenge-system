@@ -52,6 +52,12 @@ model Program {
   participantGameStates ParticipantGameState[]
   feedEvents           FeedEvent[]
 
+  // Leaderboard visibility controls
+  showIndividualLeaderboard    Boolean @default(true)
+  showGroupComparison          Boolean @default(true)
+  showOtherGroupsCharts        Boolean @default(true)
+  showOtherGroupsMemberDetails Boolean @default(false)
+
   @@map("programs")
 }
 
