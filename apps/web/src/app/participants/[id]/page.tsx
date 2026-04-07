@@ -144,8 +144,8 @@ function AgeTooltip({ age }: { age: { short: string; long: string } }) {
   );
 }
 
-// API base URL for building image URLs
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
+// Proxy prefix — upload images and file requests route through /api-proxy (see next.config.ts).
+const API_BASE = '/api-proxy';
 
 const inputStyle: React.CSSProperties = {
   width: '100%', padding: '8px 10px', border: '1px solid #cbd5e1',

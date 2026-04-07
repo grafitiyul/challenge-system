@@ -528,7 +528,7 @@ function ImageUploadInput({ value, onChange }: { value: string; onChange: (v: st
             <div style={{ color: '#64748b', fontSize: 14 }}>מעלה תמונה...</div>
           ) : value ? (
             <div>
-              <img src={value.startsWith('/uploads') ? `${BASE_URL.replace('/api', '')}${value}` : value} alt="uploaded" style={{ maxWidth: '100%', maxHeight: 200, borderRadius: 8, marginBottom: 8, objectFit: 'cover' }} />
+              <img src={value.startsWith('/uploads') ? `${BASE_URL.replace(/\/api$/, '')}${value}` : value} alt="uploaded" style={{ maxWidth: '100%', maxHeight: 200, borderRadius: 8, marginBottom: 8, objectFit: 'cover' }} />
               <div style={{ fontSize: 13, color: '#2563eb' }}>לחצי להחלפת תמונה</div>
             </div>
           ) : (

@@ -103,6 +103,7 @@ export default function QuestionnairesPage() {
   const router = useRouter();
   const [templates, setTemplates] = useState<QuestionnaireTemplate[]>([]);
   const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [form, setForm] = useState<CreateForm>(EMPTY_FORM);
   const [formError, setFormError] = useState('');
@@ -118,10 +119,17 @@ export default function QuestionnairesPage() {
   }
 
   useEffect(() => {
+    setFetchError('');
     fetch(`${BASE_URL}/questionnaires`, { cache: 'no-store' })
-      .then((r) => r.json())
+      .then((r) => {
+        if (!r.ok) throw new Error(`שגיאת שרת: ${r.status}`);
+        return r.json();
+      })
       .then((data: unknown) => setTemplates(data as QuestionnaireTemplate[]))
-      .catch(() => setTemplates([]))
+      .catch((err: unknown) => {
+        setFetchError(err instanceof Error ? err.message : 'שגיאה בטעינת השאלונים');
+        setTemplates([]);
+      })
       .finally(() => setLoading(false));
   }, []);
 
@@ -189,12 +197,26 @@ export default function QuestionnairesPage() {
       {/* Table */}
       <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
         <div style={{ padding: '14px 20px', borderBottom: '1px solid #e2e8f0', background: '#f8fafc' }}>
-          <span style={{ fontSize: 13, fontWeight: 600, color: '#64748b' }}>
-            {loading ? 'טוען...' : `${templates.length} שאלונים`}
+          <span style={{ fontSize: 13, fontWeight: 600, color: fetchError ? '#dc2626' : '#64748b' }}>
+            {loading ? 'טוען...' : fetchError ? 'שגיאה בטעינה' : `${templates.length} שאלונים`}
           </span>
         </div>
 
-        {!loading && templates.length === 0 && (
+        {!loading && fetchError && (
+          <div style={{ padding: '48px 24px', textAlign: 'center' }}>
+            <div style={{ fontSize: 36, marginBottom: 12 }}>⚠️</div>
+            <div style={{ color: '#dc2626', fontSize: 15, fontWeight: 600, marginBottom: 6 }}>לא ניתן לטעון שאלונים</div>
+            <div style={{ color: '#94a3b8', fontSize: 13, marginBottom: 16 }}>{fetchError}</div>
+            <button
+              onClick={() => { setLoading(true); setFetchError(''); fetch(`${BASE_URL}/questionnaires`, { cache: 'no-store' }).then((r) => { if (!r.ok) throw new Error(`שגיאת שרת: ${r.status}`); return r.json(); }).then((d: unknown) => setTemplates(d as QuestionnaireTemplate[])).catch((e: unknown) => setFetchError(e instanceof Error ? e.message : 'שגיאה')).finally(() => setLoading(false)); }}
+              style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '9px 20px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
+            >
+              נסי שוב
+            </button>
+          </div>
+        )}
+
+        {!loading && !fetchError && templates.length === 0 && (
           <div style={{ padding: '48px 24px', textAlign: 'center' }}>
             <div style={{ fontSize: 40, marginBottom: 12 }}>📋</div>
             <div style={{ color: '#374151', fontSize: 16, fontWeight: 500, marginBottom: 6 }}>אין שאלונים עדיין</div>
