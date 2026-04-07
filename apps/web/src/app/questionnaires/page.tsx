@@ -118,7 +118,7 @@ export default function QuestionnairesPage() {
   }
 
   useEffect(() => {
-    fetch(`${BASE_URL}/questionnaires`)
+    fetch(`${BASE_URL}/questionnaires`, { cache: 'no-store' })
       .then((r) => r.json())
       .then((data: unknown) => setTemplates(data as QuestionnaireTemplate[]))
       .catch(() => setTemplates([]))

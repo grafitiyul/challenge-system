@@ -1259,7 +1259,7 @@ function LinksTab({ template }: { template: Template }) {
   const [confirmDeleteLink, setConfirmDeleteLink] = useState<ExternalLink | null>(null);
 
   useEffect(() => {
-    fetch(`${BASE_URL}/questionnaires/${template.id}/links`)
+    fetch(`${BASE_URL}/questionnaires/${template.id}/links`, { cache: 'no-store' })
       .then((r) => r.json())
       .then((data: unknown) => setLinks(data as ExternalLink[]))
       .catch(() => setLinks([]))
@@ -1496,7 +1496,7 @@ function SubmissionsTab({ template }: { template: Template }) {
   const [detail, setDetail] = useState<TemplateSubmission | null>(null);
 
   useEffect(() => {
-    fetch(`${BASE_URL}/questionnaires/${template.id}/submissions`)
+    fetch(`${BASE_URL}/questionnaires/${template.id}/submissions`, { cache: 'no-store' })
       .then((r) => r.json())
       .then((data: unknown) => setSubmissions(data as TemplateSubmission[]))
       .catch(() => setSubmissions([]))
@@ -1639,7 +1639,7 @@ export default function TemplateEditorPage({ params }: { params: Promise<{ id: s
   }
 
   useEffect(() => {
-    fetch(`${BASE_URL}/questionnaires/${id}`)
+    fetch(`${BASE_URL}/questionnaires/${id}`, { cache: 'no-store' })
       .then((r) => { if (!r.ok) { setNotFound(true); return null; } return r.json(); })
       .then((data: unknown) => {
         if (data) {

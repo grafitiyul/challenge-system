@@ -485,12 +485,12 @@ export default function InternalFillPage({ params }: { params: Promise<{ id: str
   const questionElems = useRef<Map<string, HTMLDivElement | null>>(new Map());
 
   useEffect(() => {
-    const fetchTemplate = fetch(`${BASE_URL}/questionnaires/${id}`)
+    const fetchTemplate = fetch(`${BASE_URL}/questionnaires/${id}`, { cache: 'no-store' })
       .then((r) => { if (!r.ok) { setNotFound(true); return null; } return r.json(); })
       .then((data: unknown) => { if (data) setTemplate(data as Template); });
 
     const fetchParticipant = participantId
-      ? fetch(`${BASE_URL}/participants/${participantId}`)
+      ? fetch(`${BASE_URL}/participants/${participantId}`, { cache: 'no-store' })
         .then((r) => r.json())
         .then((data: unknown) => setParticipant(data as Participant))
         .catch(() => {})
