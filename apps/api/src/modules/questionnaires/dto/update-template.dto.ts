@@ -35,5 +35,9 @@ export class UpdateTemplateDto {
 
   @IsOptional()
   @IsString()
+  postSubmitText?: string;
+
+  @IsOptional()
+  @IsString()
   programId?: string | null;
 }

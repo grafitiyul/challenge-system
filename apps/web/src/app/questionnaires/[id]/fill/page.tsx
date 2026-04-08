@@ -116,14 +116,16 @@ function ImageUploadField({ value, onChange }: { value: string; onChange: (v: st
 
 const inputStyle: React.CSSProperties = {
   width: '100%',
-  padding: '9px 12px',
-  border: '1px solid #cbd5e1',
-  borderRadius: 7,
+  padding: '11px 14px',
+  border: '1.5px solid #e2e8f0',
+  borderRadius: 9,
   fontSize: 14,
   color: '#0f172a',
-  background: '#ffffff',
+  background: '#fafbfc',
   boxSizing: 'border-box',
   fontFamily: 'inherit',
+  outline: 'none',
+  transition: 'border-color 0.15s',
 };
 
 const labelStyle: React.CSSProperties = {
@@ -360,12 +362,22 @@ function QuestionBlock({
   const numVal = typeof answer === 'number' ? answer : null;
   const arrVal = Array.isArray(answer) ? answer : [];
 
-  // static_text: render as content block
+  // static_text: render as styled content block, no input
   if (question.questionType === 'static_text') {
     return (
       <div
         ref={onRef}
-        style={{ padding: '20px 26px', background: '#f8fafc', borderRadius: 12, border: '1px solid #e5e7eb', lineHeight: 1.75, fontSize: 15, color: '#374151', borderRight: '4px solid #e2e8f0' }}
+        style={{
+          padding: '20px 28px',
+          background: '#f8fafc',
+          borderRadius: 14,
+          border: '1px solid #e5e7eb',
+          borderRight: '4px solid #2563eb',
+          lineHeight: 1.8,
+          fontSize: 15,
+          color: '#374151',
+          boxShadow: '0 1px 4px rgba(0,0,0,0.04)',
+        }}
         dangerouslySetInnerHTML={{ __html: question.helperText ?? question.label }}
       />
     );
@@ -377,25 +389,36 @@ function QuestionBlock({
     <div
       ref={onRef}
       style={{
-        padding: '22px 26px',
+        padding: '24px 28px',
         background: '#ffffff',
-        borderRadius: 12,
-        border: `1.5px solid ${hasError ? '#fca5a5' : '#e5e7eb'}`,
-        borderRight: `4px solid ${hasError ? '#f87171' : question.isRequired ? '#2563eb' : '#e5e7eb'}`,
+        borderRadius: 14,
+        border: `1px solid ${hasError ? '#fca5a5' : '#e8edf4'}`,
+        borderRight: `4px solid ${hasError ? '#f87171' : question.isRequired ? '#2563eb' : '#cbd5e1'}`,
         transition: 'border-color 0.2s, box-shadow 0.2s',
-        boxShadow: hasError ? '0 0 0 3px rgba(252,165,165,0.15)' : '0 1px 3px rgba(0,0,0,0.04)',
+        boxShadow: hasError
+          ? '0 0 0 3px rgba(252,165,165,0.12)'
+          : '0 2px 8px rgba(0,0,0,0.05)',
       }}
     >
-      <div style={{ marginBottom: 14 }}>
-        <div style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', marginBottom: 4, lineHeight: 1.45, display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-          <span style={{ color: '#cbd5e1', fontWeight: 500, fontSize: 12, minWidth: 20, paddingTop: 2 }}>{index + 1}.</span>
-          <span>
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 5 }}>
+          {/* Question number badge */}
+          <span style={{
+            minWidth: 24, height: 24, borderRadius: '50%',
+            background: hasError ? '#fef2f2' : '#f1f5f9',
+            color: hasError ? '#dc2626' : '#64748b',
+            fontSize: 11, fontWeight: 700, display: 'inline-flex',
+            alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 1,
+          }}>
+            {index + 1}
+          </span>
+          <span style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', lineHeight: 1.45 }}>
             {question.label}
-            {question.isRequired && <span style={{ color: '#dc2626', marginRight: 4 }}>*</span>}
+            {question.isRequired && <span style={{ color: '#dc2626', marginRight: 5, fontWeight: 400 }}>*</span>}
           </span>
         </div>
         {question.helperText && (
-          <div style={{ fontSize: 13, color: '#64748b', lineHeight: 1.5, paddingRight: 28 }}>{question.helperText}</div>
+          <div style={{ fontSize: 13, color: '#64748b', lineHeight: 1.6, paddingRight: 34 }}>{question.helperText}</div>
         )}
       </div>
 
@@ -635,9 +658,14 @@ export default function InternalFillPage({ params }: { params: Promise<{ id: str
 
       {/* Header */}
       <div style={{ marginBottom: 28 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0f172a', margin: 0, marginBottom: 6 }}>
-          {template.internalName}
-        </h1>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0f172a', margin: 0 }}>
+            {template.internalName}
+          </h1>
+          <span style={{ background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', borderRadius: 20, padding: '2px 10px', fontSize: 12, fontWeight: 700, letterSpacing: 0.2, flexShrink: 0 }}>
+            פנימי
+          </span>
+        </div>
         {participant ? (
           <div style={{ fontSize: 14, color: '#64748b', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 7, padding: '7px 14px', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
             <span>ממלאת עבור:</span>
@@ -708,7 +736,7 @@ export default function InternalFillPage({ params }: { params: Promise<{ id: str
       )}
 
       {/* Questions */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 32 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginBottom: 36 }}>
         {visibleQuestions.map((q, idx) => (
           <QuestionBlock
             key={q.id}
@@ -723,32 +751,38 @@ export default function InternalFillPage({ params }: { params: Promise<{ id: str
         ))}
       </div>
 
-      {/* Submit */}
-      {submitError && (
-        <div style={{ color: '#dc2626', fontSize: 13, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '10px 14px', marginBottom: 16 }}>
-          {submitError}
+      {/* Submit area */}
+      <div style={{ background: '#f8fafc', border: '1px solid #e8edf4', borderRadius: 16, padding: '24px 28px' }}>
+        {submitError && (
+          <div style={{ color: '#dc2626', fontSize: 13, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '10px 14px', marginBottom: 16 }}>
+            {submitError}
+          </div>
+        )}
+        <button
+          onClick={handleSubmit}
+          disabled={submitting}
+          style={{
+            width: '100%',
+            padding: '16px 0',
+            background: submitting ? '#93c5fd' : '#2563eb',
+            color: '#ffffff',
+            border: 'none',
+            borderRadius: 12,
+            fontSize: 16,
+            fontWeight: 700,
+            cursor: submitting ? 'not-allowed' : 'pointer',
+            fontFamily: 'inherit',
+            letterSpacing: 0.3,
+            boxShadow: submitting ? 'none' : '0 4px 16px rgba(37,99,235,0.28)',
+            transition: 'background 0.2s, box-shadow 0.2s',
+          }}
+        >
+          {submitting ? 'שולח...' : 'שלח שאלון ✓'}
+        </button>
+        <div style={{ fontSize: 12, color: '#94a3b8', textAlign: 'center', marginTop: 10 }}>
+          {totalFillable > 0 && `${answeredCount} מתוך ${totalFillable} שאלות מולאו`}
         </div>
-      )}
-
-      <button
-        onClick={handleSubmit}
-        disabled={submitting}
-        style={{
-          width: '100%',
-          padding: '15px 0',
-          background: submitting ? '#93c5fd' : '#2563eb',
-          color: '#ffffff',
-          border: 'none',
-          borderRadius: 12,
-          fontSize: 16,
-          fontWeight: 700,
-          cursor: submitting ? 'not-allowed' : 'pointer',
-          fontFamily: 'inherit',
-          boxShadow: submitting ? 'none' : '0 4px 12px rgba(37,99,235,0.25)',
-        }}
-      >
-        {submitting ? 'שולח...' : 'שלח שאלון'}
-      </button>
+      </div>
     </div>
   );
 }

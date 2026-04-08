@@ -536,6 +536,8 @@ model QuestionnaireTemplate {
   // Shown after phone identification in public fill. Supports {firstName} placeholder.
   // Falls back to "נעבור לכמה שאלות קצרות:" when empty.
   postIdentificationGreeting String?
+  // Shown on the thank-you screen after external submission. Falls back to generic text when empty.
+  postSubmitText String?
 
   // Optional program association — used to show related questionnaires on the group screen
   programId String?

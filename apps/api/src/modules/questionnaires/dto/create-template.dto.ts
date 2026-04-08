@@ -29,5 +29,9 @@ export class CreateTemplateDto {
 
   @IsOptional()
   @IsString()
+  postSubmitText?: string;
+
+  @IsOptional()
+  @IsString()
   programId?: string;
 }

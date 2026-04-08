@@ -731,52 +731,47 @@ export default function ParticipantsPage() {
                 </div>
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                  {(Object.keys(MAPPING_LABELS) as (keyof ColumnMapping)[]).map((field) => (
-                    <div key={field}>
-                      <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 }}>
-                        {MAPPING_LABELS[field]}
-                        {field === 'phone' && <span style={{ color: '#dc2626' }}> *</span>}
-                      </label>
-                      <select
-                        style={{ width: '100%', padding: '8px 10px', border: '1px solid #e2e8f0', borderRadius: 7, fontSize: 13, background: '#fff' }}
-                        value={importMapping[field] ?? -1}
-                        onChange={(e) => setImportMapping((m) => ({ ...m, [field]: Number(e.target.value) >= 0 ? Number(e.target.value) : null }))}
-                      >
-                        <option value={-1}>— לא ממופה —</option>
-                        {csvHeaders.map((h, i) => (
-                          <option key={i} value={i}>{h || `עמודה ${i + 1}`}</option>
-                        ))}
-                      </select>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Sample preview */}
-                {csvRows.slice(0, 3).length > 0 && (
-                  <div>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 8 }}>דוגמה (3 שורות ראשונות)</div>
-                    <div style={{ overflowX: 'auto', border: '1px solid #e2e8f0', borderRadius: 8 }}>
-                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                        <thead>
-                          <tr style={{ background: '#f8fafc' }}>
-                            {csvHeaders.map((h, i) => (
-                              <th key={i} style={{ padding: '8px 10px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', whiteSpace: 'nowrap', fontWeight: 600, color: '#374151' }}>{h || `עמודה ${i + 1}`}</th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {csvRows.slice(0, 3).map((row, ri) => (
-                            <tr key={ri} style={{ borderBottom: '1px solid #f1f5f9' }}>
-                              {csvHeaders.map((_, ci) => (
-                                <td key={ci} style={{ padding: '7px 10px', color: '#374151', whiteSpace: 'nowrap' }}>{row[ci] ?? ''}</td>
-                              ))}
-                            </tr>
+                  {(Object.keys(MAPPING_LABELS) as (keyof ColumnMapping)[]).map((field) => {
+                    const colIdx = importMapping[field];
+                    const samples = colIdx != null && colIdx >= 0
+                      ? [...new Set(csvRows.map((r) => r[colIdx]?.trim()).filter(Boolean))].slice(0, 10)
+                      : [];
+                    const shown = samples.slice(0, 2);
+                    const overflow = samples.length - shown.length;
+                    return (
+                      <div key={field}>
+                        <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 }}>
+                          {MAPPING_LABELS[field]}
+                          {field === 'phone' && <span style={{ color: '#dc2626' }}> *</span>}
+                        </label>
+                        <select
+                          style={{ width: '100%', padding: '8px 10px', border: '1px solid #e2e8f0', borderRadius: 7, fontSize: 13, background: '#fff' }}
+                          value={importMapping[field] ?? -1}
+                          onChange={(e) => setImportMapping((m) => ({ ...m, [field]: Number(e.target.value) >= 0 ? Number(e.target.value) : null }))}
+                        >
+                          <option value={-1}>— לא ממופה —</option>
+                          {csvHeaders.map((h, i) => (
+                            <option key={i} value={i}>{h || `עמודה ${i + 1}`}</option>
                           ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
+                        </select>
+                        {shown.length > 0 && (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 5 }}>
+                            {shown.map((v, i) => (
+                              <span key={i} style={{ background: '#f1f5f9', color: '#475569', border: '1px solid #e2e8f0', borderRadius: 5, padding: '2px 7px', fontSize: 11, maxWidth: 110, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={v}>
+                                {v}
+                              </span>
+                            ))}
+                            {overflow > 0 && (
+                              <span style={{ background: '#e2e8f0', color: '#64748b', borderRadius: 5, padding: '2px 7px', fontSize: 11, whiteSpace: 'nowrap' }}>
+                                +{overflow} נוספים
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
 
                 {importError && <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 7, padding: '10px 14px', color: '#dc2626', fontSize: 13 }}>{importError}</div>}
 

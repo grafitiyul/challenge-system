@@ -92,6 +92,13 @@ export class QuestionnairesService {
   }
 
   async createTemplate(dto: CreateTemplateDto) {
+    const DEFAULT_SYSTEM_FIELDS = [
+      { label: 'טלפון', internalKey: 'phone', questionType: 'phone', isRequired: true, sortOrder: 0 },
+      { label: 'שם פרטי', internalKey: 'firstName', questionType: 'text', isRequired: true, sortOrder: 10 },
+      { label: 'שם משפחה', internalKey: 'lastName', questionType: 'text', isRequired: false, sortOrder: 20 },
+      { label: 'אימייל', internalKey: 'email', questionType: 'email', isRequired: false, sortOrder: 30 },
+    ];
+
     return this.prisma.questionnaireTemplate.create({
       data: {
         internalName: dto.internalName,
@@ -101,8 +108,20 @@ export class QuestionnairesService {
         submitBehavior: dto.submitBehavior ?? 'none',
         displayMode: dto.displayMode ?? 'step_by_step',
         postIdentificationGreeting: dto.postIdentificationGreeting ?? null,
+        postSubmitText: dto.postSubmitText ?? null,
         programId: dto.programId ?? null,
+        questions: {
+          create: DEFAULT_SYSTEM_FIELDS.map((f) => ({
+            label: f.label,
+            internalKey: f.internalKey,
+            questionType: f.questionType,
+            isRequired: f.isRequired,
+            isSystemField: true,
+            sortOrder: f.sortOrder,
+          })),
+        },
       },
+      include: TEMPLATE_WITH_QUESTIONS,
     });
   }
 
@@ -119,6 +138,7 @@ export class QuestionnairesService {
         ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
         ...(dto.displayMode !== undefined ? { displayMode: dto.displayMode } : {}),
         ...(dto.postIdentificationGreeting !== undefined ? { postIdentificationGreeting: dto.postIdentificationGreeting || null } : {}),
+        ...(dto.postSubmitText !== undefined ? { postSubmitText: dto.postSubmitText || null } : {}),
         ...(dto.programId !== undefined ? { programId: dto.programId ?? null } : {}),
       },
     });

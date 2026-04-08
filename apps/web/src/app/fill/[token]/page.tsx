@@ -78,6 +78,7 @@ interface Template {
   submitBehavior: string;
   displayMode: string;
   postIdentificationGreeting: string | null;
+  postSubmitText: string | null;
   questions: Question[];
 }
 
@@ -812,12 +813,13 @@ export default function PublicFillPage({ params }: { params: Promise<{ token: st
   }
 
   if (pageState === 'done') {
+    const thankYouText = template?.postSubmitText?.trim() || 'תשובותך נשמרו בהצלחה.';
     return (
       <div dir="rtl" style={{ minHeight: '100vh', background: '#ffffff', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
         <div style={{ textAlign: 'center', maxWidth: 400 }}>
           <div style={{ fontSize: 56, marginBottom: 20 }}>✅</div>
           <div style={{ fontSize: 24, fontWeight: 700, color: '#0f172a', marginBottom: 12 }}>תודה!</div>
-          <div style={{ fontSize: 16, color: '#64748b', lineHeight: 1.6 }}>תשובותך נשמרו בהצלחה.</div>
+          <div style={{ fontSize: 16, color: '#64748b', lineHeight: 1.6 }}>{thankYouText}</div>
         </div>
       </div>
     );

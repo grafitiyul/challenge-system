@@ -60,6 +60,7 @@ interface Template {
   displayMode: string;
   isActive: boolean;
   postIdentificationGreeting: string | null;
+  postSubmitText: string | null;
   programId: string | null;
   questions: Question[];
 }
@@ -198,6 +199,7 @@ function SettingsTab({ template, onSaved }: { template: Template; onSaved: (t: T
     displayMode: template.displayMode ?? 'step_by_step',
     isActive: template.isActive,
     postIdentificationGreeting: template.postIdentificationGreeting ?? '',
+    postSubmitText: template.postSubmitText ?? '',
     programId: template.programId ?? '',
   });
   const [saving, setSaving] = useState(false);
@@ -364,6 +366,20 @@ function SettingsTab({ template, onSaved }: { template: Template; onSaved: (t: T
         </div>
       </div>
 
+      <div>
+        <label style={labelStyle}>טקסט תודה (לאחר שליחה)</label>
+        <textarea
+          rows={3}
+          style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.5 }}
+          value={form.postSubmitText}
+          onChange={(e) => setField('postSubmitText', e.target.value)}
+          placeholder='תודה! תשובותך נשמרו בהצלחה.'
+        />
+        <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 5 }}>
+          מוצג למשתתפת לאחר שליחת השאלון. ריק = טקסט ברירת מחדל.
+        </div>
+      </div>
+
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <label style={{ ...labelStyle, margin: 0 }}>שאלון פעיל</label>
         <input
@@ -399,11 +415,11 @@ interface QuestionFormState {
 const EMPTY_Q_FORM: QuestionFormState = {
   label: '',
   internalKey: '',
-  questionType: 'text',
+  questionType: 'textarea',
   helperText: '',
   isRequired: false,
   allowOther: false,
-  fieldSize: 'sm',
+  fieldSize: 'lg',
 };
 
 // Converts any label to a safe ASCII snake_case key (never Hebrew)
@@ -616,8 +632,16 @@ function QuestionModal({
           </select>
         </div>
         <div>
-          <label style={labelStyle}>טקסט עזר (אופציונלי)</label>
-          <input style={inputStyle} value={form.helperText} onChange={(e) => setField('helperText', e.target.value)} placeholder="הסבר קצר שיופיע מתחת לשאלה" />
+          <label style={labelStyle}>{form.questionType === 'static_text' ? 'תוכן הבלוק *' : 'טקסט עזר (אופציונלי)'}</label>
+          {form.questionType === 'static_text' ? (
+            <RichTextEditor
+              value={form.helperText}
+              onChange={(html) => setField('helperText', html)}
+              placeholder="כתבי כאן את תוכן הבלוק — כותרת, הסבר, הוראות..."
+            />
+          ) : (
+            <input style={inputStyle} value={form.helperText} onChange={(e) => setField('helperText', e.target.value)} placeholder="הסבר קצר שיופיע מתחת לשאלה" />
+          )}
         </div>
         {form.questionType !== 'static_text' && (
           <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
