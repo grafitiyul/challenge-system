@@ -61,6 +61,9 @@ model Program {
   questionnaireTemplates  QuestionnaireTemplate[]
   messageTemplates        ProgramMessageTemplate[]
 
+  // Rich content shown in participant portal rules tab (HTML)
+  rulesContent            String?
+
   @@map("programs")
 }
 
@@ -649,9 +652,11 @@ model GameAction {
   points      Int      @default(0)
   maxPerDay   Int?
   // Whether this action appears in the participant-facing portal
-  showInPortal    Boolean  @default(true)
+  showInPortal        Boolean  @default(true)
   // Custom message shown to participant when daily limit is reached (null = use system default)
-  blockedMessage  String?
+  blockedMessage      String?
+  // Rich HTML explanation shown in participant portal rules tab
+  explanationContent  String?
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt

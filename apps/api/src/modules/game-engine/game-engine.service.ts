@@ -33,6 +33,7 @@ export class GameEngineService {
         maxPerDay: dto.maxPerDay ?? null,
         showInPortal: dto.showInPortal ?? true,
         blockedMessage: dto.blockedMessage ?? null,
+        explanationContent: dto.explanationContent ?? null,
       },
     });
   }
@@ -59,6 +60,7 @@ export class GameEngineService {
         ...(dto.maxPerDay !== undefined ? { maxPerDay: dto.maxPerDay } : {}),
         ...(dto.showInPortal !== undefined ? { showInPortal: dto.showInPortal } : {}),
         ...(dto.blockedMessage !== undefined ? { blockedMessage: dto.blockedMessage } : {}),
+        ...(dto.explanationContent !== undefined ? { explanationContent: dto.explanationContent } : {}),
         ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
       },
     });

@@ -61,6 +61,7 @@ export class ProgramsService {
         ...(dto.showGroupComparison !== undefined ? { showGroupComparison: dto.showGroupComparison } : {}),
         ...(dto.showOtherGroupsCharts !== undefined ? { showOtherGroupsCharts: dto.showOtherGroupsCharts } : {}),
         ...(dto.showOtherGroupsMemberDetails !== undefined ? { showOtherGroupsMemberDetails: dto.showOtherGroupsMemberDetails } : {}),
+        ...(dto.rulesContent !== undefined ? { rulesContent: dto.rulesContent ?? null } : {}),
       },
     });
   }

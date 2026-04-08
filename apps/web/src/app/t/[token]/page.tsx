@@ -58,10 +58,12 @@ interface FeedItem {
 }
 
 interface PortalRules {
+  programRulesContent: string | null;
   actions: {
     id: string;
     name: string;
     description: string | null;
+    explanationContent: string | null;
     points: number;
     inputType: string | null;
     unit: string | null;
@@ -588,20 +590,66 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
             {rulesError && <p style={s.tabError}>{rulesError}</p>}
             {rules && !rulesLoading && (
               <>
+                {/* Section A — Program rules rich content */}
+                {rules.programRulesContent && (
+                  <div style={{ marginBottom: 28 }}>
+                    <div
+                      style={{
+                        fontSize: 15,
+                        color: '#1e293b',
+                        lineHeight: 1.7,
+                        background: '#ffffff',
+                        border: '1px solid #e2e8f0',
+                        borderRadius: 14,
+                        padding: '18px 18px',
+                      }}
+                      dangerouslySetInnerHTML={{ __html: rules.programRulesContent }}
+                    />
+                  </div>
+                )}
+
+                {/* Section B — Action cards */}
                 <p style={{ ...s.sectionTitle, marginBottom: 12 }}>פעולות ונקודות</p>
                 {rules.actions.map((a) => (
-                  <div key={a.id} style={s.ruleActionRow}>
-                    <div style={{ flex: 1 }}>
-                      <span style={s.ruleActionName}>{a.name}</span>
-                      {a.description && <span style={s.ruleActionDesc}>{a.description}</span>}
-                      {a.maxPerDay && (
-                        <span style={s.ruleTag}>עד {a.maxPerDay} פעמים ביום</span>
-                      )}
+                  <div key={a.id} style={{ ...s.ruleActionRow, flexDirection: 'column', alignItems: 'stretch', gap: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+                      <div style={{ flex: 1 }}>
+                        <span style={s.ruleActionName}>{a.name}</span>
+                        {a.description && <span style={s.ruleActionDesc}>{a.description}</span>}
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
+                          {a.maxPerDay && (
+                            <span style={s.ruleTag}>עד {a.maxPerDay} פעמים ביום</span>
+                          )}
+                          {a.unit && (
+                            <span style={s.ruleTag}>{a.unit}</span>
+                          )}
+                          {a.inputType === 'number' && a.aggregationMode === 'latest_value' && (
+                            <span style={s.ruleTag}>סה&quot;כ שוטף</span>
+                          )}
+                          {a.inputType === 'number' && a.aggregationMode === 'incremental_sum' && (
+                            <span style={s.ruleTag}>צבירה</span>
+                          )}
+                        </div>
+                      </div>
+                      <div style={s.rulePointsBadge}>+{a.points}</div>
                     </div>
-                    <div style={s.rulePointsBadge}>+{a.points}</div>
+                    {a.explanationContent && (
+                      <div
+                        style={{
+                          marginTop: 12,
+                          paddingTop: 12,
+                          borderTop: '1px solid #f0f0f0',
+                          fontSize: 13,
+                          color: '#374151',
+                          lineHeight: 1.65,
+                        }}
+                        dangerouslySetInnerHTML={{ __html: a.explanationContent }}
+                      />
+                    )}
                   </div>
                 ))}
 
+                {/* Section C — Bonus rules */}
                 {rules.rules.filter((r) => r.isActive).length > 0 && (
                   <>
                     <p style={{ ...s.sectionTitle, marginTop: 24, marginBottom: 12 }}>בונוסים מיוחדים</p>

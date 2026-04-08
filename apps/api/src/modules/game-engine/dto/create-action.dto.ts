@@ -37,6 +37,10 @@ export class CreateActionDto {
   @IsOptional()
   @IsString()
   blockedMessage?: string | null;
+
+  @IsOptional()
+  @IsString()
+  explanationContent?: string | null;
 }
 
 export class UpdateActionDto {
@@ -82,4 +86,8 @@ export class UpdateActionDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @IsOptional()
+  @IsString()
+  explanationContent?: string | null;
 }

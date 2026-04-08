@@ -28,4 +28,8 @@ export class UpdateProgramDto {
   @IsOptional()
   @IsBoolean()
   showOtherGroupsMemberDetails?: boolean;
+
+  @IsOptional()
+  @IsString()
+  rulesContent?: string | null;
 }

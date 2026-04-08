@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { BASE_URL, apiFetch } from '@lib/api';
 import WhatsAppEditor from '@components/whatsapp-editor';
+import RichContentEditor from '@components/rich-content-editor';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -32,6 +33,7 @@ interface Program {
   showGroupComparison: boolean;
   showOtherGroupsCharts: boolean;
   showOtherGroupsMemberDetails: boolean;
+  rulesContent: string | null;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -91,6 +93,10 @@ function SettingsTab({ program, onSaved }: { program: Program; onSaved: (p: Prog
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
 
+  const [rulesContent, setRulesContent] = useState(program.rulesContent ?? '');
+  const [rulesSaving, setRulesSaving] = useState(false);
+  const [rulesSaved, setRulesSaved] = useState(false);
+
   async function handleSave() {
     if (!form.name.trim()) { setError('שם הוא שדה חובה'); return; }
     setSaving(true); setError('');
@@ -105,36 +111,78 @@ function SettingsTab({ program, onSaved }: { program: Program; onSaved: (p: Prog
     } finally { setSaving(false); }
   }
 
+  async function handleSaveRules() {
+    setRulesSaving(true);
+    try {
+      await apiFetch(`${BASE_URL}/programs/${program.id}`, {
+        method: 'PATCH',
+        cache: 'no-store',
+        body: JSON.stringify({ rulesContent: rulesContent || null }),
+      });
+      onSaved({ ...program, rulesContent: rulesContent || null });
+      setRulesSaved(true);
+      setTimeout(() => setRulesSaved(false), 2500);
+    } finally { setRulesSaving(false); }
+  }
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 20, maxWidth: 520 }}>
-      <div>
-        <label style={labelStyle}>סוג</label>
-        <div style={{ fontSize: 14, color: '#374151', padding: '6px 0' }}>{TYPE_LABEL[program.type]}</div>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20, maxWidth: 680 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 20, maxWidth: 520 }}>
+        <div>
+          <label style={labelStyle}>סוג</label>
+          <div style={{ fontSize: 14, color: '#374151', padding: '6px 0' }}>{TYPE_LABEL[program.type]}</div>
+        </div>
+        <div>
+          <label style={labelStyle}>{TYPE_NAME_LABEL[program.type]} *</label>
+          <input style={inputStyle} value={form.name} onChange={(e) => { setForm((p) => ({ ...p, name: e.target.value })); setSaved(false); }} />
+        </div>
+        <div>
+          <label style={labelStyle}>תיאור</label>
+          <textarea
+            rows={3}
+            style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.6, minHeight: 88 }}
+            value={form.description}
+            onChange={(e) => { setForm((p) => ({ ...p, description: e.target.value })); setSaved(false); }}
+            placeholder={TYPE_DESC_PLACEHOLDER[program.type]}
+          />
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <label style={{ ...labelStyle, margin: 0 }}>{TYPE_LABEL[program.type]} פעיל</label>
+          <input type="checkbox" checked={form.isActive} onChange={(e) => { setForm((p) => ({ ...p, isActive: e.target.checked })); setSaved(false); }} style={{ width: 16, height: 16, cursor: 'pointer' }} />
+        </div>
+        {error && <div style={{ color: '#dc2626', fontSize: 13 }}>{error}</div>}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <button onClick={handleSave} disabled={saving} style={{ background: saving ? '#93c5fd' : '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '9px 20px', fontSize: 13, fontWeight: 600, cursor: saving ? 'not-allowed' : 'pointer' }}>
+            {saving ? 'שומר...' : 'שמירה'}
+          </button>
+          {saved && <span style={{ color: '#16a34a', fontSize: 13 }}>✓ נשמר</span>}
+        </div>
       </div>
-      <div>
-        <label style={labelStyle}>{TYPE_NAME_LABEL[program.type]} *</label>
-        <input style={inputStyle} value={form.name} onChange={(e) => { setForm((p) => ({ ...p, name: e.target.value })); setSaved(false); }} />
-      </div>
-      <div>
-        <label style={labelStyle}>תיאור</label>
-        <textarea
-          rows={3}
-          style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.6, minHeight: 88 }}
-          value={form.description}
-          onChange={(e) => { setForm((p) => ({ ...p, description: e.target.value })); setSaved(false); }}
-          placeholder={TYPE_DESC_PLACEHOLDER[program.type]}
+
+      {/* ── Rules rich content ── */}
+      <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: 24, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div>
+          <label style={labelStyle}>תוכן חוקים לפורטל המשתתפות</label>
+          <div style={{ fontSize: 12, color: '#64748b', marginBottom: 10 }}>
+            תוכן זה יוצג בטאב &ldquo;חוקים&rdquo; בפורטל — כחלק ממסמך ההסברים לתוכנית. ניתן לכלול כותרות, רשימות, קישורים וטקסט מעוצב.
+          </div>
+        </div>
+        <RichContentEditor
+          value={rulesContent}
+          onChange={(v) => { setRulesContent(v); setRulesSaved(false); }}
+          placeholder="הוסיפי כאן את ההסברים, הכללים וההנחיות לתוכנית..."
+          minHeight={200}
         />
-      </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <label style={{ ...labelStyle, margin: 0 }}>{TYPE_LABEL[program.type]} פעיל</label>
-        <input type="checkbox" checked={form.isActive} onChange={(e) => { setForm((p) => ({ ...p, isActive: e.target.checked })); setSaved(false); }} style={{ width: 16, height: 16, cursor: 'pointer' }} />
-      </div>
-      {error && <div style={{ color: '#dc2626', fontSize: 13 }}>{error}</div>}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <button onClick={handleSave} disabled={saving} style={{ background: saving ? '#93c5fd' : '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '9px 20px', fontSize: 13, fontWeight: 600, cursor: saving ? 'not-allowed' : 'pointer' }}>
-          {saving ? 'שומר...' : 'שמירה'}
-        </button>
-        {saved && <span style={{ color: '#16a34a', fontSize: 13 }}>✓ נשמר</span>}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 4 }}>
+          <button
+            onClick={handleSaveRules}
+            disabled={rulesSaving}
+            style={{ background: rulesSaving ? '#93c5fd' : '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '9px 20px', fontSize: 13, fontWeight: 600, cursor: rulesSaving ? 'not-allowed' : 'pointer' }}
+          >
+            {rulesSaving ? 'שומר...' : 'שמור תוכן חוקים'}
+          </button>
+          {rulesSaved && <span style={{ color: '#16a34a', fontSize: 13 }}>✓ נשמר</span>}
+        </div>
       </div>
     </div>
   );
@@ -291,6 +339,7 @@ interface GameAction {
   maxPerDay: number | null;
   showInPortal: boolean;
   blockedMessage: string | null;
+  explanationContent: string | null;
   isActive: boolean;
 }
 
@@ -443,6 +492,7 @@ function ActionModal({
     maxPerDay: action?.maxPerDay != null ? String(action.maxPerDay) : '',
     showInPortal: action?.showInPortal ?? true,
     blockedMessage: action?.blockedMessage ?? '',
+    explanationContent: action?.explanationContent ?? '',
   });
   const [form, setForm] = useState(initialForm.current);
   const [saving, setSaving] = useState(false);
@@ -490,6 +540,7 @@ function ActionModal({
         maxPerDay: form.maxPerDay.trim() ? parseInt(form.maxPerDay) : null,
         showInPortal: form.showInPortal,
         blockedMessage: form.blockedMessage.trim() || null,
+        explanationContent: form.explanationContent.trim() || null,
       };
       const url = action
         ? `${BASE_URL}/game/programs/${programId}/actions/${action.id}`
@@ -648,6 +699,20 @@ function ActionModal({
                 </div>
               </div>
             </label>
+          </div>
+
+          {/* ── Explanation content (rules tab) ── */}
+          <div style={{ background: '#fefce8', border: '1px solid #fde68a', borderRadius: 10, padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: '#92400e', textTransform: 'uppercase', letterSpacing: '0.06em' }}>הסבר מורחב לטאב חוקים</div>
+            <div style={{ fontSize: 12, color: '#78350f', lineHeight: 1.5 }}>
+              תוכן זה מוצג בטאב &ldquo;חוקים&rdquo; בפורטל — מתחת לשם הפעולה ולנקודות. מקום לתת הסבר מפורט, טיפים, דוגמאות.
+            </div>
+            <RichContentEditor
+              value={form.explanationContent}
+              onChange={(v) => setForm((p) => ({ ...p, explanationContent: v }))}
+              placeholder="הוסיפי הסבר, טיפים, דוגמאות לפעולה זו..."
+              minHeight={120}
+            />
           </div>
 
           {/* ── Participant-facing preview ── */}
