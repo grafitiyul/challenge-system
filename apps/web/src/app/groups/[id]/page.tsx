@@ -120,6 +120,9 @@ export default function GroupDetailPage() {
   const [msgSending, setMsgSending] = useState(false);
   const [msgError, setMsgError] = useState('');
   const [msgSuccess, setMsgSuccess] = useState(false);
+  // Template picker
+  const [templates, setTemplates] = useState<{ id: string; name: string; content: string }[]>([]);
+  const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
 
   // Add participant modal
   const [addParticipantOpen, setAddParticipantOpen] = useState(false);
@@ -169,6 +172,17 @@ export default function GroupDetailPage() {
   }, [id]);
 
   useEffect(() => { loadGroup(); }, [loadGroup]);
+
+  // ─── Templates: fetch once when message modal first opens ────────────────
+
+  const templatesFetched = useRef(false);
+  useEffect(() => {
+    if (!msgModalOpen || templatesFetched.current || !group?.programId) return;
+    templatesFetched.current = true;
+    apiFetch<{ id: string; name: string; content: string }[]>(
+      `${BASE_URL}/programs/${group.programId}/templates`, { cache: 'no-store' },
+    ).then(setTemplates).catch(() => {});
+  }, [msgModalOpen, group?.programId]);
 
   // ─── Chat tab: load when switching to chat tab ────────────────────────────
 
@@ -855,29 +869,40 @@ export default function GroupDetailPage() {
             </div>
           )}
 
-          {/* Quick template chips */}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
-            {[
-              'שלום חברות! 👋',
-              'תזכורת למשימה להיום 📌',
-              'כל הכבוד לכולן! 🏆',
-              'מחר יש מפגש — לא לשכוח! 📅',
-            ].map((chip) => (
+          {/* Template picker trigger */}
+          {templates.length > 0 && (
+            <div style={{ marginBottom: 12 }}>
               <button
-                key={chip}
                 type="button"
-                onClick={() => setMsgText((prev) => (prev ? prev + '\n' + chip : chip))}
-                disabled={!groupChatLink}
-                style={{
-                  padding: '4px 10px', borderRadius: 20, border: '1px solid #e2e8f0',
-                  background: '#f8fafc', fontSize: 12, cursor: groupChatLink ? 'pointer' : 'not-allowed',
-                  color: '#374151',
-                }}
+                onClick={() => setTemplatePickerOpen((v) => !v)}
+                style={{ background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: 7, padding: '6px 14px', fontSize: 13, color: '#0369a1', cursor: 'pointer', fontWeight: 500 }}
               >
-                {chip}
+                📋 בחר נוסח {templatePickerOpen ? '▲' : '▼'}
               </button>
-            ))}
-          </div>
+              {templatePickerOpen && (
+                <div style={{ marginTop: 8, border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden', background: '#fff' }}>
+                  {templates.map((t) => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      onClick={() => { setMsgText(t.content); setTemplatePickerOpen(false); }}
+                      style={{
+                        display: 'block', width: '100%', textAlign: 'right' as const,
+                        padding: '10px 14px', background: 'none', border: 'none',
+                        borderBottom: '1px solid #f1f5f9', cursor: 'pointer',
+                        fontSize: 13,
+                      }}
+                      onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#f8fafc'; }}
+                      onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'none'; }}
+                    >
+                      <div style={{ fontWeight: 600, color: '#0f172a', marginBottom: 2 }}>{t.name}</div>
+                      <div style={{ color: '#64748b', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.content}</div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           <WhatsAppEditor
             value={msgText}

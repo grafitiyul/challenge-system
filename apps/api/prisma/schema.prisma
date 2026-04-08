@@ -58,9 +58,22 @@ model Program {
   showOtherGroupsCharts        Boolean @default(true)
   showOtherGroupsMemberDetails Boolean @default(false)
 
-  questionnaireTemplates QuestionnaireTemplate[]
+  questionnaireTemplates  QuestionnaireTemplate[]
+  messageTemplates        ProgramMessageTemplate[]
 
   @@map("programs")
+}
+
+model ProgramMessageTemplate {
+  id        String   @id @default(cuid())
+  programId String
+  program   Program  @relation(fields: [programId], references: [id])
+  name      String
+  content   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("program_message_templates")
 }
 
 // =============================================================================

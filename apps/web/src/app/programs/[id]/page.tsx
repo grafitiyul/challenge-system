@@ -4,12 +4,13 @@ import { Suspense, use, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { BASE_URL, apiFetch } from '@lib/api';
+import WhatsAppEditor from '@components/whatsapp-editor';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type ProgramType = 'challenge' | 'game' | 'group_coaching' | 'personal_coaching';
 type GroupStatus = 'active' | 'inactive';
-type TabKey = 'settings' | 'groups' | 'game' | 'leaderboard';
+type TabKey = 'settings' | 'groups' | 'game' | 'leaderboard' | 'templates';
 
 interface Group {
   id: string;
@@ -75,7 +76,7 @@ const labelStyle: React.CSSProperties = {
   fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 6, display: 'block',
 };
 
-const VALID_TABS: TabKey[] = ['settings', 'groups', 'game', 'leaderboard'];
+const VALID_TABS: TabKey[] = ['settings', 'groups', 'game', 'leaderboard', 'templates'];
 
 function formatDate(iso: string | null) {
   if (!iso) return '—';
@@ -1122,6 +1123,255 @@ function RuleModal({
   );
 }
 
+// ─── Templates Tab ───────────────────────────────────────────────────────────
+
+interface MessageTemplate {
+  id: string;
+  name: string;
+  content: string;
+  createdAt: string;
+}
+
+type TemplateModalMode = 'create' | 'edit';
+
+function TemplatesTab({ programId }: { programId: string }) {
+  const [templates, setTemplates] = useState<MessageTemplate[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [modal, setModal] = useState<{ open: boolean; mode: TemplateModalMode; tmpl: MessageTemplate | null }>({ open: false, mode: 'create', tmpl: null });
+  const [deleteTarget, setDeleteTarget] = useState<MessageTemplate | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  useEffect(() => {
+    apiFetch(`${BASE_URL}/programs/${programId}/templates`, { cache: 'no-store' })
+      .then((d) => setTemplates(d as MessageTemplate[]))
+      .finally(() => setLoading(false));
+  }, [programId]);
+
+  async function handleDelete(tmpl: MessageTemplate) {
+    setDeleting(true);
+    try {
+      await apiFetch(`${BASE_URL}/programs/${programId}/templates/${tmpl.id}`, { method: 'DELETE', cache: 'no-store' });
+      setTemplates((prev) => prev.filter((t) => t.id !== tmpl.id));
+      setDeleteTarget(null);
+    } finally { setDeleting(false); }
+  }
+
+  if (loading) return <div style={{ color: '#94a3b8', textAlign: 'center', padding: 48 }}>טוען...</div>;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <h3 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', margin: '0 0 2px' }}>נוסחי הודעות</h3>
+          <p style={{ fontSize: 12, color: '#94a3b8', margin: 0 }}>תבניות הודעה לשימוש חוזר בשליחת הודעות לקבוצות</p>
+        </div>
+        <button
+          onClick={() => setModal({ open: true, mode: 'create', tmpl: null })}
+          style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
+        >
+          + נוסח חדש
+        </button>
+      </div>
+
+      {templates.length === 0 ? (
+        <div style={{ padding: '36px 24px', textAlign: 'center', border: '2px dashed #e2e8f0', borderRadius: 10 }}>
+          <div style={{ fontSize: 32, marginBottom: 10 }}>📝</div>
+          <div style={{ fontSize: 15, fontWeight: 600, color: '#374151', marginBottom: 6 }}>אין נוסחים עדיין</div>
+          <div style={{ fontSize: 13, color: '#94a3b8', maxWidth: 280, margin: '0 auto' }}>
+            צרי נוסחים לשימוש חוזר — ברכות, תזכורות, הנחיות שגרתיות ועוד.
+          </div>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {templates.map((tmpl) => (
+            <div key={tmpl.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 14, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: '14px 18px' }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, color: '#0f172a', marginBottom: 4 }}>{tmpl.name}</div>
+                <div style={{ fontSize: 13, color: '#64748b', whiteSpace: 'pre-wrap', overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' as const }}>
+                  {tmpl.content}
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                <button
+                  onClick={() => setModal({ open: true, mode: 'edit', tmpl })}
+                  style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, padding: '6px 14px', fontSize: 12, color: '#374151', cursor: 'pointer', fontWeight: 500 }}
+                >
+                  ערוך
+                </button>
+                <button
+                  onClick={() => setDeleteTarget(tmpl)}
+                  style={{ background: 'none', border: '1px solid #fecaca', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: '#dc2626', cursor: 'pointer' }}
+                  title="מחק נוסח"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ── Create / Edit modal ── */}
+      {modal.open && (
+        <TemplateEditorModal
+          programId={programId}
+          mode={modal.mode}
+          tmpl={modal.tmpl}
+          onSaved={(saved) => {
+            setTemplates((prev) =>
+              modal.mode === 'edit'
+                ? prev.map((t) => t.id === saved.id ? saved : t)
+                : [...prev, saved],
+            );
+            setModal({ open: false, mode: 'create', tmpl: null });
+          }}
+          onClose={() => setModal({ open: false, mode: 'create', tmpl: null })}
+        />
+      )}
+
+      {/* ── Delete confirm ── */}
+      {deleteTarget && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 20 }}>
+          <div style={{ background: '#fff', borderRadius: 12, padding: 24, maxWidth: 360, width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
+            <h3 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', margin: '0 0 10px' }}>מחיקת נוסח</h3>
+            <p style={{ fontSize: 14, color: '#64748b', margin: '0 0 20px' }}>
+              למחוק את הנוסח <strong>&ldquo;{deleteTarget.name}&rdquo;</strong>? לא ניתן לשחזר.
+            </p>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button onClick={() => setDeleteTarget(null)} style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 7, padding: '8px 16px', fontSize: 13, cursor: 'pointer' }}>ביטול</button>
+              <button
+                onClick={() => handleDelete(deleteTarget)}
+                disabled={deleting}
+                style={{ background: deleting ? '#fca5a5' : '#dc2626', color: '#fff', border: 'none', borderRadius: 7, padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: deleting ? 'not-allowed' : 'pointer' }}
+              >
+                {deleting ? 'מוחק...' : 'מחק'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TemplateEditorModal({
+  programId, mode, tmpl, onSaved, onClose,
+}: {
+  programId: string;
+  mode: TemplateModalMode;
+  tmpl: MessageTemplate | null;
+  onSaved: (t: MessageTemplate) => void;
+  onClose: () => void;
+}) {
+  const initialName = tmpl?.name ?? '';
+  const initialContent = tmpl?.content ?? '';
+  const [name, setName] = useState(initialName);
+  const [content, setContent] = useState(initialContent);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [showUnsaved, setShowUnsaved] = useState(false);
+
+  function isDirty() {
+    return name !== initialName || content !== initialContent;
+  }
+
+  function handleClose() {
+    if (isDirty()) setShowUnsaved(true);
+    else onClose();
+  }
+
+  async function submitForm(): Promise<boolean> {
+    if (!name.trim()) { setError('שם הוא שדה חובה'); return false; }
+    if (!content.trim()) { setError('תוכן הוא שדה חובה'); return false; }
+    setSaving(true); setError('');
+    try {
+      const url = mode === 'edit' && tmpl
+        ? `${BASE_URL}/programs/${programId}/templates/${tmpl.id}`
+        : `${BASE_URL}/programs/${programId}/templates`;
+      onSaved(await apiFetch(url, {
+        method: mode === 'edit' ? 'PATCH' : 'POST',
+        cache: 'no-store',
+        body: JSON.stringify({ name: name.trim(), content: content.trim() }),
+      }) as MessageTemplate);
+      return true;
+    } catch {
+      setError('שגיאה בשמירה. נסי שוב.');
+      return false;
+    } finally { setSaving(false); }
+  }
+
+  return (
+    <>
+      <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 20, overflowY: 'auto' }}>
+        <div style={{ background: '#fff', borderRadius: 14, padding: 28, width: '100%', maxWidth: 540, boxShadow: '0 20px 60px rgba(0,0,0,0.2)', maxHeight: '92vh', overflowY: 'auto' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+            <h2 style={{ fontSize: 17, fontWeight: 700, color: '#0f172a', margin: 0 }}>
+              {mode === 'edit' ? 'עריכת נוסח' : 'נוסח חדש'}
+            </h2>
+            <button onClick={handleClose} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: '#94a3b8', lineHeight: 1 }}>×</button>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <div>
+              <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 6 }}>שם הנוסח *</label>
+              <input
+                autoFocus
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="לדוגמה: ברכת בוקר, תזכורת יומית..."
+                style={{ width: '100%', border: '1px solid #d1d5db', borderRadius: 7, padding: '9px 12px', fontSize: 14, boxSizing: 'border-box' as const, outline: 'none' }}
+              />
+            </div>
+
+            <div>
+              <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 6 }}>תוכן ההודעה *</label>
+              <WhatsAppEditor
+                value={content}
+                onChange={setContent}
+                placeholder="כתבי את תוכן הנוסח כאן..."
+                minHeight={160}
+              />
+            </div>
+
+            {error && <div style={{ color: '#dc2626', fontSize: 13, background: '#fef2f2', padding: '8px 12px', borderRadius: 7 }}>{error}</div>}
+
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button type="button" onClick={handleClose} style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 7, padding: '9px 18px', fontSize: 13, cursor: 'pointer' }}>ביטול</button>
+              <button
+                onClick={() => submitForm()}
+                disabled={saving}
+                style={{ background: saving ? '#93c5fd' : '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '9px 20px', fontSize: 13, fontWeight: 600, cursor: saving ? 'not-allowed' : 'pointer' }}
+              >
+                {saving ? 'שומר...' : 'שמירה'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {showUnsaved && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+          <div style={{ background: '#fff', borderRadius: 12, padding: 24, maxWidth: 320, width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+            <h3 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', margin: '0 0 8px' }}>שינויים לא שמורים</h3>
+            <p style={{ fontSize: 14, color: '#64748b', margin: '0 0 20px', lineHeight: 1.5 }}>יש שינויים שעדיין לא נשמרו. מה לעשות?</p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <button disabled={saving} onClick={async () => { const ok = await submitForm(); if (ok) setShowUnsaved(false); }} style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '10px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer', textAlign: 'center' as const }}>
+                {saving ? 'שומר...' : 'שמור ויצא'}
+              </button>
+              <button onClick={() => { setShowUnsaved(false); onClose(); }} style={{ background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca', borderRadius: 7, padding: '10px 16px', fontSize: 13, cursor: 'pointer', textAlign: 'center' as const }}>
+                בטל שינויים
+              </button>
+              <button onClick={() => setShowUnsaved(false)} style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 7, padding: '10px 16px', fontSize: 13, cursor: 'pointer', textAlign: 'center' as const }}>
+                המשך עריכה
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 // ─── Game Engine Tab ──────────────────────────────────────────────────────────
 
 function GameEngineTab({ programId }: { programId: string }) {
@@ -1763,6 +2013,7 @@ function ProgramPageInner({ params }: { params: Promise<{ id: string }> }) {
       { key: 'game' as TabKey, label: 'מנוע משחק' },
       { key: 'leaderboard' as TabKey, label: 'דירוגים' },
     ] : []),
+    { key: 'templates', label: 'נוסחים' },
     { key: 'settings', label: 'הגדרות' },
   ];
 
@@ -1808,6 +2059,7 @@ function ProgramPageInner({ params }: { params: Promise<{ id: string }> }) {
         {activeTab === 'settings' && <SettingsTab program={program} onSaved={(updated) => setProgram(updated)} />}
         {activeTab === 'groups' && <GroupsTab program={program} />}
         {activeTab === 'game' && <GameEngineTab programId={program.id} />}
+        {activeTab === 'templates' && <TemplatesTab programId={program.id} />}
         {activeTab === 'leaderboard' && (
           <LeaderboardTab
             program={program}

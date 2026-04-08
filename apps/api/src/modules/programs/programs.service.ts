@@ -3,6 +3,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { CreateProgramDto } from './dto/create-program.dto';
 import { UpdateProgramDto } from './dto/update-program.dto';
 import { CreateProgramGroupDto } from './dto/create-program-group.dto';
+import { CreateMessageTemplateDto, UpdateMessageTemplateDto } from './dto/create-message-template.dto';
 import { ProgramType } from '@prisma/client';
 
 @Injectable()
@@ -85,6 +86,42 @@ export class ProgramsService {
         status: dto.status ?? 'active',
       },
     });
+  }
+
+  // ─── Message templates ─────────────────────────────────────────────────────
+
+  listTemplates(programId: string) {
+    return this.prisma.programMessageTemplate.findMany({
+      where: { programId },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true, name: true, content: true, createdAt: true },
+    });
+  }
+
+  async createTemplate(programId: string, dto: CreateMessageTemplateDto) {
+    await this.findById(programId);
+    return this.prisma.programMessageTemplate.create({
+      data: { programId, name: dto.name.trim(), content: dto.content.trim() },
+    });
+  }
+
+  async updateTemplate(programId: string, templateId: string, dto: UpdateMessageTemplateDto) {
+    const tmpl = await this.prisma.programMessageTemplate.findUnique({ where: { id: templateId } });
+    if (!tmpl || tmpl.programId !== programId) throw new NotFoundException('Template not found');
+    return this.prisma.programMessageTemplate.update({
+      where: { id: templateId },
+      data: {
+        ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
+        ...(dto.content !== undefined ? { content: dto.content.trim() } : {}),
+      },
+    });
+  }
+
+  async deleteTemplate(programId: string, templateId: string) {
+    const tmpl = await this.prisma.programMessageTemplate.findUnique({ where: { id: templateId } });
+    if (!tmpl || tmpl.programId !== programId) throw new NotFoundException('Template not found');
+    await this.prisma.programMessageTemplate.delete({ where: { id: templateId } });
+    return { ok: true };
   }
 
   // Returns a stable sentinel challengeId for program-owned groups.
