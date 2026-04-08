@@ -206,7 +206,7 @@ export default function ParticipantsPage() {
         setImportMapping(result.detected);
         setImportStep('map');
       } catch (err) {
-        setImportError(err instanceof Error ? err.message : 'שגיאה בזיהוי עמודות');
+        setImportError(typeof err === 'object' && err !== null && 'message' in err ? String((err as { message: unknown }).message) : 'שגיאה בזיהוי עמודות');
       } finally {
         setDetecting(false);
       }
@@ -220,12 +220,14 @@ export default function ParticipantsPage() {
     try {
       const rows = await apiFetch(`${BASE_URL}/import/participants/preview`, {
         method: 'POST',
-        body: JSON.stringify({ headers: csvHeaders, rows: csvRows, mapping: importMapping }),
+        // Send only the first 30 rows — the backend caps preview at 30 anyway.
+        // Avoids sending the full file and hitting the body size limit.
+        body: JSON.stringify({ headers: csvHeaders, rows: csvRows.slice(0, 30), mapping: importMapping }),
       }) as PreviewRow[];
       setPreviewRows(rows);
       setImportStep('preview');
     } catch (err) {
-      setImportError(err instanceof Error ? err.message : 'שגיאה בתצוגה מקדימה');
+      setImportError(typeof err === 'object' && err !== null && 'message' in err ? String((err as { message: unknown }).message) : 'שגיאה בתצוגה מקדימה');
     } finally {
       setPreviewLoading(false);
     }
@@ -244,7 +246,7 @@ export default function ParticipantsPage() {
       setImportStep('result');
       fetchParticipants(isMockEnabled);
     } catch (err) {
-      setImportError(err instanceof Error ? err.message : 'שגיאה בייבוא');
+      setImportError(typeof err === 'object' && err !== null && 'message' in err ? String((err as { message: unknown }).message) : 'שגיאה בייבוא');
     } finally {
       setImportRunning(false);
     }
