@@ -183,6 +183,15 @@ export class ParticipantsService {
       .map((r) => (r as PromiseFulfilledResult<unknown>).value);
   }
 
+  // ─── Form submissions ───────────────────────────────────────────────────────
+
+  async listFormSubmissions(participantId: string) {
+    return this.prisma.participantFormSubmission.findMany({
+      where: { participantId },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
   // ─── Participant portal token ───────────────────────────────────────────────
 
   async generateAccessToken(participantId: string, groupId: string): Promise<{ token: string }> {

@@ -14,6 +14,7 @@ import { QuestionnairesModule } from './modules/questionnaires/questionnaires.mo
 import { UploadModule } from './modules/upload/upload.module';
 import { ProgramsModule } from './modules/programs/programs.module';
 import { GameEngineModule } from './modules/game-engine/game-engine.module';
+import { ImportModule } from './modules/import/import.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { GameEngineModule } from './modules/game-engine/game-engine.module';
     UploadModule,
     ProgramsModule,
     GameEngineModule,
+    ImportModule,
   ],
   controllers: [HealthController, WassengerController],
   providers: [WassengerService, SeederService],

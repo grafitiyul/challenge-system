@@ -234,6 +234,7 @@ model Participant {
   facts                     ParticipantFact[]
   chatLinks                 GroupChatLink[]
   questionnaireSubmissions  QuestionnaireSubmission[]
+  formSubmissions           ParticipantFormSubmission[]
 
   // Game engine
   userActionLogs        UserActionLog[]
@@ -245,6 +246,23 @@ model Participant {
   updatedAt                 DateTime                  @updatedAt
 
   @@map("participants")
+}
+
+// Immutable snapshot of any form data attached to a participant
+// source: "import" | "manual"
+// data: arbitrary key-value pairs (JSON)
+model ParticipantFormSubmission {
+  id            String      @id @default(cuid())
+  participantId String
+  participant   Participant @relation(fields: [participantId], references: [id])
+  source        String      @default("import")
+  title         String
+  data          Json
+  importKey     String?     @unique
+  createdAt     DateTime    @default(now())
+
+  @@index([participantId])
+  @@map("participant_form_submissions")
 }
 
 // Many-to-many bridge: one participant can belong to multiple groups

@@ -43,6 +43,11 @@ export class ParticipantsController {
     return this.participantsService.update(id, dto);
   }
 
+  @Get(':id/form-submissions')
+  listFormSubmissions(@Param('id') id: string) {
+    return this.participantsService.listFormSubmissions(id);
+  }
+
   // POST /api/participants/:participantId/groups/:groupId/token
   // Generates (idempotent) a personal access token for the participant portal link
   @Post(':participantId/groups/:groupId/token')

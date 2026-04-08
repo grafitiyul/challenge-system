@@ -66,9 +66,17 @@ interface Submission {
   answers: SubmissionAnswer[];
 }
 
-type Tab = 'questionnaires' | 'goals' | 'collected' | 'communication' | 'reports' | 'payments' | 'history';
+type Tab = 'questionnaires' | 'forms' | 'goals' | 'collected' | 'communication' | 'reports' | 'payments' | 'history';
 
-const VALID_TABS: Tab[] = ['questionnaires', 'goals', 'collected', 'communication', 'reports', 'payments', 'history'];
+const VALID_TABS: Tab[] = ['questionnaires', 'forms', 'goals', 'collected', 'communication', 'reports', 'payments', 'history'];
+
+interface FormSubmission {
+  id: string;
+  source: string;
+  title: string;
+  data: Record<string, string>;
+  createdAt: string;
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -488,6 +496,10 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
   const [templates, setTemplates] = useState<QuestionnaireTemplate[]>([]);
   const [pickModalOpen, setPickModalOpen] = useState(false);
 
+  const [formSubmissions, setFormSubmissions] = useState<FormSubmission[]>([]);
+  const [formSubmissionsLoaded, setFormSubmissionsLoaded] = useState(false);
+  const [formSubmissionsLoading, setFormSubmissionsLoading] = useState(false);
+
   // Load participant
   useEffect(() => {
     apiFetch(`${BASE_URL}/participants/${id}`)
@@ -516,6 +528,15 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
       .catch(() => setSubmissions([]))
       .finally(() => setSubmissionsLoading(false));
   }, [id, submissionsLoaded]);
+
+  useEffect(() => {
+    if (activeTab !== 'forms' || formSubmissionsLoaded) return;
+    setFormSubmissionsLoading(true);
+    apiFetch(`${BASE_URL}/participants/${id}/form-submissions`)
+      .then((data: unknown) => { setFormSubmissions(data as FormSubmission[]); setFormSubmissionsLoaded(true); })
+      .catch(() => setFormSubmissions([]))
+      .finally(() => setFormSubmissionsLoading(false));
+  }, [id, activeTab, formSubmissionsLoaded]);
 
   async function openPickModal() {
     setPickModalOpen(true);
@@ -559,6 +580,7 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
 
   const tabs: { key: Tab; label: string }[] = [
     { key: 'questionnaires', label: 'שאלונים' },
+    { key: 'forms',          label: 'טפסים' },
     { key: 'goals',          label: 'מטרות והתקדמות' },
     { key: 'collected',      label: 'מידע שנאסף' },
     { key: 'communication',  label: 'תקשורת' },
@@ -804,6 +826,9 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
         {activeTab === 'questionnaires' && (
           <SubmissionsAccordion submissions={submissions} loading={submissionsLoading} onFillClick={openPickModal} />
         )}
+        {activeTab === 'forms' && (
+          <FormsTab submissions={formSubmissions} loading={formSubmissionsLoading} />
+        )}
         {activeTab === 'goals' && (
           <PlaceholderTab icon="🎯" title="מטרות והתקדמות" subtitle="כאן יוצגו מטרות, אתגרים פעילים ומדדי התקדמות — בקרוב" />
         )}
@@ -864,6 +889,80 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Forms tab ───────────────────────────────────────────────────────────────
+
+function FormsTab({ submissions, loading }: { submissions: FormSubmission[]; loading: boolean }) {
+  const [openId, setOpenId] = useState<string | null>(null);
+
+  if (loading) {
+    return <div style={{ color: '#94a3b8', fontSize: 14, padding: '24px 0' }}>טוען...</div>;
+  }
+
+  if (submissions.length === 0) {
+    return (
+      <div style={{ padding: '48px 24px', textAlign: 'center', border: '2px dashed #e2e8f0', borderRadius: 12, color: '#94a3b8', fontSize: 14 }}>
+        <div style={{ fontSize: 32, marginBottom: 10 }}>📂</div>
+        לא נמצאו טפסים מיובאים עבור משתתפת זו
+        <div style={{ fontSize: 12, marginTop: 8 }}>ייבא משתתפות מ-CSV בדף המשתתפות כדי לראות כאן נתונים</div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', marginBottom: 20 }}>
+        טפסים מיובאים
+        <span style={{ fontSize: 13, fontWeight: 400, color: '#64748b', marginRight: 8 }}>{submissions.length} רשומות</span>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {submissions.map((sub) => {
+          const isOpen = openId === sub.id;
+          const entries = Object.entries(sub.data);
+          return (
+            <div
+              key={sub.id}
+              style={{ border: `1.5px solid ${isOpen ? '#93c5fd' : '#e2e8f0'}`, borderRadius: 12, background: '#fff', overflow: 'hidden' }}
+            >
+              <button
+                onClick={() => setOpenId(isOpen ? null : sub.id)}
+                style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', background: isOpen ? '#f0f7ff' : '#fafafa', border: 'none', cursor: 'pointer', textAlign: 'right', gap: 12, fontFamily: 'inherit' }}
+              >
+                <div style={{ flex: 1, textAlign: 'right' }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: '#0f172a', marginBottom: 5 }}>{sub.title}</div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 12, color: '#64748b' }}>
+                      {new Date(sub.createdAt).toLocaleDateString('he-IL', { year: 'numeric', month: 'short', day: 'numeric' })}
+                    </span>
+                    <span style={{ background: '#f0fdf4', color: '#15803d', fontSize: 11, padding: '3px 10px', borderRadius: 20, fontWeight: 600 }}>
+                      {sub.source === 'import' ? 'ייבוא CSV' : sub.source}
+                    </span>
+                    <span style={{ fontSize: 12, color: '#94a3b8' }}>{entries.length} שדות</span>
+                  </div>
+                </div>
+                <span style={{ fontSize: 18, color: '#94a3b8', flexShrink: 0, display: 'inline-block', transform: isOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}>▾</span>
+              </button>
+
+              {isOpen && (
+                <div style={{ borderTop: '1px solid #bfdbfe', padding: '20px 20px' }}>
+                  {entries.length === 0 && <div style={{ fontSize: 13, color: '#94a3b8' }}>אין שדות שמורים</div>}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 12 }}>
+                    {entries.map(([key, value]) => (
+                      <div key={key} style={{ padding: '10px 12px', background: '#f8fafc', borderRadius: 8, border: '1px solid #f1f5f9' }}>
+                        <div style={{ fontSize: 11, color: '#94a3b8', fontWeight: 600, marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{key}</div>
+                        <div style={{ fontSize: 13, color: '#0f172a', fontWeight: 500, wordBreak: 'break-word' }}>{value || '—'}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
