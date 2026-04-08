@@ -61,32 +61,39 @@ const PLACEHOLDER_SECTIONS = [
   },
 ];
 
-const MOCK_SETTING_KEY = 'showMockParticipants';
-
 export default function SettingsPage() {
   const [data, setData] = useState<Record<string, NamedItem[]>>({});
   const [loading, setLoading] = useState(true);
-  const [showMock, setShowMock] = useState(false);
+  const [mockEnabled, setMockEnabled] = useState(false);
+  const [mockToggling, setMockToggling] = useState(false);
 
-  const toggleShowMock = (val: boolean) => {
-    localStorage.setItem(MOCK_SETTING_KEY, String(val));
-    setShowMock(val);
+  const toggleMock = async (val: boolean) => {
+    setMockToggling(true);
+    try {
+      await apiFetch(`${BASE_URL}/settings/mockParticipantsEnabled`, {
+        method: 'PATCH',
+        body: JSON.stringify({ value: String(val) }),
+      });
+      setMockEnabled(val);
+    } catch {
+      // ignore — UI stays unchanged on error
+    } finally {
+      setMockToggling(false);
+    }
   };
 
   useEffect(() => {
-    // Read mock setting from localStorage on mount
-    setShowMock(localStorage.getItem(MOCK_SETTING_KEY) === 'true');
-    // Load all configurable lists on mount
     const load = async () => {
       try {
-        const results = await Promise.all(
-          SECTIONS.map((s) => {
-            console.log('[API] GET', `${BASE_URL}${s.endpoint}`);
-            return apiFetch(`${BASE_URL}${s.endpoint}`)
-              .then((d: unknown) => [s.key, Array.isArray(d) ? d : []] as [string, NamedItem[]]);
-          }),
-        );
-        setData(Object.fromEntries(results));
+        const [systemSettings, ...listResults] = await Promise.all([
+          apiFetch(`${BASE_URL}/settings`) as Promise<Record<string, string>>,
+          ...SECTIONS.map((s) =>
+            apiFetch(`${BASE_URL}${s.endpoint}`)
+              .then((d: unknown) => [s.key, Array.isArray(d) ? d : []] as [string, NamedItem[]]),
+          ),
+        ]);
+        setMockEnabled((systemSettings as Record<string, string>)['mockParticipantsEnabled'] === 'true');
+        setData(Object.fromEntries(listResults as [string, NamedItem[]][]));
       } catch {
         // Continue with empty state on error
       } finally {
@@ -206,15 +213,17 @@ export default function SettingsPage() {
           </div>
         </div>
         <button
-          onClick={() => toggleShowMock(!showMock)}
+          onClick={() => !mockToggling && toggleMock(!mockEnabled)}
+          disabled={mockToggling}
           style={{
             position: 'relative',
             width: 52,
             height: 28,
             borderRadius: 14,
             border: 'none',
-            background: showMock ? '#2563eb' : '#cbd5e1',
-            cursor: 'pointer',
+            background: mockEnabled ? '#2563eb' : '#cbd5e1',
+            cursor: mockToggling ? 'not-allowed' : 'pointer',
+            opacity: mockToggling ? 0.7 : 1,
             transition: 'background 0.2s',
             flexShrink: 0,
           }}
@@ -224,7 +233,7 @@ export default function SettingsPage() {
             style={{
               position: 'absolute',
               top: 3,
-              right: showMock ? 3 : 25,
+              right: mockEnabled ? 3 : 25,
               width: 22,
               height: 22,
               borderRadius: '50%',

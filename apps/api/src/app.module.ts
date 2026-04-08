@@ -15,6 +15,7 @@ import { UploadModule } from './modules/upload/upload.module';
 import { ProgramsModule } from './modules/programs/programs.module';
 import { GameEngineModule } from './modules/game-engine/game-engine.module';
 import { ImportModule } from './modules/import/import.module';
+import { SettingsModule } from './modules/settings/settings.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { ImportModule } from './modules/import/import.module';
     ProgramsModule,
     GameEngineModule,
     ImportModule,
+    SettingsModule,
   ],
   controllers: [HealthController, WassengerController],
   providers: [WassengerService, SeederService],

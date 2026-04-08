@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { PrismaService } from './prisma/prisma.service';
+import { SettingsService } from './modules/settings/settings.service';
 
 const DEFAULT_CHALLENGE_TYPES = [
   { name: 'ירידה במשקל', sortOrder: 1 },
@@ -13,10 +14,14 @@ const DEFAULT_CHALLENGE_TYPES = [
 export class SeederService implements OnApplicationBootstrap {
   private readonly logger = new Logger(SeederService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly settings: SettingsService,
+  ) {}
 
   async onApplicationBootstrap(): Promise<void> {
     await this.seedChallengeTypes();
+    await this.settings.seedDefaults();
   }
 
   private async seedChallengeTypes(): Promise<void> {

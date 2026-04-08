@@ -842,3 +842,17 @@ model QuestionnaireExternalLink {
   @@index([templateId])
   @@map("questionnaire_external_links")
 }
+
+// =============================================================================
+// SYSTEM SETTINGS
+// =============================================================================
+// Generic key-value store for admin-controlled feature flags and config.
+// All values stored as strings; booleans use "true" / "false".
+
+model SystemSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+
+  @@map("system_settings")
+}

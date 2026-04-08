@@ -47,8 +47,6 @@ const MAPPING_LABELS: Record<keyof ColumnMapping, string> = {
   phone: 'טלפון', email: 'מייל', city: 'עיר', gender: 'מגדר', notes: 'הערות',
 };
 
-const MOCK_SETTING_KEY = 'showMockParticipants';
-
 // Fixed local options — no API dependency
 const GENDER_OPTIONS = ['נקבה', 'זכר'];
 
@@ -123,7 +121,7 @@ export default function ParticipantsPage() {
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
-  // Read-only: controlled by Settings page (localStorage), never written here
+  // Read-only: fetched from backend (GET /api/settings), never written here
   const [isMockEnabled, setIsMockEnabled] = useState(false);
 
   // Create modal
@@ -270,10 +268,19 @@ export default function ParticipantsPage() {
   };
 
   useEffect(() => {
-    // Read the setting from localStorage — source of truth is the Settings page toggle
-    const mockEnabled = localStorage.getItem(MOCK_SETTING_KEY) === 'true';
-    setIsMockEnabled(mockEnabled);
-    fetchParticipants(mockEnabled);
+    // Fetch the setting from backend — source of truth is the database
+    apiFetch(`${BASE_URL}/settings`)
+      .then((s: unknown) => {
+        const settings = s as Record<string, string>;
+        const mockOn = settings['mockParticipantsEnabled'] === 'true';
+        setIsMockEnabled(mockOn);
+        fetchParticipants(mockOn);
+      })
+      .catch(() => {
+        // Fall back to disabled if fetch fails
+        setIsMockEnabled(false);
+        fetchParticipants(false);
+      });
   }, []);
 
   useEffect(() => {
