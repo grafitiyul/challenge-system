@@ -159,7 +159,6 @@ function ConfirmModal({ title, message, confirmLabel = 'אישור', danger = fa
 function Modal({ onClose, title, children }: { onClose: () => void; title: string; children: React.ReactNode }) {
   return (
     <div
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 20 }}
     >
       <div style={{ background: '#fff', borderRadius: 14, padding: 28, width: '100%', maxWidth: 520, boxShadow: '0 20px 60px rgba(0,0,0,0.2)', maxHeight: '90vh', overflowY: 'auto' }}>
@@ -368,15 +367,15 @@ function SettingsTab({ template, onSaved }: { template: Template; onSaved: (t: T
 
       <div>
         <label style={labelStyle}>טקסט תודה (לאחר שליחה)</label>
-        <textarea
-          rows={3}
-          style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.5 }}
+        <RichTextEditor
           value={form.postSubmitText}
-          onChange={(e) => setField('postSubmitText', e.target.value)}
-          placeholder='תודה! תשובותך נשמרו בהצלחה.'
+          onChange={(html) => setField('postSubmitText', html)}
+          placeholder="תודה! תשובותך נשמרו בהצלחה."
+          minHeight={80}
+          variables={[{ key: 'firstName', label: 'שם פרטי' }]}
         />
         <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 5 }}>
-          מוצג למשתתפת לאחר שליחת השאלון. ריק = טקסט ברירת מחדל.
+          מוצג למשתתפת לאחר שליחת השאלון. השתמשי ב-&#123;firstName&#125; לשם אישי. ריק = טקסט ברירת מחדל.
         </div>
       </div>
 

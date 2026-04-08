@@ -639,6 +639,8 @@ export default function PublicFillPage({ params }: { params: Promise<{ token: st
   const [fieldError, setFieldError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [autosaved, setAutosaved] = useState(false);
+  // Resolved after submission — used to personalise the thank-you text
+  const [submittedFirstName, setSubmittedFirstName] = useState<string | null>(null);
 
   // ── Load template + link ──
   useEffect(() => {
@@ -775,11 +777,16 @@ export default function PublicFillPage({ params }: { params: Promise<{ token: st
     if (!template || !link) return;
     setSubmitting(true);
     try {
-      await apiFetch(`${BASE_URL}/public/q/${token}/submit`, {
+      const result = await apiFetch(`${BASE_URL}/public/q/${token}/submit`, {
         method: 'POST',
         body: JSON.stringify({ submittedByMode: 'external', answers: buildPayload(visibleQuestions) }),
-      });
+      }) as { participant?: { firstName?: string } | null };
       clearDraft(token);
+      // Resolve firstName: pre-identified participant first, then from submission response
+      const fn = identifiedParticipant?.firstName?.trim()
+        || result?.participant?.firstName?.trim()
+        || null;
+      setSubmittedFirstName(fn);
       setPageState('done');
     } catch (err: unknown) {
       const msg = err && typeof err === 'object' && 'message' in err
@@ -813,13 +820,22 @@ export default function PublicFillPage({ params }: { params: Promise<{ token: st
   }
 
   if (pageState === 'done') {
-    const thankYouText = template?.postSubmitText?.trim() || 'תשובותך נשמרו בהצלחה.';
+    // Resolve {firstName} placeholder. Works for:
+    // - pre-identified participant (identifiedParticipant set during phone phase)
+    // - newly created participant (firstName comes from submission response → submittedFirstName)
+    const rawText = template?.postSubmitText?.trim() || '<p>תשובותך נשמרו בהצלחה.</p>';
+    const resolvedHtml = submittedFirstName
+      ? rawText.replace(/\{firstName\}/g, submittedFirstName)
+      : rawText.replace(/\{firstName\}/g, '');
     return (
       <div dir="rtl" style={{ minHeight: '100vh', background: '#ffffff', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-        <div style={{ textAlign: 'center', maxWidth: 400 }}>
+        <div style={{ textAlign: 'center', maxWidth: 420 }}>
           <div style={{ fontSize: 56, marginBottom: 20 }}>✅</div>
-          <div style={{ fontSize: 24, fontWeight: 700, color: '#0f172a', marginBottom: 12 }}>תודה!</div>
-          <div style={{ fontSize: 16, color: '#64748b', lineHeight: 1.6 }}>{thankYouText}</div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: '#0f172a', marginBottom: 16 }}>תודה!</div>
+          <div
+            style={{ fontSize: 16, color: '#374151', lineHeight: 1.7, textAlign: 'center' }}
+            dangerouslySetInnerHTML={{ __html: resolvedHtml }}
+          />
         </div>
       </div>
     );
@@ -937,11 +953,15 @@ export default function PublicFillPage({ params }: { params: Promise<{ token: st
       if (!template || !link) return;
       setSubmitting(true);
       try {
-        await apiFetch(`${BASE_URL}/public/q/${token}/submit`, {
+        const result = await apiFetch(`${BASE_URL}/public/q/${token}/submit`, {
           method: 'POST',
           body: JSON.stringify({ submittedByMode: 'external', answers: buildPayload(visibleQuestions) }),
-        });
+        }) as { participant?: { firstName?: string } | null };
         clearDraft(token);
+        const fn = identifiedParticipant?.firstName?.trim()
+          || result?.participant?.firstName?.trim()
+          || null;
+        setSubmittedFirstName(fn);
         setPageState('done');
       } catch (err: unknown) {
         const msg = err && typeof err === 'object' && 'message' in err

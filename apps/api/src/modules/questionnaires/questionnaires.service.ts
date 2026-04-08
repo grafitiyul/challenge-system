@@ -105,7 +105,7 @@ export class QuestionnairesService {
         publicTitle: dto.publicTitle,
         introRichText: dto.introRichText ?? null,
         usageType: dto.usageType ?? 'both',
-        submitBehavior: dto.submitBehavior ?? 'none',
+        submitBehavior: dto.submitBehavior ?? 'attach_or_create',
         displayMode: dto.displayMode ?? 'step_by_step',
         postIdentificationGreeting: dto.postIdentificationGreeting ?? null,
         postSubmitText: dto.postSubmitText ?? null,

@@ -8,14 +8,60 @@ import { TextStyle } from '@tiptap/extension-text-style';
 import Color from '@tiptap/extension-color';
 import { useEffect, useState, useRef, useCallback } from 'react';
 
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface RichTextVariable {
+  key: string;
+  label: string;
+}
+
 interface RichTextEditorProps {
   value: string;
   onChange: (html: string) => void;
   placeholder?: string;
   minHeight?: number;
+  /** Optional list of dynamic variables the user can insert as {key} tokens */
+  variables?: RichTextVariable[];
 }
 
-// ─── Color palettes (adapted from recruitment project) ────────────────────────
+// ─── Emoji data (adapted from recruitment project — reduced to practical set) ──
+
+const EMOJI_CATS: { icon: string; label: string; emojis: string[] }[] = [
+  {
+    icon: '😊', label: 'סמיילים',
+    emojis: ['😀','😃','😄','😁','😆','😅','🤣','😊','🥰','😍','🤩','😘','😋','😛','🤪','😎','🥳','😏','🤔','🙄','😔','😢','😭','😱','🤗','😇','🥲','😤','🤬','🤯','🥸','😵','🙃','😌','🤫','🤭'],
+  },
+  {
+    icon: '👋', label: 'ידיים ואנשים',
+    emojis: ['👋','🤚','✋','👌','✌️','🤞','👍','👎','👊','💪','🙌','👏','🤲','🙏','💅','💪','🫂','👶','👧','👦','👩','👨','💁','🙅','🙆','🤷','🤦','🙋','🧘','🏃','🚶'],
+  },
+  {
+    icon: '❤️', label: 'לבבות',
+    emojis: ['❤️','🧡','💛','💚','💙','💜','🖤','🤍','🤎','💔','❣️','💕','💞','💓','💗','💖','💘','💝','❤️‍🔥','💌','💋','💯','🌟','✨','💫','⭐','💥','🔥','🌈','🎵','🎶'],
+  },
+  {
+    icon: '🎉', label: 'אירועים',
+    emojis: ['🎉','🎊','🎁','🎀','🎈','✨','🌟','💥','🔥','🎵','🎶','🏆','🥇','🥈','🥉','🎯','🎓','🎂','🍰','🧁','🥂','🍾','🎠','🎡','🎢','🎭','🎨'],
+  },
+  {
+    icon: '🌸', label: 'טבע',
+    emojis: ['🌸','🌹','🌺','🌻','🌼','🌷','🥀','💐','🍀','☘️','🌿','🌱','🌴','🌵','🍁','🍂','🍃','🌊','🌈','☀️','🌙','⭐','❄️','🌸','🦋','🌺','🦚','🦜','🐬','🦋'],
+  },
+  {
+    icon: '🍕', label: 'אוכל',
+    emojis: ['🍎','🍊','🍋','🍌','🍇','🍓','🍒','🍑','🥑','🍕','🍔','🍟','🌮','🌯','🍣','🍜','🎂','🍰','🧁','🍫','🍬','🍭','🍯','☕','🍵','🧃','🥤','🧋'],
+  },
+  {
+    icon: '⚽', label: 'ספורט',
+    emojis: ['⚽','🏀','🎾','🏐','🏈','⚾','🏒','🥊','🥋','🎽','🏋️','🤸','🧘','🏊','🏄','🚴','🧗','🏆','🥇','🥈','🥉','🎯','🎱','🎳','⛳'],
+  },
+  {
+    icon: '💼', label: 'עבודה',
+    emojis: ['💼','📁','📊','📈','📉','📌','📎','✏️','📝','💡','🔑','🔒','💻','📱','📞','📡','🔍','🔎','📚','📖','✅','❌','⚠️','🔔','📢','📣'],
+  },
+];
+
+// ─── Color palettes ────────────────────────────────────────────────────────────
 
 const TEXT_COLORS = [
   { hex: '#0f172a', label: 'שחור' },
@@ -90,10 +136,14 @@ export default function RichTextEditor({
   onChange,
   placeholder = 'הכניסי טקסט...',
   minHeight = 140,
+  variables = [],
 }: RichTextEditorProps) {
   const [showColorPicker, setShowColorPicker] = useState<'text' | 'highlight' | null>(null);
   const [showLinkPopover, setShowLinkPopover] = useState(false);
   const [linkUrl, setLinkUrl] = useState('https://');
+  const [showEmoji, setShowEmoji] = useState(false);
+  const [emojiCat, setEmojiCat] = useState(0);
+  const [showVars, setShowVars] = useState(false);
   const linkInputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -128,16 +178,18 @@ export default function RichTextEditor({
     }
   }, [value, editor]);
 
-  // Close popovers when clicking outside the editor container
+  // Close all popovers when clicking outside container
   useEffect(() => {
-    function handleClickOutside(e: MouseEvent) {
+    function onOutside(e: MouseEvent) {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         setShowColorPicker(null);
         setShowLinkPopover(false);
+        setShowEmoji(false);
+        setShowVars(false);
       }
     }
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    document.addEventListener('mousedown', onOutside);
+    return () => document.removeEventListener('mousedown', onOutside);
   }, []);
 
   const openLinkPopover = useCallback(() => {
@@ -146,8 +198,17 @@ export default function RichTextEditor({
     setLinkUrl(existing || 'https://');
     setShowLinkPopover(true);
     setShowColorPicker(null);
+    setShowEmoji(false);
+    setShowVars(false);
     setTimeout(() => linkInputRef.current?.focus(), 50);
   }, [editor]);
+
+  function closeAllPopovers() {
+    setShowColorPicker(null);
+    setShowLinkPopover(false);
+    setShowEmoji(false);
+    setShowVars(false);
+  }
 
   function applyLink(e: React.FormEvent) {
     e.preventDefault();
@@ -164,6 +225,11 @@ export default function RichTextEditor({
   function removeLink() {
     editor?.chain().focus().extendMarkRange('link').unsetLink().run();
     setShowLinkPopover(false);
+  }
+
+  function insertText(text: string) {
+    if (!editor) return;
+    editor.chain().focus().insertContent(text).run();
   }
 
   if (!editor) return null;
@@ -194,33 +260,18 @@ export default function RichTextEditor({
             alignItems: 'center',
           }}
         >
-          {/* Heading dropdown */}
+          {/* Heading */}
           <select
             title="סגנון"
             onMouseDown={(e) => e.stopPropagation()}
             onChange={(e) => {
               const val = e.target.value;
-              if (val === 'p') {
-                editor.chain().focus().setParagraph().run();
-              } else {
-                editor.chain().focus().toggleHeading({ level: Number(val) as 1 | 2 | 3 }).run();
-              }
+              if (val === 'p') editor.chain().focus().setParagraph().run();
+              else editor.chain().focus().toggleHeading({ level: Number(val) as 1 | 2 | 3 }).run();
               e.target.value = '';
             }}
             defaultValue=""
-            style={{
-              height: 26,
-              fontSize: 12,
-              color: '#374151',
-              border: '1px solid #e2e8f0',
-              borderRadius: 5,
-              background: '#fff',
-              cursor: 'pointer',
-              padding: '0 4px',
-              flexShrink: 0,
-              maxWidth: 70,
-              outline: 'none',
-            }}
+            style={{ height: 26, fontSize: 12, color: '#374151', border: '1px solid #e2e8f0', borderRadius: 5, background: '#fff', cursor: 'pointer', padding: '0 4px', flexShrink: 0, maxWidth: 70, outline: 'none' }}
           >
             <option value="" disabled>סגנון</option>
             <option value="p">רגיל</option>
@@ -245,19 +296,15 @@ export default function RichTextEditor({
           <div style={SEP} />
 
           {/* Lists */}
-          <TBtn onClick={() => editor.chain().focus().toggleBulletList().run()} active={editor.isActive('bulletList')} title="רשימת נקודות">
-            •≡
-          </TBtn>
-          <TBtn onClick={() => editor.chain().focus().toggleOrderedList().run()} active={editor.isActive('orderedList')} title="רשימה ממוספרת">
-            1.
-          </TBtn>
+          <TBtn onClick={() => editor.chain().focus().toggleBulletList().run()} active={editor.isActive('bulletList')} title="רשימת נקודות">•≡</TBtn>
+          <TBtn onClick={() => editor.chain().focus().toggleOrderedList().run()} active={editor.isActive('orderedList')} title="רשימה ממוספרת">1.</TBtn>
 
           <div style={SEP} />
 
           {/* Text color */}
           <div style={{ position: 'relative', flexShrink: 0 }}>
             <TBtn
-              onClick={() => { setShowColorPicker(v => v === 'text' ? null : 'text'); setShowLinkPopover(false); }}
+              onClick={() => { setShowColorPicker(v => v === 'text' ? null : 'text'); setShowLinkPopover(false); setShowEmoji(false); setShowVars(false); }}
               active={showColorPicker === 'text'}
               title="צבע טקסט"
             >
@@ -270,30 +317,19 @@ export default function RichTextEditor({
               <div style={{ position: 'absolute', top: 'calc(100% + 4px)', right: 0, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: '8px 10px', display: 'flex', gap: 5, flexWrap: 'wrap', width: 160, boxShadow: '0 4px 16px rgba(0,0,0,0.12)', zIndex: 300 }}>
                 <div style={{ width: '100%', fontSize: 10, color: '#94a3b8', marginBottom: 2 }}>צבע טקסט</div>
                 {TEXT_COLORS.map((c) => (
-                  <button
-                    key={c.hex}
-                    type="button"
-                    title={c.label}
-                    onMouseDown={(e) => { e.preventDefault(); editor.chain().focus().setColor(c.hex).run(); setShowColorPicker(null); }}
-                    style={{ width: 22, height: 22, borderRadius: '50%', background: c.hex, border: '2px solid rgba(0,0,0,0.12)', cursor: 'pointer', flexShrink: 0 }}
-                  />
+                  <button key={c.hex} type="button" title={c.label} onMouseDown={(e) => { e.preventDefault(); editor.chain().focus().setColor(c.hex).run(); setShowColorPicker(null); }}
+                    style={{ width: 22, height: 22, borderRadius: '50%', background: c.hex, border: '2px solid rgba(0,0,0,0.12)', cursor: 'pointer', flexShrink: 0 }} />
                 ))}
-                <button
-                  type="button"
-                  title="נקה צבע"
-                  onMouseDown={(e) => { e.preventDefault(); editor.chain().focus().unsetColor().run(); setShowColorPicker(null); }}
-                  style={{ width: 22, height: 22, borderRadius: '50%', border: '2px solid #e2e8f0', cursor: 'pointer', background: '#fff', fontSize: 10, color: '#94a3b8', flexShrink: 0 }}
-                >
-                  ✕
-                </button>
+                <button type="button" title="נקה צבע" onMouseDown={(e) => { e.preventDefault(); editor.chain().focus().unsetColor().run(); setShowColorPicker(null); }}
+                  style={{ width: 22, height: 22, borderRadius: '50%', border: '2px solid #e2e8f0', cursor: 'pointer', background: '#fff', fontSize: 10, color: '#94a3b8', flexShrink: 0 }}>✕</button>
               </div>
             )}
           </div>
 
-          {/* Highlight color */}
+          {/* Highlight */}
           <div style={{ position: 'relative', flexShrink: 0 }}>
             <TBtn
-              onClick={() => { setShowColorPicker(v => v === 'highlight' ? null : 'highlight'); setShowLinkPopover(false); }}
+              onClick={() => { setShowColorPicker(v => v === 'highlight' ? null : 'highlight'); setShowLinkPopover(false); setShowEmoji(false); setShowVars(false); }}
               active={showColorPicker === 'highlight'}
               title="צבע רקע"
             >
@@ -303,22 +339,11 @@ export default function RichTextEditor({
               <div style={{ position: 'absolute', top: 'calc(100% + 4px)', right: 0, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: '8px 10px', display: 'flex', gap: 5, flexWrap: 'wrap', width: 160, boxShadow: '0 4px 16px rgba(0,0,0,0.12)', zIndex: 300 }}>
                 <div style={{ width: '100%', fontSize: 10, color: '#94a3b8', marginBottom: 2 }}>צבע רקע</div>
                 {HIGHLIGHT_COLORS.map((c) => (
-                  <button
-                    key={c.hex}
-                    type="button"
-                    title={c.label}
-                    onMouseDown={(e) => { e.preventDefault(); editor.chain().focus().setHighlight({ color: c.hex }).run(); setShowColorPicker(null); }}
-                    style={{ width: 22, height: 22, borderRadius: '50%', background: c.hex, border: '2px solid rgba(0,0,0,0.1)', cursor: 'pointer', flexShrink: 0 }}
-                  />
+                  <button key={c.hex} type="button" title={c.label} onMouseDown={(e) => { e.preventDefault(); editor.chain().focus().setHighlight({ color: c.hex }).run(); setShowColorPicker(null); }}
+                    style={{ width: 22, height: 22, borderRadius: '50%', background: c.hex, border: '2px solid rgba(0,0,0,0.1)', cursor: 'pointer', flexShrink: 0 }} />
                 ))}
-                <button
-                  type="button"
-                  title="נקה הדגשה"
-                  onMouseDown={(e) => { e.preventDefault(); editor.chain().focus().unsetHighlight().run(); setShowColorPicker(null); }}
-                  style={{ width: 22, height: 22, borderRadius: '50%', border: '2px solid #e2e8f0', cursor: 'pointer', background: '#fff', fontSize: 10, color: '#94a3b8', flexShrink: 0 }}
-                >
-                  ✕
-                </button>
+                <button type="button" title="נקה הדגשה" onMouseDown={(e) => { e.preventDefault(); editor.chain().focus().unsetHighlight().run(); setShowColorPicker(null); }}
+                  style={{ width: 22, height: 22, borderRadius: '50%', border: '2px solid #e2e8f0', cursor: 'pointer', background: '#fff', fontSize: 10, color: '#94a3b8', flexShrink: 0 }}>✕</button>
               </div>
             )}
           </div>
@@ -327,36 +352,20 @@ export default function RichTextEditor({
 
           {/* Link */}
           <div style={{ position: 'relative', flexShrink: 0 }}>
-            <TBtn onClick={openLinkPopover} active={editor.isActive('link') || showLinkPopover} title="הוסף / ערוך קישור">
-              🔗
-            </TBtn>
+            <TBtn onClick={openLinkPopover} active={editor.isActive('link') || showLinkPopover} title="הוסף / ערוך קישור">🔗</TBtn>
             {showLinkPopover && (
               <div style={{ position: 'absolute', top: 'calc(100% + 4px)', right: 0, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: '10px 12px', width: 260, boxShadow: '0 4px 16px rgba(0,0,0,0.12)', zIndex: 300 }}>
                 <form onSubmit={applyLink}>
                   <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
-                    <input
-                      ref={linkInputRef}
-                      type="url"
-                      value={linkUrl}
-                      onChange={(e) => setLinkUrl(e.target.value)}
-                      placeholder="https://..."
-                      dir="ltr"
+                    <input ref={linkInputRef} type="url" value={linkUrl} onChange={(e) => setLinkUrl(e.target.value)} placeholder="https://..." dir="ltr"
                       style={{ flex: 1, fontSize: 12, padding: '6px 8px', border: '1px solid #cbd5e1', borderRadius: 6, outline: 'none' }}
-                      onMouseDown={(e) => e.stopPropagation()}
-                    />
-                    <button
-                      type="submit"
-                      style={{ fontSize: 12, padding: '6px 10px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}
-                    >
+                      onMouseDown={(e) => e.stopPropagation()} />
+                    <button type="submit" style={{ fontSize: 12, padding: '6px 10px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}>
                       {editor.isActive('link') ? 'עדכן' : 'הוסף'}
                     </button>
                   </div>
                   {editor.isActive('link') && (
-                    <button
-                      type="button"
-                      onClick={removeLink}
-                      style={{ width: '100%', fontSize: 12, padding: '5px 0', color: '#dc2626', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, cursor: 'pointer' }}
-                    >
+                    <button type="button" onClick={removeLink} style={{ width: '100%', fontSize: 12, padding: '5px 0', color: '#dc2626', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, cursor: 'pointer' }}>
                       הסר קישור
                     </button>
                   )}
@@ -365,11 +374,73 @@ export default function RichTextEditor({
             )}
           </div>
 
+          {/* Emoji picker — ported from recruitment project */}
+          <div style={{ position: 'relative', flexShrink: 0 }}>
+            <TBtn
+              onClick={() => { setShowEmoji(v => !v); setShowColorPicker(null); setShowLinkPopover(false); setShowVars(false); }}
+              active={showEmoji}
+              title="הוסף אימוג׳י"
+            >
+              😊
+            </TBtn>
+            {showEmoji && (
+              <div style={{ position: 'absolute', top: 'calc(100% + 4px)', right: 0, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, boxShadow: '0 6px 24px rgba(0,0,0,0.14)', zIndex: 300, width: 300 }}
+                onMouseDown={(e) => e.preventDefault()}>
+                {/* Category tabs */}
+                <div style={{ display: 'flex', overflowX: 'auto', borderBottom: '1px solid #f1f5f9', padding: '4px 6px 0', gap: 2 }}>
+                  {EMOJI_CATS.map((cat, i) => (
+                    <button key={i} type="button"
+                      onMouseDown={(e) => { e.preventDefault(); setEmojiCat(i); }}
+                      style={{ background: emojiCat === i ? '#eff6ff' : 'none', border: 'none', borderRadius: '6px 6px 0 0', padding: '4px 6px', fontSize: 16, cursor: 'pointer', flexShrink: 0, color: emojiCat === i ? '#2563eb' : undefined }}
+                      title={cat.label}>{cat.icon}</button>
+                  ))}
+                </div>
+                <div style={{ fontSize: 10, color: '#94a3b8', padding: '4px 10px 2px' }}>{EMOJI_CATS[emojiCat].label}</div>
+                {/* Emoji grid */}
+                <div style={{ display: 'flex', flexWrap: 'wrap', padding: '4px 8px 8px', maxHeight: 180, overflowY: 'auto' }}>
+                  {EMOJI_CATS[emojiCat].emojis.map((emoji, i) => (
+                    <button key={i} type="button"
+                      onMouseDown={(e) => { e.preventDefault(); insertText(emoji); setShowEmoji(false); }}
+                      style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', width: 34, height: 34, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1 }}
+                      title={emoji}>{emoji}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Variable insertion — only shown when variables are provided */}
+          {variables.length > 0 && (
+            <div style={{ position: 'relative', flexShrink: 0, marginRight: 2 }}>
+              <TBtn
+                onClick={() => { setShowVars(v => !v); setShowEmoji(false); setShowColorPicker(null); setShowLinkPopover(false); }}
+                active={showVars}
+                title="הכנס משתנה דינמי"
+                style={{ fontSize: 11, padding: '3px 8px', color: '#1d4ed8', background: showVars ? '#eff6ff' : '#f8fafc', border: `1px solid ${showVars ? '#bfdbfe' : '#e2e8f0'}` }}
+              >
+                &#123;&#125; משתנה
+              </TBtn>
+              {showVars && (
+                <div style={{ position: 'absolute', top: 'calc(100% + 4px)', right: 0, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, boxShadow: '0 4px 16px rgba(0,0,0,0.12)', zIndex: 300, minWidth: 180 }}
+                  onMouseDown={(e) => e.preventDefault()}>
+                  {variables.map((v) => (
+                    <button key={v.key} type="button"
+                      onMouseDown={(e) => { e.preventDefault(); insertText(`{${v.key}}`); setShowVars(false); }}
+                      style={{ width: '100%', textAlign: 'right', padding: '9px 14px', fontSize: 13, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, borderBottom: '1px solid #f8fafc' }}>
+                      <span style={{ fontFamily: 'monospace', fontSize: 12, color: '#2563eb', background: '#eff6ff', borderRadius: 4, padding: '1px 6px' }}>{`{${v.key}}`}</span>
+                      <span style={{ color: '#374151' }}>{v.label}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Clear formatting */}
           <TBtn
-            onClick={() => editor.chain().focus().clearNodes().unsetAllMarks().run()}
+            onClick={() => { editor.chain().focus().clearNodes().unsetAllMarks().run(); closeAllPopovers(); }}
             title="נקה עיצוב"
-            style={{ color: '#94a3b8', fontSize: 12 }}
+            style={{ color: '#94a3b8', fontSize: 12, marginRight: 'auto' }}
           >
             ✕
           </TBtn>
@@ -378,18 +449,7 @@ export default function RichTextEditor({
         {/* ── Editor area ───────────────────────────────────────────────── */}
         <div style={{ position: 'relative' }}>
           {isEmpty && (
-            <div
-              style={{
-                position: 'absolute',
-                top: 12,
-                right: 14,
-                left: 14,
-                color: '#94a3b8',
-                fontSize: 14,
-                pointerEvents: 'none',
-                direction: 'rtl',
-              }}
-            >
+            <div style={{ position: 'absolute', top: 12, right: 14, left: 14, color: '#94a3b8', fontSize: 14, pointerEvents: 'none', direction: 'rtl' }}>
               {placeholder}
             </div>
           )}

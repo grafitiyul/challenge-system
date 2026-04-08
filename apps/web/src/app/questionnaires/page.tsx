@@ -26,7 +26,7 @@ const EMPTY_FORM: CreateForm = {
   internalName: '',
   publicTitle: '',
   usageType: 'both',
-  submitBehavior: 'none',
+  submitBehavior: 'attach_or_create',
 };
 
 const USAGE_LABELS: Record<string, string> = {
