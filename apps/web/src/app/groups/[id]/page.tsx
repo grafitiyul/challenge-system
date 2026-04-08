@@ -5,6 +5,7 @@ import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { BASE_URL, apiFetch } from '@lib/api';
 import WhatsAppEditor from '@components/whatsapp-editor';
+import { ChatMessage, ChatMessageList } from '@components/chat-messages';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -67,35 +68,13 @@ interface ChatLink {
   createdAt: string;
 }
 
-// ─── Chat tab types (inlined from chats page) ────────────────────────────────
-
-interface RawPayloadData {
-  author?: string;
-  from?: string;
-  meta?: { notifyName?: string };
-  contact?: { name?: string; phone?: string };
-  media?: { url?: string; filename?: string; mimetype?: string; size?: number };
-}
-
-interface Message {
-  id: string;
-  direction: string | null;
-  senderName: string | null;
-  senderPhone: string | null;
-  messageType: string;
-  textContent: string | null;
-  mediaUrl: string | null;
-  timestampFromSource: string;
-  rawPayload: { data?: RawPayloadData } | null;
-}
-
 interface ChatDetail {
   id: string;
   externalChatId: string;
   type: string;
   name: string | null;
   phoneNumber: string | null;
-  messages: Message[];
+  messages: ChatMessage[];
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -111,120 +90,6 @@ function formatDate(iso: string | null): string {
 
 function chatDisplayName(chat: WhatsAppChat): string {
   return chat.name ?? chat.phoneNumber ?? chat.externalChatId;
-}
-
-// ─── Chat rendering helpers (ported from chats/[id]/page.tsx) ────────────────
-
-function cleanPhone(raw: string | null | undefined): string | null {
-  if (!raw) return null;
-  return raw.replace(/@(c\.us|s\.whatsapp\.net|g\.us)$/i, '').trim() || null;
-}
-
-function isLikelyPhone(s: string): boolean {
-  const digits = s.replace(/[+\-\s()]/g, '');
-  return /^\d{7,15}$/.test(digits);
-}
-
-function resolveSenderLabel(msg: Message): string {
-  const name = msg.senderName?.trim() || null;
-  const rawAuthor = cleanPhone(msg.rawPayload?.data?.author);
-  const storedPhone = msg.senderPhone?.trim() || null;
-  const phone = (() => {
-    if (rawAuthor && isLikelyPhone(rawAuthor)) return rawAuthor;
-    if (storedPhone && isLikelyPhone(storedPhone)) return storedPhone;
-    return null;
-  })();
-  if (name && phone) return `${name} · ${phone}`;
-  if (name) return name;
-  if (phone) return phone;
-  return 'Unknown';
-}
-
-const URL_RE = /https?:\/\/[^\s\n]+/g;
-
-function TextWithLinks({ text }: { text: string }) {
-  const parts: React.ReactNode[] = [];
-  let lastIndex = 0;
-  const re = new RegExp(URL_RE.source, 'g');
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(text)) !== null) {
-    if (match.index > lastIndex) parts.push(text.slice(lastIndex, match.index));
-    const url = match[0];
-    parts.push(
-      <a key={match.index} href={url} target="_blank" rel="noopener noreferrer"
-        style={{ color: '#1d4ed8', textDecoration: 'underline', wordBreak: 'break-all' }}>
-        {url}
-      </a>,
-    );
-    lastIndex = match.index + url.length;
-  }
-  if (lastIndex < text.length) parts.push(text.slice(lastIndex));
-  return <span style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.5 }}>{parts}</span>;
-}
-
-const MEDIA_META: Record<string, { icon: string; label: string }> = {
-  image: { icon: '🖼', label: 'תמונה' },
-  video: { icon: '🎬', label: 'וידאו' },
-  audio: { icon: '🎵', label: 'הקלטה קולית' },
-  document: { icon: '📄', label: 'מסמך' },
-};
-
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function MediaCard({ msg }: { msg: Message }) {
-  const meta = MEDIA_META[msg.messageType] ?? { icon: '📎', label: msg.messageType };
-  const url = msg.mediaUrl ?? msg.rawPayload?.data?.media?.url ?? null;
-  const filename = msg.rawPayload?.data?.media?.filename ?? null;
-  const mimetype = msg.rawPayload?.data?.media?.mimetype ?? null;
-  const size = msg.rawPayload?.data?.media?.size ?? null;
-  const isImage = msg.messageType === 'image' || mimetype?.startsWith('image/');
-  return (
-    <div style={{ background: 'rgba(0,0,0,0.04)', borderRadius: 8, padding: '8px 10px', minWidth: 180 }}>
-      {isImage && url && (
-        <a href={url} target="_blank" rel="noopener noreferrer">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={url} alt={filename ?? 'תמונה'}
-            style={{ maxWidth: '100%', maxHeight: 220, borderRadius: 6, display: 'block', marginBottom: 6 }}
-            onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
-          />
-        </a>
-      )}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ fontSize: 20 }}>{meta.icon}</span>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a' }}>{filename ?? meta.label}</div>
-          {(mimetype || size != null) && (
-            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 1 }}>
-              {[mimetype, size != null ? formatBytes(size) : null].filter(Boolean).join(' · ')}
-            </div>
-          )}
-        </div>
-        {url ? (
-          <a href={url} target="_blank" rel="noopener noreferrer"
-            style={{ fontSize: 12, color: '#2563eb', textDecoration: 'none', padding: '3px 8px', border: '1px solid #bfdbfe', borderRadius: 5, whiteSpace: 'nowrap', flexShrink: 0 }}>
-            פתח ↗
-          </a>
-        ) : (
-          <span style={{ fontSize: 11, color: '#94a3b8', fontStyle: 'italic', flexShrink: 0 }}>אין קישור</span>
-        )}
-      </div>
-      {msg.textContent && (
-        <p style={{ fontSize: 13, color: '#374151', margin: '6px 0 0', whiteSpace: 'pre-wrap' }}>{msg.textContent}</p>
-      )}
-    </div>
-  );
-}
-
-function formatMsgTime(iso: string): string {
-  return new Date(iso).toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' });
-}
-
-function formatMsgDate(iso: string): string {
-  return new Date(iso).toLocaleDateString('he-IL', { weekday: 'long', day: 'numeric', month: 'long' });
 }
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
@@ -265,6 +130,8 @@ export default function GroupDetailPage() {
 
   // Remove participant
   const [removingParticipantId, setRemovingParticipantId] = useState<string | null>(null);
+  const [removeConfirm, setRemoveConfirm] = useState<{ id: string; name: string } | null>(null);
+  const [removeError, setRemoveError] = useState<string | null>(null);
 
   // Link chat modal
   const [linkModalOpen, setLinkModalOpen] = useState(false);
@@ -396,9 +263,11 @@ export default function GroupDetailPage() {
 
   // ─── Remove participant ────────────────────────────────────────────────────
 
-  async function removeParticipant(participantId: string, name: string) {
-    if (!confirm(`להסיר את ${name} מהקבוצה?`)) return;
+  async function confirmRemoveParticipant() {
+    if (!removeConfirm) return;
+    const { id: participantId } = removeConfirm;
     setRemovingParticipantId(participantId);
+    setRemoveError(null);
     try {
       await apiFetch(`${BASE_URL}/groups/${id}/participants/${participantId}`, { method: 'DELETE' });
       setGroup((prev) => {
@@ -408,7 +277,13 @@ export default function GroupDetailPage() {
           participantGroups: prev.participantGroups.filter((pg) => pg.participantId !== participantId),
         };
       });
-    } catch { /* ignore */ } finally {
+      setRemoveConfirm(null);
+    } catch (err) {
+      const msg = typeof err === 'object' && err !== null && 'message' in err
+        ? String((err as { message: string }).message)
+        : 'הסרת המשתתפת נכשלה. אנא נסי שוב.';
+      setRemoveError(msg);
+    } finally {
       setRemovingParticipantId(null);
     }
   }
@@ -506,19 +381,6 @@ export default function GroupDetailPage() {
       .map((l) => [l.participantId!, l]),
   );
 
-  // Group chat messages by date
-  const chatGrouped: { date: string; messages: Message[] }[] = [];
-  if (chatDetail) {
-    for (const msg of chatDetail.messages) {
-      const dateKey = formatMsgDate(msg.timestampFromSource);
-      const last = chatGrouped[chatGrouped.length - 1];
-      if (!last || last.date !== dateKey) {
-        chatGrouped.push({ date: dateKey, messages: [msg] });
-      } else {
-        last.messages.push(msg);
-      }
-    }
-  }
 
   // ─── Loading / not found ───────────────────────────────────────────────────
 
@@ -818,12 +680,12 @@ export default function GroupDetailPage() {
 
                         {/* Remove */}
                         <button
-                          onClick={() => removeParticipant(p.id, displayName(p))}
+                          onClick={() => { setRemoveConfirm({ id: p.id, name: displayName(p) }); setRemoveError(null); }}
                           disabled={isRemoving}
                           style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #fecaca', color: '#ef4444', background: 'none', fontSize: 12, cursor: isRemoving ? 'not-allowed' : 'pointer' }}
                           title="הסר מהקבוצה"
                         >
-                          הסר
+                          {isRemoving ? '...' : 'הסר'}
                         </button>
                       </div>
                     </div>
@@ -923,67 +785,58 @@ export default function GroupDetailPage() {
               </div>
 
               {/* Messages */}
-              <div style={{ flex: 1, overflowY: 'auto', padding: '16px 12px', background: '#e5ddd5', display: 'flex', flexDirection: 'column', gap: 2 }}>
-                {chatDetail.messages.length === 0 && (
-                  <div style={{ textAlign: 'center', color: '#94a3b8', marginTop: 40, fontSize: 14 }}>אין הודעות בשיחה זו עדיין.</div>
-                )}
-                {chatGrouped.map(({ date, messages }) => (
-                  <div key={date}>
-                    <div style={{ display: 'flex', justifyContent: 'center', margin: '10px 0 8px' }}>
-                      <span style={{ background: 'rgba(255,255,255,0.8)', padding: '3px 14px', borderRadius: 12, fontSize: 12, color: '#64748b', fontWeight: 500 }}>
-                        {date}
-                      </span>
-                    </div>
-                    {messages.map((msg) => {
-                      const isOutgoing = msg.direction === 'outgoing';
-                      const isMedia = ['image', 'audio', 'video', 'document'].includes(msg.messageType);
-                      return (
-                        <div key={msg.id} style={{ display: 'flex', justifyContent: isOutgoing ? 'flex-end' : 'flex-start', marginBottom: 4 }}>
-                          <div style={{
-                            maxWidth: '72%',
-                            background: isOutgoing ? '#dcf8c6' : '#ffffff',
-                            borderRadius: isOutgoing ? '12px 12px 4px 12px' : '12px 12px 12px 4px',
-                            padding: '7px 11px 5px',
-                            boxShadow: '0 1px 2px rgba(0,0,0,0.12)',
-                          }}>
-                            {chatDetail.type === 'group' && !isOutgoing && (
-                              <div style={{ fontSize: 12, fontWeight: 700, color: '#7c3aed', marginBottom: 4 }}>
-                                {resolveSenderLabel(msg)}
-                              </div>
-                            )}
-                            {msg.messageType === 'text' && msg.textContent && (
-                              <p style={{ fontSize: 14, color: '#0f172a', margin: 0 }}>
-                                <TextWithLinks text={msg.textContent} />
-                              </p>
-                            )}
-                            {msg.messageType === 'system' && (
-                              <p style={{ fontSize: 13, color: '#94a3b8', fontStyle: 'italic', margin: 0 }}>
-                                {msg.textContent ?? 'הודעת מערכת'}
-                              </p>
-                            )}
-                            {isMedia && <MediaCard msg={msg} />}
-                            {!['text', 'system', 'image', 'video', 'audio', 'document'].includes(msg.messageType) && (
-                              <p style={{ fontSize: 13, color: '#94a3b8', fontStyle: 'italic', margin: 0 }}>
-                                [{msg.messageType}] {msg.textContent ?? ''}
-                              </p>
-                            )}
-                            <div style={{ textAlign: 'left', marginTop: 4 }}>
-                              <span style={{ fontSize: 11, color: '#94a3b8' }}>
-                                {isOutgoing && <span style={{ marginLeft: 4 }}>✓</span>}
-                                {formatMsgTime(msg.timestampFromSource)}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ))}
-                <div ref={chatBottomRef} />
-              </div>
+              <ChatMessageList
+                messages={chatDetail.messages}
+                chatType={chatDetail.type}
+                bottomRef={chatBottomRef}
+              />
             </div>
           ) : null}
         </div>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════════════
+          MODAL — REMOVE PARTICIPANT CONFIRMATION
+      ══════════════════════════════════════════════════════════════════════ */}
+      {removeConfirm && (
+        <Modal onClose={() => { setRemoveConfirm(null); setRemoveError(null); }}>
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: 36, marginBottom: 12 }}>⚠️</div>
+            <h3 style={{ ...S.modalTitle, marginBottom: 8 }}>הסרת משתתפת</h3>
+            <p style={{ fontSize: 15, color: '#374151', margin: '0 0 20px' }}>
+              האם להסיר את <strong>{removeConfirm.name}</strong> מהקבוצה?
+            </p>
+            <p style={{ fontSize: 13, color: '#6b7280', margin: '0 0 20px' }}>
+              הפעולה ניתנת לביטול — ניתן להוסיף את המשתתפת מחדש בכל עת.
+            </p>
+            {removeError && (
+              <p style={{ fontSize: 13, color: '#ef4444', margin: '0 0 16px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, padding: '8px 12px' }}>
+                {removeError}
+              </p>
+            )}
+            <div style={{ display: 'flex', justifyContent: 'center', gap: 10 }}>
+              <button
+                onClick={() => { setRemoveConfirm(null); setRemoveError(null); }}
+                disabled={!!removingParticipantId}
+                style={S.btnSecondary}
+              >
+                ביטול
+              </button>
+              <button
+                onClick={confirmRemoveParticipant}
+                disabled={!!removingParticipantId}
+                style={{
+                  padding: '9px 22px', borderRadius: 8, border: 'none',
+                  background: removingParticipantId ? '#fca5a5' : '#ef4444',
+                  color: '#fff', fontSize: 14, fontWeight: 600,
+                  cursor: removingParticipantId ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {removingParticipantId ? 'מסירה...' : 'הסר מהקבוצה'}
+              </button>
+            </div>
+          </div>
+        </Modal>
       )}
 
       {/* ══════════════════════════════════════════════════════════════════════
