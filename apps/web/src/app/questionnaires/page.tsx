@@ -109,6 +109,17 @@ export default function QuestionnairesPage() {
   const [formError, setFormError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<QuestionnaireTemplate | null>(null);
+  const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
+
+  async function handleDuplicate(t: QuestionnaireTemplate) {
+    setDuplicatingId(t.id);
+    try {
+      const copy = await apiFetch(`${BASE_URL}/questionnaires/${t.id}/duplicate`, { method: 'POST' }) as QuestionnaireTemplate;
+      router.push(`/questionnaires/${copy.id}`);
+    } catch {
+      setDuplicatingId(null);
+    }
+  }
 
   async function handleDelete(t: QuestionnaireTemplate) {
     await apiFetch(`${BASE_URL}/questionnaires/${t.id}`, { method: 'DELETE' });
@@ -252,6 +263,26 @@ export default function QuestionnairesPage() {
                 style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 7, padding: '7px 16px', fontSize: 13, fontWeight: 500, cursor: 'pointer', whiteSpace: 'nowrap' }}
               >
                 ערוך
+              </button>
+              <button
+                onClick={() => handleDuplicate(t)}
+                disabled={duplicatingId === t.id}
+                title="שכפל שאלון"
+                style={{
+                  background: 'none',
+                  border: '1px solid #e2e8f0',
+                  color: duplicatingId === t.id ? '#93c5fd' : '#475569',
+                  borderRadius: 7,
+                  padding: '7px 12px',
+                  fontSize: 13,
+                  cursor: duplicatingId === t.id ? 'not-allowed' : 'pointer',
+                  whiteSpace: 'nowrap',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 5,
+                }}
+              >
+                {duplicatingId === t.id ? '⏳' : '⧉'} שכפל
               </button>
               <button
                 onClick={() => setDeleteTarget(t)}

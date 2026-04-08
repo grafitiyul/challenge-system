@@ -33,6 +33,12 @@ export class QuestionnairesController {
     return this.svc.createTemplate(dto);
   }
 
+  // Must be before @Get(':id') — otherwise NestJS matches "duplicate" as an id param
+  @Post(':id/duplicate')
+  duplicateTemplate(@Param('id') id: string) {
+    return this.svc.duplicateTemplate(id);
+  }
+
   @Get(':id')
   getTemplate(@Param('id') id: string) {
     return this.svc.getTemplate(id);

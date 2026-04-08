@@ -144,6 +144,59 @@ export class QuestionnairesService {
     });
   }
 
+  // Deep-copy a template: all fields + questions + options.
+  // External links and submissions are NOT copied — links are URL tokens (would conflict),
+  // submissions are user data (not template config).
+  async duplicateTemplate(id: string) {
+    const original = await this.prisma.questionnaireTemplate.findUnique({
+      where: { id },
+      include: {
+        questions: {
+          where: { isActive: true },
+          orderBy: { sortOrder: 'asc' },
+          include: { options: { orderBy: { sortOrder: 'asc' } } },
+        },
+      },
+    });
+    if (!original) throw new NotFoundException(`QuestionnaireTemplate ${id} not found`);
+
+    return this.prisma.questionnaireTemplate.create({
+      data: {
+        internalName: `${original.internalName} - משוכפל`,
+        publicTitle: original.publicTitle,
+        introRichText: original.introRichText,
+        usageType: original.usageType,
+        submitBehavior: original.submitBehavior,
+        displayMode: original.displayMode,
+        postIdentificationGreeting: original.postIdentificationGreeting,
+        postSubmitText: original.postSubmitText,
+        programId: original.programId,
+        isActive: original.isActive,
+        questions: {
+          create: original.questions.map((q) => ({
+            label: q.label,
+            internalKey: q.internalKey,
+            questionType: q.questionType,
+            helperText: q.helperText,
+            sortOrder: q.sortOrder,
+            isRequired: q.isRequired,
+            allowOther: q.allowOther,
+            fieldSize: q.fieldSize,
+            isSystemField: q.isSystemField,
+            options: {
+              create: q.options.map((o) => ({
+                label: o.label,
+                value: o.value,
+                sortOrder: o.sortOrder,
+              })),
+            },
+          })),
+        },
+      },
+      include: TEMPLATE_WITH_QUESTIONS,
+    });
+  }
+
   // Soft-delete: set isActive = false; submissions remain intact
   async deleteTemplate(id: string) {
     await this.getTemplateMeta(id);
