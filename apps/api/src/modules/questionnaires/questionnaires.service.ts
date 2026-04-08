@@ -95,8 +95,8 @@ export class QuestionnairesService {
     const DEFAULT_SYSTEM_FIELDS = [
       { label: 'טלפון', internalKey: 'phone', questionType: 'phone', isRequired: true, sortOrder: 0 },
       { label: 'שם פרטי', internalKey: 'firstName', questionType: 'text', isRequired: true, sortOrder: 10 },
-      { label: 'שם משפחה', internalKey: 'lastName', questionType: 'text', isRequired: false, sortOrder: 20 },
-      { label: 'אימייל', internalKey: 'email', questionType: 'email', isRequired: false, sortOrder: 30 },
+      { label: 'שם משפחה', internalKey: 'lastName', questionType: 'text', isRequired: true, sortOrder: 20 },
+      { label: 'אימייל', internalKey: 'email', questionType: 'email', isRequired: true, sortOrder: 30 },
     ];
 
     return this.prisma.questionnaireTemplate.create({
