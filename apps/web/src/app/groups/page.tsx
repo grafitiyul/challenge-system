@@ -31,6 +31,42 @@ function formatDate(iso: string | null): string {
   return new Date(iso).toLocaleDateString('he-IL');
 }
 
+// ─── SVG icon components ──────────────────────────────────────────────────────
+
+function PencilIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" fill="#f97316"/>
+    </svg>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path fillRule="evenodd" clipRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v4a1 1 0 11-2 0V8zm4 0a1 1 0 112 0v4a1 1 0 11-2 0V8z" fill="#ef4444"/>
+    </svg>
+  );
+}
+
+// ─── Shared icon-button styles ────────────────────────────────────────────────
+
+const ICON_BTN: React.CSSProperties = {
+  width: 34, height: 34, borderRadius: 8,
+  border: '1px solid #e2e8f0', background: '#fff',
+  display: 'flex', alignItems: 'center', justifyContent: 'center',
+  cursor: 'pointer', flexShrink: 0,
+};
+const ICON_BTN_HOVER: React.CSSProperties = { ...ICON_BTN, background: '#fff7ed', borderColor: '#fed7aa' };
+
+const ICON_BTN_DANGER: React.CSSProperties = {
+  width: 34, height: 34, borderRadius: 8,
+  border: '1px solid #fecaca', background: '#fff',
+  display: 'flex', alignItems: 'center', justifyContent: 'center',
+  cursor: 'pointer', flexShrink: 0,
+};
+const ICON_BTN_DANGER_HOVER: React.CSSProperties = { ...ICON_BTN_DANGER, background: '#fef2f2', borderColor: '#fca5a5' };
+
 export default function GroupsPage() {
   const router = useRouter();
   const [groups, setGroups] = useState<Group[]>([]);
@@ -143,21 +179,25 @@ export default function GroupsPage() {
                   <td style={{ padding: '12px 16px', color: '#94a3b8', fontSize: 12 }}>
                     {formatDate(g.startDate)} — {formatDate(g.endDate)}
                   </td>
-                  <td style={{ padding: '8px 12px' }} onClick={(e) => e.stopPropagation()}>
-                    <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                  <td style={{ padding: '8px 12px', width: 80 }} onClick={(e) => e.stopPropagation()}>
+                    <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center' }}>
                       <button
                         onClick={(e) => { e.stopPropagation(); router.push(`/groups/${g.id}?edit=1`); }}
                         title="עריכה"
-                        style={{ background: 'none', border: '1px solid #e2e8f0', borderRadius: 6, width: 30, height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontSize: 13, color: '#374151' }}
+                        style={ICON_BTN}
+                        onMouseEnter={(e) => Object.assign((e.currentTarget as HTMLButtonElement).style, ICON_BTN_HOVER)}
+                        onMouseLeave={(e) => Object.assign((e.currentTarget as HTMLButtonElement).style, ICON_BTN)}
                       >
-                        ✏
+                        <PencilIcon />
                       </button>
                       <button
                         onClick={(e) => { e.stopPropagation(); setDeleteTarget(g); setDeleteError(null); }}
                         title="מחיקה"
-                        style={{ background: 'none', border: '1px solid #fecaca', borderRadius: 6, width: 30, height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontSize: 13, color: '#ef4444' }}
+                        style={ICON_BTN_DANGER}
+                        onMouseEnter={(e) => Object.assign((e.currentTarget as HTMLButtonElement).style, ICON_BTN_DANGER_HOVER)}
+                        onMouseLeave={(e) => Object.assign((e.currentTarget as HTMLButtonElement).style, ICON_BTN_DANGER)}
                       >
-                        🗑
+                        <TrashIcon />
                       </button>
                     </div>
                   </td>
