@@ -136,7 +136,6 @@ export default function ParticipantsPage() {
   const [importOpen, setImportOpen] = useState(false);
   const [importStep, setImportStep] = useState<ImportStep>('upload');
   const [importTitle, setImportTitle] = useState('');
-  const [csvText, setCsvText] = useState('');
   const [csvRows, setCsvRows] = useState<string[][]>([]);
   const [csvHeaders, setCsvHeaders] = useState<string[]>([]);
   const [importMapping, setImportMapping] = useState<ColumnMapping>({});
@@ -145,6 +144,8 @@ export default function ParticipantsPage() {
   const [importRunning, setImportRunning] = useState(false);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const [detecting, setDetecting] = useState(false);
   const csvFileRef = useRef<HTMLInputElement>(null);
 
   // Mock actions
@@ -163,45 +164,54 @@ export default function ParticipantsPage() {
     setImportOpen(true);
     setImportStep('upload');
     setImportTitle('');
-    setCsvText('');
     setCsvRows([]);
     setCsvHeaders([]);
     setImportMapping({});
     setPreviewRows([]);
     setImportResult(null);
     setImportError(null);
+    setIsDragOver(false);
+    setDetecting(false);
   }
 
   function closeImport() {
     setImportOpen(false);
   }
 
-  function handleCsvFile(file: File) {
+  async function handleCsvFile(file: File) {
+    setImportError(null);
+    setDetecting(true);
+    // Auto-fill title from filename if empty
+    if (!importTitle.trim()) {
+      const name = file.name.replace(/\.[^.]+$/, '').replace(/[-_]/g, ' ');
+      setImportTitle(name);
+    }
     const reader = new FileReader();
-    reader.onload = (e) => {
-      const text = e.target?.result as string ?? '';
-      setCsvText(text);
+    reader.onload = async (e) => {
+      const text = (e.target?.result as string) ?? '';
+      const allRows = parseCsv(text);
+      if (allRows.length < 2) {
+        setImportError('הקובץ חייב להכיל לפחות שורת כותרות ושורת נתונים אחת');
+        setDetecting(false);
+        return;
+      }
+      const [headerRow, ...dataRows] = allRows;
+      setCsvHeaders(headerRow);
+      setCsvRows(dataRows);
+      try {
+        const result = await apiFetch(`${BASE_URL}/import/participants/detect`, {
+          method: 'POST',
+          body: JSON.stringify({ headers: headerRow, sampleRows: dataRows.slice(0, 5) }),
+        }) as { detected: ColumnMapping };
+        setImportMapping(result.detected);
+        setImportStep('map');
+      } catch (err) {
+        setImportError(err instanceof Error ? err.message : 'שגיאה בזיהוי עמודות');
+      } finally {
+        setDetecting(false);
+      }
     };
     reader.readAsText(file, 'utf-8');
-  }
-
-  async function handleDetect() {
-    setImportError(null);
-    const allRows = parseCsv(csvText);
-    if (allRows.length < 2) { setImportError('הקובץ חייב להכיל לפחות שורת כותרות ושורת נתונים אחת'); return; }
-    const [headerRow, ...dataRows] = allRows;
-    setCsvHeaders(headerRow);
-    setCsvRows(dataRows);
-    try {
-      const result = await apiFetch(`${BASE_URL}/import/participants/detect`, {
-        method: 'POST',
-        body: JSON.stringify({ headers: headerRow, sampleRows: dataRows.slice(0, 5) }),
-      }) as { detected: ColumnMapping };
-      setImportMapping(result.detected);
-      setImportStep('map');
-    } catch (err) {
-      setImportError(err instanceof Error ? err.message : 'שגיאה בזיהוי עמודות');
-    }
   }
 
   async function handlePreview() {
@@ -667,9 +677,62 @@ export default function ParticipantsPage() {
 
             {/* Step: Upload */}
             {importStep === 'upload' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+
+                {/* Drag-and-drop zone */}
+                <input
+                  ref={csvFileRef}
+                  type="file"
+                  accept=".csv,.tsv,.txt"
+                  style={{ display: 'none' }}
+                  onChange={(e) => { const f = e.target.files?.[0]; if (f) handleCsvFile(f); e.target.value = ''; }}
+                />
+                <div
+                  onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
+                  onDragEnter={(e) => { e.preventDefault(); setIsDragOver(true); }}
+                  onDragLeave={(e) => { e.preventDefault(); setIsDragOver(false); }}
+                  onDrop={(e) => { e.preventDefault(); setIsDragOver(false); const f = e.dataTransfer.files?.[0]; if (f) handleCsvFile(f); }}
+                  onClick={() => !detecting && csvFileRef.current?.click()}
+                  style={{
+                    border: `2px dashed ${isDragOver ? '#2563eb' : '#cbd5e1'}`,
+                    borderRadius: 14,
+                    padding: '40px 24px',
+                    textAlign: 'center',
+                    background: isDragOver ? '#eff6ff' : '#fafbfc',
+                    transition: 'border-color 0.15s, background 0.15s',
+                    cursor: detecting ? 'wait' : 'pointer',
+                  }}
+                >
+                  {detecting ? (
+                    <>
+                      <div style={{ fontSize: 32, marginBottom: 10 }}>⏳</div>
+                      <div style={{ fontSize: 15, fontWeight: 600, color: '#374151' }}>מנתח את הקובץ...</div>
+                    </>
+                  ) : isDragOver ? (
+                    <>
+                      <div style={{ fontSize: 36, marginBottom: 10 }}>📂</div>
+                      <div style={{ fontSize: 16, fontWeight: 700, color: '#2563eb' }}>שחרר כאן</div>
+                    </>
+                  ) : (
+                    <>
+                      <div style={{ fontSize: 40, marginBottom: 12, color: '#94a3b8' }}>📄</div>
+                      <div style={{ fontSize: 16, fontWeight: 600, color: '#374151', marginBottom: 6 }}>גרור קובץ CSV לכאן</div>
+                      <div style={{ fontSize: 13, color: '#94a3b8', marginBottom: 18 }}>קבצי CSV ,TSV ,TXT</div>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); csvFileRef.current?.click(); }}
+                        style={{ padding: '9px 24px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: 'pointer' }}
+                      >
+                        בחר קובץ
+                      </button>
+                    </>
+                  )}
+                </div>
+
+                {/* Import title — filled in here, auto-filled from filename on drop */}
                 <div>
-                  <label style={{ fontSize: 13, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 6 }}>שם הייבוא *</label>
+                  <label style={{ fontSize: 13, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 6 }}>
+                    שם הייבוא <span style={{ fontWeight: 400, color: '#94a3b8', fontSize: 12 }}>(אופציונלי — יאוכלס אוטומטית משם הקובץ)</span>
+                  </label>
                   <input
                     style={{ width: '100%', padding: '9px 12px', border: '1px solid #e2e8f0', borderRadius: 7, fontSize: 14, boxSizing: 'border-box' }}
                     placeholder="לדוגמה: ייבוא נרשמות ינואר 2026"
@@ -678,104 +741,88 @@ export default function ParticipantsPage() {
                   />
                 </div>
 
-                <div>
-                  <label style={{ fontSize: 13, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 6 }}>העלאת קובץ CSV</label>
-                  <input
-                    ref={csvFileRef}
-                    type="file"
-                    accept=".csv,.tsv,.txt"
-                    style={{ display: 'none' }}
-                    onChange={(e) => { const f = e.target.files?.[0]; if (f) handleCsvFile(f); e.target.value = ''; }}
-                  />
-                  <button
-                    onClick={() => csvFileRef.current?.click()}
-                    style={{ padding: '10px 18px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 14, cursor: 'pointer', color: '#374151', marginBottom: 12 }}
-                  >
-                    📁 בחר קובץ
-                  </button>
-                </div>
-
-                <div>
-                  <label style={{ fontSize: 13, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 6 }}>
-                    או הדבק תוכן CSV כאן
-                  </label>
-                  <textarea
-                    style={{ width: '100%', padding: '9px 12px', border: '1px solid #e2e8f0', borderRadius: 7, fontSize: 13, minHeight: 140, boxSizing: 'border-box', fontFamily: 'monospace', resize: 'vertical' }}
-                    placeholder={'שם פרטי,שם משפחה,טלפון,מייל\nרחל,כהן,0501234567,rachel@example.com'}
-                    value={csvText}
-                    onChange={(e) => setCsvText(e.target.value)}
-                    dir="ltr"
-                  />
-                </div>
-
                 {importError && <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 7, padding: '10px 14px', color: '#dc2626', fontSize: 13 }}>{importError}</div>}
-
-                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                  <button
-                    onClick={handleDetect}
-                    disabled={!csvText.trim() || !importTitle.trim()}
-                    style={{ padding: '10px 24px', background: !csvText.trim() || !importTitle.trim() ? '#e2e8f0' : '#2563eb', color: !csvText.trim() || !importTitle.trim() ? '#94a3b8' : '#fff', border: 'none', borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: !csvText.trim() || !importTitle.trim() ? 'not-allowed' : 'pointer' }}
-                  >
-                    המשך לזיהוי עמודות ←
-                  </button>
-                </div>
               </div>
             )}
 
             {/* Step: Map */}
             {importStep === 'map' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                <div style={{ fontSize: 13, color: '#64748b', background: '#f8fafc', borderRadius: 8, padding: '10px 14px' }}>
-                  זוהו <strong>{csvHeaders.length}</strong> עמודות ו-<strong>{csvRows.length}</strong> שורות.
-                  בדקי את המיפוי הנ&quot;ל ותקני לפי הצורך.
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+
+                {/* File summary */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: '#f8fafc', borderRadius: 8, padding: '10px 14px' }}>
+                  <span style={{ fontSize: 20 }}>📄</span>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: '#374151' }}>{importTitle || 'קובץ CSV'}</div>
+                    <div style={{ fontSize: 12, color: '#94a3b8' }}>{csvHeaders.length} עמודות · {csvRows.length} שורות</div>
+                  </div>
+                  <button onClick={() => setImportStep('upload')} style={{ marginRight: 'auto', background: 'none', border: 'none', fontSize: 12, color: '#94a3b8', cursor: 'pointer', padding: '4px 8px', borderRadius: 6 }}>החלף קובץ</button>
                 </div>
 
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                  {(Object.keys(MAPPING_LABELS) as (keyof ColumnMapping)[]).map((field) => {
-                    const colIdx = importMapping[field];
-                    const samples = colIdx != null && colIdx >= 0
-                      ? [...new Set(csvRows.map((r) => r[colIdx]?.trim()).filter(Boolean))].slice(0, 10)
-                      : [];
-                    const shown = samples.slice(0, 2);
-                    const overflow = samples.length - shown.length;
-                    return (
-                      <div key={field}>
-                        <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 }}>
-                          {MAPPING_LABELS[field]}
-                          {field === 'phone' && <span style={{ color: '#dc2626' }}> *</span>}
-                        </label>
-                        <select
-                          style={{ width: '100%', padding: '8px 10px', border: '1px solid #e2e8f0', borderRadius: 7, fontSize: 13, background: '#fff' }}
-                          value={importMapping[field] ?? -1}
-                          onChange={(e) => setImportMapping((m) => ({ ...m, [field]: Number(e.target.value) >= 0 ? Number(e.target.value) : null }))}
-                        >
-                          <option value={-1}>— לא ממופה —</option>
-                          {csvHeaders.map((h, i) => (
-                            <option key={i} value={i}>{h || `עמודה ${i + 1}`}</option>
-                          ))}
-                        </select>
-                        {shown.length > 0 && (
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 5 }}>
-                            {shown.map((v, i) => (
-                              <span key={i} style={{ background: '#f1f5f9', color: '#475569', border: '1px solid #e2e8f0', borderRadius: 5, padding: '2px 7px', fontSize: 11, maxWidth: 110, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={v}>
-                                {v}
-                              </span>
-                            ))}
-                            {overflow > 0 && (
-                              <span style={{ background: '#e2e8f0', color: '#64748b', borderRadius: 5, padding: '2px 7px', fontSize: 11, whiteSpace: 'nowrap' }}>
-                                +{overflow} נוספים
-                              </span>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
+                {/* Core identity fields */}
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: '#94a3b8', letterSpacing: 0.5, marginBottom: 10, textTransform: 'uppercase' }}>שדות זהות</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {(['phone', 'firstName', 'lastName', 'fullName', 'email'] as (keyof ColumnMapping)[]).map((field) => {
+                      const colIdx = importMapping[field];
+                      const mapped = colIdx != null && colIdx >= 0;
+                      return (
+                        <div key={field} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                          <label style={{ width: 100, fontSize: 13, fontWeight: 600, color: '#374151', flexShrink: 0 }}>
+                            {MAPPING_LABELS[field]}
+                            {field === 'phone' && <span style={{ color: '#dc2626' }}> *</span>}
+                          </label>
+                          <select
+                            style={{ flex: 1, padding: '8px 10px', border: `1px solid ${mapped ? '#bfdbfe' : '#e2e8f0'}`, borderRadius: 7, fontSize: 13, background: mapped ? '#eff6ff' : '#fff', color: '#0f172a' }}
+                            value={colIdx ?? -1}
+                            onChange={(e) => setImportMapping((m) => ({ ...m, [field]: Number(e.target.value) >= 0 ? Number(e.target.value) : null }))}
+                          >
+                            <option value={-1}>— לא ממופה —</option>
+                            {csvHeaders.map((h, i) => {
+                              const samples = [...new Set(csvRows.map((r) => r[i]?.trim()).filter(Boolean))].slice(0, 3);
+                              return <option key={i} value={i}>{h || `עמודה ${i + 1}`}{samples.length ? ` (${samples.join(', ')})` : ''}</option>;
+                            })}
+                          </select>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
+
+                {/* Extra fields */}
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: '#94a3b8', letterSpacing: 0.5, marginBottom: 10, textTransform: 'uppercase' }}>שדות נוספים</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {(['city', 'gender', 'notes'] as (keyof ColumnMapping)[]).map((field) => {
+                      const colIdx = importMapping[field];
+                      const mapped = colIdx != null && colIdx >= 0;
+                      return (
+                        <div key={field} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                          <label style={{ width: 100, fontSize: 13, fontWeight: 600, color: '#374151', flexShrink: 0 }}>
+                            {MAPPING_LABELS[field]}
+                          </label>
+                          <select
+                            style={{ flex: 1, padding: '8px 10px', border: `1px solid ${mapped ? '#bfdbfe' : '#e2e8f0'}`, borderRadius: 7, fontSize: 13, background: mapped ? '#eff6ff' : '#fff', color: '#0f172a' }}
+                            value={colIdx ?? -1}
+                            onChange={(e) => setImportMapping((m) => ({ ...m, [field]: Number(e.target.value) >= 0 ? Number(e.target.value) : null }))}
+                          >
+                            <option value={-1}>— לא ממופה —</option>
+                            {csvHeaders.map((h, i) => {
+                              const samples = [...new Set(csvRows.map((r) => r[i]?.trim()).filter(Boolean))].slice(0, 3);
+                              return <option key={i} value={i}>{h || `עמודה ${i + 1}`}{samples.length ? ` (${samples.join(', ')})` : ''}</option>;
+                            })}
+                          </select>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div style={{ fontSize: 12, color: '#94a3b8' }}>* שדה טלפון הוא שדה חובה. שורות ללא טלפון ידולגו.</div>
 
                 {importError && <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 7, padding: '10px 14px', color: '#dc2626', fontSize: 13 }}>{importError}</div>}
 
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 4 }}>
                   <button onClick={() => setImportStep('upload')} style={{ padding: '9px 18px', background: '#f1f5f9', border: 'none', borderRadius: 7, fontSize: 13, cursor: 'pointer', color: '#374151' }}>← חזרה</button>
                   <button
                     onClick={handlePreview}
