@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from './prisma/prisma.service';
 
 // ─── Webhook payload types ────────────────────────────────────────────────────
@@ -123,6 +123,59 @@ function normalizeMessageType(raw: string | undefined): string {
   return MAP[raw] ?? 'system';
 }
 
+// ─── Phone normalization ──────────────────────────────────────────────────────
+//
+// Input → Output examples:
+//   "0524264020"              → "+972524264020"
+//   "054-123-4567"            → "+972541234567"
+//   "052 426 4020"            → "+972524264020"
+//   "972524264020"            → "+972524264020"   (raw from webhook, missing +)
+//   "+972524264020"           → "+972524264020"   (already correct)
+//   "972524264020@c.us"       → "+972524264020"   (strip WA suffix)
+//   "120363406660919335@g.us" → "120363406660919335@g.us"  (group JID, pass through)
+//   "120363406660919335"      → "120363406660919335@g.us"  (group JID, suffix was stripped)
+//
+// Throws BadRequestException (Hebrew) for anything that can't be resolved.
+
+export function normalizePhoneForWassenger(raw: string): string {
+  const trimmed = raw.trim();
+
+  // 1. Already a proper group JID (digits@g.us)
+  if (/^\d+@g\.us$/.test(trimmed)) return trimmed;
+
+  // 2. Strip any @-suffix (@c.us, @s.whatsapp.net, @g.us)
+  let value = trimmed.replace(/@[\w.]+$/, '').trim();
+
+  // 3. Looks like a stripped group JID: >15 digits cannot be a valid phone (E.164 max is 15 digits)
+  if (/^\d{16,}$/.test(value)) return `${value}@g.us`;
+
+  // 4. Phone normalization ────────────────────────────────────────────────────
+  const hasPlus = value.startsWith('+');
+  const digits = value.replace(/\D/g, ''); // keep only digits
+
+  // Israeli mobile: 0XXXXXXXXX (10 digits, starts with 05–09)
+  if (/^0[5-9]\d{8}$/.test(digits)) {
+    return '+972' + digits.slice(1);
+  }
+
+  // International without +, starts with country code: 972XXXXXXXXX (12 digits)
+  if (/^972\d{9}$/.test(digits)) {
+    return '+' + digits;
+  }
+
+  // Had explicit + and valid E.164 length (8–15 digits)
+  if (hasPlus && digits.length >= 8 && digits.length <= 15) {
+    return '+' + digits;
+  }
+
+  // Generic international without + (common non-Israeli numbers)
+  if (!hasPlus && /^[1-9]\d{7,14}$/.test(digits)) {
+    return '+' + digits;
+  }
+
+  throw new BadRequestException('מספר הטלפון אינו תקין. אנא ודא שהמספר נכון ונסה שוב.');
+}
+
 // ─── Service ──────────────────────────────────────────────────────────────────
 
 const WASSENGER_API = 'https://api.wassenger.com/v1';
@@ -206,12 +259,15 @@ export class WassengerService {
 
   // ── Outbound message ──────────────────────────────────────────────────────
 
-  async sendMessage(phone: string, message: string): Promise<void> {
+  async sendMessage(rawPhone: string, message: string): Promise<void> {
     const apiKey = process.env['WASSENGER_API_KEY'];
     const deviceId = process.env['WASSENGER_DEVICE_ID'];
     if (!apiKey || !deviceId) {
-      throw new Error('WASSENGER_API_KEY or WASSENGER_DEVICE_ID not configured');
+      throw new BadRequestException('שירות ההודעות אינו מוגדר. אנא פנה למנהל המערכת.');
     }
+
+    // Normalize before calling Wassenger — throws BadRequestException for invalid numbers
+    const phone = normalizePhoneForWassenger(rawPhone);
 
     const res = await fetch(`${WASSENGER_API}/messages`, {
       method: 'POST',
@@ -220,8 +276,9 @@ export class WassengerService {
     });
 
     if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`Wassenger send failed ${res.status}: ${body}`);
+      const errorBody = await res.text().catch(() => '');
+      console.error(`[Wassenger] sendMessage failed. status=${res.status} phone="${phone}" body=${errorBody}`);
+      throw new BadRequestException('לא ניתן לשלוח את ההודעה כרגע. אנא נסה שוב.');
     }
   }
 

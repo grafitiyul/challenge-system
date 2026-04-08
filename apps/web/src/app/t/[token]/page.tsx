@@ -1,6 +1,6 @@
 'use client';
 
-import { use, useEffect, useRef, useState } from 'react';
+import { use, useCallback, useEffect, useRef, useState } from 'react';
 import { BASE_URL, apiFetch } from '@lib/api';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -30,6 +30,54 @@ interface LogResult {
   todayScore: number;
   todayValue: number | null;
 }
+
+interface PortalStats {
+  todayScore: number;
+  weekScore: number;
+  totalScore: number;
+  currentStreak: number;
+  bestStreak: number;
+  dailyTrend: { date: string; points: number }[];
+  groupLeaderboard: {
+    participantId: string;
+    firstName: string;
+    lastName: string | null;
+    totalScore: number;
+    todayScore: number;
+    rank: number;
+    isMe: boolean;
+  }[];
+}
+
+interface FeedItem {
+  id: string;
+  message: string;
+  createdAt: string;
+  participant: { id: string; firstName: string; lastName: string | null };
+}
+
+interface PortalRules {
+  actions: {
+    id: string;
+    name: string;
+    description: string | null;
+    points: number;
+    inputType: string | null;
+    unit: string | null;
+    maxPerDay: number | null;
+    aggregationMode: string;
+  }[];
+  rules: {
+    id: string;
+    name: string;
+    type: string;
+    conditionJson: Record<string, unknown> | null;
+    rewardJson: Record<string, unknown> | null;
+    isActive: boolean;
+  }[]; // conditionJson/rewardJson typed as Record for frontend convenience
+}
+
+type TabId = 'report' | 'stats' | 'feed' | 'rules';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -68,6 +116,89 @@ function getTodayDisplay(action: Action, todayValues: Record<string, number>): s
   return 'בוצע היום';
 }
 
+function relativeTime(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'עכשיו';
+  if (mins < 60) return `לפני ${mins} דקות`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `לפני ${hrs} שעות`;
+  const days = Math.floor(hrs / 24);
+  if (days < 7) return `לפני ${days} ימים`;
+  return new Date(iso).toLocaleDateString('he-IL', { day: 'numeric', month: 'short' });
+}
+
+function initials(first: string, last: string | null): string {
+  return (first[0] ?? '') + (last ? last[0] : '');
+}
+
+function ruleDescription(rule: PortalRules['rules'][0]): string {
+  const pts = rule.rewardJson?.['points'];
+  const ptsStr = pts != null ? `${pts} נקודות` : 'נקודות';
+  const cond = rule.conditionJson;
+  if (rule.type === 'daily_bonus') return `${ptsStr} — בכל יום שיש דיווח`;
+  if (rule.type === 'streak') {
+    const min = cond?.['minStreak'];
+    return min ? `${ptsStr} — אחרי ${min} ימים ברצף` : `${ptsStr} — בונוס רצף`;
+  }
+  if (rule.type === 'conditional') {
+    const threshold = cond?.['threshold'];
+    return threshold !== undefined ? `${ptsStr} — בהגיע לסף ${threshold}` : `${ptsStr} — בהתקיים תנאי`;
+  }
+  return ptsStr;
+}
+
+// ─── SVG Bar Chart ────────────────────────────────────────────────────────────
+
+function TrendChart({ data }: { data: { date: string; points: number }[] }) {
+  const WIDTH = 320;
+  const HEIGHT = 80;
+  const BAR_GAP = 2;
+  const n = data.length;
+  const barW = Math.floor((WIDTH - BAR_GAP * (n - 1)) / n);
+  const maxVal = Math.max(...data.map((d) => d.points), 1);
+
+  return (
+    <svg
+      width="100%"
+      viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
+      style={{ display: 'block', overflow: 'visible' }}
+      aria-label="גרף נקודות 14 ימים"
+    >
+      {data.map((d, i) => {
+        const barH = Math.max(2, Math.round((d.points / maxVal) * (HEIGHT - 14)));
+        const x = i * (barW + BAR_GAP);
+        const y = HEIGHT - barH;
+        const isToday = i === n - 1;
+        return (
+          <g key={d.date}>
+            <rect
+              x={x}
+              y={y}
+              width={barW}
+              height={barH}
+              rx={3}
+              fill={isToday ? '#1d4ed8' : d.points > 0 ? '#93c5fd' : '#e5e7eb'}
+            />
+            {isToday && d.points > 0 && (
+              <text
+                x={x + barW / 2}
+                y={y - 4}
+                textAnchor="middle"
+                fontSize={9}
+                fill="#1d4ed8"
+                fontWeight={700}
+              >
+                {d.points}
+              </text>
+            )}
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function ParticipantPortal({ params }: { params: Promise<{ token: string }> }) {
@@ -76,17 +207,33 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
   const [state, setState] = useState<'loading' | 'invalid' | 'inactive' | 'ready'>('loading');
   const [ctx, setCtx] = useState<PortalContext | null>(null);
   const [loadError, setLoadError] = useState('');
+  const [activeTab, setActiveTab] = useState<TabId>('report');
 
-  // Bottom sheet state
+  // Lazy-load flags: track which tabs have been loaded at least once
+  const loadedTabs = useRef<Set<TabId>>(new Set());
+
+  // Bottom sheet state (report tab)
   const [activeAction, setActiveAction] = useState<Action | null>(null);
   const [inputValue, setInputValue] = useState('');
   const [inputError, setInputError] = useState('');
   const [submitting, setSubmitting] = useState(false);
-
-  // Per-action success feedback: actionId → { pointsEarned, visible }
   const [feedback, setFeedback] = useState<Record<string, { points: number; visible: boolean }>>({});
-
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Stats tab
+  const [stats, setStats] = useState<PortalStats | null>(null);
+  const [statsLoading, setStatsLoading] = useState(false);
+  const [statsError, setStatsError] = useState('');
+
+  // Feed tab
+  const [feed, setFeed] = useState<FeedItem[]>([]);
+  const [feedLoading, setFeedLoading] = useState(false);
+  const [feedError, setFeedError] = useState('');
+
+  // Rules tab
+  const [rules, setRules] = useState<PortalRules | null>(null);
+  const [rulesLoading, setRulesLoading] = useState(false);
+  const [rulesError, setRulesError] = useState('');
 
   // ─── Load context ──────────────────────────────────────────────────────────
 
@@ -95,6 +242,7 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
       .then((data) => {
         setCtx(data);
         setState('ready');
+        loadedTabs.current.add('report');
       })
       .catch((err) => {
         const msg = typeof err === 'object' && err !== null && 'message' in err
@@ -106,13 +254,51 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
       });
   }, [token]);
 
-  // ─── Open input sheet ──────────────────────────────────────────────────────
+  // ─── Lazy tab loaders ──────────────────────────────────────────────────────
+
+  const loadStats = useCallback(() => {
+    if (loadedTabs.current.has('stats')) return;
+    loadedTabs.current.add('stats');
+    setStatsLoading(true);
+    apiFetch<PortalStats>(`${BASE_URL}/public/participant/${token}/stats`, { cache: 'no-store' })
+      .then(setStats)
+      .catch(() => setStatsError('שגיאה בטעינת הנתונים'))
+      .finally(() => setStatsLoading(false));
+  }, [token]);
+
+  const loadFeed = useCallback(() => {
+    if (loadedTabs.current.has('feed')) return;
+    loadedTabs.current.add('feed');
+    setFeedLoading(true);
+    apiFetch<FeedItem[]>(`${BASE_URL}/public/participant/${token}/feed`, { cache: 'no-store' })
+      .then(setFeed)
+      .catch(() => setFeedError('שגיאה בטעינת המבזק'))
+      .finally(() => setFeedLoading(false));
+  }, [token]);
+
+  const loadRules = useCallback(() => {
+    if (loadedTabs.current.has('rules')) return;
+    loadedTabs.current.add('rules');
+    setRulesLoading(true);
+    apiFetch<PortalRules>(`${BASE_URL}/public/participant/${token}/rules`, { cache: 'no-store' })
+      .then(setRules)
+      .catch(() => setRulesError('שגיאה בטעינת החוקים'))
+      .finally(() => setRulesLoading(false));
+  }, [token]);
+
+  function switchTab(tab: TabId) {
+    setActiveTab(tab);
+    if (tab === 'stats') loadStats();
+    if (tab === 'feed') loadFeed();
+    if (tab === 'rules') loadRules();
+  }
+
+  // ─── Action sheet ──────────────────────────────────────────────────────────
 
   function openAction(action: Action) {
     setActiveAction(action);
     setInputValue('');
     setInputError('');
-    // Pre-fill for latest_value — participant sees their current reported total
     if (action.inputType === 'number' && action.aggregationMode === 'latest_value' && ctx) {
       const current = ctx.todayValues[action.id];
       if (current && current > 0) setInputValue(String(current));
@@ -126,8 +312,6 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
     setInputError('');
   }
 
-  // ─── Submit action ─────────────────────────────────────────────────────────
-
   async function handleSubmit() {
     if (!activeAction || !ctx) return;
     setInputError('');
@@ -135,7 +319,6 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
     const isNumeric = activeAction.inputType === 'number';
     const value = isNumeric ? inputValue.trim() : 'true';
 
-    // Client-side validation
     if (isNumeric) {
       const num = parseFloat(value);
       if (!value || isNaN(num) || num < 0) {
@@ -158,7 +341,6 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
         body: JSON.stringify({ actionId: activeAction.id, value: isNumeric ? value : undefined }),
       });
 
-      // Update context with fresh values
       setCtx((prev) => {
         if (!prev) return prev;
         return {
@@ -173,10 +355,8 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
 
       const actionId = activeAction.id;
       const pointsEarned = result.pointsEarned;
-
       closeSheet();
 
-      // Show success feedback on the row
       setFeedback((prev) => ({ ...prev, [actionId]: { points: pointsEarned, visible: true } }));
       setTimeout(() => {
         setFeedback((prev) => ({ ...prev, [actionId]: { ...prev[actionId], visible: false } }));
@@ -192,14 +372,14 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
     }
   }
 
-  // ─── Render: loading ───────────────────────────────────────────────────────
+  // ─── Loading / error screens ───────────────────────────────────────────────
 
   if (state === 'loading') {
     return (
-      <div style={styles.fullScreen}>
-        <div style={styles.statusBox}>
-          <div style={styles.spinner} />
-          <p style={styles.statusText}>טוענת...</p>
+      <div style={s.fullScreen}>
+        <div style={s.statusBox}>
+          <div style={s.spinner} />
+          <p style={s.statusText}>טוענת...</p>
         </div>
       </div>
     );
@@ -207,11 +387,11 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
 
   if (state === 'invalid') {
     return (
-      <div style={styles.fullScreen}>
-        <div style={styles.statusBox}>
+      <div style={s.fullScreen}>
+        <div style={s.statusBox}>
           <div style={{ fontSize: 40, marginBottom: 16 }}>🔗</div>
-          <p style={styles.statusTitle}>הקישור אינו בתוקף</p>
-          <p style={styles.statusText}>{loadError || 'יש לפנות למנהלת התוכנית'}</p>
+          <p style={s.statusTitle}>הקישור אינו בתוקף</p>
+          <p style={s.statusText}>{loadError || 'יש לפנות למנהלת התוכנית'}</p>
         </div>
       </div>
     );
@@ -219,11 +399,11 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
 
   if (state === 'inactive') {
     return (
-      <div style={styles.fullScreen}>
-        <div style={styles.statusBox}>
+      <div style={s.fullScreen}>
+        <div style={s.statusBox}>
           <div style={{ fontSize: 40, marginBottom: 16 }}>🏁</div>
-          <p style={styles.statusTitle}>התוכנית הסתיימה</p>
-          <p style={styles.statusText}>תודה על ההשתתפות</p>
+          <p style={s.statusTitle}>התוכנית הסתיימה</p>
+          <p style={s.statusText}>תודה על ההשתתפות</p>
         </div>
       </div>
     );
@@ -234,105 +414,247 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
   const firstName = ctx.participant.firstName;
   const dateRange = formatDateRange(ctx.group.startDate, ctx.group.endDate);
 
-  // ─── Render: ready ─────────────────────────────────────────────────────────
+  // ─── Main app render ───────────────────────────────────────────────────────
 
   return (
-    <div style={styles.root} dir="rtl">
+    <div style={s.root} dir="rtl">
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }
         @keyframes fadeInOut {
-          0% { opacity: 0; transform: scale(0.95); }
-          15% { opacity: 1; transform: scale(1); }
-          75% { opacity: 1; transform: scale(1); }
+          0%   { opacity: 0; transform: scale(0.95); }
+          15%  { opacity: 1; transform: scale(1); }
+          75%  { opacity: 1; transform: scale(1); }
           100% { opacity: 0; transform: scale(1.02); }
         }
+        * { box-sizing: border-box; }
       `}</style>
 
       {/* ── Top bar ── */}
-      <div style={styles.topBar}>
-        <div style={styles.topRow}>
-          <span style={styles.greeting}>{dailyGreeting()}, {firstName}</span>
-          <span style={styles.todayScore}>
+      <div style={s.topBar}>
+        <div style={s.topRow}>
+          <span style={s.greeting}>{dailyGreeting()}, {firstName}</span>
+          <span style={s.todayScore}>
             {ctx.todayScore > 0 ? `${ctx.todayScore} נקודות היום` : 'היום: 0 נקודות'}
           </span>
         </div>
-        <div style={styles.programMeta}>
-          <span style={styles.programName}>{ctx.program.name}</span>
-          {dateRange && <span style={styles.dateRange}>{dateRange}</span>}
+        <div style={s.programMeta}>
+          <span style={s.programName}>{ctx.program.name}</span>
+          {dateRange && <span style={s.dateRange}>{dateRange}</span>}
         </div>
       </div>
 
-      {/* ── Action list ── */}
-      <div style={styles.actionList}>
-        {ctx.actions.map((action) => {
-          const fb = feedback[action.id];
-          const todayDisplay = getTodayDisplay(action, ctx.todayValues);
-          const done = (ctx.todayValues[action.id] ?? 0) > 0;
+      {/* ── Tab content ── */}
+      <div style={s.tabContent}>
 
-          return (
-            <button
-              key={action.id}
-              onClick={() => openAction(action)}
-              style={{
-                ...styles.actionRow,
-                ...(done ? styles.actionRowDone : {}),
-              }}
-              aria-label={`דווחי על: ${action.name}`}
-            >
-              {/* Left side: status indicator */}
-              <div style={styles.actionIndicator(done)} />
+        {/* ── Tab 1: דיווח שוטף ── */}
+        {activeTab === 'report' && (
+          <div style={s.actionList}>
+            {ctx.actions.map((action) => {
+              const fb = feedback[action.id];
+              const todayDisplay = getTodayDisplay(action, ctx.todayValues);
+              const done = (ctx.todayValues[action.id] ?? 0) > 0;
+              return (
+                <button
+                  key={action.id}
+                  onClick={() => openAction(action)}
+                  style={{ ...s.actionRow, ...(done ? s.actionRowDone : {}) }}
+                  aria-label={`דווחי על: ${action.name}`}
+                >
+                  <div style={s.actionIndicator(done)} />
+                  <div style={s.actionContent}>
+                    <span style={s.actionName}>{action.name}</span>
+                    {todayDisplay && <span style={s.actionHint}>{todayDisplay}</span>}
+                    {!todayDisplay && action.description && <span style={s.actionHint}>{action.description}</span>}
+                  </div>
+                  <div style={s.pointsBadge}>
+                    <span style={s.pointsValue}>+{action.points}</span>
+                  </div>
+                  {fb?.visible && (
+                    <div style={s.successFlash}>
+                      <span style={s.successFlashText}>+{fb.points} נקודות!</span>
+                    </div>
+                  )}
+                </button>
+              );
+            })}
+            {ctx.actions.length === 0 && (
+              <p style={{ textAlign: 'center', color: '#9ca3af', padding: '40px 0', fontSize: 15 }}>
+                אין פעולות להצגה כרגע
+              </p>
+            )}
+          </div>
+        )}
 
-              {/* Content */}
-              <div style={styles.actionContent}>
-                <span style={styles.actionName}>{action.name}</span>
-                {todayDisplay && (
-                  <span style={styles.actionHint}>{todayDisplay}</span>
-                )}
-                {!todayDisplay && action.description && (
-                  <span style={styles.actionHint}>{action.description}</span>
-                )}
-              </div>
-
-              {/* Points badge */}
-              <div style={styles.pointsBadge}>
-                <span style={styles.pointsValue}>+{action.points}</span>
-              </div>
-
-              {/* Success flash */}
-              {fb?.visible && (
-                <div style={styles.successFlash}>
-                  <span style={styles.successFlashText}>+{fb.points} נקודות!</span>
+        {/* ── Tab 2: נתונים ── */}
+        {activeTab === 'stats' && (
+          <div style={s.tabPane}>
+            {statsLoading && <div style={s.tabCenter}><div style={s.spinner} /></div>}
+            {statsError && <p style={s.tabError}>{statsError}</p>}
+            {stats && !statsLoading && (
+              <>
+                {/* Score cards */}
+                <div style={s.statsGrid}>
+                  <div style={s.statCard}>
+                    <span style={s.statValue}>{stats.todayScore}</span>
+                    <span style={s.statLabel}>היום</span>
+                  </div>
+                  <div style={s.statCard}>
+                    <span style={s.statValue}>{stats.weekScore}</span>
+                    <span style={s.statLabel}>השבוע</span>
+                  </div>
+                  <div style={s.statCard}>
+                    <span style={s.statValue}>{stats.totalScore}</span>
+                    <span style={s.statLabel}>סה"כ</span>
+                  </div>
+                  <div style={s.statCard}>
+                    <span style={s.statValue}>{stats.currentStreak}</span>
+                    <span style={s.statLabel}>רצף ימים</span>
+                  </div>
                 </div>
-              )}
-            </button>
-          );
-        })}
+
+                {/* Trend chart */}
+                <div style={s.chartCard}>
+                  <p style={s.sectionTitle}>14 ימים אחרונים</p>
+                  <TrendChart data={stats.dailyTrend} />
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6 }}>
+                    <span style={s.chartAxisLabel}>{stats.dailyTrend[0]?.date ? formatDate(stats.dailyTrend[0].date) : ''}</span>
+                    <span style={s.chartAxisLabel}>היום</span>
+                  </div>
+                </div>
+
+                {/* Leaderboard */}
+                {stats.groupLeaderboard.length > 1 && (
+                  <div style={s.leaderboardCard}>
+                    <p style={s.sectionTitle}>דירוג הקבוצה</p>
+                    {stats.groupLeaderboard.map((row) => (
+                      <div
+                        key={row.participantId}
+                        style={{ ...s.leaderRow, ...(row.isMe ? s.leaderRowMe : {}) }}
+                      >
+                        <span style={s.leaderRank}>#{row.rank}</span>
+                        <span style={s.leaderName}>
+                          {row.firstName}{row.lastName ? ` ${row.lastName}` : ''}
+                          {row.isMe && <span style={s.meBadge}> (את)</span>}
+                        </span>
+                        <span style={s.leaderScore}>{row.totalScore}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ── Tab 3: מבזק ── */}
+        {activeTab === 'feed' && (
+          <div style={s.tabPane}>
+            {feedLoading && <div style={s.tabCenter}><div style={s.spinner} /></div>}
+            {feedError && <p style={s.tabError}>{feedError}</p>}
+            {!feedLoading && !feedError && feed.length === 0 && (
+              <p style={{ textAlign: 'center', color: '#9ca3af', padding: '40px 0', fontSize: 15 }}>אין פעילות עדיין</p>
+            )}
+            {feed.map((item) => (
+              <div key={item.id} style={s.feedItem}>
+                <div style={s.feedAvatar}>
+                  {initials(item.participant.firstName, item.participant.lastName)}
+                </div>
+                <div style={s.feedContent}>
+                  <p style={s.feedMessage}>{item.message}</p>
+                  <span style={s.feedTime}>{relativeTime(item.createdAt)}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ── Tab 4: חוקים ── */}
+        {activeTab === 'rules' && (
+          <div style={s.tabPane}>
+            {rulesLoading && <div style={s.tabCenter}><div style={s.spinner} /></div>}
+            {rulesError && <p style={s.tabError}>{rulesError}</p>}
+            {rules && !rulesLoading && (
+              <>
+                <p style={{ ...s.sectionTitle, marginBottom: 12 }}>פעולות ונקודות</p>
+                {rules.actions.map((a) => (
+                  <div key={a.id} style={s.ruleActionRow}>
+                    <div style={{ flex: 1 }}>
+                      <span style={s.ruleActionName}>{a.name}</span>
+                      {a.description && <span style={s.ruleActionDesc}>{a.description}</span>}
+                      {a.maxPerDay && (
+                        <span style={s.ruleTag}>עד {a.maxPerDay} פעמים ביום</span>
+                      )}
+                    </div>
+                    <div style={s.rulePointsBadge}>+{a.points}</div>
+                  </div>
+                ))}
+
+                {rules.rules.filter((r) => r.isActive).length > 0 && (
+                  <>
+                    <p style={{ ...s.sectionTitle, marginTop: 24, marginBottom: 12 }}>בונוסים מיוחדים</p>
+                    {rules.rules.filter((r) => r.isActive).map((r) => {
+                      const pts = r.rewardJson?.['points'];
+                      return (
+                        <div key={r.id} style={s.bonusRow}>
+                          <div style={s.bonusIcon}>⭐</div>
+                          <div style={{ flex: 1 }}>
+                            <span style={s.bonusName}>{r.name}</span>
+                            <span style={s.bonusDesc}>{ruleDescription(r)}</span>
+                          </div>
+                          {pts != null && <div style={s.bonusPoints}>+{String(pts)}</div>}
+                        </div>
+                      );
+                    })}
+                  </>
+                )}
+              </>
+            )}
+          </div>
+        )}
       </div>
+
+      {/* ── Bottom navigation ── */}
+      <nav style={s.bottomNav}>
+        {(
+          [
+            { id: 'report', label: 'דיווח', icon: '✏️' },
+            { id: 'stats',  label: 'נתונים', icon: '📊' },
+            { id: 'feed',   label: 'מבזק',   icon: '📣' },
+            { id: 'rules',  label: 'חוקים',  icon: '📋' },
+          ] as { id: TabId; label: string; icon: string }[]
+        ).map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => switchTab(tab.id)}
+            style={{
+              ...s.navBtn,
+              ...(activeTab === tab.id ? s.navBtnActive : {}),
+            }}
+          >
+            <span style={s.navIcon}>{tab.icon}</span>
+            <span style={s.navLabel(activeTab === tab.id)}>{tab.label}</span>
+          </button>
+        ))}
+      </nav>
 
       {/* ── Bottom sheet backdrop ── */}
       {activeAction && (
-        <div style={styles.backdrop} onClick={closeSheet} />
+        <div style={s.backdrop} onClick={closeSheet} />
       )}
 
       {/* ── Bottom sheet ── */}
       <div style={{
-        ...styles.sheet,
+        ...s.sheet,
         transform: activeAction ? 'translateX(-50%) translateY(0)' : 'translateX(-50%) translateY(100%)',
       }}>
         {activeAction && (
-          <div style={styles.sheetInner}>
-            {/* Handle */}
-            <div style={styles.sheetHandle} />
+          <div style={s.sheetInner}>
+            <div style={s.sheetHandle} />
+            <p style={s.sheetActionName}>{activeAction.name}</p>
+            <p style={s.sheetLabel}>{getInputLabel(activeAction)}</p>
 
-            {/* Action name */}
-            <p style={styles.sheetActionName}>{activeAction.name}</p>
-
-            {/* Input label */}
-            <p style={styles.sheetLabel}>{getInputLabel(activeAction)}</p>
-
-            {/* Input */}
             {activeAction.inputType === 'number' ? (
-              <div style={styles.inputRow}>
+              <div style={s.inputRow}>
                 <input
                   ref={inputRef}
                   type="number"
@@ -341,51 +663,41 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                   onChange={(e) => setInputValue(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') handleSubmit(); }}
                   placeholder="0"
-                  style={styles.input}
+                  style={s.input}
                   min="0"
                   dir="ltr"
                 />
                 {activeAction.unit && (
-                  <span style={styles.inputUnit}>{activeAction.unit}</span>
+                  <span style={s.inputUnit}>{activeAction.unit}</span>
                 )}
               </div>
             ) : (
-              // Boolean / select — no input needed, just confirm
-              <p style={styles.confirmText}>לחצי "שלח" לאישור הפעולה</p>
+              <p style={s.confirmText}>לחצי "שלח" לאישור הפעולה</p>
             )}
 
-            {/* Error */}
-            {inputError && (
-              <p style={styles.inputError}>{inputError}</p>
-            )}
+            {inputError && <p style={s.inputError}>{inputError}</p>}
 
-            {/* Submit button */}
             <button
               onClick={handleSubmit}
               disabled={submitting}
-              style={{
-                ...styles.submitBtn,
-                ...(submitting ? styles.submitBtnDisabled : {}),
-              }}
+              style={{ ...s.submitBtn, ...(submitting ? s.submitBtnDisabled : {}) }}
             >
               {submitting ? 'שולחת...' : 'שלח'}
             </button>
 
-            {/* Cancel */}
-            <button onClick={closeSheet} style={styles.cancelBtn}>
-              ביטול
-            </button>
+            <button onClick={closeSheet} style={s.cancelBtn}>ביטול</button>
           </div>
         )}
       </div>
-
     </div>
   );
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
-const styles = {
+const BOTTOM_NAV_H = 64;
+
+const s = {
   root: {
     minHeight: '100vh',
     background: '#f9fafb',
@@ -395,9 +707,9 @@ const styles = {
     margin: '0 auto',
     position: 'relative' as const,
     overflowX: 'hidden' as const,
+    paddingBottom: BOTTOM_NAV_H + 16,
   } satisfies React.CSSProperties,
 
-  // ── Full-screen error/loading states ──
   fullScreen: {
     minHeight: '100vh',
     display: 'flex',
@@ -480,9 +792,31 @@ const styles = {
     fontSize: 12,
   } satisfies React.CSSProperties,
 
-  // ── Action list ──
+  // ── Tab content area ──
+  tabContent: {
+    minHeight: 0,
+  } satisfies React.CSSProperties,
+
+  tabPane: {
+    padding: '16px 16px 0',
+  } satisfies React.CSSProperties,
+
+  tabCenter: {
+    display: 'flex',
+    justifyContent: 'center',
+    padding: '40px 0',
+  } satisfies React.CSSProperties,
+
+  tabError: {
+    textAlign: 'center' as const,
+    color: '#ef4444',
+    padding: '40px 0',
+    fontSize: 15,
+  } satisfies React.CSSProperties,
+
+  // ── Report tab ──
   actionList: {
-    padding: '12px 16px 32px',
+    padding: '12px 16px 0',
     display: 'flex',
     flexDirection: 'column' as const,
     gap: 10,
@@ -552,7 +886,6 @@ const styles = {
     color: '#1d4ed8',
   } satisfies React.CSSProperties,
 
-  // ── Success flash overlay on row ──
   successFlash: {
     position: 'absolute' as const,
     inset: 0,
@@ -569,6 +902,286 @@ const styles = {
     fontWeight: 700,
     color: '#ffffff',
   } satisfies React.CSSProperties,
+
+  // ── Stats tab ──
+  statsGrid: {
+    display: 'grid',
+    gridTemplateColumns: '1fr 1fr',
+    gap: 10,
+    marginBottom: 16,
+  } satisfies React.CSSProperties,
+
+  statCard: {
+    background: '#ffffff',
+    border: '1px solid #e5e7eb',
+    borderRadius: 14,
+    padding: '16px 12px',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'center',
+    gap: 4,
+  } satisfies React.CSSProperties,
+
+  statValue: {
+    fontSize: 28,
+    fontWeight: 800,
+    color: '#111827',
+    lineHeight: 1,
+  } satisfies React.CSSProperties,
+
+  statLabel: {
+    fontSize: 13,
+    color: '#6b7280',
+  } satisfies React.CSSProperties,
+
+  chartCard: {
+    background: '#ffffff',
+    border: '1px solid #e5e7eb',
+    borderRadius: 14,
+    padding: '16px',
+    marginBottom: 16,
+  } satisfies React.CSSProperties,
+
+  sectionTitle: {
+    fontSize: 14,
+    fontWeight: 700,
+    color: '#374151',
+    margin: '0 0 10px',
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.05em',
+  } satisfies React.CSSProperties,
+
+  chartAxisLabel: {
+    fontSize: 11,
+    color: '#9ca3af',
+  } satisfies React.CSSProperties,
+
+  leaderboardCard: {
+    background: '#ffffff',
+    border: '1px solid #e5e7eb',
+    borderRadius: 14,
+    padding: '16px',
+    marginBottom: 16,
+  } satisfies React.CSSProperties,
+
+  leaderRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+    padding: '10px 0',
+    borderBottom: '1px solid #f3f4f6',
+  } satisfies React.CSSProperties,
+
+  leaderRowMe: {
+    background: '#eff6ff',
+    margin: '0 -16px',
+    padding: '10px 16px',
+    borderRadius: 8,
+  } satisfies React.CSSProperties,
+
+  leaderRank: {
+    fontSize: 13,
+    color: '#9ca3af',
+    width: 28,
+    flexShrink: 0,
+  } satisfies React.CSSProperties,
+
+  leaderName: {
+    flex: 1,
+    fontSize: 15,
+    color: '#111827',
+    fontWeight: 500,
+  } satisfies React.CSSProperties,
+
+  leaderScore: {
+    fontSize: 15,
+    fontWeight: 700,
+    color: '#1d4ed8',
+  } satisfies React.CSSProperties,
+
+  meBadge: {
+    fontSize: 12,
+    color: '#1d4ed8',
+    fontWeight: 400,
+  } satisfies React.CSSProperties,
+
+  // ── Feed tab ──
+  feedItem: {
+    display: 'flex',
+    gap: 12,
+    padding: '14px 0',
+    borderBottom: '1px solid #f3f4f6',
+    alignItems: 'flex-start',
+  } satisfies React.CSSProperties,
+
+  feedAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: '50%',
+    background: '#dbeafe',
+    color: '#1d4ed8',
+    fontSize: 13,
+    fontWeight: 700,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    textTransform: 'uppercase' as const,
+  } satisfies React.CSSProperties,
+
+  feedContent: {
+    flex: 1,
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 4,
+  } satisfies React.CSSProperties,
+
+  feedMessage: {
+    fontSize: 15,
+    color: '#111827',
+    margin: 0,
+    lineHeight: 1.4,
+  } satisfies React.CSSProperties,
+
+  feedTime: {
+    fontSize: 12,
+    color: '#9ca3af',
+  } satisfies React.CSSProperties,
+
+  // ── Rules tab ──
+  ruleActionRow: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: 12,
+    padding: '12px',
+    background: '#ffffff',
+    border: '1px solid #e5e7eb',
+    borderRadius: 12,
+    marginBottom: 8,
+  } satisfies React.CSSProperties,
+
+  ruleActionName: {
+    fontSize: 15,
+    fontWeight: 600,
+    color: '#111827',
+    display: 'block',
+    marginBottom: 2,
+  } satisfies React.CSSProperties,
+
+  ruleActionDesc: {
+    fontSize: 13,
+    color: '#6b7280',
+    display: 'block',
+    marginBottom: 4,
+  } satisfies React.CSSProperties,
+
+  ruleTag: {
+    display: 'inline-block',
+    fontSize: 11,
+    color: '#6b7280',
+    background: '#f3f4f6',
+    borderRadius: 6,
+    padding: '2px 6px',
+  } satisfies React.CSSProperties,
+
+  rulePointsBadge: {
+    background: '#eff6ff',
+    border: '1px solid #bfdbfe',
+    borderRadius: 8,
+    padding: '4px 10px',
+    fontSize: 14,
+    fontWeight: 700,
+    color: '#1d4ed8',
+    flexShrink: 0,
+    alignSelf: 'center' as const,
+  } satisfies React.CSSProperties,
+
+  bonusRow: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: 10,
+    padding: '12px',
+    background: '#fffbeb',
+    border: '1px solid #fde68a',
+    borderRadius: 12,
+    marginBottom: 8,
+  } satisfies React.CSSProperties,
+
+  bonusIcon: {
+    fontSize: 20,
+    flexShrink: 0,
+  } satisfies React.CSSProperties,
+
+  bonusName: {
+    fontSize: 15,
+    fontWeight: 600,
+    color: '#92400e',
+    display: 'block',
+    marginBottom: 2,
+  } satisfies React.CSSProperties,
+
+  bonusDesc: {
+    fontSize: 13,
+    color: '#78350f',
+    display: 'block',
+  } satisfies React.CSSProperties,
+
+  bonusPoints: {
+    background: '#fef3c7',
+    border: '1px solid #fde68a',
+    borderRadius: 8,
+    padding: '4px 10px',
+    fontSize: 14,
+    fontWeight: 700,
+    color: '#92400e',
+    flexShrink: 0,
+    alignSelf: 'center' as const,
+  } satisfies React.CSSProperties,
+
+  // ── Bottom navigation ──
+  bottomNav: {
+    position: 'fixed' as const,
+    bottom: 0,
+    left: '50%',
+    transform: 'translateX(-50%)',
+    width: '100%',
+    maxWidth: 480,
+    height: BOTTOM_NAV_H,
+    background: '#ffffff',
+    borderTop: '1px solid #e5e7eb',
+    display: 'flex',
+    zIndex: 20,
+    paddingBottom: 'env(safe-area-inset-bottom)',
+  } satisfies React.CSSProperties,
+
+  navBtn: {
+    flex: 1,
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 2,
+    border: 'none',
+    background: 'transparent',
+    cursor: 'pointer',
+    padding: '6px 0',
+    minHeight: 48,
+  } satisfies React.CSSProperties,
+
+  navBtnActive: {
+    borderTop: '2px solid #1d4ed8',
+  } satisfies React.CSSProperties,
+
+  navIcon: {
+    fontSize: 20,
+    lineHeight: 1,
+  } satisfies React.CSSProperties,
+
+  navLabel: (active: boolean): React.CSSProperties => ({
+    fontSize: 11,
+    color: active ? '#1d4ed8' : '#9ca3af',
+    fontWeight: active ? 700 : 400,
+  }),
 
   // ── Bottom sheet ──
   backdrop: {
@@ -639,7 +1252,6 @@ const styles = {
     outline: 'none',
     background: '#f9fafb',
     textAlign: 'center' as const,
-    // 16px+ prevents iOS auto-zoom
     WebkitTextSizeAdjust: '100%',
   } satisfies React.CSSProperties,
 

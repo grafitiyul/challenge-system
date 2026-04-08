@@ -1,4 +1,4 @@
-import { Body, Controller, DefaultValuePipe, Get, HttpCode, HttpException, HttpStatus, Param, ParseIntPipe, Post, Query, BadRequestException } from '@nestjs/common';
+import { BadRequestException, Body, Controller, DefaultValuePipe, Get, HttpCode, HttpException, HttpStatus, Param, ParseIntPipe, Post, Query } from '@nestjs/common';
 import { IsString } from 'class-validator';
 import { WassengerService } from './wassenger.service';
 
@@ -46,14 +46,17 @@ export class WassengerController {
   @Post('send')
   async sendMessage(@Body() body: { phone?: string; message?: string }) {
     if (!body.phone || !body.message) {
-      throw new BadRequestException('phone and message are required');
+      throw new BadRequestException('מספר טלפון והודעה הם שדות חובה');
     }
     try {
       await this.wassengerService.sendMessage(body.phone, body.message);
       return { ok: true };
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to send';
-      throw new HttpException(msg, HttpStatus.BAD_GATEWAY);
+      // Re-throw controlled errors (BadRequestException) directly — they already have clean Hebrew messages
+      if (err instanceof BadRequestException) throw err;
+      // Unexpected error: log internally, return clean message
+      console.error('[Wassenger] unexpected sendMessage error:', err);
+      throw new HttpException('שליחת ההודעה נכשלה. נסה שוב מאוחר יותר.', HttpStatus.BAD_GATEWAY);
     }
   }
 
