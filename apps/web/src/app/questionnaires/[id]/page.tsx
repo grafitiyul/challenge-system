@@ -45,6 +45,11 @@ interface ExternalLink {
   utmTerm: string | null;
 }
 
+interface Program {
+  id: string;
+  name: string;
+}
+
 interface Template {
   id: string;
   internalName: string;
@@ -55,6 +60,7 @@ interface Template {
   displayMode: string;
   isActive: boolean;
   postIdentificationGreeting: string | null;
+  programId: string | null;
   questions: Question[];
 }
 
@@ -192,12 +198,20 @@ function SettingsTab({ template, onSaved }: { template: Template; onSaved: (t: T
     displayMode: template.displayMode ?? 'step_by_step',
     isActive: template.isActive,
     postIdentificationGreeting: template.postIdentificationGreeting ?? '',
+    programId: template.programId ?? '',
   });
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
   const [showEmoji, setShowEmoji] = useState(false);
   const greetingRef = useRef<HTMLTextAreaElement>(null);
+  const [programs, setPrograms] = useState<Program[]>([]);
+
+  useEffect(() => {
+    apiFetch<Program[]>(`${BASE_URL}/programs`)
+      .then((data) => setPrograms(Array.isArray(data) ? data : []))
+      .catch(() => {});
+  }, []);
 
   function insertIntoGreeting(text: string) {
     const el = greetingRef.current;
@@ -230,9 +244,10 @@ function SettingsTab({ template, onSaved }: { template: Template; onSaved: (t: T
     setError('');
     setSaving(true);
     try {
+      const body = { ...form, programId: form.programId || null };
       const updated = await apiFetch<Template>(`${BASE_URL}/questionnaires/${template.id}`, {
         method: 'PATCH',
-        body: JSON.stringify(form),
+        body: JSON.stringify(body),
       });
       onSaved(updated);
       setSaved(true);
@@ -274,6 +289,16 @@ function SettingsTab({ template, onSaved }: { template: Template; onSaved: (t: T
             <option value="step_by_step">שאלה אחת בכל פעם</option>
             <option value="full_list">כל השאלות ברצף</option>
           </select>
+        </div>
+        <div>
+          <label style={labelStyle}>תוכנית משויכת</label>
+          <select style={inputStyle} value={form.programId} onChange={(e) => setField('programId', e.target.value)}>
+            <option value="">ללא תוכנית</option>
+            {programs.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>שיוך לתוכנית מציג שאלון זה בדף הקבוצות שמשתמשות בתוכנית</div>
         </div>
       </div>
 

@@ -149,4 +149,17 @@ export class GroupsService {
   deleteChatLink(linkId: string) {
     return this.prisma.groupChatLink.delete({ where: { id: linkId } });
   }
+
+  // ── Participant removal (soft-delete) ───────────────────────────────────────
+
+  async removeParticipant(groupId: string, participantId: string) {
+    const pg = await this.prisma.participantGroup.findUnique({
+      where: { participantId_groupId: { participantId, groupId } },
+    });
+    if (!pg) throw new NotFoundException(`Participant ${participantId} not in group ${groupId}`);
+    return this.prisma.participantGroup.update({
+      where: { participantId_groupId: { participantId, groupId } },
+      data: { isActive: false, leftAt: new Date() },
+    });
+  }
 }

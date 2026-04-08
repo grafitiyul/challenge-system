@@ -56,4 +56,15 @@ export class GroupsController {
   deleteChatLink(@Param('linkId') linkId: string) {
     return this.groupsService.deleteChatLink(linkId);
   }
+
+  // ── Participant removal ─────────────────────────────────────────────────────
+
+  @Delete(':id/participants/:participantId')
+  @HttpCode(204)
+  removeParticipant(
+    @Param('id') id: string,
+    @Param('participantId') participantId: string,
+  ) {
+    return this.groupsService.removeParticipant(id, participantId);
+  }
 }
