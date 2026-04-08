@@ -267,20 +267,34 @@ export class WassengerService {
     }
 
     // Group chat JIDs (e.g. "120363406660919335@g.us") must be sent as-is.
-    // Running phone normalization on them triggers Wassenger's "invalid phone number" error.
     // Personal chats and raw phone numbers go through normalization to reach E.164 format.
     const isGroupJid = rawPhone.trim().endsWith('@g.us');
     const phone = isGroupJid ? rawPhone.trim() : normalizePhoneForWassenger(rawPhone);
 
+    const requestPayload = { device: deviceId, phone, message };
+
+    console.log('[Wassenger][sendMessage] === OUTBOUND REQUEST ===');
+    console.log('[Wassenger][sendMessage] rawPhone (from caller):', JSON.stringify(rawPhone));
+    console.log('[Wassenger][sendMessage] isGroupJid:', isGroupJid);
+    console.log('[Wassenger][sendMessage] phone (after resolution):', JSON.stringify(phone));
+    console.log('[Wassenger][sendMessage] deviceId:', deviceId);
+    console.log('[Wassenger][sendMessage] message length:', message.length);
+    console.log('[Wassenger][sendMessage] full payload:', JSON.stringify(requestPayload));
+
     const res = await fetch(`${WASSENGER_API}/messages`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Token': apiKey },
-      body: JSON.stringify({ device: deviceId, phone, message }),
+      body: JSON.stringify(requestPayload),
     });
 
+    const responseBody = await res.text().catch(() => '');
+
+    console.log('[Wassenger][sendMessage] === RESPONSE ===');
+    console.log('[Wassenger][sendMessage] status:', res.status, res.statusText);
+    console.log('[Wassenger][sendMessage] response body:', responseBody);
+
     if (!res.ok) {
-      const errorBody = await res.text().catch(() => '');
-      console.error(`[Wassenger] sendMessage failed. status=${res.status} phone="${phone}" body=${errorBody}`);
+      console.error('[Wassenger][sendMessage] FAILED — status:', res.status, '| phone:', phone, '| body:', responseBody);
       throw new BadRequestException('לא ניתן לשלוח את ההודעה כרגע. אנא נסה שוב.');
     }
   }
