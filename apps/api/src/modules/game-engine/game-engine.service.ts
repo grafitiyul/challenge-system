@@ -191,13 +191,18 @@ export class GameEngineService {
 
     // 4. Create feed event (if groupId provided)
     if (dto.groupId) {
+      const suffix = await this.getGenderSuffix(dto.participantId);
+      const hasNumericValue = action.inputType === 'number' && dto.value && dto.value !== 'true';
+      const valueStr = hasNumericValue
+        ? `: ${dto.value}${action.unit ? ` ${action.unit}` : ''}`
+        : '';
       await this.prisma.feedEvent.create({
         data: {
           participantId: dto.participantId,
           groupId: dto.groupId,
           programId: dto.programId,
           type: 'action',
-          message: `דיווחה על: ${action.name}`,
+          message: `דיווח${suffix} על ${action.name}${valueStr}`,
           points: action.points,
           isPublic: true,
         },
@@ -414,13 +419,14 @@ export class GameEngineService {
       });
 
       if (dto.groupId && pointsToAward > 0) {
+        const suffix = await this.getGenderSuffix(dto.participantId);
         await this.prisma.feedEvent.create({
           data: {
             participantId: dto.participantId,
             groupId: dto.groupId,
             programId: dto.programId,
             type: 'rare',
-            message: `קיבלה בונוס: ${rule.name}`,
+            message: `קיבל${suffix} בונוס: ${rule.name}`,
             points: pointsToAward,
             isPublic: true,
           },
@@ -815,5 +821,16 @@ export class GameEngineService {
       where: { participantId_programId: { participantId, programId } },
       data: { currentStreak: newStreak, bestStreak: newBest, lastActionDate: now },
     });
+  }
+
+  // ─── Gender helpers ────────────────────────────────────────────────────────
+
+  /** Returns 'ה' for feminine participants, '' for masculine/other. */
+  private async getGenderSuffix(participantId: string): Promise<string> {
+    const p = await this.prisma.participant.findUnique({
+      where: { id: participantId },
+      select: { gender: { select: { name: true } } },
+    });
+    return p?.gender?.name === 'אישה' ? 'ה' : '';
   }
 }

@@ -41,6 +41,7 @@ export interface PortalStats {
 export interface PortalFeedItem {
   id: string;
   message: string;
+  points: number;
   createdAt: string;
   participant: { id: string; firstName: string; lastName: string | null };
 }
@@ -278,6 +279,7 @@ export class ParticipantPortalService {
     return events.map((e) => ({
       id: e.id,
       message: e.message,
+      points: e.points,
       createdAt: e.createdAt.toISOString(),
       participant: e.participant,
     }));

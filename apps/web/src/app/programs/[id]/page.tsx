@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, use, useEffect, useState } from 'react';
+import { Suspense, use, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { BASE_URL, apiFetch } from '@lib/api';
@@ -432,7 +432,7 @@ function ActionModal({
   onSaved: (a: GameAction) => void;
   onClose: () => void;
 }) {
-  const [form, setForm] = useState({
+  const initialForm = useRef({
     name: action?.name ?? '',
     description: action?.description ?? '',
     inputType: action?.inputType ?? 'boolean',
@@ -443,8 +443,19 @@ function ActionModal({
     showInPortal: action?.showInPortal ?? true,
     blockedMessage: action?.blockedMessage ?? '',
   });
+  const [form, setForm] = useState(initialForm.current);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [showUnsaved, setShowUnsaved] = useState(false);
+
+  function isDirty(): boolean {
+    return JSON.stringify(form) !== JSON.stringify(initialForm.current);
+  }
+
+  function handleClose() {
+    if (isDirty()) setShowUnsaved(true);
+    else onClose();
+  }
 
   // Derived: participant-facing preview values
   const previewInputPrompt =
@@ -461,11 +472,10 @@ function ActionModal({
         ? `כבר הגעת למכסה היומית לפעולה זו (${form.maxPerDay} פעמים). ניתן לדווח שוב מחר.`
         : '');
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!form.name.trim()) { setError('שם הוא שדה חובה'); return; }
+  async function submitForm(): Promise<boolean> {
+    if (!form.name.trim()) { setError('שם הוא שדה חובה'); return false; }
     const pts = parseInt(form.points);
-    if (isNaN(pts) || pts < 0) { setError('נקודות חייבות להיות מספר חיובי'); return; }
+    if (isNaN(pts) || pts < 0) { setError('נקודות חייבות להיות מספר חיובי'); return false; }
     setSaving(true); setError('');
     try {
       const body: Record<string, unknown> = {
@@ -488,7 +498,15 @@ function ActionModal({
         cache: 'no-store',
         body: JSON.stringify(body),
       }) as GameAction);
+      return true;
+    } catch {
+      return false;
     } finally { setSaving(false); }
+  }
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    submitForm();
   }
 
   const sectionHead: React.CSSProperties = {
@@ -497,12 +515,12 @@ function ActionModal({
   };
 
   return (
-    <div onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 20, overflowY: 'auto' }}>
+    <>
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 20, overflowY: 'auto' }}>
       <div style={{ background: '#fff', borderRadius: 14, padding: 28, width: '100%', maxWidth: 500, boxShadow: '0 20px 60px rgba(0,0,0,0.2)', maxHeight: '92vh', overflowY: 'auto' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 22 }}>
           <h2 style={{ fontSize: 17, fontWeight: 700, color: '#0f172a', margin: 0 }}>{action ? 'עריכת פעולה' : 'פעולה חדשה'}</h2>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: '#94a3b8' }}>×</button>
+          <button onClick={handleClose} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: '#94a3b8', lineHeight: 1 }}>×</button>
         </div>
 
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -666,7 +684,7 @@ function ActionModal({
 
           {error && <div style={{ color: '#dc2626', fontSize: 13, background: '#fef2f2', padding: '8px 12px', borderRadius: 7 }}>{error}</div>}
           <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-            <button type="button" onClick={onClose} style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 7, padding: '9px 18px', fontSize: 13, cursor: 'pointer' }}>ביטול</button>
+            <button type="button" onClick={handleClose} style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 7, padding: '9px 18px', fontSize: 13, cursor: 'pointer' }}>ביטול</button>
             <button type="submit" disabled={saving} style={{ background: saving ? '#93c5fd' : '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '9px 20px', fontSize: 13, fontWeight: 600, cursor: saving ? 'not-allowed' : 'pointer' }}>
               {saving ? 'שומר...' : 'שמירה'}
             </button>
@@ -674,6 +692,38 @@ function ActionModal({
         </form>
       </div>
     </div>
+
+    {/* ── Unsaved-changes confirmation ── */}
+    {showUnsaved && (
+      <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+        <div style={{ background: '#fff', borderRadius: 12, padding: 24, maxWidth: 320, width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+          <h3 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', margin: '0 0 8px' }}>שינויים לא שמורים</h3>
+          <p style={{ fontSize: 14, color: '#64748b', margin: '0 0 20px', lineHeight: 1.5 }}>יש שינויים שעדיין לא נשמרו. מה לעשות?</p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <button
+              disabled={saving}
+              onClick={async () => { const ok = await submitForm(); if (ok) setShowUnsaved(false); }}
+              style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '10px 16px', fontSize: 13, fontWeight: 600, cursor: saving ? 'not-allowed' : 'pointer', textAlign: 'center' as const }}
+            >
+              {saving ? 'שומר...' : 'שמור ויצא'}
+            </button>
+            <button
+              onClick={() => { setShowUnsaved(false); onClose(); }}
+              style={{ background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca', borderRadius: 7, padding: '10px 16px', fontSize: 13, cursor: 'pointer', textAlign: 'center' as const }}
+            >
+              בטל שינויים
+            </button>
+            <button
+              onClick={() => setShowUnsaved(false)}
+              style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 7, padding: '10px 16px', fontSize: 13, cursor: 'pointer', textAlign: 'center' as const }}
+            >
+              המשך עריכה
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }
 
@@ -691,20 +741,56 @@ function RuleModal({
   const initCondition = rule?.conditionJson as Record<string, unknown> | null;
   const initReward = rule?.rewardJson as Record<string, unknown> | null;
 
-  const [name, setName] = useState(rule?.name ?? '');
-  const [type, setType] = useState(rule?.type ?? 'daily_bonus');
-  const [activationType, setActivationType] = useState(rule?.activationType ?? 'immediate');
-  const [activationDays, setActivationDays] = useState(String(rule?.activationDays ?? ''));
-  const [requiresAdminApproval, setRequiresAdminApproval] = useState(rule?.requiresAdminApproval ?? false);
-  const [rewardPoints, setRewardPoints] = useState(String(initReward?.['points'] ?? 10));
-  const [minStreak, setMinStreak] = useState(String(initCondition?.['minStreak'] ?? '7'));
-  const [conditionActionId, setConditionActionId] = useState(String(initCondition?.['actionId'] ?? ''));
-  const [threshold, setThreshold] = useState(String(initCondition?.['threshold'] ?? ''));
+  const initial = useRef({
+    name: rule?.name ?? '',
+    type: rule?.type ?? 'daily_bonus',
+    activationType: rule?.activationType ?? 'immediate',
+    activationDays: String(rule?.activationDays ?? ''),
+    requiresAdminApproval: rule?.requiresAdminApproval ?? false,
+    rewardPoints: String(initReward?.['points'] ?? 10),
+    minStreak: String(initCondition?.['minStreak'] ?? '7'),
+    conditionActionId: String(initCondition?.['actionId'] ?? ''),
+    threshold: String(initCondition?.['threshold'] ?? ''),
+    conditionJson: rule?.conditionJson ? JSON.stringify(rule.conditionJson, null, 2) : '{}',
+    rewardJson: rule?.rewardJson ? JSON.stringify(rule.rewardJson, null, 2) : '{"points":10}',
+  });
+
+  const [name, setName] = useState(initial.current.name);
+  const [type, setType] = useState(initial.current.type);
+  const [activationType, setActivationType] = useState(initial.current.activationType);
+  const [activationDays, setActivationDays] = useState(initial.current.activationDays);
+  const [requiresAdminApproval, setRequiresAdminApproval] = useState(initial.current.requiresAdminApproval);
+  const [rewardPoints, setRewardPoints] = useState(initial.current.rewardPoints);
+  const [minStreak, setMinStreak] = useState(initial.current.minStreak);
+  const [conditionActionId, setConditionActionId] = useState(initial.current.conditionActionId);
+  const [threshold, setThreshold] = useState(initial.current.threshold);
   const [advancedMode, setAdvancedMode] = useState(false);
-  const [conditionJson, setConditionJson] = useState(rule?.conditionJson ? JSON.stringify(rule.conditionJson, null, 2) : '{}');
-  const [rewardJson, setRewardJson] = useState(rule?.rewardJson ? JSON.stringify(rule.rewardJson, null, 2) : '{"points":10}');
+  const [conditionJson, setConditionJson] = useState(initial.current.conditionJson);
+  const [rewardJson, setRewardJson] = useState(initial.current.rewardJson);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [showUnsaved, setShowUnsaved] = useState(false);
+
+  function isDirty(): boolean {
+    return (
+      name !== initial.current.name ||
+      type !== initial.current.type ||
+      activationType !== initial.current.activationType ||
+      activationDays !== initial.current.activationDays ||
+      requiresAdminApproval !== initial.current.requiresAdminApproval ||
+      rewardPoints !== initial.current.rewardPoints ||
+      minStreak !== initial.current.minStreak ||
+      conditionActionId !== initial.current.conditionActionId ||
+      threshold !== initial.current.threshold ||
+      conditionJson !== initial.current.conditionJson ||
+      rewardJson !== initial.current.rewardJson
+    );
+  }
+
+  function handleClose() {
+    if (isDirty()) setShowUnsaved(true);
+    else onClose();
+  }
 
   function buildJsonFromUI(): { cond: Record<string, unknown>; reward: Record<string, unknown> } {
     const pts = parseInt(rewardPoints) || 0;
@@ -743,16 +829,15 @@ function RuleModal({
     return '';
   }
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!name.trim()) { setError('שם הוא שדה חובה'); return; }
+  async function submitForm(): Promise<boolean> {
+    if (!name.trim()) { setError('שם הוא שדה חובה'); return false; }
 
     let conditionJsonParsed: Record<string, unknown>;
     let rewardJsonParsed: Record<string, unknown>;
 
     if (advancedMode) {
-      try { conditionJsonParsed = JSON.parse(conditionJson); } catch { setError('תנאי JSON שגוי'); return; }
-      try { rewardJsonParsed = JSON.parse(rewardJson); } catch { setError('פרס JSON שגוי'); return; }
+      try { conditionJsonParsed = JSON.parse(conditionJson); } catch { setError('תנאי JSON שגוי'); return false; }
+      try { rewardJsonParsed = JSON.parse(rewardJson); } catch { setError('פרס JSON שגוי'); return false; }
     } else {
       const { cond, reward } = buildJsonFromUI();
       conditionJsonParsed = cond;
@@ -778,7 +863,15 @@ function RuleModal({
         cache: 'no-store',
         body: JSON.stringify(body),
       }) as GameRule);
+      return true;
+    } catch {
+      return false;
     } finally { setSaving(false); }
+  }
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    submitForm();
   }
 
   const sectionHead: React.CSSProperties = {
@@ -791,12 +884,12 @@ function RuleModal({
   const summary = buildSummary();
 
   return (
-    <div onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 20 }}>
+    <>
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 20 }}>
       <div style={{ background: '#fff', borderRadius: 14, padding: 28, width: '100%', maxWidth: 520, maxHeight: '92vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 22 }}>
           <h2 style={{ fontSize: 17, fontWeight: 700, color: '#0f172a', margin: 0 }}>{rule ? 'עריכת חוק' : 'חוק בונוס חדש'}</h2>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: '#94a3b8' }}>×</button>
+          <button onClick={handleClose} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: '#94a3b8', lineHeight: 1 }}>×</button>
         </div>
 
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -986,7 +1079,7 @@ function RuleModal({
 
           {error && <div style={{ color: '#dc2626', fontSize: 13, background: '#fef2f2', padding: '8px 12px', borderRadius: 7 }}>{error}</div>}
           <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-            <button type="button" onClick={onClose} style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 7, padding: '9px 18px', fontSize: 13, cursor: 'pointer' }}>ביטול</button>
+            <button type="button" onClick={handleClose} style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 7, padding: '9px 18px', fontSize: 13, cursor: 'pointer' }}>ביטול</button>
             <button type="submit" disabled={saving} style={{ background: saving ? '#93c5fd' : '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '9px 20px', fontSize: 13, fontWeight: 600, cursor: saving ? 'not-allowed' : 'pointer' }}>
               {saving ? 'שומר...' : 'שמירה'}
             </button>
@@ -994,6 +1087,38 @@ function RuleModal({
         </form>
       </div>
     </div>
+
+    {/* ── Unsaved-changes confirmation ── */}
+    {showUnsaved && (
+      <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+        <div style={{ background: '#fff', borderRadius: 12, padding: 24, maxWidth: 320, width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+          <h3 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', margin: '0 0 8px' }}>שינויים לא שמורים</h3>
+          <p style={{ fontSize: 14, color: '#64748b', margin: '0 0 20px', lineHeight: 1.5 }}>יש שינויים שעדיין לא נשמרו. מה לעשות?</p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <button
+              disabled={saving}
+              onClick={async () => { const ok = await submitForm(); if (ok) setShowUnsaved(false); }}
+              style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '10px 16px', fontSize: 13, fontWeight: 600, cursor: saving ? 'not-allowed' : 'pointer', textAlign: 'center' as const }}
+            >
+              {saving ? 'שומר...' : 'שמור ויצא'}
+            </button>
+            <button
+              onClick={() => { setShowUnsaved(false); onClose(); }}
+              style={{ background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca', borderRadius: 7, padding: '10px 16px', fontSize: 13, cursor: 'pointer', textAlign: 'center' as const }}
+            >
+              בטל שינויים
+            </button>
+            <button
+              onClick={() => setShowUnsaved(false)}
+              style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 7, padding: '10px 16px', fontSize: 13, cursor: 'pointer', textAlign: 'center' as const }}
+            >
+              המשך עריכה
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }
 
@@ -1008,6 +1133,8 @@ function GameEngineTab({ programId }: { programId: string }) {
   const [deleteAction, setDeleteAction] = useState<GameAction | null>(null);
   const [deleteRule, setDeleteRule] = useState<GameRule | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [portalToggling, setPortalToggling] = useState<Record<string, boolean>>({});
+  const [portalErrors, setPortalErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     Promise.all([
@@ -1035,6 +1162,27 @@ function GameEngineTab({ programId }: { programId: string }) {
       setRules((prev) => prev.filter((x) => x.id !== r.id));
       setDeleteRule(null);
     } finally { setDeleting(false); }
+  }
+
+  async function handleTogglePortal(a: GameAction) {
+    const newValue = !a.showInPortal;
+    setPortalToggling((p) => ({ ...p, [a.id]: true }));
+    setPortalErrors((p) => ({ ...p, [a.id]: '' }));
+    // Optimistic update
+    setActions((prev) => prev.map((x) => x.id === a.id ? { ...x, showInPortal: newValue } : x));
+    try {
+      await apiFetch(`${BASE_URL}/game/programs/${programId}/actions/${a.id}`, {
+        method: 'PATCH',
+        cache: 'no-store',
+        body: JSON.stringify({ showInPortal: newValue }),
+      });
+    } catch {
+      // Revert on failure
+      setActions((prev) => prev.map((x) => x.id === a.id ? { ...x, showInPortal: !newValue } : x));
+      setPortalErrors((p) => ({ ...p, [a.id]: 'שגיאה בשמירת הנראות' }));
+    } finally {
+      setPortalToggling((p) => ({ ...p, [a.id]: false }));
+    }
   }
 
   const badge = (text: string, color: 'blue' | 'green' | 'gray' | 'orange'): React.ReactElement => {
@@ -1076,33 +1224,57 @@ function GameEngineTab({ programId }: { programId: string }) {
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {actions.map((a) => (
-              <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 14, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: '14px 18px' }}>
-                <div style={{ width: 40, height: 40, borderRadius: 8, background: '#eff6ff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>🎯</div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 14, fontWeight: 600, color: '#0f172a', marginBottom: 4 }}>{a.name}</div>
-                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-                    {badge(`${a.points} נקודות`, 'green')}
-                    {badge(ACTION_INPUT_TYPES.find((t) => t.value === a.inputType)?.label ?? a.inputType ?? 'כן/לא', 'blue')}
-                    {a.inputType === 'number' && a.aggregationMode === 'latest_value' && badge('סה״כ שוטף', 'blue')}
-                    {a.inputType === 'number' && a.aggregationMode === 'incremental_sum' && badge('הוספה מצטברת', 'blue')}
-                    {a.unit && badge(a.unit, 'gray')}
-                    {a.maxPerDay ? badge(`מגבלה: ${a.maxPerDay}/יום`, 'orange') : badge('ללא מגבלה', 'gray')}
-                    {!a.showInPortal && badge('מוסתר ממשתתפות', 'gray')}
+              <div key={a.id} style={{ display: 'flex', flexDirection: 'column', background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: '14px 18px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                  <div style={{ width: 40, height: 40, borderRadius: 8, background: '#eff6ff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>🎯</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: '#0f172a', marginBottom: 4 }}>{a.name}</div>
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                      {badge(`${a.points} נקודות`, 'green')}
+                      {badge(ACTION_INPUT_TYPES.find((t) => t.value === a.inputType)?.label ?? a.inputType ?? 'כן/לא', 'blue')}
+                      {a.inputType === 'number' && a.aggregationMode === 'latest_value' && badge('סה״כ שוטף', 'blue')}
+                      {a.inputType === 'number' && a.aggregationMode === 'incremental_sum' && badge('הוספה מצטברת', 'blue')}
+                      {a.unit && badge(a.unit, 'gray')}
+                      {a.maxPerDay ? badge(`מגבלה: ${a.maxPerDay}/יום`, 'orange') : badge('ללא מגבלה', 'gray')}
+                    </div>
+                    {a.description && <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>{a.description}</div>}
                   </div>
-                  {a.description && <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>{a.description}</div>}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                    <button
+                      onClick={() => handleTogglePortal(a)}
+                      disabled={portalToggling[a.id]}
+                      title={a.showInPortal ? 'גלוי למשתתפות — לחץ להסתרה' : 'מוסתר ממשתתפות — לחץ להציג'}
+                      style={{
+                        background: a.showInPortal ? '#f0fdf4' : '#f8fafc',
+                        border: `1px solid ${a.showInPortal ? '#bbf7d0' : '#cbd5e1'}`,
+                        borderRadius: 6,
+                        padding: '5px 10px',
+                        fontSize: 12,
+                        color: a.showInPortal ? '#15803d' : '#94a3b8',
+                        cursor: portalToggling[a.id] ? 'wait' : 'pointer',
+                        whiteSpace: 'nowrap' as const,
+                        fontWeight: 500,
+                      }}
+                    >
+                      {portalToggling[a.id] ? '...' : (a.showInPortal ? '👁 גלוי' : '🚫 מוסתר')}
+                    </button>
+                    <button onClick={() => setActionModal({ open: true, action: a })}
+                      style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, padding: '6px 14px', fontSize: 12, color: '#374151', cursor: 'pointer', fontWeight: 500 }}>
+                      ערוך
+                    </button>
+                    <button onClick={() => setDeleteAction(a)}
+                      style={{ background: 'none', border: '1px solid #fecaca', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: '#dc2626', cursor: 'pointer' }}
+                      title="מחק פעולה"
+                    >
+                      ✕
+                    </button>
+                  </div>
                 </div>
-                <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-                  <button onClick={() => setActionModal({ open: true, action: a })}
-                    style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, padding: '6px 14px', fontSize: 12, color: '#374151', cursor: 'pointer', fontWeight: 500 }}>
-                    ערוך
-                  </button>
-                  <button onClick={() => setDeleteAction(a)}
-                    style={{ background: 'none', border: '1px solid #fecaca', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: '#dc2626', cursor: 'pointer' }}
-                    title="מחק פעולה"
-                  >
-                    ✕
-                  </button>
-                </div>
+                {portalErrors[a.id] && (
+                  <div style={{ fontSize: 12, color: '#dc2626', marginTop: 6, padding: '4px 8px', background: '#fef2f2', borderRadius: 5 }}>
+                    {portalErrors[a.id]}
+                  </div>
+                )}
               </div>
             ))}
           </div>

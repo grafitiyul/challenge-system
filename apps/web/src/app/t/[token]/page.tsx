@@ -52,6 +52,7 @@ interface PortalStats {
 interface FeedItem {
   id: string;
   message: string;
+  points: number;
   createdAt: string;
   participant: { id: string; firstName: string; lastName: string | null };
 }
@@ -560,8 +561,20 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                   {initials(item.participant.firstName, item.participant.lastName)}
                 </div>
                 <div style={s.feedContent}>
-                  <p style={s.feedMessage}>{item.message}</p>
-                  <span style={s.feedTime}>{relativeTime(item.createdAt)}</span>
+                  <p style={s.feedMessage}>
+                    <span style={s.feedName}>
+                      {item.participant.firstName}
+                      {item.participant.lastName ? ` ${item.participant.lastName}` : ''}
+                    </span>
+                    {' '}
+                    {item.message}
+                  </p>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={s.feedTime}>{relativeTime(item.createdAt)}</span>
+                    {item.points > 0 && (
+                      <span style={s.feedPoints}>+{item.points} נק׳</span>
+                    )}
+                  </div>
                 </div>
               </div>
             ))}
@@ -1043,9 +1056,23 @@ const s = {
     lineHeight: 1.4,
   } satisfies React.CSSProperties,
 
+  feedName: {
+    fontWeight: 700,
+    color: '#1d4ed8',
+  } satisfies React.CSSProperties,
+
   feedTime: {
     fontSize: 12,
     color: '#9ca3af',
+  } satisfies React.CSSProperties,
+
+  feedPoints: {
+    fontSize: 12,
+    fontWeight: 600,
+    color: '#16a34a',
+    background: '#dcfce7',
+    padding: '1px 7px',
+    borderRadius: 10,
   } satisfies React.CSSProperties,
 
   // ── Rules tab ──
