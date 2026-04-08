@@ -11,7 +11,7 @@ import RichContentEditor from '@components/rich-content-editor';
 
 type ProgramType = 'challenge' | 'game' | 'group_coaching' | 'personal_coaching';
 type GroupStatus = 'active' | 'inactive';
-type TabKey = 'settings' | 'groups' | 'game' | 'leaderboard' | 'templates';
+type TabKey = 'settings' | 'groups' | 'game' | 'rules' | 'templates';
 
 interface Group {
   id: string;
@@ -34,6 +34,7 @@ interface Program {
   showOtherGroupsCharts: boolean;
   showOtherGroupsMemberDetails: boolean;
   rulesContent: string | null;
+  rulesPublished: boolean;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -78,7 +79,7 @@ const labelStyle: React.CSSProperties = {
   fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 6, display: 'block',
 };
 
-const VALID_TABS: TabKey[] = ['settings', 'groups', 'game', 'leaderboard', 'templates'];
+const VALID_TABS: TabKey[] = ['settings', 'groups', 'game', 'rules', 'templates'];
 
 function formatDate(iso: string | null) {
   if (!iso) return '—';
@@ -93,9 +94,14 @@ function SettingsTab({ program, onSaved }: { program: Program; onSaved: (p: Prog
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
 
-  const [rulesContent, setRulesContent] = useState(program.rulesContent ?? '');
-  const [rulesSaving, setRulesSaving] = useState(false);
-  const [rulesSaved, setRulesSaved] = useState(false);
+  const [vis, setVis] = useState({
+    showIndividualLeaderboard: program.showIndividualLeaderboard,
+    showGroupComparison: program.showGroupComparison,
+    showOtherGroupsCharts: program.showOtherGroupsCharts,
+    showOtherGroupsMemberDetails: program.showOtherGroupsMemberDetails,
+  });
+  const [savingVis, setSavingVis] = useState(false);
+  const [visSaved, setVisSaved] = useState(false);
 
   async function handleSave() {
     if (!form.name.trim()) { setError('שם הוא שדה חובה'); return; }
@@ -111,18 +117,18 @@ function SettingsTab({ program, onSaved }: { program: Program; onSaved: (p: Prog
     } finally { setSaving(false); }
   }
 
-  async function handleSaveRules() {
-    setRulesSaving(true);
+  async function handleSaveVisibility() {
+    setSavingVis(true); setVisSaved(false);
     try {
-      await apiFetch(`${BASE_URL}/programs/${program.id}`, {
+      const updated = await apiFetch(`${BASE_URL}/programs/${program.id}`, {
         method: 'PATCH',
         cache: 'no-store',
-        body: JSON.stringify({ rulesContent: rulesContent || null }),
-      });
-      onSaved({ ...program, rulesContent: rulesContent || null });
-      setRulesSaved(true);
-      setTimeout(() => setRulesSaved(false), 2500);
-    } finally { setRulesSaving(false); }
+        body: JSON.stringify(vis),
+      }) as Program;
+      onSaved({ ...program, ...updated });
+      setVisSaved(true);
+      setTimeout(() => setVisSaved(false), 2500);
+    } finally { setSavingVis(false); }
   }
 
   return (
@@ -159,29 +165,43 @@ function SettingsTab({ program, onSaved }: { program: Program; onSaved: (p: Prog
         </div>
       </div>
 
-      {/* ── Rules rich content ── */}
-      <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: 24, display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {/* ── Visibility settings ── */}
+      <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: 24, display: 'flex', flexDirection: 'column', gap: 14, maxWidth: 520 }}>
         <div>
-          <label style={labelStyle}>תוכן חוקים לפורטל המשתתפות</label>
+          <label style={labelStyle}>הגדרות חשיפה למשתתפות</label>
           <div style={{ fontSize: 12, color: '#64748b', marginBottom: 10 }}>
-            תוכן זה יוצג בטאב &ldquo;חוקים&rdquo; בפורטל — כחלק ממסמך ההסברים לתוכנית. ניתן לכלול כותרות, רשימות, קישורים וטקסט מעוצב.
+            שלטי הצגה אלו יקבעו מה רואות המשתתפות בממשק שלהן. המנהל תמיד רואה הכל.
           </div>
         </div>
-        <RichContentEditor
-          value={rulesContent}
-          onChange={(v) => { setRulesContent(v); setRulesSaved(false); }}
-          placeholder="הוסיפי כאן את ההסברים, הכללים וההנחיות לתוכנית..."
-          minHeight={200}
-        />
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 4 }}>
+        {([
+          { key: 'showIndividualLeaderboard', label: 'הצגת דירוג אישי', desc: 'המשתתפת רואה את מיקומה ואת שאר חברות הקבוצה' },
+          { key: 'showGroupComparison', label: 'הצגת השוואת קבוצות', desc: 'המשתתפת רואה את ציון הקבוצה שלה מול קבוצות אחרות' },
+          { key: 'showOtherGroupsCharts', label: 'הצגת גרפים של קבוצות אחרות', desc: 'אפשרי רק כאשר השוואת קבוצות פעילה' },
+          { key: 'showOtherGroupsMemberDetails', label: 'הצגת חברות קבוצות אחרות', desc: 'המשתתפת רואה שמות ודירוג מקבוצות אחרות' },
+        ] as { key: keyof typeof vis; label: string; desc: string }[]).map((item) => (
+          <div key={item.key} style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+            <input
+              type="checkbox"
+              id={`vis-${item.key}`}
+              checked={vis[item.key]}
+              onChange={(e) => { setVis((p) => ({ ...p, [item.key]: e.target.checked })); setVisSaved(false); }}
+              style={{ width: 16, height: 16, marginTop: 2, cursor: 'pointer', flexShrink: 0 }}
+            />
+            <label htmlFor={`vis-${item.key}`} style={{ cursor: 'pointer' }}>
+              <div style={{ fontSize: 14, fontWeight: 500, color: '#0f172a' }}>{item.label}</div>
+              <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>{item.desc}</div>
+            </label>
+          </div>
+        ))}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <button
-            onClick={handleSaveRules}
-            disabled={rulesSaving}
-            style={{ background: rulesSaving ? '#93c5fd' : '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '9px 20px', fontSize: 13, fontWeight: 600, cursor: rulesSaving ? 'not-allowed' : 'pointer' }}
+            onClick={handleSaveVisibility}
+            disabled={savingVis}
+            style={{ background: savingVis ? '#93c5fd' : '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '9px 20px', fontSize: 13, fontWeight: 600, cursor: savingVis ? 'not-allowed' : 'pointer' }}
           >
-            {rulesSaving ? 'שומר...' : 'שמור תוכן חוקים'}
+            {savingVis ? 'שומר...' : 'שמור הגדרות חשיפה'}
           </button>
-          {rulesSaved && <span style={{ color: '#16a34a', fontSize: 13 }}>✓ נשמר</span>}
+          {visSaved && <span style={{ color: '#16a34a', fontSize: 13 }}>✓ נשמר</span>}
         </div>
       </div>
     </div>
@@ -1713,327 +1733,197 @@ function GameEngineTab({ programId }: { programId: string }) {
   );
 }
 
-// ─── Leaderboard Tab ──────────────────────────────────────────────────────────
+// ─── Rules Tab ────────────────────────────────────────────────────────────────
 
-interface GroupRankRow {
-  groupId: string;
-  groupName: string;
-  totalScore: number;
-  todayScore: number;
-  weekScore: number;
-  participantCount: number;
-  averageScorePerParticipant: number;
-  rank: number;
-}
+function RulesTab({ program, onSaved }: { program: Program; onSaved: (p: Program) => void }) {
+  const [rulesContent, setRulesContent] = useState(program.rulesContent ?? '');
+  const [rulesPublished, setRulesPublished] = useState(program.rulesPublished);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [actions, setActions] = useState<GameAction[]>([]);
+  const [actionsLoading, setActionsLoading] = useState(false);
 
-interface ParticipantRankRow {
-  participantId: string;
-  firstName: string;
-  lastName: string | null;
-  totalScore: number;
-  todayScore: number;
-  weekScore: number;
-  currentStreak: number;
-  rank: number;
-}
-
-interface ProgramSummary {
-  totalGroups: number;
-  totalParticipants: number;
-  totalScoreEvents: number;
-  highestScoringGroup: { groupId: string | null; groupName: string | null; totalScore: number };
-  highestScoringParticipant: { participantId: string | null; firstName: string | null; totalScore: number };
-  averageScorePerGroup: number;
-  averageScorePerParticipant: number;
-}
-
-function LeaderboardTab({ program, onVisibilityChange }: {
-  program: Program;
-  onVisibilityChange: (updated: Program) => void;
-}) {
-  const [groupRanks, setGroupRanks] = useState<GroupRankRow[]>([]);
-  const [participantRanks, setParticipantRanks] = useState<ParticipantRankRow[]>([]);
-  const [summary, setSummary] = useState<ProgramSummary | null>(null);
-  const [selectedGroupId, setSelectedGroupId] = useState<string>('');
-  const [loadingGroups, setLoadingGroups] = useState(false);
-  const [loadingParticipants, setLoadingParticipants] = useState(false);
-  const [loadingSummary, setLoadingSummary] = useState(false);
-  const [savingVis, setSavingVis] = useState(false);
-  const [visSaved, setVisSaved] = useState(false);
-  const [vis, setVis] = useState({
-    showIndividualLeaderboard: program.showIndividualLeaderboard,
-    showGroupComparison: program.showGroupComparison,
-    showOtherGroupsCharts: program.showOtherGroupsCharts,
-    showOtherGroupsMemberDetails: program.showOtherGroupsMemberDetails,
-  });
-
-  // Load group ranking and summary on mount
   useEffect(() => {
-    setLoadingGroups(true);
-    apiFetch(`${BASE_URL}/game/leaderboard/program/${program.id}/groups`, { cache: 'no-store' })
-      .then((d: unknown) => setGroupRanks(d as GroupRankRow[]))
+    setActionsLoading(true);
+    apiFetch<GameAction[]>(`${BASE_URL}/game/programs/${program.id}/actions`, { cache: 'no-store' })
+      .then((data) => setActions(data.filter((a) => a.isActive)))
       .catch(() => {})
-      .finally(() => setLoadingGroups(false));
-
-    setLoadingSummary(true);
-    apiFetch(`${BASE_URL}/game/leaderboard/program/${program.id}/summary`, { cache: 'no-store' })
-      .then((d: unknown) => setSummary(d as ProgramSummary))
-      .catch(() => {})
-      .finally(() => setLoadingSummary(false));
+      .finally(() => setActionsLoading(false));
   }, [program.id]);
 
-  // Load participant ranking when group changes
-  useEffect(() => {
-    if (!selectedGroupId) { setParticipantRanks([]); return; }
-    setLoadingParticipants(true);
-    apiFetch(`${BASE_URL}/game/leaderboard/group/${selectedGroupId}`, { cache: 'no-store' })
-      .then((d: unknown) => setParticipantRanks(d as ParticipantRankRow[]))
-      .catch(() => {})
-      .finally(() => setLoadingParticipants(false));
-  }, [selectedGroupId]);
-
-  async function saveVisibility() {
-    setSavingVis(true); setVisSaved(false);
+  async function handleSave() {
+    setSaving(true);
     try {
       const updated = await apiFetch(`${BASE_URL}/programs/${program.id}`, {
         method: 'PATCH',
         cache: 'no-store',
-        body: JSON.stringify(vis),
+        body: JSON.stringify({ rulesContent: rulesContent || null, rulesPublished }),
       }) as Program;
-      onVisibilityChange(updated);
-      setVisSaved(true);
-    } finally { setSavingVis(false); }
+      onSaved({ ...program, ...updated });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+    } finally { setSaving(false); }
   }
 
-  function refreshGroupRanks() {
-    setLoadingGroups(true);
-    apiFetch(`${BASE_URL}/game/leaderboard/program/${program.id}/groups`, { cache: 'no-store' })
-      .then((d: unknown) => setGroupRanks(d as GroupRankRow[]))
-      .catch(() => {})
-      .finally(() => setLoadingGroups(false));
-  }
+  const portalActions = actions.filter((a) => a.showInPortal);
 
-  function refreshParticipantRanks() {
-    if (!selectedGroupId) return;
-    setLoadingParticipants(true);
-    apiFetch(`${BASE_URL}/game/leaderboard/group/${selectedGroupId}`, { cache: 'no-store' })
-      .then((d: unknown) => setParticipantRanks(d as ParticipantRankRow[]))
-      .catch(() => {})
-      .finally(() => setLoadingParticipants(false));
-  }
-
-  const medalColor = (rank: number) => rank === 1 ? '#f59e0b' : rank === 2 ? '#94a3b8' : rank === 3 ? '#b45309' : '#e2e8f0';
-  const medalText = (rank: number) => rank === 1 ? '#fff' : rank === 2 ? '#fff' : rank === 3 ? '#fff' : '#64748b';
+  const aggLabel: Record<string, string> = {
+    count: 'ספירה',
+    latest_value: 'ערך עדכני',
+    incremental_sum: 'סכום מצטבר',
+  };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 32 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 32, maxWidth: 800 }}>
 
-      {/* ── Summary stats ── */}
-      {summary && (
-        <section>
-          <h3 style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', margin: '0 0 14px' }}>סיכום תוכנית</h3>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 10 }}>
-            {[
-              { label: 'קבוצות', value: summary.totalGroups },
-              { label: 'משתתפות', value: summary.totalParticipants },
-              { label: 'אירועי ניקוד', value: summary.totalScoreEvents },
-              { label: 'ממוצע לקבוצה', value: summary.averageScorePerGroup + ' נק׳' },
-              { label: 'ממוצע למשתתפת', value: summary.averageScorePerParticipant + ' נק׳' },
-            ].map((s) => (
-              <div key={s.label} style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10, padding: '14px 16px' }}>
-                <div style={{ fontSize: 22, fontWeight: 700, color: '#0f172a', lineHeight: 1 }}>{s.value}</div>
-                <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>{s.label}</div>
-              </div>
-            ))}
-            {summary.highestScoringGroup.groupName && (
-              <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 10, padding: '14px 16px' }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: '#92400e', lineHeight: 1.3 }}>{summary.highestScoringGroup.groupName}</div>
-                <div style={{ fontSize: 18, fontWeight: 700, color: '#b45309' }}>{summary.highestScoringGroup.totalScore} נק׳</div>
-                <div style={{ fontSize: 11, color: '#a16207', marginTop: 2 }}>קבוצה מובילה</div>
-              </div>
-            )}
-            {summary.highestScoringParticipant.firstName && (
-              <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 10, padding: '14px 16px' }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: '#14532d', lineHeight: 1.3 }}>{summary.highestScoringParticipant.firstName}</div>
-                <div style={{ fontSize: 18, fontWeight: 700, color: '#15803d' }}>{summary.highestScoringParticipant.totalScore} נק׳</div>
-                <div style={{ fontSize: 11, color: '#166534', marginTop: 2 }}>משתתפת מובילה</div>
-              </div>
-            )}
-          </div>
-        </section>
-      )}
-      {loadingSummary && <div style={{ color: '#94a3b8', fontSize: 13 }}>טוען סיכום...</div>}
-
-      {/* ── Group ranking ── */}
+      {/* ── Section A: Content editor ── */}
       <section>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-          <h3 style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', margin: 0 }}>דירוג קבוצות</h3>
-          <button
-            onClick={refreshGroupRanks}
-            style={{ background: '#f1f5f9', border: '1px solid #e2e8f0', borderRadius: 6, padding: '6px 12px', fontSize: 12, color: '#374151', cursor: 'pointer' }}
-          >
-            ↻ רענן
-          </button>
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', marginBottom: 4 }}>א — תוכן חוקים כללי</div>
+          <div style={{ fontSize: 12, color: '#64748b' }}>
+            תוכן חופשי שיוצג בראש טאב &ldquo;חוקים&rdquo; בפורטל המשתתפות. ניתן לכלול כותרות, רשימות, קישורים, תמונות וסרטונים.
+          </div>
         </div>
-
-        {loadingGroups && <div style={{ color: '#94a3b8', fontSize: 13 }}>טוען דירוג קבוצות...</div>}
-        {!loadingGroups && groupRanks.length === 0 && (
-          <div style={{ padding: '32px 24px', textAlign: 'center', border: '2px dashed #e2e8f0', borderRadius: 10, color: '#94a3b8', fontSize: 13 }}>
-            אין נתוני ניקוד לקבוצות עדיין
-          </div>
-        )}
-        {!loadingGroups && groupRanks.length > 0 && (
-          <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-              <thead>
-                <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
-                  <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b', width: 40 }}>#</th>
-                  <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b' }}>קבוצה</th>
-                  <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b' }}>סה״כ</th>
-                  <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b' }}>השבוע</th>
-                  <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b' }}>היום</th>
-                  <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b' }}>משתתפות</th>
-                  <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b' }}>ממוצע</th>
-                </tr>
-              </thead>
-              <tbody>
-                {groupRanks.map((g) => (
-                  <tr key={g.groupId} style={{ borderBottom: '1px solid #f1f5f9' }}>
-                    <td style={{ padding: '11px 14px' }}>
-                      <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 26, height: 26, borderRadius: '50%', background: medalColor(g.rank), color: medalText(g.rank), fontSize: 12, fontWeight: 700 }}>
-                        {g.rank}
-                      </span>
-                    </td>
-                    <td style={{ padding: '11px 14px', fontWeight: 600, color: '#0f172a' }}>{g.groupName}</td>
-                    <td style={{ padding: '11px 14px', fontWeight: 700, color: '#2563eb' }}>{g.totalScore}</td>
-                    <td style={{ padding: '11px 14px', color: '#374151' }}>{g.weekScore}</td>
-                    <td style={{ padding: '11px 14px', color: '#374151' }}>{g.todayScore}</td>
-                    <td style={{ padding: '11px 14px', color: '#374151' }}>{g.participantCount}</td>
-                    <td style={{ padding: '11px 14px', color: '#374151' }}>{g.averageScorePerParticipant}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        <RichContentEditor
+          value={rulesContent}
+          onChange={(v) => { setRulesContent(v); setSaved(false); }}
+          placeholder="הוסיפי כאן את ההסברים, הכללים וההנחיות לתוכנית..."
+          minHeight={220}
+        />
       </section>
 
-      {/* ── Participant ranking ── */}
-      <section>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
-          <h3 style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', margin: 0 }}>דירוג משתתפות בקבוצה</h3>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <select
-              style={{ ...inputStyle, width: 'auto', minWidth: 160, fontSize: 13, padding: '7px 12px' }}
-              value={selectedGroupId}
-              onChange={(e) => setSelectedGroupId(e.target.value)}
-            >
-              <option value="">— בחרי קבוצה —</option>
-              {program.groups.map((g) => (
-                <option key={g.id} value={g.id}>{g.name}</option>
-              ))}
-            </select>
-            {selectedGroupId && (
-              <button
-                onClick={refreshParticipantRanks}
-                style={{ background: '#f1f5f9', border: '1px solid #e2e8f0', borderRadius: 6, padding: '6px 12px', fontSize: 12, color: '#374151', cursor: 'pointer' }}
-              >
-                ↻ רענן
-              </button>
-            )}
-          </div>
+      {/* ── Section B: Publishing control ── */}
+      <section style={{ borderTop: '1px solid #e2e8f0', paddingTop: 24 }}>
+        <div style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', marginBottom: 12 }}>ב — פרסום לפורטל</div>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 16 }}>
+          <input
+            type="checkbox"
+            id="rules-published"
+            checked={rulesPublished}
+            onChange={(e) => { setRulesPublished(e.target.checked); setSaved(false); }}
+            style={{ width: 16, height: 16, marginTop: 2, cursor: 'pointer', flexShrink: 0 }}
+          />
+          <label htmlFor="rules-published" style={{ cursor: 'pointer' }}>
+            <div style={{ fontSize: 14, fontWeight: 500, color: '#0f172a' }}>פרסם חוקים בפורטל</div>
+            <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
+              {rulesPublished
+                ? '✓ המשתתפות רואות את תוכן החוקים בפורטל'
+                : '✗ טאב "חוקים" בפורטל יציג הודעת "תוכן לא זמין"'}
+            </div>
+          </label>
         </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            style={{ background: saving ? '#93c5fd' : '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '9px 20px', fontSize: 13, fontWeight: 600, cursor: saving ? 'not-allowed' : 'pointer' }}
+          >
+            {saving ? 'שומר...' : 'שמור ופרסם'}
+          </button>
+          {saved && <span style={{ color: '#16a34a', fontSize: 13 }}>✓ נשמר</span>}
+        </div>
+      </section>
 
-        {!selectedGroupId && (
-          <div style={{ padding: '32px 24px', textAlign: 'center', border: '2px dashed #e2e8f0', borderRadius: 10, color: '#94a3b8', fontSize: 13 }}>
-            בחרי קבוצה כדי לראות את הדירוג הפנימי
+      {/* ── Section C: Actions review ── */}
+      <section style={{ borderTop: '1px solid #e2e8f0', paddingTop: 24 }}>
+        <div style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', marginBottom: 4 }}>ג — פעולות וניקוד (סקירה)</div>
+        <div style={{ fontSize: 12, color: '#64748b', marginBottom: 14 }}>
+          פעולות הניקוד הפעילות בתוכנית זו. פעולות עם ✓ בפורטל מופיעות לפני המשתתפות.
+        </div>
+        {actionsLoading && <div style={{ color: '#94a3b8', fontSize: 13 }}>טוען פעולות...</div>}
+        {!actionsLoading && actions.length === 0 && (
+          <div style={{ padding: '24px', textAlign: 'center', border: '2px dashed #e2e8f0', borderRadius: 10, color: '#94a3b8', fontSize: 13 }}>
+            לא הוגדרו פעולות לתוכנית זו עדיין
           </div>
         )}
-        {selectedGroupId && loadingParticipants && <div style={{ color: '#94a3b8', fontSize: 13 }}>טוען דירוג משתתפות...</div>}
-        {selectedGroupId && !loadingParticipants && participantRanks.length === 0 && (
-          <div style={{ padding: '32px 24px', textAlign: 'center', border: '2px dashed #e2e8f0', borderRadius: 10, color: '#94a3b8', fontSize: 13 }}>
-            אין נתוני ניקוד לקבוצה זו עדיין
-          </div>
-        )}
-        {selectedGroupId && !loadingParticipants && participantRanks.length > 0 && (
+        {!actionsLoading && actions.length > 0 && (
           <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
                 <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
-                  <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b', width: 40 }}>#</th>
-                  <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b' }}>שם</th>
-                  <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b' }}>סה״כ</th>
-                  <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b' }}>השבוע</th>
-                  <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b' }}>היום</th>
-                  <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b' }}>רצף</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b' }}>פעולה</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b' }}>נקודות</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b' }}>סוג</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b' }}>מקסימום יומי</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b' }}>בפורטל</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b' }}>הסבר</th>
                 </tr>
               </thead>
               <tbody>
-                {participantRanks.map((p) => (
-                  <tr key={p.participantId} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                {actions.map((a) => (
+                  <tr key={a.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
                     <td style={{ padding: '11px 14px' }}>
-                      <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 26, height: 26, borderRadius: '50%', background: medalColor(p.rank), color: medalText(p.rank), fontSize: 12, fontWeight: 700 }}>
-                        {p.rank}
+                      <div style={{ fontWeight: 600, color: '#0f172a' }}>{a.name}</div>
+                      {a.description && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>{a.description}</div>}
+                    </td>
+                    <td style={{ padding: '11px 14px', fontWeight: 700, color: '#2563eb' }}>
+                      {a.points} נק׳{a.unit ? ` / ${a.unit}` : ''}
+                    </td>
+                    <td style={{ padding: '11px 14px' }}>
+                      <span style={{ background: '#f1f5f9', color: '#374151', fontSize: 11, padding: '2px 8px', borderRadius: 20 }}>
+                        {a.aggregationMode ? (aggLabel[a.aggregationMode] ?? a.aggregationMode) : (a.inputType ?? 'ספירה')}
                       </span>
                     </td>
-                    <td style={{ padding: '11px 14px', fontWeight: 600, color: '#0f172a' }}>
-                      {p.firstName}{p.lastName ? ' ' + p.lastName : ''}
+                    <td style={{ padding: '11px 14px', color: '#374151' }}>
+                      {a.maxPerDay ?? '∞'}
                     </td>
-                    <td style={{ padding: '11px 14px', fontWeight: 700, color: '#2563eb' }}>{p.totalScore}</td>
-                    <td style={{ padding: '11px 14px', color: '#374151' }}>{p.weekScore}</td>
-                    <td style={{ padding: '11px 14px', color: '#374151' }}>{p.todayScore}</td>
-                    <td style={{ padding: '11px 14px' }}>
-                      {p.currentStreak > 0
-                        ? <span style={{ background: '#fff7ed', color: '#c2410c', fontSize: 12, padding: '2px 8px', borderRadius: 20 }}>🔥 {p.currentStreak}</span>
+                    <td style={{ padding: '11px 14px', textAlign: 'center' }}>
+                      {a.showInPortal
+                        ? <span style={{ color: '#16a34a', fontWeight: 600 }}>✓</span>
                         : <span style={{ color: '#94a3b8' }}>—</span>}
                     </td>
+                    <td style={{ padding: '11px 14px', textAlign: 'center' }}>
+                      {a.explanationContent
+                        ? <span style={{ background: '#f0fdf4', color: '#16a34a', fontSize: 11, padding: '2px 8px', borderRadius: 20 }}>יש הסבר</span>
+                        : <span style={{ color: '#94a3b8', fontSize: 12 }}>—</span>}
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         )}
+        {portalActions.length > 0 && (
+          <div style={{ marginTop: 8, fontSize: 12, color: '#64748b' }}>
+            {portalActions.length} מתוך {actions.length} פעולות מוצגות בפורטל
+          </div>
+        )}
       </section>
 
-      {/* ── Visibility settings ── */}
-      <section style={{ borderTop: '1px solid #e2e8f0', paddingTop: 28 }}>
-        <h3 style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', margin: '0 0 6px' }}>הגדרות חשיפה למשתתפות</h3>
-        <p style={{ fontSize: 13, color: '#64748b', margin: '0 0 18px', lineHeight: 1.5 }}>
-          שלטי הצגה אלו יקבעו מה רואות המשתתפות בממשק שלהן. המנהל תמיד רואה הכל.
-        </p>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-          {([
-            { key: 'showIndividualLeaderboard', label: 'הצגת דירוג אישי', desc: 'המשתתפת רואה את מיקומה ואת שאר חברות הקבוצה' },
-            { key: 'showGroupComparison', label: 'הצגת השוואת קבוצות', desc: 'המשתתפת רואה את ציון הקבוצה שלה מול קבוצות אחרות' },
-            { key: 'showOtherGroupsCharts', label: 'הצגת גרפים של קבוצות אחרות', desc: 'אפשרי רק כאשר השוואת קבוצות פעילה' },
-            { key: 'showOtherGroupsMemberDetails', label: 'הצגת חברות קבוצות אחרות', desc: 'המשתתפת רואה שמות ודירוג מקבוצות אחרות' },
-          ] as { key: keyof typeof vis; label: string; desc: string }[]).map((item) => (
-            <div key={item.key} style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-              <input
-                type="checkbox"
-                id={`vis-${item.key}`}
-                checked={vis[item.key]}
-                onChange={(e) => { setVis((p) => ({ ...p, [item.key]: e.target.checked })); setVisSaved(false); }}
-                style={{ width: 16, height: 16, marginTop: 2, cursor: 'pointer', flexShrink: 0 }}
-              />
-              <label htmlFor={`vis-${item.key}`} style={{ cursor: 'pointer' }}>
-                <div style={{ fontSize: 14, fontWeight: 500, color: '#0f172a' }}>{item.label}</div>
-                <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>{item.desc}</div>
-              </label>
-            </div>
-          ))}
+      {/* ── Section D: Portal preview ── */}
+      <section style={{ borderTop: '1px solid #e2e8f0', paddingTop: 24 }}>
+        <div style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', marginBottom: 4 }}>ד — תצוגה מקדימה (פורטל)</div>
+        <div style={{ fontSize: 12, color: '#64748b', marginBottom: 14 }}>
+          כך ייראה תוכן זה בטאב &ldquo;חוקים&rdquo; בפורטל המשתתפות
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 18 }}>
-          <button
-            onClick={saveVisibility}
-            disabled={savingVis}
-            style={{ background: savingVis ? '#93c5fd' : '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '9px 20px', fontSize: 13, fontWeight: 600, cursor: savingVis ? 'not-allowed' : 'pointer' }}
-          >
-            {savingVis ? 'שומר...' : 'שמור הגדרות'}
-          </button>
-          {visSaved && <span style={{ color: '#16a34a', fontSize: 13 }}>✓ נשמר</span>}
+        <div style={{ border: '2px solid #e2e8f0', borderRadius: 14, padding: '20px', background: '#fafafa', maxWidth: 480 }}>
+          {/* Simulated phone header */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16, paddingBottom: 12, borderBottom: '1px solid #e2e8f0' }}>
+            <span style={{ fontSize: 16 }}>📋</span>
+            <span style={{ fontSize: 15, fontWeight: 700, color: '#0f172a' }}>חוקים</span>
+            <span style={{ marginRight: 'auto', fontSize: 11, background: rulesPublished ? '#dcfce7' : '#fef2f2', color: rulesPublished ? '#16a34a' : '#dc2626', padding: '2px 8px', borderRadius: 20, fontWeight: 600 }}>
+              {rulesPublished ? 'פורסם' : 'לא פורסם'}
+            </span>
+          </div>
+          {!rulesPublished ? (
+            <div style={{ textAlign: 'center', padding: '32px 0', color: '#94a3b8', fontSize: 13 }}>
+              <div style={{ fontSize: 28, marginBottom: 8 }}>🔒</div>
+              תוכן החוקים לא זמין כרגע
+            </div>
+          ) : rulesContent ? (
+            <div
+              style={{ fontSize: 14, lineHeight: 1.7, color: '#0f172a', direction: 'rtl' }}
+              dangerouslySetInnerHTML={{ __html: rulesContent }}
+            />
+          ) : (
+            <div style={{ textAlign: 'center', padding: '32px 0', color: '#94a3b8', fontSize: 13 }}>
+              <div style={{ fontSize: 28, marginBottom: 8 }}>✏️</div>
+              לא הוזן תוכן חוקים עדיין
+            </div>
+          )}
         </div>
       </section>
+
     </div>
   );
 }
@@ -2076,7 +1966,7 @@ function ProgramPageInner({ params }: { params: Promise<{ id: string }> }) {
     { key: 'groups', label: 'קבוצות' },
     ...(program.type === 'game' ? [
       { key: 'game' as TabKey, label: 'מנוע משחק' },
-      { key: 'leaderboard' as TabKey, label: 'דירוגים' },
+      { key: 'rules' as TabKey, label: 'חוקים' },
     ] : []),
     { key: 'templates', label: 'נוסחים' },
     { key: 'settings', label: 'הגדרות' },
@@ -2125,12 +2015,7 @@ function ProgramPageInner({ params }: { params: Promise<{ id: string }> }) {
         {activeTab === 'groups' && <GroupsTab program={program} />}
         {activeTab === 'game' && <GameEngineTab programId={program.id} />}
         {activeTab === 'templates' && <TemplatesTab programId={program.id} />}
-        {activeTab === 'leaderboard' && (
-          <LeaderboardTab
-            program={program}
-            onVisibilityChange={(updated) => setProgram((p) => p ? { ...p, ...updated } : p)}
-          />
-        )}
+        {activeTab === 'rules' && <RulesTab program={program} onSaved={(updated) => setProgram(updated)} />}
       </div>
     </div>
   );

@@ -48,6 +48,7 @@ export interface PortalFeedItem {
 
 export interface PortalRules {
   programRulesContent: string | null;
+  rulesPublished: boolean;
   actions: {
     id: string;
     name: string;
@@ -294,7 +295,7 @@ export class ParticipantPortalService {
     const { programId } = pg;
 
     const [program, actions, rules] = await Promise.all([
-      this.prisma.program.findUnique({ where: { id: programId }, select: { rulesContent: true } }),
+      this.prisma.program.findUnique({ where: { id: programId }, select: { rulesContent: true, rulesPublished: true } }),
       this.prisma.gameAction.findMany({
         where: { programId, isActive: true, showInPortal: true },
         orderBy: { createdAt: 'asc' },
@@ -307,7 +308,13 @@ export class ParticipantPortalService {
       }),
     ]);
 
-    return { programRulesContent: program?.rulesContent ?? null, actions, rules };
+    const published = program?.rulesPublished ?? false;
+    return {
+      programRulesContent: published ? (program?.rulesContent ?? null) : null,
+      rulesPublished: published,
+      actions,
+      rules,
+    };
   }
 
   // ─── Private helpers ───────────────────────────────────────────────────────

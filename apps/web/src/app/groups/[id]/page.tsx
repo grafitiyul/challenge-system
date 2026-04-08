@@ -94,7 +94,18 @@ function chatDisplayName(chat: WhatsAppChat): string {
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
-type Tab = 'details' | 'chat';
+type Tab = 'details' | 'chat' | 'leaderboard';
+
+interface ParticipantRankRow {
+  participantId: string;
+  firstName: string;
+  lastName: string | null;
+  totalScore: number;
+  todayScore: number;
+  weekScore: number;
+  currentStreak: number;
+  rank: number;
+}
 
 export default function GroupDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -113,6 +124,11 @@ export default function GroupDetailPage() {
   const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState(false);
   const chatBottomRef = useRef<HTMLDivElement>(null);
+
+  // Leaderboard tab
+  const [participantRanks, setParticipantRanks] = useState<ParticipantRankRow[]>([]);
+  const [ranksLoading, setRanksLoading] = useState(false);
+  const [ranksError, setRanksError] = useState(false);
 
   // Group message modal
   const [msgModalOpen, setMsgModalOpen] = useState(false);
@@ -204,6 +220,18 @@ export default function GroupDetailPage() {
       chatBottomRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [tab, chatDetail]);
+
+  // ─── Leaderboard tab: load when switching ─────────────────────────────────
+
+  useEffect(() => {
+    if (tab !== 'leaderboard' || !id) return;
+    setRanksLoading(true);
+    setRanksError(false);
+    apiFetch<ParticipantRankRow[]>(`${BASE_URL}/game/leaderboard/group/${id}`, { cache: 'no-store' })
+      .then((data) => setParticipantRanks(Array.isArray(data) ? data : []))
+      .catch(() => setRanksError(true))
+      .finally(() => setRanksLoading(false));
+  }, [tab, id]);
 
   // ─── Copy helper ──────────────────────────────────────────────────────────
 
@@ -501,6 +529,7 @@ export default function GroupDetailPage() {
         {([
           ['details', 'הגדרות ופרטים'],
           ['chat', 'צ׳אט קבוצתי'],
+          ['leaderboard', 'דירוגים'],
         ] as const).map(([key, label]) => (
           <button
             key={key}
@@ -807,6 +836,85 @@ export default function GroupDetailPage() {
               />
             </div>
           ) : null}
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════════════
+          TAB: LEADERBOARD
+      ══════════════════════════════════════════════════════════════════════ */}
+      {tab === 'leaderboard' && (
+        <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: 24 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+            <h3 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', margin: 0 }}>דירוג משתתפות בקבוצה</h3>
+            <button
+              onClick={() => {
+                setRanksLoading(true);
+                setRanksError(false);
+                apiFetch<ParticipantRankRow[]>(`${BASE_URL}/game/leaderboard/group/${id}`, { cache: 'no-store' })
+                  .then((data) => setParticipantRanks(Array.isArray(data) ? data : []))
+                  .catch(() => setRanksError(true))
+                  .finally(() => setRanksLoading(false));
+              }}
+              style={{ background: '#f1f5f9', border: '1px solid #e2e8f0', borderRadius: 6, padding: '6px 12px', fontSize: 12, color: '#374151', cursor: 'pointer' }}
+            >
+              ↻ רענן
+            </button>
+          </div>
+
+          {ranksLoading && (
+            <div style={{ color: '#94a3b8', fontSize: 13, paddingTop: 20, textAlign: 'center' }}>טוען דירוג...</div>
+          )}
+          {!ranksLoading && ranksError && (
+            <div style={{ color: '#dc2626', fontSize: 13, textAlign: 'center', paddingTop: 20 }}>שגיאה בטעינת הדירוג</div>
+          )}
+          {!ranksLoading && !ranksError && participantRanks.length === 0 && (
+            <div style={{ padding: '32px 24px', textAlign: 'center', border: '2px dashed #e2e8f0', borderRadius: 10, color: '#94a3b8', fontSize: 13 }}>
+              <div style={{ fontSize: 28, marginBottom: 8 }}>🏆</div>
+              אין נתוני ניקוד לקבוצה זו עדיין
+            </div>
+          )}
+          {!ranksLoading && !ranksError && participantRanks.length > 0 && (
+            <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                <thead>
+                  <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
+                    <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b', width: 40 }}>#</th>
+                    <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b' }}>שם</th>
+                    <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b' }}>סה״כ</th>
+                    <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b' }}>השבוע</th>
+                    <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b' }}>היום</th>
+                    <th style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 600, color: '#64748b' }}>רצף</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {participantRanks.map((p) => {
+                    const medalColor = p.rank === 1 ? '#f59e0b' : p.rank === 2 ? '#94a3b8' : p.rank === 3 ? '#b45309' : '#e2e8f0';
+                    const medalText = p.rank <= 3 ? '#fff' : '#64748b';
+                    return (
+                      <tr key={p.participantId} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                        <td style={{ padding: '11px 14px' }}>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 26, height: 26, borderRadius: '50%', background: medalColor, color: medalText, fontSize: 12, fontWeight: 700 }}>
+                            {p.rank}
+                          </span>
+                        </td>
+                        <td style={{ padding: '11px 14px', fontWeight: 600, color: '#0f172a' }}>
+                          {p.firstName}{p.lastName ? ' ' + p.lastName : ''}
+                        </td>
+                        <td style={{ padding: '11px 14px', fontWeight: 700, color: '#2563eb' }}>{p.totalScore}</td>
+                        <td style={{ padding: '11px 14px', color: '#374151' }}>{p.weekScore}</td>
+                        <td style={{ padding: '11px 14px', color: '#374151' }}>{p.todayScore}</td>
+                        <td style={{ padding: '11px 14px' }}>
+                          {p.currentStreak > 0
+                            ? <span style={{ background: '#fff7ed', color: '#c2410c', fontSize: 12, padding: '2px 8px', borderRadius: 20 }}>🔥 {p.currentStreak}</span>
+                            : <span style={{ color: '#94a3b8' }}>—</span>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 

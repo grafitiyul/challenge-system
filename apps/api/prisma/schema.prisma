@@ -63,6 +63,7 @@ model Program {
 
   // Rich content shown in participant portal rules tab (HTML)
   rulesContent            String?
+  rulesPublished          Boolean  @default(false)
 
   @@map("programs")
 }

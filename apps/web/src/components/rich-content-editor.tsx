@@ -46,7 +46,7 @@ const HIGHLIGHT_COLORS = [
   { hex: 'transparent', label: 'נקה' },
 ];
 
-const ALLOWED_TAGS = new Set(['b','strong','i','em','u','s','del','br','p','div','h1','h2','h3','ul','ol','li','a']);
+const ALLOWED_TAGS = new Set(['b','strong','i','em','u','s','del','br','p','div','h1','h2','h3','ul','ol','li','a','img','iframe']);
 
 function sanitizeHtml(html: string): string {
   const tmp = document.createElement('div');
@@ -67,11 +67,37 @@ function sanitizeHtml(html: string): string {
       }
       return inner;
     }
+    if (tag === 'img') {
+      const src = el.getAttribute('src') ?? '';
+      const alt = el.getAttribute('alt') ?? '';
+      if (/^https?:\/\//i.test(src)) {
+        return `<img src="${src}" alt="${alt}" style="max-width:100%;height:auto;border-radius:6px;" />`;
+      }
+      return '';
+    }
+    if (tag === 'iframe') {
+      const src = el.getAttribute('src') ?? '';
+      const allowed = /^https:\/\/(www\.)?(youtube\.com|youtube-nocookie\.com|player\.vimeo\.com)\//i;
+      if (allowed.test(src)) {
+        return `<iframe src="${src}" width="100%" height="315" frameborder="0" allowfullscreen style="border-radius:8px;display:block;"></iframe>`;
+      }
+      return '';
+    }
     return `<${tag}>${inner}</${tag}>`;
   }
   let result = '';
   for (const child of tmp.childNodes) result += walk(child);
   return result;
+}
+
+function extractYoutubeId(url: string): string | null {
+  const m = url.match(/(?:youtube\.com\/(?:watch\?v=|embed\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/);
+  return m ? m[1] : null;
+}
+
+function extractVimeoId(url: string): string | null {
+  const m = url.match(/(?:vimeo\.com\/)(\d+)/);
+  return m ? m[1] : null;
 }
 
 // ── Props ─────────────────────────────────────────────────────────────────────
@@ -97,6 +123,10 @@ export default function RichContentEditor({ value, onChange, placeholder, minHei
   const [showColorPicker, setShowColorPicker] = useState<'text' | 'highlight' | null>(null);
   const [showLinkInput, setShowLinkInput] = useState(false);
   const [linkUrl, setLinkUrl] = useState('https://');
+  const [showImageInput, setShowImageInput] = useState(false);
+  const [imageUrl, setImageUrl] = useState('https://');
+  const [showVideoInput, setShowVideoInput] = useState(false);
+  const [videoUrl, setVideoUrl] = useState('');
 
   // Sync external value → DOM
   useEffect(() => {
@@ -199,7 +229,69 @@ export default function RichContentEditor({ value, onChange, placeholder, minHei
     syncValue();
   }
 
-  function closeAll() { setShowEmoji(false); setShowColorPicker(null); }
+  function insertImageAtCursor(url: string) {
+    const el = editorRef.current;
+    if (!el) return;
+    el.focus();
+    const img = document.createElement('img');
+    img.src = url; img.alt = ''; img.style.cssText = 'max-width:100%;height:auto;border-radius:6px;';
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount > 0) {
+      const range = sel.getRangeAt(0);
+      range.deleteContents();
+      range.insertNode(img);
+      range.setStartAfter(img); range.collapse(true);
+      sel.removeAllRanges(); sel.addRange(range);
+    } else {
+      el.appendChild(img);
+    }
+    syncValue();
+  }
+
+  function insertVideoAtCursor(url: string) {
+    const el = editorRef.current;
+    if (!el) return;
+    let embedSrc = '';
+    const ytId = extractYoutubeId(url);
+    const viId = extractVimeoId(url);
+    if (ytId) embedSrc = `https://www.youtube-nocookie.com/embed/${ytId}`;
+    else if (viId) embedSrc = `https://player.vimeo.com/video/${viId}`;
+    if (!embedSrc) return;
+    el.focus();
+    const iframe = document.createElement('iframe');
+    iframe.src = embedSrc; iframe.width = '100%'; iframe.height = '315';
+    iframe.setAttribute('frameborder', '0'); iframe.setAttribute('allowfullscreen', '');
+    iframe.style.cssText = 'border-radius:8px;display:block;';
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount > 0) {
+      const range = sel.getRangeAt(0);
+      range.deleteContents();
+      range.insertNode(iframe);
+      range.setStartAfter(iframe); range.collapse(true);
+      sel.removeAllRanges(); sel.addRange(range);
+    } else {
+      el.appendChild(iframe);
+    }
+    syncValue();
+  }
+
+  function handleImageInsert(e: React.FormEvent) {
+    e.preventDefault();
+    const url = imageUrl.trim();
+    if (!url || !/^https?:\/\//i.test(url)) return;
+    setShowImageInput(false); setImageUrl('https://');
+    insertImageAtCursor(url);
+  }
+
+  function handleVideoInsert(e: React.FormEvent) {
+    e.preventDefault();
+    const url = videoUrl.trim();
+    if (!url) return;
+    setShowVideoInput(false); setVideoUrl('');
+    insertVideoAtCursor(url);
+  }
+
+  function closeAll() { setShowEmoji(false); setShowColorPicker(null); setShowImageInput(false); setShowVideoInput(false); }
 
   const isEmpty = !value || value === '<br>' || value === '<div><br></div>' || value === '<p><br></p>';
 
@@ -356,7 +448,7 @@ export default function RichContentEditor({ value, onChange, placeholder, minHei
         {/* Link */}
         <div style={{ position: 'relative', flexShrink: 0 }}>
           <button type="button" title="הוסף / ערוך קישור"
-            onMouseDown={(e) => { e.preventDefault(); saveSelection(); const existing = getAnchorAtCursor(); setLinkUrl(existing?.href ?? 'https://'); setShowLinkInput(v => !v); setShowColorPicker(null); setShowEmoji(false); }}
+            onMouseDown={(e) => { e.preventDefault(); saveSelection(); const existing = getAnchorAtCursor(); setLinkUrl(existing?.href ?? 'https://'); setShowLinkInput(v => !v); setShowColorPicker(null); setShowEmoji(false); setShowImageInput(false); setShowVideoInput(false); }}
             style={btnBase}
             onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#e5e7eb'; }}
             onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'none'; }}
@@ -383,6 +475,55 @@ export default function RichContentEditor({ value, onChange, placeholder, minHei
                     style={{ width: '100%', fontSize: 12, padding: '4px 8px', color: '#dc2626', border: '1px solid #fecaca', borderRadius: 5, background: 'none', cursor: 'pointer' }}
                   >הסר קישור</button>
                 )}
+              </form>
+            </div>
+          )}
+        </div>
+
+        {/* Image */}
+        <div style={{ position: 'relative', flexShrink: 0 }}>
+          <button type="button" title="הוסף תמונה (URL)"
+            onMouseDown={(e) => { e.preventDefault(); saveSelection(); setShowImageInput(v => !v); setShowVideoInput(false); setShowLinkInput(false); setShowColorPicker(null); setShowEmoji(false); }}
+            style={btnBase}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#e5e7eb'; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'none'; }}
+          >🖼</button>
+          {showImageInput && (
+            <div style={{ position: 'absolute', top: '100%', marginTop: 4, left: 0, zIndex: 50, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: 10, boxShadow: '0 8px 24px rgba(0,0,0,0.12)', minWidth: 260 }} onMouseDown={(e) => e.preventDefault()}>
+              <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 5 }}>כתובת תמונה (URL)</div>
+              <form onSubmit={handleImageInsert}>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <input autoFocus type="url" value={imageUrl} onChange={(e) => setImageUrl(e.target.value)} placeholder="https://..." dir="ltr"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    style={{ flex: 1, fontSize: 12, padding: '4px 8px', border: '1px solid #d1d5db', borderRadius: 5, outline: 'none' }}
+                  />
+                  <button type="submit" style={{ fontSize: 12, padding: '4px 10px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: 5, cursor: 'pointer' }}>הוסף</button>
+                </div>
+              </form>
+            </div>
+          )}
+        </div>
+
+        {/* Video embed */}
+        <div style={{ position: 'relative', flexShrink: 0 }}>
+          <button type="button" title="הטמע סרטון (YouTube / Vimeo)"
+            onMouseDown={(e) => { e.preventDefault(); saveSelection(); setShowVideoInput(v => !v); setShowImageInput(false); setShowLinkInput(false); setShowColorPicker(null); setShowEmoji(false); }}
+            style={btnBase}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#e5e7eb'; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'none'; }}
+          >▶</button>
+          {showVideoInput && (
+            <div style={{ position: 'absolute', top: '100%', marginTop: 4, left: 0, zIndex: 50, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: 10, boxShadow: '0 8px 24px rgba(0,0,0,0.12)', minWidth: 280 }} onMouseDown={(e) => e.preventDefault()}>
+              <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 5 }}>קישור YouTube / Vimeo</div>
+              <form onSubmit={handleVideoInsert}>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <input autoFocus type="url" value={videoUrl} onChange={(e) => setVideoUrl(e.target.value)} placeholder="https://youtu.be/... או vimeo.com/..." dir="ltr"
+                    onMouseDown={(e) => e.stopPropagation()}
+                    style={{ flex: 1, fontSize: 12, padding: '4px 8px', border: '1px solid #d1d5db', borderRadius: 5, outline: 'none' }}
+                  />
+                  <button type="submit" style={{ fontSize: 12, padding: '4px 10px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: 5, cursor: 'pointer' }}>הטמע</button>
+                </div>
+                <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 4 }}>YouTube, YouTube Shorts, Vimeo</div>
               </form>
             </div>
           )}

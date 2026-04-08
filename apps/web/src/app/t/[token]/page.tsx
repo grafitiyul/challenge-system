@@ -59,6 +59,7 @@ interface FeedItem {
 
 interface PortalRules {
   programRulesContent: string | null;
+  rulesPublished: boolean;
   actions: {
     id: string;
     name: string;
@@ -588,7 +589,14 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
           <div style={s.tabPane}>
             {rulesLoading && <div style={s.tabCenter}><div style={s.spinner} /></div>}
             {rulesError && <p style={s.tabError}>{rulesError}</p>}
-            {rules && !rulesLoading && (
+            {rules && !rulesLoading && !rules.rulesPublished && (
+              <div style={{ textAlign: 'center', padding: '48px 24px' }}>
+                <div style={{ fontSize: 40, marginBottom: 12 }}>🔒</div>
+                <div style={{ fontSize: 16, fontWeight: 600, color: '#374151', marginBottom: 8 }}>תוכן החוקים לא זמין כרגע</div>
+                <div style={{ fontSize: 14, color: '#94a3b8' }}>המנהלת תפרסם את החוקים בקרוב</div>
+              </div>
+            )}
+            {rules && !rulesLoading && rules.rulesPublished && (
               <>
                 {/* Section A — Program rules rich content */}
                 {rules.programRulesContent && (

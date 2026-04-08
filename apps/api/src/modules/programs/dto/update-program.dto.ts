@@ -32,4 +32,8 @@ export class UpdateProgramDto {
   @IsOptional()
   @IsString()
   rulesContent?: string | null;
+
+  @IsOptional()
+  @IsBoolean()
+  rulesPublished?: boolean;
 }
