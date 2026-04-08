@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { BASE_URL, apiFetch } from '@lib/api';
-import WhatsAppEditor from '@/components/whatsapp-editor';
+import WhatsAppEditor from '@components/whatsapp-editor';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
