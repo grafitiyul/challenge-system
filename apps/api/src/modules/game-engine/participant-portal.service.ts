@@ -50,7 +50,7 @@ export class ParticipantPortalService {
     const programId = pg.group.programId;
 
     const actions = await this.prisma.gameAction.findMany({
-      where: { programId, isActive: true },
+      where: { programId, isActive: true, showInPortal: true },
       orderBy: { createdAt: 'asc' },
     });
 

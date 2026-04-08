@@ -1,4 +1,4 @@
-import { IsBoolean, IsInt, IsOptional, IsString, Min } from 'class-validator';
+import { IsBoolean, IsInt, IsOptional, IsString, Min, ValidateIf } from 'class-validator';
 
 export class CreateActionDto {
   @IsString()
@@ -25,9 +25,18 @@ export class CreateActionDto {
   points: number;
 
   @IsOptional()
+  @ValidateIf((o) => o.maxPerDay !== null)
   @IsInt()
   @Min(1)
-  maxPerDay?: number;
+  maxPerDay?: number | null;
+
+  @IsOptional()
+  @IsBoolean()
+  showInPortal?: boolean;
+
+  @IsOptional()
+  @IsString()
+  blockedMessage?: string | null;
 }
 
 export class UpdateActionDto {
@@ -57,9 +66,18 @@ export class UpdateActionDto {
   points?: number;
 
   @IsOptional()
+  @ValidateIf((o) => o.maxPerDay !== null)
   @IsInt()
   @Min(1)
-  maxPerDay?: number;
+  maxPerDay?: number | null;
+
+  @IsOptional()
+  @IsBoolean()
+  showInPortal?: boolean;
+
+  @IsOptional()
+  @IsString()
+  blockedMessage?: string | null;
 
   @IsOptional()
   @IsBoolean()

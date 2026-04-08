@@ -635,6 +635,10 @@ model GameAction {
   unit            String?
   points      Int      @default(0)
   maxPerDay   Int?
+  // Whether this action appears in the participant-facing portal
+  showInPortal    Boolean  @default(true)
+  // Custom message shown to participant when daily limit is reached (null = use system default)
+  blockedMessage  String?
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt

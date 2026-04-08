@@ -31,6 +31,8 @@ export class GameEngineService {
         unit: dto.unit ?? null,
         points: dto.points,
         maxPerDay: dto.maxPerDay ?? null,
+        showInPortal: dto.showInPortal ?? true,
+        blockedMessage: dto.blockedMessage ?? null,
       },
     });
   }
@@ -55,6 +57,8 @@ export class GameEngineService {
         ...(dto.unit !== undefined ? { unit: dto.unit } : {}),
         ...(dto.points !== undefined ? { points: dto.points } : {}),
         ...(dto.maxPerDay !== undefined ? { maxPerDay: dto.maxPerDay } : {}),
+        ...(dto.showInPortal !== undefined ? { showInPortal: dto.showInPortal } : {}),
+        ...(dto.blockedMessage !== undefined ? { blockedMessage: dto.blockedMessage } : {}),
         ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
       },
     });
@@ -129,7 +133,11 @@ export class GameEngineService {
         },
       });
       if (todayCount >= action.maxPerDay) {
-        throw new BadRequestException(`Max ${action.maxPerDay} logs per day reached for this action`);
+        const msg = action.blockedMessage?.trim() ||
+          (action.maxPerDay === 1
+            ? 'כבר ביצעת פעולה זו היום. ניתן לדווח שוב מחר.'
+            : `כבר הגעת למכסה היומית לפעולה זו (${action.maxPerDay} פעמים). ניתן לדווח שוב מחר.`);
+        throw new BadRequestException(msg);
       }
     }
 
