@@ -141,7 +141,6 @@ function ConfirmModal({ title, message, confirmLabel = 'אישור', danger = fa
 }) {
   return (
     <div
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100, padding: 20 }}
     >
       <div style={{ background: '#fff', borderRadius: 12, padding: 24, width: '100%', maxWidth: 400, boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
@@ -150,6 +149,44 @@ function ConfirmModal({ title, message, confirmLabel = 'אישור', danger = fa
         <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
           <button onClick={onClose} style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 7, padding: '8px 16px', fontSize: 13, cursor: 'pointer' }}>ביטול</button>
           <button onClick={onConfirm} style={{ background: danger ? '#dc2626' : '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>{confirmLabel}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function UnsavedChangesModal({ onSave, onDiscard, onContinue }: {
+  onSave: () => void;
+  onDiscard: () => void;
+  onContinue: () => void;
+}) {
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 1200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+      <div style={{ background: '#fff', borderRadius: 12, padding: 28, width: '100%', maxWidth: 360, boxShadow: '0 20px 60px rgba(0,0,0,0.25)', textAlign: 'center' }}>
+        <div style={{ fontSize: 36, marginBottom: 12 }}>⚠️</div>
+        <h3 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', margin: '0 0 8px' }}>שינויים לא שמורים</h3>
+        <p style={{ fontSize: 14, color: '#64748b', margin: '0 0 22px', lineHeight: 1.5 }}>
+          יש שינויים שטרם נשמרו. מה ברצונך לעשות?
+        </p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <button
+            onClick={onSave}
+            style={{ padding: '10px 16px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: 'pointer', width: '100%' }}
+          >
+            שמור שינויים
+          </button>
+          <button
+            onClick={onDiscard}
+            style={{ padding: '10px 16px', background: '#fef2f2', color: '#dc2626', border: '1px solid #fca5a5', borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: 'pointer', width: '100%' }}
+          >
+            בטל שינויים
+          </button>
+          <button
+            onClick={onContinue}
+            style={{ padding: '10px 16px', background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 13, cursor: 'pointer', width: '100%' }}
+          >
+            המשך עריכה
+          </button>
         </div>
       </div>
     </div>
@@ -561,6 +598,22 @@ function QuestionModal({
   const [modalOptions, setModalOptions] = useState<{ id: string; label: string }[]>(initialOptions ?? []);
   // Track whether admin has manually overridden the key
   const [keyManuallySet, setKeyManuallySet] = useState(!!initial.internalKey);
+  // Unsaved-changes guard
+  const [showUnsaved, setShowUnsaved] = useState(false);
+
+  const isDirty = (() => {
+    const formDirty = (Object.keys(form) as (keyof QuestionFormState)[]).some(
+      (k) => String(form[k]) !== String(initial[k]),
+    );
+    const optsDirty =
+      JSON.stringify(modalOptions.map((o) => o.label)) !==
+      JSON.stringify((initialOptions ?? []).map((o) => o.label));
+    return formDirty || optsDirty;
+  })();
+
+  function handleClose() {
+    if (isDirty) { setShowUnsaved(true); } else { onClose(); }
+  }
 
   function setField(field: keyof QuestionFormState, value: string | boolean) {
     setForm((prev) => ({ ...prev, [field]: value }));
@@ -613,7 +666,15 @@ function QuestionModal({
   const previewKey = form.internalKey || generateUniqueKey(form.label, existingKeys, existingKeys.length + 1);
 
   return (
-    <Modal title={title} onClose={onClose}>
+    <>
+    {showUnsaved && (
+      <UnsavedChangesModal
+        onSave={() => { setShowUnsaved(false); handleSave(); }}
+        onDiscard={() => { setShowUnsaved(false); onClose(); }}
+        onContinue={() => setShowUnsaved(false)}
+      />
+    )}
+    <Modal title={title} onClose={handleClose}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         <div>
           <label style={labelStyle}>תווית שאלה *</label>
@@ -711,11 +772,12 @@ function QuestionModal({
 
         {error && <div style={{ color: '#dc2626', fontSize: 13 }}>{error}</div>}
         <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-          <button onClick={onClose} style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 7, padding: '8px 16px', fontSize: 13, cursor: 'pointer' }}>ביטול</button>
+          <button onClick={handleClose} style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 7, padding: '8px 16px', fontSize: 13, cursor: 'pointer' }}>ביטול</button>
           <SaveBtn saving={saving} onClick={handleSave} />
         </div>
       </div>
     </Modal>
+    </>
   );
 }
 
@@ -801,11 +863,20 @@ function SystemFieldModal({
   onClose: () => void;
 }) {
   const available = SYSTEM_FIELDS.filter((f) => !existingSystemKeys.includes(f.key));
-  const [selected, setSelected] = useState<SystemFieldDef | null>(available[0] ?? null);
-  const [label, setLabel] = useState(available[0]?.defaultLabel ?? '');
+  const initialSelected = available[0] ?? null;
+  const initialLabel = available[0]?.defaultLabel ?? '';
+  const [selected, setSelected] = useState<SystemFieldDef | null>(initialSelected);
+  const [label, setLabel] = useState(initialLabel);
   const [isRequired, setIsRequired] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [showUnsaved, setShowUnsaved] = useState(false);
+
+  const isDirty = selected?.key !== initialSelected?.key || label !== initialLabel || isRequired !== false;
+
+  function handleClose() {
+    if (isDirty) { setShowUnsaved(true); } else { onClose(); }
+  }
 
   function handleSelect(f: SystemFieldDef) {
     setSelected(f);
@@ -823,7 +894,15 @@ function SystemFieldModal({
   }
 
   return (
-    <Modal title="הוסף שדה מערכת" onClose={onClose}>
+    <>
+    {showUnsaved && (
+      <UnsavedChangesModal
+        onSave={() => { setShowUnsaved(false); handleSave(); }}
+        onDiscard={() => { setShowUnsaved(false); onClose(); }}
+        onContinue={() => setShowUnsaved(false)}
+      />
+    )}
+    <Modal title="הוסף שדה מערכת" onClose={handleClose}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         {available.length === 0 && (
           <div style={{ color: '#64748b', fontSize: 14, textAlign: 'center', padding: '16px 0' }}>כל שדות המערכת כבר נוספו לשאלון זה</div>
@@ -872,7 +951,7 @@ function SystemFieldModal({
 
             {error && <div style={{ color: '#dc2626', fontSize: 13 }}>{error}</div>}
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-              <button onClick={onClose} style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 7, padding: '8px 16px', fontSize: 13, cursor: 'pointer' }}>ביטול</button>
+              <button onClick={handleClose} style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 7, padding: '8px 16px', fontSize: 13, cursor: 'pointer' }}>ביטול</button>
               <SaveBtn saving={saving} onClick={handleSave} label="הוסף שדה" />
             </div>
           </>
@@ -884,6 +963,7 @@ function SystemFieldModal({
         )}
       </div>
     </Modal>
+    </>
   );
 }
 
@@ -1569,7 +1649,6 @@ function SubmissionsTab({ template }: { template: Template }) {
 
       {detail && (
         <div
-          onClick={(e) => { if (e.target === e.currentTarget) setDetail(null); }}
           style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100, padding: 20 }}
         >
           <div style={{ background: '#fff', borderRadius: 14, padding: 24, width: '100%', maxWidth: 560, boxShadow: '0 20px 60px rgba(0,0,0,0.2)', maxHeight: '85vh', overflowY: 'auto' }}>
