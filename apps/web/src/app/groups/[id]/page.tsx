@@ -454,7 +454,7 @@ export default function GroupDetailPage() {
           {/* Right: primary actions */}
           <div style={{ display: 'flex', gap: 10, flexShrink: 0, flexWrap: 'wrap' }}>
             <button
-              onClick={() => { setMsgModalOpen(true); setMsgText(''); setMsgError(''); setMsgSuccess(false); }}
+              onClick={() => { setMsgModalOpen(true); setMsgError(''); setMsgSuccess(false); }}
               style={{
                 display: 'flex', alignItems: 'center', gap: 6,
                 background: groupChatLink ? '#16a34a' : '#94a3b8',
@@ -843,7 +843,7 @@ export default function GroupDetailPage() {
           MODAL — GROUP MESSAGE COMPOSER (WhatsAppEditor)
       ══════════════════════════════════════════════════════════════════════ */}
       {msgModalOpen && (
-        <Modal onClose={() => setMsgModalOpen(false)}>
+        <Modal onClose={() => setMsgModalOpen(false)} disableBackdropClose showCloseButton>
           <h3 style={S.modalTitle}>הודעה לקבוצה</h3>
           {groupChatLink ? (
             <p style={{ fontSize: 13, color: '#6b7280', margin: '0 0 16px' }}>
@@ -1071,13 +1071,39 @@ function Section({
 
 // ─── Modal wrapper ─────────────────────────────────────────────────────────────
 
-function Modal({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
+function Modal({
+  children,
+  onClose,
+  disableBackdropClose = false,
+  showCloseButton = false,
+}: {
+  children: React.ReactNode;
+  onClose: () => void;
+  disableBackdropClose?: boolean;
+  showCloseButton?: boolean;
+}) {
   return (
     <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      onClick={(e) => { if (!disableBackdropClose && e.target === e.currentTarget) onClose(); }}
     >
-      <div style={{ background: '#fff', borderRadius: 14, width: '100%', maxWidth: 520, padding: 28, boxShadow: '0 20px 60px rgba(0,0,0,0.2)', maxHeight: '90vh', overflowY: 'auto' }}>
+      <div style={{ position: 'relative', background: '#fff', borderRadius: 14, width: '100%', maxWidth: 520, padding: 28, boxShadow: '0 20px 60px rgba(0,0,0,0.2)', maxHeight: '90vh', overflowY: 'auto' }}>
+        {showCloseButton && (
+          <button
+            onClick={onClose}
+            aria-label="סגור"
+            style={{
+              position: 'absolute', top: 14, left: 14,
+              width: 30, height: 30, borderRadius: '50%',
+              border: '1px solid #e2e8f0', background: '#f8fafc',
+              color: '#64748b', fontSize: 16, lineHeight: 1,
+              cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              padding: 0,
+            }}
+          >
+            ✕
+          </button>
+        )}
         {children}
       </div>
     </div>
