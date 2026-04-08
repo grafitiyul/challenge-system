@@ -1,6 +1,7 @@
-import { Body, Controller, Delete, Get, HttpCode, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Query } from '@nestjs/common';
 import { GroupsService } from './groups.service';
 import { CreateGroupDto } from './dto/create-group.dto';
+import { UpdateGroupDto } from './dto/update-group.dto';
 import { CreateGroupChatLinkDto } from './dto/create-group-chat-link.dto';
 
 @Controller('groups')
@@ -20,6 +21,17 @@ export class GroupsController {
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.groupsService.findById(id);
+  }
+
+  @Patch(':id')
+  update(@Param('id') id: string, @Body() dto: UpdateGroupDto) {
+    return this.groupsService.update(id, dto);
+  }
+
+  @Delete(':id')
+  @HttpCode(204)
+  remove(@Param('id') id: string) {
+    return this.groupsService.softDelete(id);
   }
 
   // ── Questionnaires ──────────────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateGroupDto } from './dto/create-group.dto';
+import { UpdateGroupDto } from './dto/update-group.dto';
 import { CreateGroupChatLinkDto } from './dto/create-group-chat-link.dto';
 
 function randomAlphanumeric(length: number): string {
@@ -33,7 +34,7 @@ export class GroupsService {
       where: { id },
       include: {
         challenge: true,
-        program: { select: { id: true, name: true, isActive: true } },
+        program: { select: { id: true, name: true, isActive: true, type: true } },
         participantGroups: {
           where: { isActive: true },
           include: { participant: { select: { id: true, firstName: true, lastName: true, phoneNumber: true } } },
@@ -43,6 +44,29 @@ export class GroupsService {
     });
     if (!group) throw new NotFoundException(`Group ${id} not found`);
     return group;
+  }
+
+  async update(id: string, dto: UpdateGroupDto) {
+    const group = await this.prisma.group.findUnique({ where: { id } });
+    if (!group) throw new NotFoundException(`Group ${id} not found`);
+    return this.prisma.group.update({
+      where: { id },
+      data: {
+        ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
+        ...(dto.startDate !== undefined ? { startDate: dto.startDate ? new Date(dto.startDate) : null } : {}),
+        ...(dto.endDate !== undefined ? { endDate: dto.endDate ? new Date(dto.endDate) : null } : {}),
+        ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
+      },
+    });
+  }
+
+  async softDelete(id: string) {
+    const group = await this.prisma.group.findUnique({ where: { id } });
+    if (!group) throw new NotFoundException(`Group ${id} not found`);
+    return this.prisma.group.update({
+      where: { id },
+      data: { isActive: false },
+    });
   }
 
   // Returns active questionnaire templates that are linked to the same program as this group.

@@ -1,13 +1,29 @@
 'use client';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { BASE_URL, apiFetch } from '@lib/api';
 import WhatsAppEditor from '@components/whatsapp-editor';
 import { ChatMessage, ChatMessageList } from '@components/chat-messages';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
+
+type ProgramType = 'challenge' | 'game' | 'group_coaching' | 'personal_coaching';
+
+const PROGRAM_TYPE_LABEL: Record<string, string> = {
+  challenge:         'אתגר',
+  game:              'משחק',
+  group_coaching:    'ליווי קבוצתי',
+  personal_coaching: 'ליווי אישי',
+};
+
+const PROGRAM_TYPE_ICON: Record<string, string> = {
+  challenge:         '🏆',
+  game:              '🎮',
+  group_coaching:    '👥',
+  personal_coaching: '👤',
+};
 
 interface Participant {
   id: string;
@@ -28,7 +44,7 @@ interface Group {
   name: string;
   isActive: boolean;
   programId: string | null;
-  program: { id: string; name: string; isActive: boolean } | null;
+  program: { id: string; name: string; isActive: boolean; type: ProgramType } | null;
   startDate: string | null;
   endDate: string | null;
   challenge: { id: string; name: string };
@@ -88,6 +104,25 @@ function formatDate(iso: string | null): string {
   return new Date(iso).toLocaleDateString('he-IL', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
+function formatDateRange(start: string | null, end: string | null): string {
+  if (!start && !end) return '';
+  const heDate = (iso: string, opts: Intl.DateTimeFormatOptions) =>
+    new Date(iso).toLocaleDateString('he-IL', opts);
+  if (!start) return `עד ${heDate(end!, { day: 'numeric', month: 'long', year: 'numeric' })}`;
+  if (!end) return `מ‑${heDate(start, { day: 'numeric', month: 'long', year: 'numeric' })}`;
+  const s = new Date(start);
+  const e = new Date(end);
+  if (s.getMonth() === e.getMonth() && s.getFullYear() === e.getFullYear()) {
+    const month = e.toLocaleDateString('he-IL', { month: 'long' });
+    return `${s.getDate()}–${e.getDate()} ב${month} ${e.getFullYear()}`;
+  }
+  return `${heDate(start, { day: 'numeric', month: 'short' })} – ${heDate(end, { day: 'numeric', month: 'short', year: 'numeric' })}`;
+}
+
+function isLegacyChallenge(name: string): boolean {
+  return name.startsWith('__') && name.endsWith('__');
+}
+
 function chatDisplayName(chat: WhatsAppChat): string {
   return chat.name ?? chat.phoneNumber ?? chat.externalChatId;
 }
@@ -109,6 +144,7 @@ interface ParticipantRankRow {
 
 export default function GroupDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const router = useRouter();
 
   // Core data
   const [group, setGroup] = useState<Group | null>(null);
@@ -165,6 +201,17 @@ export default function GroupDetailPage() {
 
   // Token generation
   const [generatingTokenFor, setGeneratingTokenFor] = useState<string | null>(null);
+
+  // Edit group modal
+  const [editModalOpen, setEditModalOpen] = useState(false);
+  const [editForm, setEditForm] = useState({ name: '', startDate: '', endDate: '', isActive: true });
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState('');
+
+  // Delete group modal
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
 
   // Copy feedback
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -232,6 +279,58 @@ export default function GroupDetailPage() {
       .catch(() => setRanksError(true))
       .finally(() => setRanksLoading(false));
   }, [tab, id]);
+
+  // ─── Edit group ────────────────────────────────────────────────────────────
+
+  function openEditModal() {
+    if (!group) return;
+    setEditForm({
+      name: group.name,
+      startDate: group.startDate ? group.startDate.slice(0, 10) : '',
+      endDate: group.endDate ? group.endDate.slice(0, 10) : '',
+      isActive: group.isActive,
+    });
+    setEditError('');
+    setEditModalOpen(true);
+  }
+
+  async function handleEditSave() {
+    if (!editForm.name.trim()) { setEditError('שם הקבוצה הוא שדה חובה'); return; }
+    setEditSaving(true);
+    try {
+      const updated = await apiFetch<{ name: string; startDate: string | null; endDate: string | null; isActive: boolean }>(
+        `${BASE_URL}/groups/${id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            name: editForm.name.trim(),
+            startDate: editForm.startDate || null,
+            endDate: editForm.endDate || null,
+            isActive: editForm.isActive,
+          }),
+        },
+      );
+      setGroup((prev) => prev ? { ...prev, name: updated.name, startDate: updated.startDate, endDate: updated.endDate, isActive: updated.isActive } : prev);
+      setEditModalOpen(false);
+    } catch (err) {
+      setEditError(err instanceof Error ? err.message : 'שגיאה בשמירה');
+    } finally {
+      setEditSaving(false);
+    }
+  }
+
+  // ─── Delete group ───────────────────────────────────────────────────────────
+
+  async function handleDelete() {
+    setDeleting(true);
+    setDeleteError('');
+    try {
+      await apiFetch(`${BASE_URL}/groups/${id}`, { method: 'DELETE' });
+      router.push('/groups');
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : 'שגיאה במחיקה');
+      setDeleting(false);
+    }
+  }
 
   // ─── Copy helper ──────────────────────────────────────────────────────────
 
@@ -457,66 +556,88 @@ export default function GroupDetailPage() {
       {/* ══════════════════════════════════════════════════════════════════════
           HEADER
       ══════════════════════════════════════════════════════════════════════ */}
-      <div style={{
-        background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14,
-        padding: '20px 24px', marginBottom: 20,
-      }}>
+      <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, padding: '20px 24px', marginBottom: 20 }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
-          {/* Left: identity */}
+
+          {/* Identity block */}
           <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 6 }}>
-              <h1 style={{ fontSize: 24, fontWeight: 800, color: '#0f172a', margin: 0, letterSpacing: '-0.3px' }}>{group.name}</h1>
+            {/* Line 1: name + status */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+              <h1 style={{ fontSize: 22, fontWeight: 800, color: '#0f172a', margin: 0, letterSpacing: '-0.3px' }}>
+                {group.name}
+              </h1>
               <span style={{
                 background: group.isActive ? '#dcfce7' : '#f1f5f9',
-                color: group.isActive ? '#16a34a' : '#64748b',
+                color: group.isActive ? '#16a34a' : '#94a3b8',
                 padding: '3px 10px', borderRadius: 20, fontSize: 12, fontWeight: 600,
               }}>
-                {group.isActive ? 'פעילה' : 'לא פעילה'}
+                {group.isActive ? '🟢 פעילה' : '⚫ לא פעילה'}
               </span>
-              {group.program && (
-                <Link href={`/programs/${group.program.id}`} style={{ textDecoration: 'none' }}>
-                  <span style={{
-                    background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe',
-                    padding: '3px 10px', borderRadius: 20, fontSize: 12, fontWeight: 600,
-                  }}>
-                    ⚡ {group.program.name}
-                  </span>
-                </Link>
-              )}
             </div>
-            <p style={{ color: '#64748b', fontSize: 13, margin: 0 }}>
-              {group.challenge.name}
-              {(group.startDate || group.endDate) && (
-                <> · {formatDate(group.startDate)} – {formatDate(group.endDate)}</>
+
+            {/* Line 2: program type · program name · dates · participants */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+              {group.program && (
+                <>
+                  <Link href={`/programs/${group.program.id}`} style={{ textDecoration: 'none' }}>
+                    <span style={{
+                      background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe',
+                      padding: '3px 10px', borderRadius: 20, fontSize: 12, fontWeight: 600,
+                    }}>
+                      {PROGRAM_TYPE_ICON[group.program.type] ?? '⚡'} {PROGRAM_TYPE_LABEL[group.program.type] ?? group.program.type}
+                    </span>
+                  </Link>
+                  <span style={{ color: '#6b7280', fontSize: 13, fontWeight: 500 }}>{group.program.name}</span>
+                  <span style={{ color: '#cbd5e1' }}>·</span>
+                </>
               )}
-              {' · '}
-              <strong style={{ color: '#0f172a' }}>{participants.length}</strong> משתתפות
-            </p>
+              {(group.startDate || group.endDate) && (() => {
+                const range = formatDateRange(group.startDate, group.endDate);
+                return range ? (
+                  <>
+                    <span style={{ fontSize: 13, color: '#374151' }}>📅 {range}</span>
+                    <span style={{ color: '#cbd5e1' }}>·</span>
+                  </>
+                ) : null;
+              })()}
+              <span style={{ fontSize: 13, color: '#374151' }}>
+                👥 {participants.length} {participants.length === 1 ? 'משתתפת' : 'משתתפות'}
+              </span>
+            </div>
           </div>
 
-          {/* Right: primary actions */}
-          <div style={{ display: 'flex', gap: 10, flexShrink: 0, flexWrap: 'wrap' }}>
+          {/* Action buttons */}
+          <div style={{ display: 'flex', gap: 8, flexShrink: 0, flexWrap: 'wrap', alignItems: 'flex-start' }}>
             <button
               onClick={() => { setMsgModalOpen(true); setMsgError(''); setMsgSuccess(false); }}
+              disabled={!groupChatLink}
+              title={groupChatLink ? undefined : 'אין קבוצת וואטסאפ מקושרת'}
               style={{
                 display: 'flex', alignItems: 'center', gap: 6,
-                background: groupChatLink ? '#16a34a' : '#94a3b8',
+                background: groupChatLink ? '#16a34a' : '#d1d5db',
                 color: '#fff', border: 'none', borderRadius: 8, padding: '9px 16px',
                 fontSize: 13, fontWeight: 600, cursor: groupChatLink ? 'pointer' : 'not-allowed',
               }}
-              title={groupChatLink ? undefined : 'אין קבוצת וואטסאפ מקושרת'}
             >
-              <span>💬</span> הודעה לקבוצה
+              💬 הודעה
+            </button>
+            <button
+              onClick={openEditModal}
+              style={{ display: 'flex', alignItems: 'center', gap: 5, background: '#fff', color: '#374151', border: '1px solid #d1d5db', borderRadius: 8, padding: '9px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
+            >
+              ✏️ עריכה
             </button>
             <button
               onClick={openLinkModal}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 6,
-                background: '#fff', color: '#374151', border: '1px solid #d1d5db',
-                borderRadius: 8, padding: '9px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer',
-              }}
+              style={{ display: 'flex', alignItems: 'center', gap: 5, background: '#fff', color: '#374151', border: '1px solid #d1d5db', borderRadius: 8, padding: '9px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
             >
-              <span>🔗</span> קשרי צ׳אט
+              🔗 צ׳אט
+            </button>
+            <button
+              onClick={() => { setDeleteError(''); setDeleteModalOpen(true); }}
+              style={{ display: 'flex', alignItems: 'center', gap: 5, background: '#fff', color: '#ef4444', border: '1px solid #fecaca', borderRadius: 8, padding: '9px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
+            >
+              🗑 מחיקה
             </button>
           </div>
         </div>
@@ -956,6 +1077,103 @@ export default function GroupDetailPage() {
                 }}
               >
                 {removingParticipantId ? 'מסירה...' : 'הסר מהקבוצה'}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════════════
+          MODAL — EDIT GROUP
+      ══════════════════════════════════════════════════════════════════════ */}
+      {editModalOpen && (
+        <Modal onClose={() => setEditModalOpen(false)} showCloseButton>
+          <h2 style={S.modalTitle}>עריכת קבוצה</h2>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <div>
+              <label style={S.fieldLabel}>שם הקבוצה *</label>
+              <input
+                style={S.input}
+                value={editForm.name}
+                onChange={(e) => setEditForm((p) => ({ ...p, name: e.target.value }))}
+                autoFocus
+                placeholder="שם הקבוצה"
+              />
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <div>
+                <label style={S.fieldLabel}>תאריך התחלה</label>
+                <input
+                  type="date"
+                  style={{ ...S.input, direction: 'ltr' }}
+                  value={editForm.startDate}
+                  onChange={(e) => setEditForm((p) => ({ ...p, startDate: e.target.value }))}
+                />
+              </div>
+              <div>
+                <label style={S.fieldLabel}>תאריך סיום</label>
+                <input
+                  type="date"
+                  style={{ ...S.input, direction: 'ltr' }}
+                  value={editForm.endDate}
+                  onChange={(e) => setEditForm((p) => ({ ...p, endDate: e.target.value }))}
+                />
+              </div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <input
+                type="checkbox"
+                id="edit-isActive"
+                checked={editForm.isActive}
+                onChange={(e) => setEditForm((p) => ({ ...p, isActive: e.target.checked }))}
+                style={{ width: 16, height: 16, cursor: 'pointer' }}
+              />
+              <label htmlFor="edit-isActive" style={{ fontSize: 14, color: '#374151', cursor: 'pointer' }}>קבוצה פעילה</label>
+            </div>
+            {editError && <div style={{ color: '#dc2626', fontSize: 13 }}>{editError}</div>}
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 4 }}>
+              <button onClick={() => setEditModalOpen(false)} style={S.btnSecondary}>ביטול</button>
+              <button
+                onClick={handleEditSave}
+                disabled={editSaving}
+                style={{ padding: '9px 22px', borderRadius: 8, border: 'none', background: editSaving ? '#93c5fd' : '#2563eb', color: '#fff', fontSize: 14, fontWeight: 600, cursor: editSaving ? 'not-allowed' : 'pointer' }}
+              >
+                {editSaving ? 'שומר...' : 'שמור'}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════════════
+          MODAL — DELETE GROUP
+      ══════════════════════════════════════════════════════════════════════ */}
+      {deleteModalOpen && (
+        <Modal onClose={() => !deleting && setDeleteModalOpen(false)}>
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: 40, marginBottom: 12 }}>🗑️</div>
+            <h2 style={{ fontSize: 17, fontWeight: 700, color: '#0f172a', margin: '0 0 10px' }}>מחיקת קבוצה</h2>
+            <p style={{ fontSize: 14, color: '#374151', margin: '0 0 6px' }}>
+              האם למחוק את הקבוצה <strong>&ldquo;{group.name}&rdquo;</strong>?
+            </p>
+            <p style={{ fontSize: 13, color: '#64748b', margin: '0 0 20px', lineHeight: 1.5 }}>
+              הקבוצה תסומן כלא פעילה ולא תופיע ברשימות. המשתתפות והנתונים נשמרים.
+            </p>
+            {deleteError && <div style={{ color: '#dc2626', fontSize: 13, marginBottom: 12 }}>{deleteError}</div>}
+            <div style={{ display: 'flex', justifyContent: 'center', gap: 10 }}>
+              <button
+                onClick={() => setDeleteModalOpen(false)}
+                disabled={deleting}
+                style={S.btnSecondary}
+              >
+                ביטול
+              </button>
+              <button
+                onClick={handleDelete}
+                disabled={deleting}
+                style={{ padding: '9px 22px', borderRadius: 8, border: 'none', background: deleting ? '#fca5a5' : '#ef4444', color: '#fff', fontSize: 14, fontWeight: 600, cursor: deleting ? 'not-allowed' : 'pointer' }}
+              >
+                {deleting ? 'מוחק...' : 'מחק קבוצה'}
               </button>
             </div>
           </div>
