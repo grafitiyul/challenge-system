@@ -271,7 +271,13 @@ export class WassengerService {
     const isGroupJid = rawPhone.trim().endsWith('@g.us');
     const phone = isGroupJid ? rawPhone.trim() : normalizePhoneForWassenger(rawPhone);
 
-    const requestPayload = { device: deviceId, phone, message };
+    // Wassenger /v1/messages uses mutually exclusive fields:
+    //   phone: E.164 number   — for individual chats
+    //   group: group JID      — for group chats (e.g. "972556638970-1593609853@g.us")
+    // Sending a group JID in the `phone` field returns 400 phone:invalid.
+    const requestPayload = isGroupJid
+      ? { device: deviceId, group: phone, message }
+      : { device: deviceId, phone, message };
 
     console.log('[Wassenger][sendMessage] === OUTBOUND REQUEST ===');
     console.log('[Wassenger][sendMessage] rawPhone (from caller):', JSON.stringify(rawPhone));
