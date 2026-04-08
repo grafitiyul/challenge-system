@@ -123,7 +123,8 @@ export default function ParticipantsPage() {
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
-  const [showMock, setShowMock] = useState(false);
+  // Read-only: controlled by Settings page (localStorage), never written here
+  const [isMockEnabled, setIsMockEnabled] = useState(false);
 
   // Create modal
   const [modalOpen, setModalOpen] = useState(false);
@@ -233,19 +234,12 @@ export default function ParticipantsPage() {
       }) as ImportResult;
       setImportResult(result);
       setImportStep('result');
-      fetchParticipants(showMock);
+      fetchParticipants(isMockEnabled);
     } catch (err) {
       setImportError(err instanceof Error ? err.message : 'שגיאה בייבוא');
     } finally {
       setImportRunning(false);
     }
-  }
-
-  function toggleMock() {
-    const next = !showMock;
-    setShowMock(next);
-    localStorage.setItem(MOCK_SETTING_KEY, String(next));
-    fetchParticipants(next);
   }
 
   async function handleDeleteParticipant() {
@@ -269,7 +263,6 @@ export default function ParticipantsPage() {
 
   const fetchParticipants = (includeMock: boolean) => {
     setLoading(true);
-    console.log('[API] GET', `${BASE_URL}/participants?includeMock=${includeMock}`);
     apiFetch(`${BASE_URL}/participants?includeMock=${includeMock}`)
       .then((data: unknown) => setParticipants(Array.isArray(data) ? (data as Participant[]) : []))
       .catch(() => setParticipants([]))
@@ -277,9 +270,10 @@ export default function ParticipantsPage() {
   };
 
   useEffect(() => {
-    const saved = localStorage.getItem(MOCK_SETTING_KEY) === 'true';
-    setShowMock(saved);
-    fetchParticipants(saved);
+    // Read the setting from localStorage — source of truth is the Settings page toggle
+    const mockEnabled = localStorage.getItem(MOCK_SETTING_KEY) === 'true';
+    setIsMockEnabled(mockEnabled);
+    fetchParticipants(mockEnabled);
   }, []);
 
   useEffect(() => {
@@ -334,7 +328,7 @@ export default function ParticipantsPage() {
         body: JSON.stringify(body),
       });
       closeModal();
-      fetchParticipants(showMock);
+      fetchParticipants(isMockEnabled);
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : 'שגיאה לא ידועה');
     } finally {
@@ -349,8 +343,6 @@ export default function ParticipantsPage() {
     try {
       console.log('[API] POST', `${BASE_URL}/participants/mock?count=${count}`);
       const created = await apiFetch(`${BASE_URL}/participants/mock?count=${count}`, { method: 'POST' }) as unknown[];
-      localStorage.setItem(MOCK_SETTING_KEY, 'true');
-      setShowMock(true);
       fetchParticipants(true);
       setMockMessage({ type: 'success', text: `נוצרו ${Array.isArray(created) ? created.length : count} משתתפות פיקטיביות` });
     } catch (err) {
@@ -397,33 +389,15 @@ export default function ParticipantsPage() {
           <h1 style={{ fontSize: 24, fontWeight: 700, color: '#0f172a', margin: 0 }}>משתתפות</h1>
           {!loading && (
             <p style={{ color: '#64748b', fontSize: 14, marginTop: 4, marginBottom: 0 }}>
-              {participants.length} משתתפות{showMock ? ' (כולל פיקטיביות)' : ''}
+              {participants.length} משתתפות{isMockEnabled ? ' (כולל פיקטיביות)' : ''}
             </p>
           )}
         </div>
 
         {/* Primary actions */}
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-          {/* Mock toggle — always visible */}
-          <button
-            onClick={toggleMock}
-            title={showMock ? 'הסתר משתתפות פיקטיביות' : 'הצג משתתפות פיקטיביות'}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 6,
-              padding: '8px 14px',
-              background: showMock ? '#fef9c3' : '#f8fafc',
-              color: showMock ? '#92400e' : '#94a3b8',
-              border: `1px solid ${showMock ? '#fde68a' : '#e2e8f0'}`,
-              borderRadius: 8, fontSize: 12, fontWeight: 500, cursor: 'pointer',
-            }}
-          >
-            <span style={{ fontSize: 10, width: 28, height: 16, borderRadius: 8, background: showMock ? '#f59e0b' : '#cbd5e1', display: 'inline-flex', alignItems: 'center', padding: '0 2px', transition: 'background 0.2s', justifyContent: showMock ? 'flex-end' : 'flex-start' }}>
-              <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#fff', display: 'block' }} />
-            </span>
-            🧪 פיקטיביות
-          </button>
-
-          {showMock && (
+          {/* Mock add button — only when feature is enabled in Settings */}
+          {isMockEnabled && (
             <button
               onClick={() => handleMock(1)}
               disabled={mockBusy !== null}
@@ -456,8 +430,8 @@ export default function ParticipantsPage() {
         </div>
       </div>
 
-      {/* Mock feedback (inline, non-blocking) */}
-      {mockMessage && (
+      {/* Mock feedback (inline, non-blocking) — only when feature enabled */}
+      {isMockEnabled && mockMessage && (
         <div
           style={{
             background: mockMessage.type === 'success' ? '#f0fdf4' : '#fef2f2',
@@ -569,8 +543,8 @@ export default function ParticipantsPage() {
         </table>
       </div>
 
-      {/* ── Secondary: bulk mock (collapsible) — only when mock is enabled ── */}
-      {showMock && <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden', background: '#fff' }}>
+      {/* ── Secondary: bulk mock (collapsible) — only when feature is enabled in Settings ── */}
+      {isMockEnabled && <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden', background: '#fff' }}>
         <button
           onClick={() => { setMockBulkExpanded((v) => !v); }}
           style={{ width: '100%', padding: '11px 20px', background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10 }}
