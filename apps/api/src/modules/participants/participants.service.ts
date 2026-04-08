@@ -183,6 +183,14 @@ export class ParticipantsService {
       .map((r) => (r as PromiseFulfilledResult<unknown>).value);
   }
 
+  // ─── Soft-delete ────────────────────────────────────────────────────────────
+
+  async deactivate(id: string) {
+    const p = await this.prisma.participant.findUnique({ where: { id } });
+    if (!p) throw new NotFoundException(`Participant ${id} not found`);
+    return this.prisma.participant.update({ where: { id }, data: { isActive: false } });
+  }
+
   // ─── Form submissions ───────────────────────────────────────────────────────
 
   async listFormSubmissions(participantId: string) {

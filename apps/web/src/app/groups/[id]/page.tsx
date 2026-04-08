@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { BASE_URL, apiFetch } from '@lib/api';
 import WhatsAppEditor from '@components/whatsapp-editor';
@@ -145,6 +145,7 @@ interface ParticipantRankRow {
 export default function GroupDetailPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   // Core data
   const [group, setGroup] = useState<Group | null>(null);
@@ -237,6 +238,15 @@ export default function GroupDetailPage() {
 
   useEffect(() => { loadGroup(); }, [loadGroup]);
 
+  // Auto-open edit modal when arriving from list page with ?edit=1
+  useEffect(() => {
+    if (searchParams.get('edit') === '1' && !loading && group) {
+      openEditModal();
+      router.replace(`/groups/${id}`);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, group]);
+
   // ─── Templates: fetch once when message modal first opens ────────────────
 
   const templatesFetched = useRef(false);
@@ -327,7 +337,11 @@ export default function GroupDetailPage() {
       await apiFetch(`${BASE_URL}/groups/${id}`, { method: 'DELETE' });
       router.push('/groups');
     } catch (err) {
-      setDeleteError(err instanceof Error ? err.message : 'שגיאה במחיקה');
+      setDeleteError(
+        typeof err === 'object' && err !== null && 'message' in err
+          ? String((err as { message: unknown }).message)
+          : 'שגיאה במחיקה',
+      );
       setDeleting(false);
     }
   }
@@ -607,11 +621,12 @@ export default function GroupDetailPage() {
           </div>
 
           {/* Action buttons */}
-          <div style={{ display: 'flex', gap: 8, flexShrink: 0, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+          <div style={{ display: 'flex', gap: 6, flexShrink: 0, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+            {/* Primary: send message — prominent */}
             <button
               onClick={() => { setMsgModalOpen(true); setMsgError(''); setMsgSuccess(false); }}
               disabled={!groupChatLink}
-              title={groupChatLink ? undefined : 'אין קבוצת וואטסאפ מקושרת'}
+              title={groupChatLink ? 'שלח הודעה לקבוצה' : 'אין קבוצת וואטסאפ מקושרת'}
               style={{
                 display: 'flex', alignItems: 'center', gap: 6,
                 background: groupChatLink ? '#16a34a' : '#d1d5db',
@@ -621,23 +636,32 @@ export default function GroupDetailPage() {
             >
               💬 הודעה
             </button>
-            <button
-              onClick={openEditModal}
-              style={{ display: 'flex', alignItems: 'center', gap: 5, background: '#fff', color: '#374151', border: '1px solid #d1d5db', borderRadius: 8, padding: '9px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
-            >
-              ✏️ עריכה
-            </button>
+
+            {/* Secondary: link chat */}
             <button
               onClick={openLinkModal}
-              style={{ display: 'flex', alignItems: 'center', gap: 5, background: '#fff', color: '#374151', border: '1px solid #d1d5db', borderRadius: 8, padding: '9px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
+              title="קשר צ׳אט WhatsApp"
+              style={{ background: '#fff', color: '#374151', border: '1px solid #d1d5db', borderRadius: 8, padding: '9px 12px', fontSize: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', minWidth: 38 }}
             >
-              🔗 צ׳אט
+              🔗
             </button>
+
+            {/* Secondary: edit — compact icon */}
+            <button
+              onClick={openEditModal}
+              title="ערוך קבוצה"
+              style={{ background: '#fff', color: '#374151', border: '1px solid #d1d5db', borderRadius: 8, padding: '9px 12px', fontSize: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', minWidth: 38 }}
+            >
+              ✏
+            </button>
+
+            {/* Danger: delete — compact icon */}
             <button
               onClick={() => { setDeleteError(''); setDeleteModalOpen(true); }}
-              style={{ display: 'flex', alignItems: 'center', gap: 5, background: '#fff', color: '#ef4444', border: '1px solid #fecaca', borderRadius: 8, padding: '9px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
+              title="מחק קבוצה"
+              style={{ background: '#fff', color: '#ef4444', border: '1px solid #fecaca', borderRadius: 8, padding: '9px 12px', fontSize: 14, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', minWidth: 38 }}
             >
-              🗑 מחיקה
+              🗑
             </button>
           </div>
         </div>

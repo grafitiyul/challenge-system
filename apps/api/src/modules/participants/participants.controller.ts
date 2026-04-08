@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Patch, Body, Query, Param, DefaultValuePipe, ParseIntPipe } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, HttpCode, Body, Query, Param, DefaultValuePipe, ParseIntPipe } from '@nestjs/common';
 import { ParticipantsService } from './participants.service';
 import { CreateParticipantDto } from './dto/create-participant.dto';
 import { UpdateParticipantDto } from './dto/update-participant.dto';
@@ -41,6 +41,12 @@ export class ParticipantsController {
   @Patch(':id')
   update(@Param('id') id: string, @Body() dto: UpdateParticipantDto) {
     return this.participantsService.update(id, dto);
+  }
+
+  @Delete(':id')
+  @HttpCode(204)
+  deactivate(@Param('id') id: string) {
+    return this.participantsService.deactivate(id);
   }
 
   @Get(':id/form-submissions')
