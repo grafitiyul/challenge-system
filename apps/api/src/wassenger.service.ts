@@ -266,8 +266,11 @@ export class WassengerService {
       throw new BadRequestException('שירות ההודעות אינו מוגדר. אנא פנה למנהל המערכת.');
     }
 
-    // Normalize before calling Wassenger — throws BadRequestException for invalid numbers
-    const phone = normalizePhoneForWassenger(rawPhone);
+    // Group chat JIDs (e.g. "120363406660919335@g.us") must be sent as-is.
+    // Running phone normalization on them triggers Wassenger's "invalid phone number" error.
+    // Personal chats and raw phone numbers go through normalization to reach E.164 format.
+    const isGroupJid = rawPhone.trim().endsWith('@g.us');
+    const phone = isGroupJid ? rawPhone.trim() : normalizePhoneForWassenger(rawPhone);
 
     const res = await fetch(`${WASSENGER_API}/messages`, {
       method: 'POST',
