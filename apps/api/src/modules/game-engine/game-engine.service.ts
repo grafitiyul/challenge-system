@@ -165,6 +165,17 @@ export class GameEngineService {
 
     const now = new Date();
 
+    // For incremental_sum numeric actions, action.points is "per unit".
+    // Multiply by the quantity submitted to get total points for this entry.
+    // For all other action types (boolean, latest_value), use action.points as-is.
+    let pointsForThisLog = action.points;
+    if (action.inputType === 'number' && action.aggregationMode === 'incremental_sum') {
+      const qty = parseFloat(dto.value ?? '0');
+      if (!isNaN(qty) && qty > 0) {
+        pointsForThisLog = Math.round(action.points * qty);
+      }
+    }
+
     // 1. Create the log entry
     const log = await this.prisma.userActionLog.create({
       data: {
@@ -183,7 +194,7 @@ export class GameEngineService {
         groupId: dto.groupId ?? null,
         sourceType: 'action',
         sourceId: dto.actionId,
-        points: action.points,
+        points: pointsForThisLog,
         metadata: { logId: log.id, actionName: action.name, value: dto.value ?? 'true' },
       },
     });
@@ -204,7 +215,7 @@ export class GameEngineService {
           programId: dto.programId,
           type: 'action',
           message: `דיווחה על ${action.name}${valueStr}`,
-          points: action.points,
+          points: pointsForThisLog,
           isPublic: true,
         },
       });
