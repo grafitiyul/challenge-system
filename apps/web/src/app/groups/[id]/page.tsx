@@ -123,6 +123,7 @@ export default function GroupDetailPage() {
   // Template picker
   const [templates, setTemplates] = useState<{ id: string; name: string; content: string }[]>([]);
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
+  const [templateConfirm, setTemplateConfirm] = useState<{ content: string } | null>(null);
 
   // Add participant modal
   const [addParticipantOpen, setAddParticipantOpen] = useState(false);
@@ -885,7 +886,14 @@ export default function GroupDetailPage() {
                     <button
                       key={t.id}
                       type="button"
-                      onClick={() => { setMsgText(t.content); setTemplatePickerOpen(false); }}
+                      onClick={() => {
+                        setTemplatePickerOpen(false);
+                        if (msgText.trim()) {
+                          setTemplateConfirm({ content: t.content });
+                        } else {
+                          setMsgText(t.content);
+                        }
+                      }}
                       style={{
                         display: 'block', width: '100%', textAlign: 'right' as const,
                         padding: '10px 14px', background: 'none', border: 'none',
@@ -924,6 +932,31 @@ export default function GroupDetailPage() {
             </button>
           </div>
         </Modal>
+      )}
+
+      {/* ── Template overwrite confirmation ── */}
+      {templateConfirm && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+          <div style={{ background: '#fff', borderRadius: 12, padding: 24, maxWidth: 320, width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+            <p style={{ fontSize: 15, color: '#0f172a', margin: '0 0 20px', lineHeight: 1.5 }}>
+              יש טקסט קיים. האם להחליף אותו בנוסח שנבחר?
+            </p>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setTemplateConfirm(null)}
+                style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 7, padding: '9px 18px', fontSize: 13, cursor: 'pointer' }}
+              >
+                בטל
+              </button>
+              <button
+                onClick={() => { setMsgText(templateConfirm.content); setTemplateConfirm(null); }}
+                style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '9px 18px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
+              >
+                החלף
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* ══════════════════════════════════════════════════════════════════════
