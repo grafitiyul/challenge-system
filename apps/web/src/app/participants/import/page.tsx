@@ -83,13 +83,12 @@ function StepIndicator({ current }: { current: Step }) {
           <div key={s.key} style={{ display: 'flex', alignItems: 'center', flex: i < STEPS.length - 1 ? 1 : 'none' }}>
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
               <div style={{
-                width: 34, height: 34, borderRadius: '50%', flexShrink: 0,
+                width: 32, height: 32, borderRadius: '50%', flexShrink: 0,
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: 13, fontWeight: 700,
-                background: done ? '#2563eb' : active ? '#2563eb' : '#f1f5f9',
+                fontSize: 12, fontWeight: 700,
+                background: done || active ? '#2563eb' : '#f1f5f9',
                 color: done || active ? '#fff' : '#94a3b8',
                 boxShadow: active ? '0 0 0 4px #dbeafe' : 'none',
-                transition: 'all 0.2s',
               }}>
                 {done ? '✓' : i + 1}
               </div>
@@ -103,13 +102,9 @@ function StepIndicator({ current }: { current: Step }) {
             </div>
             {i < STEPS.length - 1 && (
               <div style={{
-                flex: 1,
-                height: 2,
+                flex: 1, height: 2,
                 background: done ? '#2563eb' : '#e2e8f0',
-                margin: '0 8px',
-                marginBottom: 28,
-                borderRadius: 1,
-                transition: 'background 0.2s',
+                margin: '0 8px', marginBottom: 28, borderRadius: 1,
               }} />
             )}
           </div>
@@ -119,7 +114,7 @@ function StepIndicator({ current }: { current: Step }) {
   );
 }
 
-// ─── Mapping row (vertical layout) ────────────────────────────────────────────
+// ─── Mapping row ───────────────────────────────────────────────────────────────
 
 function MappingRow({
   label, required, field, mapping, csvHeaders, csvRows, onChange, helperText,
@@ -136,23 +131,33 @@ function MappingRow({
   const colIdx = mapping[field];
   const mapped = colIdx != null && colIdx >= 0;
   const samples = mapped && colIdx != null
-    ? [...new Set(csvRows.map(r => r[colIdx]?.trim()).filter(Boolean))].slice(0, 3)
+    ? [...new Set(csvRows.map(r => r[colIdx]?.trim()).filter(Boolean))].slice(0, 4)
     : [];
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-      <div style={{ fontSize: 12, fontWeight: 600, color: '#475569' }}>
-        {label}
-        {required && <span style={{ color: '#dc2626', marginRight: 3 }}>*</span>}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ fontSize: 13, fontWeight: 600, color: '#374151' }}>
+          {label}
+          {required && <span style={{ color: '#dc2626', marginRight: 3 }}>*</span>}
+        </span>
+        {mapped && (
+          <span style={{
+            fontSize: 11, fontWeight: 700, color: '#16a34a',
+            background: '#dcfce7', borderRadius: 10,
+            padding: '1px 7px', lineHeight: '18px',
+          }}>
+            ✓ ממופה
+          </span>
+        )}
       </div>
       <select
         style={{
-          width: '100%', padding: '9px 11px', fontSize: 13, borderRadius: 8,
-          border: `1.5px solid ${mapped ? '#93c5fd' : '#e2e8f0'}`,
-          background: mapped ? '#eff6ff' : '#fff',
-          color: mapped ? '#1d4ed8' : '#374151',
-          outline: 'none',
-          cursor: 'pointer',
+          width: '100%', padding: '9px 12px', fontSize: 14, borderRadius: 8,
+          border: `1.5px solid ${mapped ? '#86efac' : '#e2e8f0'}`,
+          background: '#fff',
+          color: '#0f172a',
+          outline: 'none', cursor: 'pointer',
         }}
         value={colIdx ?? -1}
         onChange={e => onChange(field, Number(e.target.value) >= 0 ? Number(e.target.value) : null)}
@@ -163,12 +168,12 @@ function MappingRow({
         ))}
       </select>
       {mapped && samples.length > 0 && (
-        <div style={{ fontSize: 11, color: '#94a3b8', paddingRight: 2 }}>
-          לדוגמה: {samples.join(' · ')}
+        <div style={{ fontSize: 12, color: '#64748b', paddingRight: 2 }}>
+          לדוגמה: {samples.join(', ')}
         </div>
       )}
       {helperText && (
-        <div style={{ fontSize: 11, color: '#94a3b8', lineHeight: 1.5, paddingRight: 2 }}>
+        <div style={{ fontSize: 12, color: '#94a3b8', lineHeight: 1.5, paddingRight: 2 }}>
           {helperText}
         </div>
       )}
@@ -286,7 +291,7 @@ export default function ImportPage() {
     }
   }
 
-  // ─── Derived state ────────────────────────────────────────────────────────────
+  // ─── Derived ─────────────────────────────────────────────────────────────────
 
   const autoDetectedCount = Object.values(mapping).filter(v => v != null).length;
   const onlyPhoneMapped   = Object.values(mapping).filter(v => v != null).length === 1 && mapping.phone != null;
@@ -295,7 +300,7 @@ export default function ImportPage() {
 
   return (
     <div dir="rtl" style={{ minHeight: '100vh', background: '#f1f5f9' }}>
-      <div style={{ maxWidth: 680, margin: '0 auto', padding: '32px 20px 80px' }}>
+      <div style={{ maxWidth: 640, margin: '0 auto', padding: '32px 20px 80px' }}>
 
         {/* ── Back link ── */}
         <Link
@@ -307,25 +312,12 @@ export default function ImportPage() {
 
         {/* ── Page header ── */}
         <div style={{ marginBottom: 36 }}>
-          <h1 style={{ fontSize: 24, fontWeight: 700, color: '#0f172a', margin: '0 0 16px' }}>
-            ייבוא משתתפות מקובץ CSV
+          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0f172a', margin: '0 0 8px' }}>
+            ייבוא משתתפות מ-CSV
           </h1>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {[
-              'מוסיף משתתפות חדשות לרשימה',
-              'מעדכן משתתפות קיימות לפי מספר טלפון',
-              'שומר עותק טופס לכל שורה',
-            ].map((text, i) => (
-              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 9, fontSize: 14, color: '#475569' }}>
-                <span style={{
-                  width: 18, height: 18, borderRadius: '50%', background: '#dbeafe',
-                  color: '#2563eb', fontSize: 10, fontWeight: 700,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                }}>✓</span>
-                {text}
-              </div>
-            ))}
-          </div>
+          <p style={{ fontSize: 14, color: '#64748b', margin: 0, lineHeight: 1.6 }}>
+            משתתפות חדשות ייווצרו, קיימות יעודכנו לפי מספר טלפון — ללא כפילויות.
+          </p>
         </div>
 
         {/* ── Step indicator ── */}
@@ -334,13 +326,11 @@ export default function ImportPage() {
         {/* ── Global error banner ── */}
         {error && (
           <div style={{
-            background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 10,
-            padding: '12px 16px', color: '#dc2626', fontSize: 14,
-            marginBottom: 24, lineHeight: 1.5,
-            display: 'flex', alignItems: 'flex-start', gap: 10,
+            background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8,
+            padding: '11px 16px', color: '#b91c1c', fontSize: 13,
+            marginBottom: 20, lineHeight: 1.5,
           }}>
-            <span style={{ flexShrink: 0, marginTop: 1 }}>⚠</span>
-            <span>{error}</span>
+            {error}
           </div>
         )}
 
@@ -348,9 +338,8 @@ export default function ImportPage() {
             STEP 1 — UPLOAD
         ══════════════════════════════════════════════════════════════════════ */}
         {step === 'upload' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
 
-            {/* Hidden file input */}
             <input
               ref={fileRef}
               type="file"
@@ -368,42 +357,51 @@ export default function ImportPage() {
               onClick={() => !detecting && fileRef.current?.click()}
               style={{
                 border: `2px dashed ${dragOver ? '#3b82f6' : '#cbd5e1'}`,
-                borderRadius: 16,
-                padding: '64px 32px',
+                borderRadius: 14,
+                padding: '56px 32px',
                 textAlign: 'center',
                 background: dragOver ? '#eff6ff' : '#ffffff',
                 transition: 'border-color 0.15s, background 0.15s',
-                cursor: detecting ? 'wait' : 'pointer',
+                cursor: detecting ? 'default' : 'pointer',
               }}
             >
               {detecting ? (
                 <>
-                  <div style={{ fontSize: 40, marginBottom: 16, opacity: 0.5 }}>⏳</div>
-                  <div style={{ fontSize: 16, fontWeight: 600, color: '#374151' }}>מנתח את הקובץ...</div>
-                  <div style={{ fontSize: 13, color: '#94a3b8', marginTop: 6 }}>מזהה עמודות אוטומטית</div>
+                  <div style={{
+                    width: 40, height: 40, borderRadius: '50%',
+                    border: '3px solid #e2e8f0', borderTopColor: '#2563eb',
+                    margin: '0 auto 16px',
+                    animation: 'spin 0.8s linear infinite',
+                  }} />
+                  <div style={{ fontSize: 15, fontWeight: 600, color: '#374151' }}>מנתח את הקובץ...</div>
+                  <div style={{ fontSize: 13, color: '#94a3b8', marginTop: 5 }}>מזהה עמודות אוטומטית</div>
                 </>
               ) : dragOver ? (
-                <>
-                  <div style={{ fontSize: 44, marginBottom: 12 }}>📂</div>
-                  <div style={{ fontSize: 18, fontWeight: 700, color: '#2563eb' }}>שחרר כאן</div>
-                </>
+                <div style={{ fontSize: 16, fontWeight: 700, color: '#2563eb' }}>שחרר כאן</div>
               ) : (
                 <>
-                  <div style={{ fontSize: 48, marginBottom: 16, lineHeight: 1 }}>⬆</div>
-                  <div style={{ fontSize: 18, fontWeight: 600, color: '#1e293b', marginBottom: 8 }}>
+                  <div style={{
+                    width: 48, height: 48, borderRadius: 12,
+                    background: '#f1f5f9', margin: '0 auto 18px',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  }}>
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                      <polyline points="17 8 12 3 7 8" />
+                      <line x1="12" y1="3" x2="12" y2="15" />
+                    </svg>
+                  </div>
+                  <div style={{ fontSize: 16, fontWeight: 600, color: '#1e293b', marginBottom: 6 }}>
                     גררי קובץ CSV לכאן
                   </div>
-                  <div style={{ fontSize: 13, color: '#94a3b8', marginBottom: 6 }}>
+                  <div style={{ fontSize: 13, color: '#94a3b8', marginBottom: 20 }}>
                     או לחצי לבחור קובץ
-                  </div>
-                  <div style={{ fontSize: 12, color: '#cbd5e1', marginBottom: 24 }}>
-                    CSV בלבד
                   </div>
                   <button
                     onClick={e => { e.stopPropagation(); fileRef.current?.click(); }}
                     style={{
-                      padding: '10px 32px', background: '#2563eb', color: '#fff',
-                      border: 'none', borderRadius: 8, fontSize: 14, fontWeight: 600,
+                      padding: '9px 28px', background: '#2563eb', color: '#fff',
+                      border: 'none', borderRadius: 7, fontSize: 13, fontWeight: 600,
                       cursor: 'pointer',
                     }}
                   >
@@ -413,21 +411,23 @@ export default function ImportPage() {
               )}
             </div>
 
-            {/* Import title card */}
-            <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: '20px' }}>
-              <label style={{ fontSize: 13, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 }}>
+            {/* Spin keyframe — injected inline once */}
+            <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+
+            {/* Import title */}
+            <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: '18px 20px' }}>
+              <label style={{ fontSize: 13, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 3 }}>
                 שם הייבוא
               </label>
               <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 10 }}>
-                יאוכלס אוטומטית משם הקובץ — ניתן לערוך
+                יאוכלס אוטומטית משם הקובץ — ניתן לשנות
               </div>
               <input
                 style={{
-                  width: '100%', padding: '10px 12px',
-                  border: '1px solid #e2e8f0', borderRadius: 8,
+                  width: '100%', padding: '9px 12px',
+                  border: '1px solid #e2e8f0', borderRadius: 7,
                   fontSize: 14, boxSizing: 'border-box',
-                  background: '#f8fafc', color: '#0f172a',
-                  outline: 'none',
+                  background: '#f8fafc', color: '#0f172a', outline: 'none',
                 }}
                 placeholder="לדוגמה: ייבוא נרשמות ינואר 2026"
                 value={title}
@@ -442,30 +442,41 @@ export default function ImportPage() {
             STEP 2 — MAPPING
         ══════════════════════════════════════════════════════════════════════ */}
         {step === 'map' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 
             {/* File summary */}
             <div style={{
               display: 'flex', alignItems: 'center', gap: 12,
               background: '#fff', border: '1px solid #e2e8f0',
-              borderRadius: 10, padding: '12px 16px',
+              borderRadius: 9, padding: '11px 16px',
             }}>
-              <span style={{ fontSize: 20 }}>📄</span>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 14, fontWeight: 600, color: '#0f172a' }}>{title || 'קובץ CSV'}</div>
-                <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 2 }}>
+              <div style={{
+                width: 34, height: 34, borderRadius: 7,
+                background: '#f1f5f9', flexShrink: 0,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                  <polyline points="14 2 14 8 20 8" />
+                </svg>
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {title || 'קובץ CSV'}
+                </div>
+                <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 1 }}>
                   {csvHeaders.length} עמודות · {csvRows.length} שורות
                 </div>
               </div>
               <button
                 onClick={() => { setStep('upload'); setCsvHeaders([]); setCsvRows([]); setMapping({}); }}
                 style={{
-                  fontSize: 12, color: '#94a3b8', background: 'none',
+                  fontSize: 12, color: '#64748b', background: 'none',
                   border: '1px solid #e2e8f0', borderRadius: 6,
-                  cursor: 'pointer', padding: '5px 10px',
+                  cursor: 'pointer', padding: '4px 10px', flexShrink: 0,
                 }}
               >
-                החלפי קובץ
+                החלפי
               </button>
             </div>
 
@@ -473,77 +484,41 @@ export default function ImportPage() {
             {autoDetectedCount > 0 && (
               <div style={{
                 background: '#f0fdf4', border: '1px solid #bbf7d0',
-                borderRadius: 10, padding: '10px 16px',
+                borderRadius: 8, padding: '9px 14px',
                 fontSize: 13, color: '#15803d',
-                display: 'flex', alignItems: 'center', gap: 8,
               }}>
-                <span>✓</span>
-                <span>זוהו אוטומטית {autoDetectedCount} שדות — בדקי ותקני לפי הצורך</span>
+                זוהו אוטומטית {autoDetectedCount} שדות — בדקי ותקני לפי הצורך.
               </div>
             )}
 
-            {/* ── Identity fields card ── */}
-            <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, overflow: 'hidden' }}>
-              <div style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0', padding: '14px 20px' }}>
-                <div style={{ fontSize: 14, fontWeight: 700, color: '#0f172a' }}>שדות כרטיס משתתפת</div>
-                <div style={{ fontSize: 12, color: '#64748b', marginTop: 3 }}>
-                  נשמרים ישירות על כרטיס המשתתפת. טלפון משמש לזיהוי — אין כפילויות.
+            {/* ── Identity fields ── */}
+            <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
+              <div style={{ borderBottom: '1px solid #f1f5f9', padding: '14px 20px' }}>
+                <div style={{ fontSize: 14, fontWeight: 600, color: '#0f172a' }}>שדות כרטיס משתתפת</div>
+                <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 3 }}>
+                  נשמרים ישירות על הכרטיס. טלפון משמש לזיהוי — לא נוצרות כפילויות.
                 </div>
               </div>
-              <div style={{ padding: '20px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-                <div style={{ gridColumn: '1 / -1' }}>
-                  <MappingRow
-                    label="טלפון" required
-                    field="phone" mapping={mapping}
-                    csvHeaders={csvHeaders} csvRows={csvRows}
-                    onChange={updateMapping}
-                  />
-                </div>
+              <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: 18 }}>
+                <MappingRow label="טלפון" required field="phone" mapping={mapping} csvHeaders={csvHeaders} csvRows={csvRows} onChange={updateMapping} />
                 <MappingRow label="שם פרטי"  field="firstName" mapping={mapping} csvHeaders={csvHeaders} csvRows={csvRows} onChange={updateMapping} />
                 <MappingRow label="שם משפחה" field="lastName"  mapping={mapping} csvHeaders={csvHeaders} csvRows={csvRows} onChange={updateMapping} />
-                <div style={{ gridColumn: '1 / -1' }}>
-                  <MappingRow
-                    label="שם מלא" field="fullName"
-                    mapping={mapping} csvHeaders={csvHeaders} csvRows={csvRows}
-                    onChange={updateMapping}
-                    helperText="אם ממפים 'שם מלא' — המילה הראשונה תהפוך לשם פרטי, והשאר לשם משפחה."
-                  />
-                </div>
+                <MappingRow
+                  label="שם מלא" field="fullName"
+                  mapping={mapping} csvHeaders={csvHeaders} csvRows={csvRows}
+                  onChange={updateMapping}
+                  helperText="המילה הראשונה → שם פרטי, השאר → שם משפחה. בשימוש רק כאשר שם פרטי לא ממופה."
+                />
                 <MappingRow label="מייל" field="email" mapping={mapping} csvHeaders={csvHeaders} csvRows={csvRows} onChange={updateMapping} />
                 <MappingRow label="עיר"  field="city"  mapping={mapping} csvHeaders={csvHeaders} csvRows={csvRows} onChange={updateMapping} />
               </div>
             </div>
 
-            {/* ── Trust / duplicate explanation box ── */}
-            <div style={{
-              background: '#fffbeb', border: '1px solid #fde68a',
-              borderRadius: 12, padding: '18px 20px',
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 14 }}>
-                <span style={{ fontSize: 18 }}>🛡</span>
-                <span style={{ fontSize: 14, fontWeight: 700, color: '#92400e' }}>
-                  מה קורה אם המשתתפת כבר קיימת?
-                </span>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {[
-                  { icon: '🚫', text: 'לא נוצרת כפילות — הזיהוי הוא לפי מספר טלפון' },
-                  { icon: '✏️', text: 'הכרטיס מתעדכן לפי הצורך (מייל, עיר)' },
-                  { icon: '📋', text: 'נוסף עותק טופס חדש עם כל הנתונים מהשורה' },
-                ].map((item, i) => (
-                  <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, fontSize: 13, color: '#78350f' }}>
-                    <span style={{ fontSize: 15, flexShrink: 0, marginTop: 0 }}>{item.icon}</span>
-                    <span style={{ lineHeight: 1.5 }}>{item.text}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* ── Additional fields card ── */}
-            <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, overflow: 'hidden' }}>
-              <div style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0', padding: '14px 20px' }}>
-                <div style={{ fontSize: 14, fontWeight: 700, color: '#0f172a' }}>שדות נוספים</div>
-                <div style={{ fontSize: 12, color: '#64748b', marginTop: 3 }}>
+            {/* ── Additional fields ── */}
+            <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
+              <div style={{ borderBottom: '1px solid #f1f5f9', padding: '14px 20px' }}>
+                <div style={{ fontSize: 14, fontWeight: 600, color: '#0f172a' }}>שדות נוספים</div>
+                <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 3 }}>
                   נשמרים בעותק הטופס בלבד — לא מופיעים בכרטיס הראשי.
                 </div>
               </div>
@@ -552,27 +527,47 @@ export default function ImportPage() {
               </div>
             </div>
 
-            {/* Only-phone-mapped warning */}
+            {/* ── What will happen (confidence summary) ── */}
+            <div style={{
+              background: '#f8fafc', border: '1px solid #e2e8f0',
+              borderRadius: 10, padding: '16px 20px',
+            }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 10 }}>
+                מה יקרה בייבוא?
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {[
+                  'משתתפות חדשות ייווצרו אם לא נמצא מספר טלפון קיים',
+                  'משתתפות קיימות יעודכנו לפי הצורך — ללא כפילות',
+                  'לכל שורה יישמר עותק טופס עם כל הנתונים מהשורה',
+                ].map((t, i) => (
+                  <div key={i} style={{ display: 'flex', gap: 10, fontSize: 13, color: '#475569', lineHeight: 1.5 }}>
+                    <span style={{ color: '#94a3b8', flexShrink: 0, marginTop: 1 }}>—</span>
+                    <span>{t}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Only-phone warning */}
             {onlyPhoneMapped && (
               <div style={{
                 background: '#fffbeb', border: '1px solid #fde68a',
-                borderRadius: 10, padding: '10px 14px',
+                borderRadius: 8, padding: '9px 14px',
                 fontSize: 13, color: '#92400e',
-                display: 'flex', alignItems: 'flex-start', gap: 8,
               }}>
-                <span style={{ flexShrink: 0 }}>ℹ</span>
-                <span>לא מופו שדות נוספים — הנתונים יישמרו רק כעותק טופס.</span>
+                לא מופו שדות נוספים — הנתונים יישמרו רק כעותק טופס.
               </div>
             )}
 
             {/* Footer notes */}
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#94a3b8' }}>
-              <span>* שדה טלפון הוא שדה חובה. שורות ללא טלפון ידולגו.</span>
-              <span>בתצוגה מקדימה יוצגו עד 30 שורות בלבד.</span>
+              <span>* שדה טלפון חובה. שורות ללא טלפון ידולגו.</span>
+              <span>בתצוגה מקדימה יוצגו עד 30 שורות.</span>
             </div>
 
             {/* Actions */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 8 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 4 }}>
               <button
                 onClick={() => setStep('upload')}
                 style={{
@@ -587,7 +582,7 @@ export default function ImportPage() {
                 onClick={handlePreview}
                 disabled={previewing}
                 style={{
-                  padding: '11px 32px',
+                  padding: '10px 28px',
                   background: previewing ? '#93c5fd' : '#2563eb',
                   color: '#fff', border: 'none', borderRadius: 8,
                   fontSize: 14, fontWeight: 600,
@@ -605,23 +600,24 @@ export default function ImportPage() {
             STEP 3 — PREVIEW
         ══════════════════════════════════════════════════════════════════════ */}
         {step === 'preview' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 
-            {/* Summary cards — 4 cards in a 2x2 grid */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            {/* Summary cards */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
               {[
-                { icon: '✨', label: 'משתתפות חדשות',  count: preview.filter(r => r.status === 'create').length, bg: '#f0fdf4', border: '#bbf7d0', color: '#15803d' },
-                { icon: '🔄', label: 'קיימות שיעודכנו', count: preview.filter(r => r.status === 'update').length, bg: '#eff6ff', border: '#bfdbfe', color: '#1d4ed8' },
-                { icon: '📋', label: 'עותקי טפסים',     count: preview.filter(r => r.status !== 'skip').length,  bg: '#f5f3ff', border: '#ddd6fe', color: '#7c3aed' },
-                { icon: '⏭',  label: 'שורות שידולגו',   count: preview.filter(r => r.status === 'skip').length,  bg: '#f8fafc', border: '#e2e8f0', color: '#64748b' },
+                { label: 'משתתפות חדשות',  count: preview.filter(r => r.status === 'create').length, bg: '#f0fdf4', border: '#bbf7d0', color: '#15803d' },
+                { label: 'קיימות שיעודכנו', count: preview.filter(r => r.status === 'update').length, bg: '#eff6ff', border: '#bfdbfe', color: '#1d4ed8' },
+                { label: 'עותקי טפסים',     count: preview.filter(r => r.status !== 'skip').length,  bg: '#f5f3ff', border: '#ddd6fe', color: '#7c3aed' },
+                { label: 'שורות שידולגו',   count: preview.filter(r => r.status === 'skip').length,  bg: '#f8fafc', border: '#e2e8f0', color: '#64748b' },
               ].map(s => (
                 <div key={s.label} style={{
                   background: s.bg, border: `1px solid ${s.border}`,
-                  borderRadius: 12, padding: '20px 16px', textAlign: 'center',
+                  borderRadius: 10, padding: '18px 14px', textAlign: 'center',
                 }}>
-                  <div style={{ fontSize: 20, marginBottom: 8 }}>{s.icon}</div>
-                  <div style={{ fontSize: 30, fontWeight: 700, color: s.color, marginBottom: 5 }}>{s.count}</div>
-                  <div style={{ fontSize: 12, color: s.color, fontWeight: 600 }}>{s.label}</div>
+                  <div style={{ fontSize: 28, fontWeight: 700, color: s.color, marginBottom: 5, lineHeight: 1 }}>
+                    {s.count}
+                  </div>
+                  <div style={{ fontSize: 12, color: s.color, fontWeight: 500 }}>{s.label}</div>
                 </div>
               ))}
             </div>
@@ -629,12 +625,12 @@ export default function ImportPage() {
             {/* Info note */}
             <div style={{
               background: '#fff', border: '1px solid #e2e8f0',
-              borderRadius: 10, padding: '12px 16px',
-              fontSize: 13, color: '#475569', lineHeight: 1.6,
+              borderRadius: 8, padding: '11px 16px',
+              fontSize: 13, color: '#64748b', lineHeight: 1.6,
             }}>
-              לכל שורה שתיובא יתווסף עותק טופס עם כל הנתונים מהשורה.
+              לכל שורה שתיובא יתווסף עותק טופס עם כל הנתונים.
               {csvRows.length > 30 && (
-                <span style={{ display: 'block', marginTop: 4, color: '#94a3b8', fontSize: 12 }}>
+                <span style={{ display: 'block', marginTop: 3, fontSize: 12, color: '#94a3b8' }}>
                   מוצגות 30 שורות ראשונות. הייבוא יכלול את כל {csvRows.length} השורות.
                 </span>
               )}
@@ -642,17 +638,17 @@ export default function ImportPage() {
 
             {/* Preview table */}
             {preview.length > 0 && (
-              <div style={{ border: '1px solid #e2e8f0', borderRadius: 12, overflow: 'hidden' }}>
-                <div style={{ maxHeight: 400, overflowY: 'auto' }}>
+              <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
+                <div style={{ maxHeight: 380, overflowY: 'auto' }}>
                   <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                     <thead>
-                      <tr style={{ background: '#f8fafc', borderBottom: '2px solid #e2e8f0' }}>
+                      <tr style={{ background: '#f8fafc' }}>
                         {['#', 'שם', 'טלפון', 'מייל', 'סטטוס'].map(h => (
                           <th key={h} style={{
-                            padding: '11px 14px', textAlign: 'right',
+                            padding: '10px 14px', textAlign: 'right',
                             fontWeight: 600, color: '#374151', fontSize: 12,
                             position: 'sticky', top: 0, background: '#f8fafc',
-                            borderBottom: '2px solid #e2e8f0',
+                            borderBottom: '1px solid #e2e8f0',
                           }}>
                             {h}
                           </th>
@@ -668,28 +664,22 @@ export default function ImportPage() {
                         };
                         const s = STATUS[row.status];
                         return (
-                          <tr
-                            key={row.rowIndex}
-                            style={{ borderBottom: '1px solid #f1f5f9' }}
-                          >
-                            <td style={{ padding: '11px 14px', color: '#94a3b8', fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>
-                              {row.rowIndex + 2}
-                            </td>
-                            <td style={{ padding: '11px 14px', color: '#0f172a', fontWeight: 500 }}>
+                          <tr key={row.rowIndex} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                            <td style={{ padding: '10px 14px', color: '#94a3b8', fontSize: 12 }}>{row.rowIndex + 2}</td>
+                            <td style={{ padding: '10px 14px', color: '#0f172a', fontWeight: 500 }}>
                               {[row.firstName, row.lastName].filter(Boolean).join(' ') || '—'}
                             </td>
-                            <td style={{ padding: '11px 14px', color: '#374151', direction: 'ltr', textAlign: 'right' }}>
+                            <td style={{ padding: '10px 14px', color: '#374151', direction: 'ltr', textAlign: 'right' }}>
                               {row.phone || '—'}
                             </td>
-                            <td style={{ padding: '11px 14px', color: '#374151', direction: 'ltr', textAlign: 'right' }}>
+                            <td style={{ padding: '10px 14px', color: '#374151', direction: 'ltr', textAlign: 'right' }}>
                               {row.email || '—'}
                             </td>
-                            <td style={{ padding: '11px 14px' }}>
+                            <td style={{ padding: '10px 14px' }}>
                               <span style={{
                                 background: s.bg, color: s.color,
-                                padding: '3px 10px', borderRadius: 20,
-                                fontSize: 11, fontWeight: 600,
-                                whiteSpace: 'nowrap',
+                                padding: '3px 9px', borderRadius: 20,
+                                fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap',
                               }}>
                                 {s.label}{row.skipReason ? ` — ${row.skipReason}` : ''}
                               </span>
@@ -704,7 +694,7 @@ export default function ImportPage() {
             )}
 
             {/* Actions */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 8 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 4 }}>
               <button
                 onClick={() => setStep('map')}
                 style={{
@@ -719,7 +709,7 @@ export default function ImportPage() {
                 onClick={handleRun}
                 disabled={running}
                 style={{
-                  padding: '11px 32px',
+                  padding: '10px 28px',
                   background: running ? '#86efac' : '#16a34a',
                   color: '#fff', border: 'none', borderRadius: 8,
                   fontSize: 14, fontWeight: 600,
@@ -737,47 +727,46 @@ export default function ImportPage() {
             STEP 4 — RESULT
         ══════════════════════════════════════════════════════════════════════ */}
         {step === 'result' && result && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
 
             {/* Success header */}
             <div style={{
               background: '#fff', border: '1px solid #bbf7d0',
-              borderRadius: 16, padding: '40px 32px',
+              borderRadius: 14, padding: '36px 28px',
               textAlign: 'center',
             }}>
               <div style={{
-                width: 72, height: 72, borderRadius: '50%',
-                background: '#dcfce7', margin: '0 auto 20px',
+                width: 60, height: 60, borderRadius: '50%',
+                background: '#dcfce7', margin: '0 auto 18px',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: 32,
+                fontSize: 26, color: '#16a34a', fontWeight: 700,
               }}>
                 ✓
               </div>
-              <div style={{ fontSize: 22, fontWeight: 700, color: '#0f172a', marginBottom: 8 }}>
+              <div style={{ fontSize: 20, fontWeight: 700, color: '#0f172a', marginBottom: 6 }}>
                 הייבוא הושלם בהצלחה
               </div>
-              <div style={{ fontSize: 14, color: '#64748b' }}>
+              <div style={{ fontSize: 13, color: '#94a3b8' }}>
                 {title}
               </div>
             </div>
 
-            {/* Stats 2×2 */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            {/* Stats */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
               {[
-                { icon: '✨', label: 'משתתפות חדשות נוצרו',   count: result.created,                     bg: '#f0fdf4', border: '#bbf7d0', color: '#15803d' },
-                { icon: '🔄', label: 'משתתפות קיימות עודכנו', count: result.updated,                     bg: '#eff6ff', border: '#bfdbfe', color: '#1d4ed8' },
-                { icon: '📋', label: 'עותקי טפסים שנוספו',    count: result.created + result.updated,    bg: '#f5f3ff', border: '#ddd6fe', color: '#7c3aed' },
-                { icon: '⏭',  label: 'שורות שדולגו',          count: result.skipped,                     bg: '#f8fafc', border: '#e2e8f0', color: '#64748b' },
+                { label: 'משתתפות חדשות נוצרו',   count: result.created,                  bg: '#f0fdf4', border: '#bbf7d0', color: '#15803d' },
+                { label: 'קיימות עודכנו',           count: result.updated,                  bg: '#eff6ff', border: '#bfdbfe', color: '#1d4ed8' },
+                { label: 'עותקי טפסים שנוספו',     count: result.created + result.updated, bg: '#f5f3ff', border: '#ddd6fe', color: '#7c3aed' },
+                { label: 'שורות שדולגו',            count: result.skipped,                  bg: '#f8fafc', border: '#e2e8f0', color: '#64748b' },
               ].map(s => (
                 <div key={s.label} style={{
                   background: s.bg, border: `1px solid ${s.border}`,
-                  borderRadius: 12, padding: '22px 16px', textAlign: 'center',
+                  borderRadius: 10, padding: '20px 14px', textAlign: 'center',
                 }}>
-                  <div style={{ fontSize: 22, marginBottom: 10 }}>{s.icon}</div>
-                  <div style={{ fontSize: 32, fontWeight: 700, color: s.color, marginBottom: 6 }}>
+                  <div style={{ fontSize: 30, fontWeight: 700, color: s.color, marginBottom: 6, lineHeight: 1 }}>
                     {s.count}
                   </div>
-                  <div style={{ fontSize: 12, color: s.color, fontWeight: 600, lineHeight: 1.4 }}>
+                  <div style={{ fontSize: 12, color: s.color, fontWeight: 500, lineHeight: 1.4 }}>
                     {s.label}
                   </div>
                 </div>
@@ -788,9 +777,9 @@ export default function ImportPage() {
             {result.errors.length > 0 && (
               <div style={{
                 background: '#fef2f2', border: '1px solid #fecaca',
-                borderRadius: 10, padding: '14px 16px',
+                borderRadius: 9, padding: '13px 16px',
               }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: '#dc2626', marginBottom: 8 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#dc2626', marginBottom: 8 }}>
                   שגיאות בשורות ספציפיות ({result.errors.length})
                 </div>
                 <div style={{ maxHeight: 120, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -802,12 +791,12 @@ export default function ImportPage() {
             )}
 
             {/* Action buttons */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               <button
                 onClick={() => router.push('/participants')}
                 style={{
-                  padding: '13px 24px', background: '#2563eb', color: '#fff',
-                  border: 'none', borderRadius: 9, fontSize: 14, fontWeight: 600,
+                  padding: '12px', background: '#2563eb', color: '#fff',
+                  border: 'none', borderRadius: 8, fontSize: 14, fontWeight: 600,
                   cursor: 'pointer', width: '100%',
                 }}
               >
@@ -825,8 +814,8 @@ export default function ImportPage() {
                   setError(null);
                 }}
                 style={{
-                  padding: '13px 24px', background: '#fff', color: '#374151',
-                  border: '1px solid #e2e8f0', borderRadius: 9,
+                  padding: '12px', background: '#fff', color: '#374151',
+                  border: '1px solid #e2e8f0', borderRadius: 8,
                   fontSize: 14, cursor: 'pointer', width: '100%',
                 }}
               >
