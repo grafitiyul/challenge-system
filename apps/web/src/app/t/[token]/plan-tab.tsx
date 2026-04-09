@@ -518,23 +518,32 @@ export function PlanTab({ token }: { token: string }) {
               ) : notes.length === 0 ? (
                 <div style={{ color: '#9ca3af', textAlign: 'center', padding: 20, fontSize: 13 }}>עדיין אין הודעות</div>
               ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                   {notes.map((n) => {
                     const isMe = n.senderType === 'participant';
+                    const msgDate = new Date(n.createdAt);
+                    const isToday = msgDate.toDateString() === new Date().toDateString();
+                    const timeStr = msgDate.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' });
+                    const dateStr = isToday ? timeStr : msgDate.toLocaleDateString('he-IL', { day: '2-digit', month: '2-digit' }) + ' ' + timeStr;
                     return (
-                      <div key={n.id} style={{ display: 'flex', justifyContent: isMe ? 'flex-end' : 'flex-start' }}>
+                      <div key={n.id} style={{ display: 'flex', flexDirection: 'column', alignItems: isMe ? 'flex-end' : 'flex-start', gap: 2 }}>
+                        {/* Sender label — only on incoming (coach) messages */}
+                        {!isMe && (
+                          <div style={{ fontSize: 11, fontWeight: 700, color: '#92400e', paddingRight: 4 }}>
+                            👩‍💼 המאמנת
+                          </div>
+                        )}
                         <div style={{
-                          maxWidth: '80%', background: isMe ? '#1d4ed8' : '#f3f4f6',
-                          color: isMe ? '#fff' : '#111827',
-                          borderRadius: isMe ? '12px 12px 4px 12px' : '12px 12px 12px 4px',
-                          padding: '8px 12px', fontSize: 13,
+                          maxWidth: '82%',
+                          background: isMe ? '#1d4ed8' : '#fff7ed',
+                          color: isMe ? '#fff' : '#1c1917',
+                          border: isMe ? 'none' : '1px solid #fed7aa',
+                          borderRadius: isMe ? '14px 14px 4px 14px' : '14px 14px 14px 4px',
+                          padding: '9px 13px', fontSize: 14, lineHeight: 1.5,
                         }}>
-                          {!isMe && n.senderName && (
-                            <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 3, color: '#6b7280' }}>{n.senderName}</div>
-                          )}
                           {n.content}
-                          <div style={{ fontSize: 10, marginTop: 4, opacity: 0.7 }}>
-                            {new Date(n.createdAt).toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' })}
+                          <div style={{ fontSize: 10, marginTop: 5, opacity: isMe ? 0.65 : 0.55, textAlign: 'left' as const }}>
+                            {dateStr}
                           </div>
                         </div>
                       </div>

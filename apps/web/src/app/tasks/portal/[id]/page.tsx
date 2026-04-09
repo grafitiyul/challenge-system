@@ -792,23 +792,32 @@ export default function AdminPortalView({ params }: { params: Promise<{ id: stri
                   ) : notes.length === 0 ? (
                     <div style={{ color: '#94a3b8', textAlign: 'center', padding: 20, fontSize: 13 }}>עדיין אין הודעות</div>
                   ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                       {notes.map((n) => {
                         const isCoach = n.senderType === 'coach';
+                        const msgDate = new Date(n.createdAt);
+                        const isToday = msgDate.toDateString() === new Date().toDateString();
+                        const timeStr = msgDate.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' });
+                        const dateStr = isToday ? timeStr : msgDate.toLocaleDateString('he-IL', { day: '2-digit', month: '2-digit' }) + ' ' + timeStr;
                         return (
-                          <div key={n.id} style={{ display: 'flex', justifyContent: isCoach ? 'flex-end' : 'flex-start' }}>
+                          <div key={n.id} style={{ display: 'flex', flexDirection: 'column', alignItems: isCoach ? 'flex-end' : 'flex-start', gap: 2 }}>
+                            {/* Sender label — only on incoming (participant) messages */}
+                            {!isCoach && (
+                              <div style={{ fontSize: 11, fontWeight: 700, color: '#15803d', paddingLeft: 4 }}>
+                                👤 {n.senderName || 'משתתפת'}
+                              </div>
+                            )}
                             <div style={{
-                              maxWidth: '75%', background: isCoach ? '#1d4ed8' : '#f1f5f9',
-                              color: isCoach ? '#fff' : '#111827',
-                              borderRadius: isCoach ? '12px 12px 4px 12px' : '12px 12px 12px 4px',
-                              padding: '8px 12px', fontSize: 13,
+                              maxWidth: '78%',
+                              background: isCoach ? '#1d4ed8' : '#f0fdf4',
+                              color: isCoach ? '#fff' : '#14532d',
+                              border: isCoach ? 'none' : '1px solid #bbf7d0',
+                              borderRadius: isCoach ? '14px 14px 4px 14px' : '14px 14px 14px 4px',
+                              padding: '9px 13px', fontSize: 13, lineHeight: 1.5,
                             }}>
-                              {!isCoach && n.senderName && (
-                                <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 3, color: '#6b7280' }}>{n.senderName}</div>
-                              )}
                               {n.content}
-                              <div style={{ fontSize: 10, marginTop: 4, opacity: 0.7 }}>
-                                {new Date(n.createdAt).toLocaleString('he-IL', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                              <div style={{ fontSize: 10, marginTop: 5, opacity: isCoach ? 0.65 : 0.55, textAlign: 'left' as const }}>
+                                {dateStr}
                               </div>
                             </div>
                           </div>

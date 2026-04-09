@@ -846,6 +846,10 @@ export default function GroupDetailPage() {
               </p>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+                {/* Explanatory note */}
+                <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, padding: '8px 12px', marginBottom: 10, fontSize: 12, color: '#15803d' }}>
+                  📱 הקישור האישי הוא מה שיש לשלוח למשתתפת — זהו הכניסה שלה לפורטל התכנון האישי שלה
+                </div>
                 {participants.map((pg, idx) => {
                   const p = pg.participant;
                   const portalUrl = pg.accessToken
@@ -853,51 +857,61 @@ export default function GroupDetailPage() {
                     : null;
                   return (
                     <div key={pg.id} style={{
-                      display: 'flex', alignItems: 'center', gap: 12, padding: '11px 0',
+                      padding: '12px 0',
                       borderBottom: idx < participants.length - 1 ? '1px solid #f1f5f9' : 'none',
                     }}>
-                      <div style={{
-                        width: 32, height: 32, borderRadius: '50%', flexShrink: 0,
-                        background: '#f0fdf4', color: '#16a34a',
-                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        fontWeight: 700, fontSize: 13,
-                      }}>
-                        {p.firstName.charAt(0)}
-                      </div>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <Link href={`/participants/${p.id}?tab=goals`}
-                          style={{ fontWeight: 600, fontSize: 14, color: '#0f172a', textDecoration: 'none' }}>
-                          {displayName(p)}
-                        </Link>
-                      </div>
-                      <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                      {/* Row 1: avatar + name + admin plan view */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: portalUrl ? 8 : 0 }}>
+                        <div style={{
+                          width: 32, height: 32, borderRadius: '50%', flexShrink: 0,
+                          background: '#f0fdf4', color: '#16a34a',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          fontWeight: 700, fontSize: 13,
+                        }}>
+                          {p.firstName.charAt(0)}
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <Link href={`/participants/${p.id}?tab=goals`}
+                            style={{ fontWeight: 600, fontSize: 14, color: '#0f172a', textDecoration: 'none' }}>
+                            {displayName(p)}
+                          </Link>
+                        </div>
                         <Link href={`/tasks/portal/${p.id}`}
-                          style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #bfdbfe', color: '#1d4ed8', background: '#eff6ff', fontSize: 12, fontWeight: 500, textDecoration: 'none' }}>
-                          📅 תוכנית
+                          style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #bfdbfe', color: '#1d4ed8', background: '#eff6ff', fontSize: 11, fontWeight: 500, textDecoration: 'none', flexShrink: 0 }}>
+                          📅 תוכנית (מנהל)
                         </Link>
-                        {portalUrl ? (
+                      </div>
+                      {/* Row 2: participant link — prominent */}
+                      {portalUrl ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingRight: 42 }}>
+                          <div style={{ flex: 1, fontSize: 12, color: '#64748b', fontFamily: 'monospace', direction: 'ltr' as const, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>
+                            {portalUrl}
+                          </div>
                           <button
                             onClick={() => copyText(portalUrl, `portal-${pg.id}`)}
                             style={{
-                              padding: '5px 10px', borderRadius: 6,
-                              border: `1px solid ${copiedId === `portal-${pg.id}` ? '#bbf7d0' : '#e2e8f0'}`,
-                              color: copiedId === `portal-${pg.id}` ? '#16a34a' : '#64748b',
-                              background: copiedId === `portal-${pg.id}` ? '#f0fdf4' : '#f8fafc',
-                              fontSize: 12, fontWeight: 500, cursor: 'pointer',
+                              padding: '5px 12px', borderRadius: 6, flexShrink: 0,
+                              border: `1px solid ${copiedId === `portal-${pg.id}` ? '#86efac' : '#16a34a'}`,
+                              color: copiedId === `portal-${pg.id}` ? '#15803d' : '#fff',
+                              background: copiedId === `portal-${pg.id}` ? '#f0fdf4' : '#16a34a',
+                              fontSize: 12, fontWeight: 600, cursor: 'pointer',
                             }}
                           >
-                            {copiedId === `portal-${pg.id}` ? '✓ הועתק' : '🔗 קישור'}
+                            {copiedId === `portal-${pg.id}` ? '✓ הועתק' : '📋 שלחי לנייד'}
                           </button>
-                        ) : (
+                        </div>
+                      ) : (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingRight: 42 }}>
+                          <div style={{ flex: 1, fontSize: 12, color: '#f59e0b' }}>טרם נוצר קישור אישי</div>
                           <button
                             onClick={() => generateToken(p.id, id)}
                             disabled={generatingTokenFor === p.id}
-                            style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #e2e8f0', color: '#64748b', background: '#f8fafc', fontSize: 12, cursor: generatingTokenFor === p.id ? 'not-allowed' : 'pointer' }}
+                            style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid #e2e8f0', color: '#64748b', background: '#f8fafc', fontSize: 12, cursor: generatingTokenFor === p.id ? 'not-allowed' : 'pointer', flexShrink: 0 }}
                           >
-                            {generatingTokenFor === p.id ? '...' : 'צור קישור'}
+                            {generatingTokenFor === p.id ? '...' : '+ צרי קישור אישי'}
                           </button>
-                        )}
-                      </div>
+                        </div>
+                      )}
                     </div>
                   );
                 })}

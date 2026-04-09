@@ -404,78 +404,89 @@ function GoalsTab({ participantId, participantGroups }: {
   }
 
   return (
-    <div>
-      {/* Admin view link */}
-      <div style={{ marginBottom: 20 }}>
-        <a
-          href={`/tasks/portal/${participantId}`}
-          style={{
-            display: 'inline-flex', alignItems: 'center', gap: 8,
-            background: 'linear-gradient(135deg, #eff6ff, #f0fdf4)',
-            border: '1px solid #bfdbfe', borderRadius: 10, padding: '12px 18px',
-            color: '#1e40af', fontSize: 14, fontWeight: 600, textDecoration: 'none',
-          }}
-        >
-          📅 פתח תוכנית שבועית (מצב מנהל)
-          <span style={{ fontSize: 11, color: '#60a5fa', fontWeight: 400 }}>צפייה בלבד → אפשרות עריכה מוגנת</span>
-        </a>
-      </div>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 
-      {/* Portal links per group */}
+      {/* ── Participant link — PRIMARY: this is what gets sent to the participant ── */}
       {taskGroups.length > 0 ? (
         <div>
-          <div style={{ fontSize: 12, fontWeight: 700, color: '#64748b', marginBottom: 10, textTransform: 'uppercase' as const, letterSpacing: '0.05em' }}>
-            קישורי פורטל אישי למשתתפת
+          {/* Section header */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: '#0f172a' }}>📱 קישור לשליחה למשתתפת</div>
+            <div style={{ fontSize: 12, color: '#6b7280' }}>— הפורטל האישי שלה</div>
+          </div>
+          {/* Instructional note */}
+          <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, padding: '8px 12px', marginBottom: 12, fontSize: 12, color: '#15803d', lineHeight: 1.5 }}>
+            שלחי את הקישור הזה למשתתפת. היא תפתח אותו בנייד ותוכל לנהל את תוכנית העבודה האישית שלה.
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {taskGroups.map((pg) => {
               const token = pg.accessToken;
               const url = token ? `${window.location.origin}/t/${token}` : null;
               return (
-                <div key={pg.id} style={{
-                  background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: '12px 16px',
-                  display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
-                }}>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 14, fontWeight: 600, color: '#0f172a' }}>{pg.group.name}</div>
+                <div key={pg.id} style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
+                  {/* Group name bar */}
+                  <div style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0', padding: '8px 14px', fontSize: 12, fontWeight: 600, color: '#374151' }}>
+                    {pg.group.name}
+                  </div>
+                  <div style={{ padding: '12px 14px' }}>
                     {url ? (
-                      <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 2, fontFamily: 'monospace', direction: 'ltr' as const }}>
-                        {url}
-                      </div>
+                      <>
+                        {/* URL display */}
+                        <div style={{ fontSize: 12, color: '#64748b', fontFamily: 'monospace', direction: 'ltr' as const, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, padding: '7px 10px', marginBottom: 10, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>
+                          {url}
+                        </div>
+                        {/* Primary CTA */}
+                        <button
+                          onClick={() => copyLink(token!)}
+                          style={{
+                            width: '100%', padding: '11px 16px',
+                            background: copied === token ? '#f0fdf4' : '#16a34a',
+                            border: `1px solid ${copied === token ? '#86efac' : '#16a34a'}`,
+                            borderRadius: 8, cursor: 'pointer',
+                            fontSize: 14, fontWeight: 700,
+                            color: copied === token ? '#15803d' : '#fff',
+                          }}
+                        >
+                          {copied === token ? '✓ הועתק ללוח — שלחי בוואטסאפ' : '📋 העתיקי קישור לשליחה למשתתפת'}
+                        </button>
+                      </>
                     ) : (
-                      <div style={{ fontSize: 12, color: '#f59e0b', marginTop: 2 }}>טרם נוצר קישור — כנסי לפרופיל הקבוצה ליצירת קישור</div>
+                      <div style={{ fontSize: 13, color: '#f59e0b' }}>
+                        טרם נוצר קישור — כנסי לפרופיל הקבוצה ולחצי &ldquo;+ צרי קישור אישי&rdquo;
+                      </div>
                     )}
                   </div>
-                  {url && (
-                    <button
-                      onClick={() => copyLink(token!)}
-                      style={{
-                        background: copied === token ? '#f0fdf4' : '#f1f5f9',
-                        border: `1px solid ${copied === token ? '#86efac' : '#e2e8f0'}`,
-                        borderRadius: 8, padding: '7px 14px', cursor: 'pointer',
-                        fontSize: 12, color: copied === token ? '#15803d' : '#374151', fontWeight: 600,
-                      }}
-                    >{copied === token ? '✓ הועתק' : 'העתק קישור'}</button>
-                  )}
                 </div>
               );
             })}
           </div>
         </div>
       ) : (
-        <div style={{
-          background: '#fff', border: '1.5px dashed #e2e8f0', borderRadius: 10, padding: '32px 24px',
-          textAlign: 'center' as const, color: '#94a3b8',
-        }}>
+        <div style={{ background: '#fff', border: '1.5px dashed #e2e8f0', borderRadius: 10, padding: '32px 24px', textAlign: 'center' as const, color: '#94a3b8' }}>
           <div style={{ fontSize: 32, marginBottom: 10 }}>📅</div>
-          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6, color: '#374151' }}>
-            תכנון שבועי לא פעיל עדיין
-          </div>
-          <div style={{ fontSize: 13 }}>
-            כדי לאפשר פורטל תכנון אישי, הפעילי את מערכת המשימות בהגדרות הקבוצה
-          </div>
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6, color: '#374151' }}>תכנון שבועי לא פעיל עדיין</div>
+          <div style={{ fontSize: 13 }}>כדי לאפשר פורטל תכנון אישי, הפעילי את מערכת המשימות בהגדרות הקבוצה</div>
         </div>
       )}
+
+      {/* ── Admin view link — SECONDARY ── */}
+      <div style={{ borderTop: '1px solid #f1f5f9', paddingTop: 14 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: '#94a3b8', marginBottom: 8, textTransform: 'uppercase' as const, letterSpacing: '0.05em' }}>כלי מנהל</div>
+        <a
+          href={`/tasks/portal/${participantId}`}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 8,
+            background: '#f8fafc', border: '1px solid #e2e8f0',
+            borderRadius: 8, padding: '10px 14px',
+            color: '#374151', fontSize: 13, fontWeight: 500, textDecoration: 'none',
+          }}
+        >
+          📅 פתח תוכנית שבועית כמנהל
+          <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 400, marginRight: 'auto' }}>צפייה בלבד — אפשרות עריכה מוגנת</span>
+          <span style={{ fontSize: 11, color: '#94a3b8' }}>↗</span>
+        </a>
+      </div>
+
     </div>
   );
 }
