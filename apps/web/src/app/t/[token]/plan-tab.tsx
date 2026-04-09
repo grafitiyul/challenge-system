@@ -179,6 +179,8 @@ export function PlanTab({ token }: { token: string }) {
   const [addTaskGoalId, setAddTaskGoalId] = useState<string | undefined>(undefined);
   const [addTaskOpen, setAddTaskOpen] = useState(false);
   const [carryTarget, setCarryTarget] = useState<{ assignmentId: string; taskTitle: string } | null>(null);
+  const [editGoal, setEditGoal] = useState<GoalShape | null>(null);
+  const [editTask, setEditTask] = useState<TaskShape | null>(null);
 
   const today = toDateStr(new Date());
   const days = weekDays(currentSunday);
@@ -256,6 +258,23 @@ export function PlanTab({ token }: { token: string }) {
       method: 'POST', body: JSON.stringify({ toDate }),
     }).catch(() => {});
     setCarryTarget(null);
+    loadPlan();
+  }
+
+  async function handleDeleteGoal(goalId: string) {
+    if (!confirm('מחוק יעד זה? כל המשימות שלו יימחקו גם כן.')) return;
+    await apiFetch(`${BASE_URL}/task-engine/goals/${goalId}`, { method: 'DELETE' }).catch(() => {});
+    loadPlan();
+  }
+
+  async function handleDeleteTask(taskId: string) {
+    if (!confirm('מחוק משימה זו?')) return;
+    await apiFetch(`${BASE_URL}/task-engine/tasks/${taskId}`, { method: 'DELETE' }).catch(() => {});
+    loadPlan();
+  }
+
+  async function handleRemoveAssignment(assignmentId: string) {
+    await apiFetch(`${BASE_URL}/task-engine/assignments/${assignmentId}`, { method: 'DELETE' }).catch(() => {});
     loadPlan();
   }
 
@@ -397,11 +416,18 @@ export function PlanTab({ token }: { token: string }) {
                       )}
                     </div>
                     {!isCarried && !assignment.isCompleted && (
-                      <button
-                        onClick={() => setCarryTarget({ assignmentId: assignment.id, taskTitle: task.title })}
-                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af', padding: '0 2px', fontSize: 16 }}
-                        title="העבר ליום אחר"
-                      >↩</button>
+                      <div style={{ display: 'flex', gap: 2, flexShrink: 0 }}>
+                        <button
+                          onClick={() => setCarryTarget({ assignmentId: assignment.id, taskTitle: task.title })}
+                          style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af', padding: '2px 4px', fontSize: 16 }}
+                          title="העבר ליום אחר"
+                        >↩</button>
+                        <button
+                          onClick={() => handleRemoveAssignment(assignment.id)}
+                          style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#fca5a5', padding: '2px 4px', fontSize: 16 }}
+                          title="הסר מהיום"
+                        >✕</button>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -428,32 +454,50 @@ export function PlanTab({ token }: { token: string }) {
               const gc = colors[gIdx % colors.length];
               return (
                 <div key={goal.id} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden' }}>
-                  <div style={{ background: gc.bg, borderBottom: `1px solid ${gc.border}`, padding: '10px 14px' }}>
-                    <div style={{ fontSize: 14, fontWeight: 700, color: gc.title }}>{goal.title}</div>
-                    {goal.description && (
-                      <div style={{ fontSize: 12, color: '#6b7280', marginTop: 3 }}>{goal.description}</div>
-                    )}
+                  <div style={{ background: gc.bg, borderBottom: `1px solid ${gc.border}`, padding: '10px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: gc.title }}>{goal.title}</div>
+                      {goal.description && (
+                        <div style={{ fontSize: 12, color: '#6b7280', marginTop: 3 }}>{goal.description}</div>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', gap: 2, flexShrink: 0, marginRight: 8 }}>
+                      <button onClick={() => setEditGoal(goal)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, padding: '2px 4px', lineHeight: 1 }} title="ערוך יעד">✏️</button>
+                      <button onClick={() => { setAddTaskGoalId(goal.id); setAddTaskOpen(true); }} style={{ background: 'none', border: 'none', color: '#1d4ed8', fontSize: 12, cursor: 'pointer', padding: '2px 6px', fontWeight: 600 }}>+ משימה</button>
+                      <button onClick={() => handleDeleteGoal(goal.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#fca5a5', fontSize: 16, padding: '2px 4px', lineHeight: 1 }} title="מחק יעד">✕</button>
+                    </div>
                   </div>
                   <div style={{ padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 4 }}>
                     {goal.tasks.map((t) => (
                       <div key={t.id} style={{
-                        display: 'flex', alignItems: 'center', gap: 8,
+                        display: 'flex', alignItems: 'center', gap: 6,
                         padding: '8px 10px', background: '#f9fafb', borderRadius: 8,
                       }}>
-                        <div style={{ flex: 1 }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ fontSize: 13, color: '#374151' }}>{t.title}</div>
                           {t.notes && <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>{t.notes}</div>}
                         </div>
-                        <button
-                          onClick={() => {
-                            // Schedule this task to the selected day
-                            apiFetch(`${BASE_URL}/task-engine/tasks/${t.id}/assign`, {
-                              method: 'POST',
-                              body: JSON.stringify({ scheduledDate: selectedDay }),
-                            }).then(() => loadPlan()).catch(() => {});
-                          }}
-                          style={{ background: 'none', border: '1px solid #e5e7eb', borderRadius: 6, cursor: 'pointer', color: '#1d4ed8', fontSize: 11, padding: '3px 8px' }}
-                        >+ שבץ</button>
+                        <div style={{ display: 'flex', gap: 3, flexShrink: 0 }}>
+                          <button
+                            onClick={() => setEditTask(t)}
+                            style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, padding: '2px 3px', lineHeight: 1 }}
+                            title="ערוך משימה"
+                          >✏️</button>
+                          <button
+                            onClick={() => {
+                              apiFetch(`${BASE_URL}/task-engine/tasks/${t.id}/assign`, {
+                                method: 'POST',
+                                body: JSON.stringify({ scheduledDate: selectedDay }),
+                              }).then(() => loadPlan()).catch(() => {});
+                            }}
+                            style={{ background: 'none', border: '1px solid #e5e7eb', borderRadius: 6, cursor: 'pointer', color: '#1d4ed8', fontSize: 11, padding: '3px 8px' }}
+                          >+ שבץ</button>
+                          <button
+                            onClick={() => handleDeleteTask(t.id)}
+                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#fca5a5', fontSize: 16, padding: '2px 3px', lineHeight: 1 }}
+                            title="מחק משימה"
+                          >✕</button>
+                        </div>
                       </div>
                     ))}
                     {goal.tasks.length === 0 && (
@@ -476,20 +520,32 @@ export function PlanTab({ token }: { token: string }) {
                 </div>
                 <div style={{ padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 4 }}>
                   {plan.ungroupedTasks.map((t) => (
-                    <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', background: '#f9fafb', borderRadius: 8 }}>
-                      <div style={{ flex: 1 }}>
+                    <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 10px', background: '#f9fafb', borderRadius: 8 }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 13, color: '#374151' }}>{t.title}</div>
                         {t.notes && <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>{t.notes}</div>}
                       </div>
-                      <button
-                        onClick={() => {
-                          apiFetch(`${BASE_URL}/task-engine/tasks/${t.id}/assign`, {
-                            method: 'POST',
-                            body: JSON.stringify({ scheduledDate: selectedDay }),
-                          }).then(() => loadPlan()).catch(() => {});
-                        }}
-                        style={{ background: 'none', border: '1px solid #e5e7eb', borderRadius: 6, cursor: 'pointer', color: '#1d4ed8', fontSize: 11, padding: '3px 8px' }}
-                      >+ שבץ</button>
+                      <div style={{ display: 'flex', gap: 3, flexShrink: 0 }}>
+                        <button
+                          onClick={() => setEditTask(t)}
+                          style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, padding: '2px 3px', lineHeight: 1 }}
+                          title="ערוך משימה"
+                        >✏️</button>
+                        <button
+                          onClick={() => {
+                            apiFetch(`${BASE_URL}/task-engine/tasks/${t.id}/assign`, {
+                              method: 'POST',
+                              body: JSON.stringify({ scheduledDate: selectedDay }),
+                            }).then(() => loadPlan()).catch(() => {});
+                          }}
+                          style={{ background: 'none', border: '1px solid #e5e7eb', borderRadius: 6, cursor: 'pointer', color: '#1d4ed8', fontSize: 11, padding: '3px 8px' }}
+                        >+ שבץ</button>
+                        <button
+                          onClick={() => handleDeleteTask(t.id)}
+                          style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#fca5a5', fontSize: 16, padding: '2px 3px', lineHeight: 1 }}
+                          title="מחק משימה"
+                        >✕</button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -601,6 +657,15 @@ export function PlanTab({ token }: { token: string }) {
         />
       )}
 
+      {/* Edit Goal */}
+      {editGoal && (
+        <EditGoalModal
+          goal={editGoal}
+          onClose={() => setEditGoal(null)}
+          onDone={() => { setEditGoal(null); loadPlan(); }}
+        />
+      )}
+
       {/* Add Task */}
       {addTaskOpen && plan && (
         <AddTaskModal
@@ -610,6 +675,16 @@ export function PlanTab({ token }: { token: string }) {
           defaultGoalId={addTaskGoalId}
           onClose={() => setAddTaskOpen(false)}
           onDone={() => { setAddTaskOpen(false); loadPlan(); }}
+        />
+      )}
+
+      {/* Edit Task */}
+      {editTask && plan && (
+        <EditTaskModal
+          task={editTask}
+          goals={plan.goals}
+          onClose={() => setEditTask(null)}
+          onDone={() => { setEditTask(null); loadPlan(); }}
         />
       )}
 
@@ -700,6 +775,77 @@ function AddTaskModal({ planId, participantId, goals, defaultGoalId, onClose, on
         </select>
         <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="הערות (אופציונלי)" style={{ ...inp, minHeight: 60, resize: 'vertical' as const }} />
         {err && <div style={{ color: '#ef4444', fontSize: 13 }}>{err}</div>}
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={onClose} style={{ ...btnS, flex: 1 }}>ביטול</button>
+          <button onClick={handleSave} disabled={saving || !title.trim()} style={{ ...btnP, flex: 1, opacity: saving || !title.trim() ? 0.6 : 1 }}>{saving ? '...' : 'שמור'}</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ─── Edit Goal Modal ──────────────────────────────────────────────────────────
+
+function EditGoalModal({ goal, onClose, onDone }: { goal: GoalShape; onClose: () => void; onDone: () => void }) {
+  const [title, setTitle] = useState(goal.title);
+  const [description, setDescription] = useState(goal.description ?? '');
+  const [saving, setSaving] = useState(false);
+
+  async function handleSave() {
+    if (!title.trim()) return;
+    setSaving(true);
+    try {
+      await apiFetch(`${BASE_URL}/task-engine/goals/${goal.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ title: title.trim(), description: description.trim() || null }),
+      });
+      onDone();
+    } finally { setSaving(false); }
+  }
+
+  return (
+    <Modal title="ערוך יעד" onClose={onClose}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="שם היעד *" style={inp} autoFocus />
+        <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="תיאור (אופציונלי)" style={{ ...inp, minHeight: 70, resize: 'vertical' as const }} />
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={onClose} style={{ ...btnS, flex: 1 }}>ביטול</button>
+          <button onClick={handleSave} disabled={saving || !title.trim()} style={{ ...btnP, flex: 1, opacity: saving || !title.trim() ? 0.6 : 1 }}>{saving ? '...' : 'שמור'}</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ─── Edit Task Modal ───────────────────────────────────────────────────────────
+
+function EditTaskModal({ task, goals, onClose, onDone }: { task: TaskShape; goals: GoalShape[]; onClose: () => void; onDone: () => void }) {
+  const [title, setTitle] = useState(task.title);
+  const [goalId, setGoalId] = useState(task.goalId ?? '');
+  const [notes, setNotes] = useState(task.notes ?? '');
+  const [saving, setSaving] = useState(false);
+
+  async function handleSave() {
+    if (!title.trim()) return;
+    setSaving(true);
+    try {
+      await apiFetch(`${BASE_URL}/task-engine/tasks/${task.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ title: title.trim(), goalId: goalId || null, notes: notes.trim() || null }),
+      });
+      onDone();
+    } finally { setSaving(false); }
+  }
+
+  return (
+    <Modal title="ערוך משימה" onClose={onClose}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="שם המשימה *" style={inp} autoFocus />
+        <select value={goalId} onChange={(e) => setGoalId(e.target.value)} style={{ ...inp, appearance: 'auto' as const }}>
+          <option value="">— ללא יעד —</option>
+          {goals.map((g) => <option key={g.id} value={g.id}>{g.title}</option>)}
+        </select>
+        <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="הערות (אופציונלי)" style={{ ...inp, minHeight: 60, resize: 'vertical' as const }} />
         <div style={{ display: 'flex', gap: 8 }}>
           <button onClick={onClose} style={{ ...btnS, flex: 1 }}>ביטול</button>
           <button onClick={handleSave} disabled={saving || !title.trim()} style={{ ...btnP, flex: 1, opacity: saving || !title.trim() ? 0.6 : 1 }}>{saving ? '...' : 'שמור'}</button>
