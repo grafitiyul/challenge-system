@@ -143,8 +143,8 @@ function MappingRow({
         </span>
         {mapped && (
           <span style={{
-            fontSize: 11, fontWeight: 700, color: '#16a34a',
-            background: '#dcfce7', borderRadius: 10,
+            fontSize: 11, fontWeight: 600, color: '#4b7c52',
+            background: '#f0fdf4', borderRadius: 10,
             padding: '1px 7px', lineHeight: '18px',
           }}>
             ✓ ממופה
@@ -154,10 +154,11 @@ function MappingRow({
       <select
         style={{
           width: '100%', padding: '9px 12px', fontSize: 14, borderRadius: 8,
-          border: `1.5px solid ${mapped ? '#86efac' : '#e2e8f0'}`,
+          border: `1.5px solid ${mapped ? '#a7c4aa' : '#e2e8f0'}`,
           background: '#fff',
           color: '#0f172a',
           outline: 'none', cursor: 'pointer',
+          maxWidth: '100%',
         }}
         value={colIdx ?? -1}
         onChange={e => onChange(field, Number(e.target.value) >= 0 ? Number(e.target.value) : null)}
@@ -168,7 +169,7 @@ function MappingRow({
         ))}
       </select>
       {mapped && samples.length > 0 && (
-        <div style={{ fontSize: 12, color: '#64748b', paddingRight: 2 }}>
+        <div style={{ fontSize: 12, color: '#64748b', paddingRight: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           לדוגמה: {samples.join(', ')}
         </div>
       )}
@@ -538,7 +539,7 @@ export default function ImportPage() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {[
                   'משתתפות חדשות ייווצרו אם לא נמצא מספר טלפון קיים',
-                  'משתתפות קיימות יעודכנו לפי הצורך — ללא כפילות',
+                  'משתתפות קיימות יעודכנו לפי מספר טלפון — לא ייווצרו כפילויות',
                   'לכל שורה יישמר עותק טופס עם כל הנתונים מהשורה',
                 ].map((t, i) => (
                   <div key={i} style={{ display: 'flex', gap: 10, fontSize: 13, color: '#475569', lineHeight: 1.5 }}>
@@ -567,30 +568,35 @@ export default function ImportPage() {
             </div>
 
             {/* Actions */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 4 }}>
-              <button
-                onClick={() => setStep('upload')}
-                style={{
-                  padding: '10px 22px', background: '#fff',
-                  border: '1px solid #e2e8f0', borderRadius: 8,
-                  fontSize: 13, color: '#374151', cursor: 'pointer',
-                }}
-              >
-                ← חזרה
-              </button>
-              <button
-                onClick={handlePreview}
-                disabled={previewing}
-                style={{
-                  padding: '10px 28px',
-                  background: previewing ? '#93c5fd' : '#2563eb',
-                  color: '#fff', border: 'none', borderRadius: 8,
-                  fontSize: 14, fontWeight: 600,
-                  cursor: previewing ? 'not-allowed' : 'pointer',
-                }}
-              >
-                {previewing ? 'טוען...' : 'תצוגה מקדימה ←'}
-              </button>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <button
+                  onClick={() => setStep('upload')}
+                  style={{
+                    padding: '10px 22px', background: '#fff',
+                    border: '1px solid #e2e8f0', borderRadius: 8,
+                    fontSize: 13, color: '#374151', cursor: 'pointer',
+                  }}
+                >
+                  ← חזרה
+                </button>
+                <button
+                  onClick={handlePreview}
+                  disabled={previewing}
+                  style={{
+                    padding: '10px 28px',
+                    background: previewing ? '#93c5fd' : '#2563eb',
+                    color: '#fff', border: 'none', borderRadius: 8,
+                    fontSize: 14, fontWeight: 600,
+                    cursor: previewing ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  {previewing ? 'טוען...' : 'תצוגה מקדימה ←'}
+                </button>
+              </div>
+              <div style={{ fontSize: 12, color: '#94a3b8', textAlign: 'center' }}>
+                לא ייווצרו כפילויות — ההתאמה מתבצעת לפי מספר טלפון
+              </div>
             </div>
 
           </div>
@@ -614,10 +620,10 @@ export default function ImportPage() {
                   background: s.bg, border: `1px solid ${s.border}`,
                   borderRadius: 10, padding: '18px 14px', textAlign: 'center',
                 }}>
-                  <div style={{ fontSize: 28, fontWeight: 700, color: s.color, marginBottom: 5, lineHeight: 1 }}>
+                  <div style={{ fontSize: 30, fontWeight: 700, color: s.color, marginBottom: 6, lineHeight: 1 }}>
                     {s.count}
                   </div>
-                  <div style={{ fontSize: 12, color: s.color, fontWeight: 500 }}>{s.label}</div>
+                  <div style={{ fontSize: 12, color: s.color, fontWeight: 400, opacity: 0.85 }}>{s.label}</div>
                 </div>
               ))}
             </div>
