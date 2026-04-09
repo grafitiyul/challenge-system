@@ -1,4 +1,21 @@
-import { IsBoolean, IsInt, IsOptional, IsString, Min, ValidateIf } from 'class-validator';
+import { IsBoolean, IsInt, IsOptional, IsString, Min, ValidateIf, ValidateNested, IsArray } from 'class-validator';
+import { Type } from 'class-transformer';
+
+export class ReorderItemDto {
+  @IsString()
+  id: string;
+
+  @IsInt()
+  @Min(0)
+  sortOrder: number;
+}
+
+export class ReorderItemsDto {
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ReorderItemDto)
+  items: ReorderItemDto[];
+}
 
 export class CreateActionDto {
   @IsString()

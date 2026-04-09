@@ -361,6 +361,7 @@ interface GameAction {
   blockedMessage: string | null;
   explanationContent: string | null;
   isActive: boolean;
+  sortOrder: number;
 }
 
 interface GameRule {
@@ -373,6 +374,7 @@ interface GameRule {
   conditionJson: Record<string, unknown> | null;
   rewardJson: Record<string, unknown> | null;
   isActive: boolean;
+  sortOrder: number;
 }
 
 const ACTION_INPUT_TYPES = [
@@ -1520,6 +1522,46 @@ function GameEngineTab({ programId }: { programId: string }) {
     }
   }
 
+  async function handleMoveAction(index: number, direction: 'up' | 'down') {
+    const next = direction === 'up' ? index - 1 : index + 1;
+    if (next < 0 || next >= actions.length) return;
+    const reordered = [...actions];
+    [reordered[index], reordered[next]] = [reordered[next], reordered[index]];
+    const withOrder = reordered.map((a, i) => ({ ...a, sortOrder: i }));
+    setActions(withOrder);
+    try {
+      await apiFetch(`${BASE_URL}/game/programs/${programId}/actions/reorder`, {
+        method: 'POST',
+        cache: 'no-store',
+        body: JSON.stringify({ items: withOrder.map((a) => ({ id: a.id, sortOrder: a.sortOrder })) }),
+      });
+    } catch {
+      // Revert on failure — re-fetch from server
+      apiFetch(`${BASE_URL}/game/programs/${programId}/actions`, { cache: 'no-store' })
+        .then((data) => setActions((data as GameAction[]).filter((x) => x.isActive)));
+    }
+  }
+
+  async function handleMoveRule(index: number, direction: 'up' | 'down') {
+    const next = direction === 'up' ? index - 1 : index + 1;
+    if (next < 0 || next >= rules.length) return;
+    const reordered = [...rules];
+    [reordered[index], reordered[next]] = [reordered[next], reordered[index]];
+    const withOrder = reordered.map((r, i) => ({ ...r, sortOrder: i }));
+    setRules(withOrder);
+    try {
+      await apiFetch(`${BASE_URL}/game/programs/${programId}/rules/reorder`, {
+        method: 'POST',
+        cache: 'no-store',
+        body: JSON.stringify({ items: withOrder.map((r) => ({ id: r.id, sortOrder: r.sortOrder })) }),
+      });
+    } catch {
+      // Revert on failure — re-fetch from server
+      apiFetch(`${BASE_URL}/game/programs/${programId}/rules`, { cache: 'no-store' })
+        .then((data) => setRules((data as GameRule[]).filter((x) => x.isActive)));
+    }
+  }
+
   const badge = (text: string, color: 'blue' | 'green' | 'gray' | 'orange'): React.ReactElement => {
     const styles: Record<string, React.CSSProperties> = {
       blue:   { background: '#eff6ff', color: '#1d4ed8' },
@@ -1558,9 +1600,17 @@ function GameEngineTab({ programId }: { programId: string }) {
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {actions.map((a) => (
+            {actions.map((a, idx) => (
               <div key={a.id} style={{ display: 'flex', flexDirection: 'column', background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: '14px 18px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2, flexShrink: 0 }}>
+                    <button onClick={() => handleMoveAction(idx, 'up')} disabled={idx === 0}
+                      style={{ background: 'none', border: 'none', cursor: idx === 0 ? 'default' : 'pointer', color: idx === 0 ? '#cbd5e1' : '#64748b', fontSize: 14, lineHeight: 1, padding: '1px 4px' }}
+                      title="הזז למעלה">▲</button>
+                    <button onClick={() => handleMoveAction(idx, 'down')} disabled={idx === actions.length - 1}
+                      style={{ background: 'none', border: 'none', cursor: idx === actions.length - 1 ? 'default' : 'pointer', color: idx === actions.length - 1 ? '#cbd5e1' : '#64748b', fontSize: 14, lineHeight: 1, padding: '1px 4px' }}
+                      title="הזז למטה">▼</button>
+                  </div>
                   <div style={{ width: 40, height: 40, borderRadius: 8, background: '#eff6ff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>🎯</div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 14, fontWeight: 600, color: '#0f172a', marginBottom: 4 }}>{a.name}</div>
@@ -1639,12 +1689,20 @@ function GameEngineTab({ programId }: { programId: string }) {
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {rules.map((r) => {
+            {rules.map((r, idx) => {
               const typeIcons: Record<string, string> = { daily_bonus: '☀️', streak: '🔥', conditional: '⚡' };
               const desc = ruleDescription(r, actions);
               const activation = activationDescription(r);
               return (
                 <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 14, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: '14px 18px' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2, flexShrink: 0 }}>
+                    <button onClick={() => handleMoveRule(idx, 'up')} disabled={idx === 0}
+                      style={{ background: 'none', border: 'none', cursor: idx === 0 ? 'default' : 'pointer', color: idx === 0 ? '#cbd5e1' : '#64748b', fontSize: 14, lineHeight: 1, padding: '1px 4px' }}
+                      title="הזז למעלה">▲</button>
+                    <button onClick={() => handleMoveRule(idx, 'down')} disabled={idx === rules.length - 1}
+                      style={{ background: 'none', border: 'none', cursor: idx === rules.length - 1 ? 'default' : 'pointer', color: idx === rules.length - 1 ? '#cbd5e1' : '#64748b', fontSize: 14, lineHeight: 1, padding: '1px 4px' }}
+                      title="הזז למטה">▼</button>
+                  </div>
                   <div style={{ width: 40, height: 40, borderRadius: 8, background: '#fff7ed', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>
                     {typeIcons[r.type] ?? '⚡'}
                   </div>

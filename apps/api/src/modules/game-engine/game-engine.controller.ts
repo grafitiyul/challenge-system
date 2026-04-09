@@ -9,7 +9,7 @@ import {
   Query,
 } from '@nestjs/common';
 import { GameEngineService } from './game-engine.service';
-import { CreateActionDto, UpdateActionDto } from './dto/create-action.dto';
+import { CreateActionDto, UpdateActionDto, ReorderItemsDto } from './dto/create-action.dto';
 import { CreateRuleDto, UpdateRuleDto } from './dto/create-rule.dto';
 import { LogActionDto } from './dto/log-action.dto';
 import { EvaluateRulesDto } from './dto/evaluate-rules.dto';
@@ -30,6 +30,11 @@ export class GameActionsController {
   @Post()
   create(@Param('programId') programId: string, @Body() dto: CreateActionDto) {
     return this.svc.createAction(programId, dto);
+  }
+
+  @Post('reorder')
+  reorder(@Param('programId') programId: string, @Body() dto: ReorderItemsDto) {
+    return this.svc.reorderActions(programId, dto.items);
   }
 
   @Patch(':actionId')
@@ -57,6 +62,11 @@ export class GameRulesController {
   @Post()
   create(@Param('programId') programId: string, @Body() dto: CreateRuleDto) {
     return this.svc.createRule(programId, dto);
+  }
+
+  @Post('reorder')
+  reorder(@Param('programId') programId: string, @Body() dto: ReorderItemsDto) {
+    return this.svc.reorderRules(programId, dto.items);
   }
 
   @Patch(':ruleId')

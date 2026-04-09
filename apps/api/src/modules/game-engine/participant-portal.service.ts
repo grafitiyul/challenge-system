@@ -103,7 +103,7 @@ export class ParticipantPortalService {
 
     const actions = await this.prisma.gameAction.findMany({
       where: { programId, isActive: true, showInPortal: true },
-      orderBy: { createdAt: 'asc' },
+      orderBy: { sortOrder: 'asc' },
     });
 
     const todayStart = new Date();
@@ -298,12 +298,12 @@ export class ParticipantPortalService {
       this.prisma.program.findUnique({ where: { id: programId }, select: { rulesContent: true, rulesPublished: true } }),
       this.prisma.gameAction.findMany({
         where: { programId, isActive: true, showInPortal: true },
-        orderBy: { createdAt: 'asc' },
+        orderBy: { sortOrder: 'asc' },
         select: { id: true, name: true, description: true, explanationContent: true, points: true, inputType: true, unit: true, maxPerDay: true, aggregationMode: true },
       }),
       this.prisma.gameRule.findMany({
         where: { programId },
-        orderBy: { createdAt: 'asc' },
+        orderBy: { sortOrder: 'asc' },
         select: { id: true, name: true, type: true, conditionJson: true, rewardJson: true, isActive: true },
       }),
     ]);

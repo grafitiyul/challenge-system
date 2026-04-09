@@ -16,11 +16,12 @@ export class GameEngineService {
   listActions(programId: string) {
     return this.prisma.gameAction.findMany({
       where: { programId, isActive: true },
-      orderBy: { createdAt: 'asc' },
+      orderBy: { sortOrder: 'asc' },
     });
   }
 
-  createAction(programId: string, dto: CreateActionDto) {
+  async createAction(programId: string, dto: CreateActionDto) {
+    const count = await this.prisma.gameAction.count({ where: { programId } });
     return this.prisma.gameAction.create({
       data: {
         programId,
@@ -34,8 +35,20 @@ export class GameEngineService {
         showInPortal: dto.showInPortal ?? true,
         blockedMessage: dto.blockedMessage ?? null,
         explanationContent: dto.explanationContent ?? null,
+        sortOrder: count,
       },
     });
+  }
+
+  async reorderActions(programId: string, items: { id: string; sortOrder: number }[]) {
+    await this.prisma.$transaction(
+      items.map((item) =>
+        this.prisma.gameAction.update({
+          where: { id: item.id, programId },
+          data: { sortOrder: item.sortOrder },
+        }),
+      ),
+    );
   }
 
   async deleteAction(actionId: string) {
@@ -71,11 +84,12 @@ export class GameEngineService {
   listRules(programId: string) {
     return this.prisma.gameRule.findMany({
       where: { programId },
-      orderBy: { createdAt: 'asc' },
+      orderBy: { sortOrder: 'asc' },
     });
   }
 
-  createRule(programId: string, dto: CreateRuleDto) {
+  async createRule(programId: string, dto: CreateRuleDto) {
+    const count = await this.prisma.gameRule.count({ where: { programId } });
     return this.prisma.gameRule.create({
       data: {
         programId,
@@ -86,8 +100,20 @@ export class GameEngineService {
         activationType: dto.activationType ?? 'immediate',
         activationDays: dto.activationDays ?? null,
         requiresAdminApproval: dto.requiresAdminApproval ?? false,
+        sortOrder: count,
       },
     });
+  }
+
+  async reorderRules(programId: string, items: { id: string; sortOrder: number }[]) {
+    await this.prisma.$transaction(
+      items.map((item) =>
+        this.prisma.gameRule.update({
+          where: { id: item.id, programId },
+          data: { sortOrder: item.sortOrder },
+        }),
+      ),
+    );
   }
 
   async deleteRule(ruleId: string) {
