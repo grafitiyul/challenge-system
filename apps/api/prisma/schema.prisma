@@ -242,6 +242,13 @@ model Participant {
   participantGameStates ParticipantGameState[]
   feedEvents            FeedEvent[]
 
+  // Task engine
+  weeklyPlans      WeeklyPlan[]
+  planTasks        PlanTask[]
+  taskAssignments  TaskAssignment[]
+  deferralEvents   DeferralEvent[]
+  deferralConfigs  DeferralTriggerConfig[]
+
   createdAt                 DateTime                  @default(now())
   updatedAt                 DateTime                  @updatedAt
 
@@ -859,4 +866,146 @@ model SystemSetting {
   updatedAt DateTime @updatedAt
 
   @@map("system_settings")
+}
+
+// =============================================================================
+// TASK ENGINE
+// Weekly personal planning: goals → tasks → day assignments → completion.
+// History is immutable: carry-forward creates a new assignment while marking the
+// old one as "carried_forward". Deferral vs planning-change is tracked per event.
+// =============================================================================
+
+// One plan per participant per calendar week.
+// weekStart is always the Sunday of the week at 00:00:00 UTC (Israeli convention).
+model WeeklyPlan {
+  id            String        @id @default(cuid())
+  participantId String
+  participant   Participant   @relation(fields: [participantId], references: [id])
+  // Always Sunday 00:00:00 UTC for the week
+  weekStart     DateTime
+  status        String        @default("active") // "active" | "closed"
+  goals         WeeklyGoal[]
+  tasks         PlanTask[]
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@unique([participantId, weekStart])
+  @@index([participantId])
+  @@map("weekly_plans")
+}
+
+model WeeklyGoal {
+  id          String      @id @default(cuid())
+  planId      String
+  plan        WeeklyPlan  @relation(fields: [planId], references: [id])
+  title       String
+  description String?
+  sortOrder   Int         @default(0)
+  isAbandoned Boolean     @default(false)
+  tasks       PlanTask[]
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@index([planId])
+  @@map("weekly_goals")
+}
+
+// The task itself. Separate from its day assignment.
+// goalId = null → ungoaled (directly under the plan's task pool).
+model PlanTask {
+  id               String           @id @default(cuid())
+  planId           String
+  plan             WeeklyPlan       @relation(fields: [planId], references: [id])
+  goalId           String?
+  goal             WeeklyGoal?      @relation(fields: [goalId], references: [id])
+  participantId    String
+  participant      Participant      @relation(fields: [participantId], references: [id])
+  title            String
+  notes            String?
+  estimatedMinutes Int?
+  sortOrder        Int              @default(0)
+  isAbandoned      Boolean          @default(false)
+  assignments      TaskAssignment[]
+  deferralEvents   DeferralEvent[]
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  @@index([planId])
+  @@index([participantId])
+  @@map("plan_tasks")
+}
+
+// A task's presence on a specific day. One task may have many assignments
+// (original + carried-forward chain). Old assignments are never deleted —
+// status = "carried_forward" marks history.
+model TaskAssignment {
+  id            String           @id @default(cuid())
+  taskId        String
+  task          PlanTask         @relation(fields: [taskId], references: [id])
+  participantId String
+  participant   Participant      @relation(fields: [participantId], references: [id])
+  // Day-level date: always midnight UTC of the target day
+  scheduledDate DateTime
+  // Optional time window, stored as "HH:MM" strings
+  startTime     String?
+  endTime       String?
+  isCompleted   Boolean          @default(false)
+  completedAt   DateTime?
+  // "scheduled" | "completed" | "carried_forward" | "abandoned"
+  status        String           @default("scheduled")
+  // Linked list: carried_forward assignments point to the replacement
+  carriedToId   String?
+  carriedTo     TaskAssignment?  @relation("CarryChain", fields: [carriedToId], references: [id])
+  carriedFrom   TaskAssignment[] @relation("CarryChain")
+  deferralEvents DeferralEvent[]
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  @@index([participantId, scheduledDate])
+  @@index([taskId])
+  @@map("task_assignments")
+}
+
+// Written every time carry-forward is executed.
+// isDeferral = true when scheduledDate <= today at time of carry (same-day or past).
+// isDeferral = false for future rescheduling (planning change, not avoidance).
+model DeferralEvent {
+  id                         String         @id @default(cuid())
+  taskId                     String
+  task                       PlanTask       @relation(fields: [taskId], references: [id])
+  participantId              String
+  participant                Participant    @relation(fields: [participantId], references: [id])
+  fromAssignmentId           String
+  fromAssignment             TaskAssignment @relation(fields: [fromAssignmentId], references: [id])
+  fromDate                   DateTime
+  toDate                     DateTime?
+  // "daily" = moved to another day | "weekly" = moved to another week
+  deferralType               String
+  // true = task was due today or earlier (avoidance); false = future planning change
+  isDeferral                 Boolean
+  // Snapshot of the streak at the time of this event
+  consecutiveDailyDeferrals  Int            @default(0)
+  consecutiveWeeklyCarries   Int            @default(0)
+  createdAt                  DateTime       @default(now())
+
+  @@index([participantId])
+  @@index([taskId])
+  @@map("deferral_events")
+}
+
+// Future hook: configures when a deferral streak triggers a questionnaire.
+// participantId = null → global default; specific participantId → override.
+model DeferralTriggerConfig {
+  id                      String       @id @default(cuid())
+  participantId           String?
+  participant             Participant? @relation(fields: [participantId], references: [id])
+  dailyDeferralThreshold  Int          @default(3)
+  weeklyCarryThreshold    Int          @default(2)
+  // FK to QuestionnaireTemplate if/when questionnaire triggering is activated
+  questionnaireTemplateId String?
+  isActive                Boolean      @default(true)
+  createdAt               DateTime     @default(now())
+  updatedAt               DateTime     @updatedAt
+
+  @@map("deferral_trigger_configs")
 }

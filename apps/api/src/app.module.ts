@@ -16,6 +16,7 @@ import { ProgramsModule } from './modules/programs/programs.module';
 import { GameEngineModule } from './modules/game-engine/game-engine.module';
 import { ImportModule } from './modules/import/import.module';
 import { SettingsModule } from './modules/settings/settings.module';
+import { TaskEngineModule } from './modules/task-engine/task-engine.module';
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { SettingsModule } from './modules/settings/settings.module';
     GameEngineModule,
     ImportModule,
     SettingsModule,
+    TaskEngineModule,
   ],
   controllers: [HealthController, WassengerController],
   providers: [WassengerService, SeederService],
