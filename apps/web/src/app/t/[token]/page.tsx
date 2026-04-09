@@ -2,6 +2,7 @@
 
 import { use, useCallback, useEffect, useRef, useState } from 'react';
 import { BASE_URL, apiFetch } from '@lib/api';
+import { PlanTab } from './plan-tab';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -81,7 +82,7 @@ interface PortalRules {
   }[]; // conditionJson/rewardJson typed as Record for frontend convenience
 }
 
-type TabId = 'report' | 'stats' | 'feed' | 'rules';
+type TabId = 'report' | 'stats' | 'feed' | 'rules' | 'plan';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -682,6 +683,11 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
         )}
       </div>
 
+      {/* ── Plan tab ── */}
+      {activeTab === 'plan' && (
+        <PlanTab token={token} />
+      )}
+
       {/* ── Bottom navigation ── */}
       <nav style={s.bottomNav}>
         {(
@@ -690,6 +696,7 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
             { id: 'stats',  label: 'נתונים', icon: '📊' },
             { id: 'feed',   label: 'מבזק',   icon: '📣' },
             { id: 'rules',  label: 'חוקים',  icon: '📋' },
+            { id: 'plan',   label: 'תוכנית', icon: '📅' },
           ] as { id: TabId; label: string; icon: string }[]
         ).map((tab) => (
           <button

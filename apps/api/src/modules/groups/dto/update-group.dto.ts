@@ -16,4 +16,8 @@ export class UpdateGroupDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  taskEngineEnabled?: boolean;
 }

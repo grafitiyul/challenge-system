@@ -148,3 +148,20 @@ export class ReorderDto {
   @Type(() => ReorderItemDto)
   items: ReorderItemDto[];
 }
+
+// ─── Notes (coach ↔ participant chat) ─────────────────────────────────────────
+
+export class CreateNoteDto {
+  @IsString()
+  participantId: string;
+
+  @IsString()
+  content: string;
+
+  @IsString()
+  senderType: string; // "coach" | "participant"
+
+  @IsOptional()
+  @IsString()
+  senderName?: string;
+}

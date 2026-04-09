@@ -423,6 +423,92 @@ function AddGoalModal({ planId, onClose, onDone }: { planId: string; onClose: ()
   );
 }
 
+// ─── Edit Goal Modal ──────────────────────────────────────────────────────────
+
+function EditGoalModal({ goal, onClose, onDone }: { goal: GoalShape; onClose: () => void; onDone: () => void }) {
+  const [title, setTitle] = useState(goal.title);
+  const [description, setDescription] = useState(goal.description ?? '');
+  const [saving, setSaving] = useState(false);
+
+  async function handleSave() {
+    if (!title.trim()) return;
+    setSaving(true);
+    try {
+      await apiFetch(`${BASE_URL}/task-engine/goals/${goal.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ title: title.trim(), description: description.trim() || null }),
+      });
+      onDone();
+    } finally { setSaving(false); }
+  }
+
+  return (
+    <Modal onClose={onClose} title="ערוך יעד" width={420}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div>
+          <label style={labelSt}>שם היעד</label>
+          <input value={title} onChange={(e) => setTitle(e.target.value)} style={inputSt} autoFocus />
+        </div>
+        <div>
+          <label style={labelSt}>תיאור</label>
+          <textarea value={description} onChange={(e) => setDescription(e.target.value)} style={{ ...inputSt, minHeight: 70, resize: 'vertical' as const }} placeholder="תיאור אופציונלי..." />
+        </div>
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+          <button onClick={onClose} style={btnSecondary}>ביטול</button>
+          <button onClick={handleSave} disabled={saving || !title.trim()} style={btnPrimary}>{saving ? '...' : 'שמור'}</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ─── Edit Task Modal ──────────────────────────────────────────────────────────
+
+function EditTaskModal({ task, goals, onClose, onDone }: { task: TaskShape; goals: GoalShape[]; onClose: () => void; onDone: () => void }) {
+  const [title, setTitle] = useState(task.title);
+  const [goalId, setGoalId] = useState(task.goalId ?? '');
+  const [notes, setNotes] = useState(task.notes ?? '');
+  const [saving, setSaving] = useState(false);
+
+  async function handleSave() {
+    if (!title.trim()) return;
+    setSaving(true);
+    try {
+      await apiFetch(`${BASE_URL}/task-engine/tasks/${task.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ title: title.trim(), goalId: goalId || null, notes: notes.trim() || null }),
+      });
+      onDone();
+    } finally { setSaving(false); }
+  }
+
+  return (
+    <Modal onClose={onClose} title="ערוך משימה" width={420}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div>
+          <label style={labelSt}>שם המשימה</label>
+          <input value={title} onChange={(e) => setTitle(e.target.value)} style={inputSt} autoFocus />
+        </div>
+        <div>
+          <label style={labelSt}>יעד</label>
+          <select value={goalId} onChange={(e) => setGoalId(e.target.value)} style={inputSt}>
+            <option value="">— ללא יעד —</option>
+            {goals.map((g) => <option key={g.id} value={g.id}>{g.title}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={labelSt}>הערות</label>
+          <textarea value={notes} onChange={(e) => setNotes(e.target.value)} style={{ ...inputSt, minHeight: 70, resize: 'vertical' as const }} placeholder="פרטים נוספים..." />
+        </div>
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+          <button onClick={onClose} style={btnSecondary}>ביטול</button>
+          <button onClick={handleSave} disabled={saving || !title.trim()} style={btnPrimary}>{saving ? '...' : 'שמור'}</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 // ─── Assign-to-Day Modal ──────────────────────────────────────────────────────
 
 function AssignDayModal({
@@ -726,6 +812,8 @@ function TasksPageInner() {
   const [timeModal, setTimeModal] = useState<{ assignment: AssignmentShape; task: TaskShape } | null>(null);
   const [assignModal, setAssignModal] = useState<TaskShape | null>(null);
   const [summaryModal, setSubmmaryModal] = useState<'daily' | 'weekly' | null>(null);
+  const [editGoalModal, setEditGoalModal] = useState<GoalShape | null>(null);
+  const [editTaskModal, setEditTaskModal] = useState<TaskShape | null>(null);
 
   const days = weekDays(currentSunday);
   const today = toDateStr(new Date());
@@ -908,8 +996,14 @@ function TasksPageInner() {
               display: 'flex', alignItems: 'center', justifyContent: 'space-between',
               padding: '10px 14px', background: gc.bg, borderBottom: `1px solid ${gc.border}`,
             }}>
-              <span style={{ fontSize: 13, fontWeight: 700, color: gc.title }}>{goal.title}</span>
-              <div style={{ display: 'flex', gap: 6 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: gc.title }}>{goal.title}</div>
+                {goal.description && <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>{goal.description}</div>}
+              </div>
+              <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+                <button onClick={() => setEditGoalModal(goal)} style={{
+                  background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', fontSize: 12,
+                }} title="ערוך יעד">✏️</button>
                 <button onClick={() => setAddTaskModal({ open: true, goalId: goal.id })} style={{
                   background: 'none', border: 'none', cursor: 'pointer', color: '#2563eb',
                   fontSize: 12, fontWeight: 600,
@@ -922,11 +1016,17 @@ function TasksPageInner() {
             <div style={{ padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 4 }}>
               {goal.tasks.map((t) => (
                 <div key={t.id} style={{
-                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between',
                   padding: '6px 8px', background: '#f8fafc', borderRadius: 6, gap: 8,
                 }}>
-                  <span style={{ fontSize: 12, color: '#374151', flex: 1, minWidth: 0, wordBreak: 'break-word' }}>{t.title}</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12, color: '#374151', wordBreak: 'break-word' }}>{t.title}</div>
+                    {t.notes && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2, fontStyle: 'italic' }}>{t.notes}</div>}
+                  </div>
                   <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+                    <button onClick={() => setEditTaskModal(t)} style={{
+                      background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', fontSize: 11,
+                    }} title="ערוך משימה">✏️</button>
                     <button onClick={() => setAssignModal(t)} style={{
                       background: 'none', border: '1px solid #e2e8f0', borderRadius: 5,
                       cursor: 'pointer', color: '#2563eb', fontSize: 11, padding: '2px 7px',
@@ -954,11 +1054,17 @@ function TasksPageInner() {
             <div style={{ padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 4 }}>
               {plan.ungroupedTasks.map((t) => (
                 <div key={t.id} style={{
-                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between',
                   padding: '6px 8px', background: '#f8fafc', borderRadius: 6, gap: 8,
                 }}>
-                  <span style={{ fontSize: 12, color: '#374151', flex: 1, minWidth: 0, wordBreak: 'break-word' }}>{t.title}</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12, color: '#374151', wordBreak: 'break-word' }}>{t.title}</div>
+                    {t.notes && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2, fontStyle: 'italic' }}>{t.notes}</div>}
+                  </div>
                   <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+                    <button onClick={() => setEditTaskModal(t)} style={{
+                      background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', fontSize: 11,
+                    }} title="ערוך">✏️</button>
                     <button onClick={() => setAssignModal(t)} style={{
                       background: 'none', border: '1px solid #e2e8f0', borderRadius: 5,
                       cursor: 'pointer', color: '#2563eb', fontSize: 11, padding: '2px 7px',
@@ -1214,7 +1320,7 @@ function TasksPageInner() {
         <button onClick={() => setCurrentSunday(addDays(currentSunday, -7))} style={{
           background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8,
           padding: '6px 14px', cursor: 'pointer', fontSize: 13, color: '#374151', fontWeight: 600,
-        }}>← קודם</button>
+        }}>קודם ›</button>
         <div style={{ flex: 1, textAlign: 'center' as const }}>
           <span style={{
             display: 'inline-block', fontSize: 15, fontWeight: 700, color: '#1e293b',
@@ -1228,7 +1334,7 @@ function TasksPageInner() {
         <button onClick={() => setCurrentSunday(addDays(currentSunday, 7))} style={{
           background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8,
           padding: '6px 14px', cursor: 'pointer', fontSize: 13, color: '#374151', fontWeight: 600,
-        }}>הבא →</button>
+        }}>‹ הבא</button>
       </div>
 
       {err && (
@@ -1304,6 +1410,21 @@ function TasksPageInner() {
           participantId={participantId}
           mode={summaryModal}
           onClose={() => setSubmmaryModal(null)}
+        />
+      )}
+      {editGoalModal && (
+        <EditGoalModal
+          goal={editGoalModal}
+          onClose={() => setEditGoalModal(null)}
+          onDone={() => { setEditGoalModal(null); loadPlan(); }}
+        />
+      )}
+      {editTaskModal && plan && (
+        <EditTaskModal
+          task={editTaskModal}
+          goals={plan.goals}
+          onClose={() => setEditTaskModal(null)}
+          onDone={() => { setEditTaskModal(null); loadPlan(); }}
         />
       )}
     </div>

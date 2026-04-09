@@ -43,6 +43,7 @@ interface Group {
   id: string;
   name: string;
   isActive: boolean;
+  taskEngineEnabled: boolean;
   programId: string | null;
   program: { id: string; name: string; isActive: boolean; type: ProgramType } | null;
   startDate: string | null;
@@ -806,6 +807,100 @@ export default function GroupDetailPage() {
                     )}
                   </div>
                 ))}
+              </div>
+            )}
+          </Section>
+
+          {/* ── Section: task engine ── */}
+          <Section
+            title="מנוע משימות"
+            icon="📅"
+            action={
+              <button
+                onClick={async () => {
+                  if (!group) return;
+                  const updated = await apiFetch<Group>(
+                    `${BASE_URL}/groups/${id}`,
+                    { method: 'PATCH', body: JSON.stringify({ taskEngineEnabled: !group.taskEngineEnabled }), headers: { 'Content-Type': 'application/json' } },
+                  ).catch(() => null);
+                  if (updated) setGroup(updated);
+                }}
+                style={{
+                  background: group?.taskEngineEnabled ? '#f0fdf4' : '#f8fafc',
+                  color: group?.taskEngineEnabled ? '#16a34a' : '#64748b',
+                  border: `1px solid ${group?.taskEngineEnabled ? '#bbf7d0' : '#e2e8f0'}`,
+                  borderRadius: 7, padding: '6px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                }}
+              >
+                {group?.taskEngineEnabled ? '✓ מופעל — כבה' : 'הפעל'}
+              </button>
+            }
+          >
+            {!group?.taskEngineEnabled ? (
+              <p style={{ color: '#94a3b8', fontSize: 14, margin: 0 }}>
+                מנוע המשימות כבוי לקבוצה זו. לחצי &ldquo;הפעל&rdquo; כדי לאפשר לחברות גישה לתוכנית האישית שלהן.
+              </p>
+            ) : participants.length === 0 ? (
+              <p style={{ color: '#94a3b8', fontSize: 14, margin: 0 }}>
+                אין משתתפות בקבוצה עדיין. הוסיפי משתתפות כדי לנהל תוכניות אישיות.
+              </p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+                {participants.map((pg, idx) => {
+                  const p = pg.participant;
+                  const portalUrl = pg.accessToken
+                    ? `${typeof window !== 'undefined' ? window.location.origin : ''}/t/${pg.accessToken}`
+                    : null;
+                  return (
+                    <div key={pg.id} style={{
+                      display: 'flex', alignItems: 'center', gap: 12, padding: '11px 0',
+                      borderBottom: idx < participants.length - 1 ? '1px solid #f1f5f9' : 'none',
+                    }}>
+                      <div style={{
+                        width: 32, height: 32, borderRadius: '50%', flexShrink: 0,
+                        background: '#f0fdf4', color: '#16a34a',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        fontWeight: 700, fontSize: 13,
+                      }}>
+                        {p.firstName.charAt(0)}
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <Link href={`/participants/${p.id}?tab=goals`}
+                          style={{ fontWeight: 600, fontSize: 14, color: '#0f172a', textDecoration: 'none' }}>
+                          {displayName(p)}
+                        </Link>
+                      </div>
+                      <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                        <Link href={`/tasks/portal/${p.id}`}
+                          style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #bfdbfe', color: '#1d4ed8', background: '#eff6ff', fontSize: 12, fontWeight: 500, textDecoration: 'none' }}>
+                          📅 תוכנית
+                        </Link>
+                        {portalUrl ? (
+                          <button
+                            onClick={() => copyText(portalUrl, `portal-${pg.id}`)}
+                            style={{
+                              padding: '5px 10px', borderRadius: 6,
+                              border: `1px solid ${copiedId === `portal-${pg.id}` ? '#bbf7d0' : '#e2e8f0'}`,
+                              color: copiedId === `portal-${pg.id}` ? '#16a34a' : '#64748b',
+                              background: copiedId === `portal-${pg.id}` ? '#f0fdf4' : '#f8fafc',
+                              fontSize: 12, fontWeight: 500, cursor: 'pointer',
+                            }}
+                          >
+                            {copiedId === `portal-${pg.id}` ? '✓ הועתק' : '🔗 קישור'}
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => generateToken(p.id, id)}
+                            disabled={generatingTokenFor === p.id}
+                            style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #e2e8f0', color: '#64748b', background: '#f8fafc', fontSize: 12, cursor: generatingTokenFor === p.id ? 'not-allowed' : 'pointer' }}
+                          >
+                            {generatingTokenFor === p.id ? '...' : 'צור קישור'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </Section>

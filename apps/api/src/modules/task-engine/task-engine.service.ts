@@ -10,6 +10,7 @@ import {
   CarryForwardDto,
   UpdatePlanDto,
   ReorderItemDto,
+  CreateNoteDto,
 } from './dto/task-engine.dto';
 import {
   buildDailySummaryMessage,
@@ -585,5 +586,55 @@ export class TaskEngineService {
       incompleteCount: incompleteTasks.length,
       messagePreview: buildWeeklySummaryMessage(summaryData),
     };
+  }
+
+  // ─── Portal token resolution ───────────────────────────────────────────────
+  // Resolves a ParticipantGroup.accessToken → participant context.
+  // Returns the participant + group info needed to bootstrap the portal.
+
+  async resolvePortalToken(token: string) {
+    const pg = await this.prisma.participantGroup.findUnique({
+      where: { accessToken: token },
+      include: {
+        participant: {
+          select: { id: true, firstName: true, lastName: true },
+        },
+        group: {
+          select: { id: true, name: true, taskEngineEnabled: true },
+        },
+      },
+    });
+
+    if (!pg) throw new NotFoundException('Link not found or invalid');
+
+    return {
+      participantId: pg.participantId,
+      participantName: `${pg.participant.firstName} ${pg.participant.lastName ?? ''}`.trim(),
+      participantFirstName: pg.participant.firstName,
+      groupId: pg.groupId,
+      groupName: pg.group.name,
+      taskEngineEnabled: pg.group.taskEngineEnabled,
+      memberIsActive: pg.isActive,
+    };
+  }
+
+  // ─── Coach ↔ participant notes ─────────────────────────────────────────────
+
+  async getNotes(participantId: string) {
+    return this.prisma.participantTaskNote.findMany({
+      where: { participantId },
+      orderBy: { createdAt: 'asc' },
+    });
+  }
+
+  async createNote(dto: CreateNoteDto) {
+    return this.prisma.participantTaskNote.create({
+      data: {
+        participantId: dto.participantId,
+        content: dto.content,
+        senderType: dto.senderType,
+        senderName: dto.senderName ?? null,
+      },
+    });
   }
 }

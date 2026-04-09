@@ -19,6 +19,7 @@ import {
   CarryForwardDto,
   UpdatePlanDto,
   ReorderDto,
+  CreateNoteDto,
 } from './dto/task-engine.dto';
 
 // ─── Weekly plan ──────────────────────────────────────────────────────────────
@@ -137,5 +138,25 @@ export class TaskEngineController {
   @Get('weekly-summary')
   getWeeklySummary(@Query('planId') planId: string) {
     return this.svc.getWeeklySummary(planId);
+  }
+
+  // ─── Portal ────────────────────────────────────────────────────────────────
+  // GET /api/task-engine/portal/:token  — resolve token to participant context
+  @Get('portal/:token')
+  resolvePortalToken(@Param('token') token: string) {
+    return this.svc.resolvePortalToken(token);
+  }
+
+  // ─── Notes (coach ↔ participant chat) ──────────────────────────────────────
+  // GET /api/task-engine/notes?participantId=
+  @Get('notes')
+  getNotes(@Query('participantId') participantId: string) {
+    return this.svc.getNotes(participantId);
+  }
+
+  // POST /api/task-engine/notes
+  @Post('notes')
+  createNote(@Body() dto: CreateNoteDto) {
+    return this.svc.createNote(dto);
   }
 }

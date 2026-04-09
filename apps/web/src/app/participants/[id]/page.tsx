@@ -11,7 +11,7 @@ import { BASE_URL, apiFetch } from '@lib/api';
 interface Gender { id: string; name: string; }
 interface Challenge { id: string; name: string; }
 interface Group { id: string; name: string; startDate: string; endDate: string; challenge: Challenge; }
-interface ParticipantGroup { id: string; joinedAt: string; group: Group; }
+interface ParticipantGroup { id: string; joinedAt: string; accessToken: string | null; group: Group & { taskEngineEnabled: boolean }; }
 
 interface Participant {
   id: string;
@@ -380,6 +380,102 @@ function PlaceholderTab({ icon, title, subtitle }: { icon: string; title: string
       <div style={{ fontSize: 36, marginBottom: 12 }}>{icon}</div>
       <div style={{ color: '#374151', fontSize: 15, fontWeight: 600, marginBottom: 6 }}>{title}</div>
       <div style={{ color: '#94a3b8', fontSize: 13 }}>{subtitle}</div>
+    </div>
+  );
+}
+
+// ─── Goals tab ────────────────────────────────────────────────────────────────
+
+function GoalsTab({ participantId, participantGroups }: {
+  participantId: string;
+  participantGroups: ParticipantGroup[];
+}) {
+  const [copied, setCopied] = useState<string | null>(null);
+
+  // Find groups that have task engine enabled and have an accessToken
+  const taskGroups = participantGroups.filter((pg) => pg.group.taskEngineEnabled);
+
+  function copyLink(token: string) {
+    const url = `${window.location.origin}/t/${token}`;
+    navigator.clipboard.writeText(url).then(() => {
+      setCopied(token);
+      setTimeout(() => setCopied(null), 2000);
+    });
+  }
+
+  return (
+    <div>
+      {/* Admin view link */}
+      <div style={{ marginBottom: 20 }}>
+        <a
+          href={`/tasks/portal/${participantId}`}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 8,
+            background: 'linear-gradient(135deg, #eff6ff, #f0fdf4)',
+            border: '1px solid #bfdbfe', borderRadius: 10, padding: '12px 18px',
+            color: '#1e40af', fontSize: 14, fontWeight: 600, textDecoration: 'none',
+          }}
+        >
+          📅 פתח תוכנית שבועית (מצב מנהל)
+          <span style={{ fontSize: 11, color: '#60a5fa', fontWeight: 400 }}>צפייה בלבד → אפשרות עריכה מוגנת</span>
+        </a>
+      </div>
+
+      {/* Portal links per group */}
+      {taskGroups.length > 0 ? (
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: '#64748b', marginBottom: 10, textTransform: 'uppercase' as const, letterSpacing: '0.05em' }}>
+            קישורי פורטל אישי למשתתפת
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {taskGroups.map((pg) => {
+              const token = pg.accessToken;
+              const url = token ? `${window.location.origin}/t/${token}` : null;
+              return (
+                <div key={pg.id} style={{
+                  background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: '12px 16px',
+                  display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+                }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: '#0f172a' }}>{pg.group.name}</div>
+                    {url ? (
+                      <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 2, fontFamily: 'monospace', direction: 'ltr' as const }}>
+                        {url}
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: 12, color: '#f59e0b', marginTop: 2 }}>טרם נוצר קישור — כנסי לפרופיל הקבוצה ליצירת קישור</div>
+                    )}
+                  </div>
+                  {url && (
+                    <button
+                      onClick={() => copyLink(token!)}
+                      style={{
+                        background: copied === token ? '#f0fdf4' : '#f1f5f9',
+                        border: `1px solid ${copied === token ? '#86efac' : '#e2e8f0'}`,
+                        borderRadius: 8, padding: '7px 14px', cursor: 'pointer',
+                        fontSize: 12, color: copied === token ? '#15803d' : '#374151', fontWeight: 600,
+                      }}
+                    >{copied === token ? '✓ הועתק' : 'העתק קישור'}</button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : (
+        <div style={{
+          background: '#fff', border: '1.5px dashed #e2e8f0', borderRadius: 10, padding: '32px 24px',
+          textAlign: 'center' as const, color: '#94a3b8',
+        }}>
+          <div style={{ fontSize: 32, marginBottom: 10 }}>📅</div>
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6, color: '#374151' }}>
+            תכנון שבועי לא פעיל עדיין
+          </div>
+          <div style={{ fontSize: 13 }}>
+            כדי לאפשר פורטל תכנון אישי, הפעילי את מערכת המשימות בהגדרות הקבוצה
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -830,7 +926,7 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
           <FormsTab submissions={formSubmissions} loading={formSubmissionsLoading} />
         )}
         {activeTab === 'goals' && (
-          <PlaceholderTab icon="🎯" title="מטרות והתקדמות" subtitle="כאן יוצגו מטרות, אתגרים פעילים ומדדי התקדמות — בקרוב" />
+          <GoalsTab participantId={participant.id} participantGroups={participant.participantGroups} />
         )}
         {activeTab === 'collected' && (
           <CollectedInfoTab participant={participant} />

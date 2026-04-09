@@ -42,6 +42,7 @@ export class GroupsService {
           where: { isActive: true },
           include: { participant: { select: { id: true, firstName: true, lastName: true, phoneNumber: true } } },
           orderBy: { joinedAt: 'asc' },
+          // accessToken included for task portal links
         },
       },
     });
@@ -59,6 +60,7 @@ export class GroupsService {
         ...(dto.startDate !== undefined ? { startDate: dto.startDate ? new Date(dto.startDate) : null } : {}),
         ...(dto.endDate !== undefined ? { endDate: dto.endDate ? new Date(dto.endDate) : null } : {}),
         ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
+        ...(dto.taskEngineEnabled !== undefined ? { taskEngineEnabled: dto.taskEngineEnabled } : {}),
       },
     });
   }
