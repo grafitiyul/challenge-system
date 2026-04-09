@@ -41,7 +41,6 @@ interface ColumnMapping {
   phone?: number | null;
   email?: number | null;
   city?: number | null;
-  gender?: number | null;
   notes?: number | null;
 }
 
@@ -219,6 +218,10 @@ export default function ImportPage() {
   // ── Preview ──────────────────────────────────────────────────────────────────
 
   async function handlePreview() {
+    if (mapping.phone == null) {
+      setError('יש למפות מספר טלפון לפני המשך לתצוגה מקדימה.');
+      return;
+    }
     setError(null);
     setPreviewing(true);
     try {
@@ -397,7 +400,12 @@ export default function ImportPage() {
                 <MappingRow label="טלפון"    required field="phone"     mapping={mapping} csvHeaders={csvHeaders} csvRows={csvRows} onChange={updateMapping} />
                 <MappingRow label="שם פרטי"  field="firstName" mapping={mapping} csvHeaders={csvHeaders} csvRows={csvRows} onChange={updateMapping} />
                 <MappingRow label="שם משפחה" field="lastName"  mapping={mapping} csvHeaders={csvHeaders} csvRows={csvRows} onChange={updateMapping} />
-                <MappingRow label="שם מלא"   field="fullName"  mapping={mapping} csvHeaders={csvHeaders} csvRows={csvRows} onChange={updateMapping} />
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <MappingRow label="שם מלא" field="fullName" mapping={mapping} csvHeaders={csvHeaders} csvRows={csvRows} onChange={updateMapping} />
+                  <div style={{ paddingRight: 124, fontSize: 12, color: '#94a3b8', lineHeight: 1.4 }}>
+                    אם ממופה, המילה הראשונה תהפוך לשם פרטי, השאר לשם משפחה. ממלא רק כאשר שם פרטי ריק.
+                  </div>
+                </div>
                 <MappingRow label="מייל"     field="email"     mapping={mapping} csvHeaders={csvHeaders} csvRows={csvRows} onChange={updateMapping} />
                 <MappingRow label="עיר"      field="city"      mapping={mapping} csvHeaders={csvHeaders} csvRows={csvRows} onChange={updateMapping} />
               </div>
@@ -431,8 +439,7 @@ export default function ImportPage() {
                 </div>
               </div>
               <div style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-                <MappingRow label="מגדר"   field="gender" mapping={mapping} csvHeaders={csvHeaders} csvRows={csvRows} onChange={updateMapping} />
-                <MappingRow label="הערות"  field="notes"  mapping={mapping} csvHeaders={csvHeaders} csvRows={csvRows} onChange={updateMapping} />
+                <MappingRow label="הערות" field="notes" mapping={mapping} csvHeaders={csvHeaders} csvRows={csvRows} onChange={updateMapping} />
               </div>
             </div>
 
