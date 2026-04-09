@@ -11,6 +11,12 @@ import {
   UpdatePlanDto,
   ReorderItemDto,
 } from './dto/task-engine.dto';
+import {
+  buildDailySummaryMessage,
+  buildWeeklySummaryMessage,
+  DailySummaryData,
+  WeeklySummaryData,
+} from './task-engine.message-builder';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -336,7 +342,6 @@ export class TaskEngineService {
     });
     if (!assignment) throw new NotFoundException('Assignment not found');
     if (assignment.isCompleted) throw new BadRequestException('Cannot carry forward a completed task');
-    if (assignment.status === 'carried_forward') throw new BadRequestException('Already carried forward');
 
     const today = toMidnightUTC(new Date().toISOString().split('T')[0]);
 
@@ -345,32 +350,27 @@ export class TaskEngineService {
     if (dto.toDate) {
       toDate = toMidnightUTC(dto.toDate);
     } else if (dto.toWeekStart) {
-      // Same weekday but in target week
       const fromWeekday = assignment.scheduledDate.getUTCDay();
       const targetWeekSunday = toMidnightUTC(dto.toWeekStart);
       toDate = addDays(targetWeekSunday, fromWeekday);
     } else {
-      // Default: tomorrow
       toDate = addDays(today, 1);
     }
 
-    // Is this a genuine deferral? Only if the original scheduled date <= today.
     const isDeferral = assignment.scheduledDate <= today;
     const deferralType = dto.toWeekStart ? 'weekly' : 'daily';
 
-    // Count consecutive streaks
+    // Count consecutive streaks before the transaction
     let consecutiveDailyDeferrals = 0;
     let consecutiveWeeklyCarries = 0;
 
     if (isDeferral) {
-      // Look up most recent deferral events for this task in reverse order
       const recent = await this.prisma.deferralEvent.findMany({
         where: { taskId: assignment.taskId, isDeferral: true },
         orderBy: { createdAt: 'desc' },
         take: 20,
       });
-      // Count consecutive without a completion in between
-      // A completion resets the streak: check if task was completed between last event and now
+      // Use the composite index [taskId, completedAt] for this query
       const lastCompletion = await this.prisma.taskAssignment.findFirst({
         where: { taskId: assignment.taskId, isCompleted: true },
         orderBy: { completedAt: 'desc' },
@@ -378,24 +378,33 @@ export class TaskEngineService {
       const lastCompletionTime = lastCompletion?.completedAt ?? null;
 
       for (const e of recent) {
-        if (lastCompletionTime && e.createdAt < lastCompletionTime) break; // streak reset
+        if (lastCompletionTime && e.createdAt < lastCompletionTime) break;
         if (e.deferralType === 'daily') consecutiveDailyDeferrals++;
         if (e.deferralType === 'weekly') consecutiveWeeklyCarries++;
       }
-      // +1 for current event
       if (deferralType === 'daily') consecutiveDailyDeferrals++;
       else consecutiveWeeklyCarries++;
     }
 
-    // Execute atomically
-    const [, newAssignment] = await this.prisma.$transaction(async (tx) => {
-      // Mark old assignment as carried forward
-      const updated = await tx.taskAssignment.update({
-        where: { id: assignmentId },
-        data: { status: 'carried_forward', carriedToId: null }, // will update after new is created
+    // Execute atomically.
+    //
+    // Invariant: a TaskAssignment with status='scheduled' must produce at most one
+    // carried_forward child. We enforce this by using updateMany with a conditional
+    // WHERE status='scheduled' inside the transaction. If the row was already carried
+    // forward (e.g. a concurrent request beat us), updateMany returns count=0 and we
+    // throw — no partial write, no branching chains.
+    const newAssignment = await this.prisma.$transaction(async (tx) => {
+      // Atomic status guard: only updates if still 'scheduled'
+      const { count } = await tx.taskAssignment.updateMany({
+        where: { id: assignmentId, status: 'scheduled' },
+        data: { status: 'carried_forward' },
       });
+      if (count === 0) {
+        // Already carried forward or completed by a concurrent request
+        throw new BadRequestException('Assignment is already carried forward or completed');
+      }
 
-      // Create new assignment on target date
+      // Create the new assignment on the target date
       const created = await tx.taskAssignment.create({
         data: {
           taskId: assignment.taskId,
@@ -406,7 +415,7 @@ export class TaskEngineService {
         },
       });
 
-      // Link old → new
+      // Link old → new (completes the chain pointer)
       await tx.taskAssignment.update({
         where: { id: assignmentId },
         data: { carriedToId: created.id },
@@ -427,7 +436,7 @@ export class TaskEngineService {
         },
       });
 
-      return [updated, created];
+      return created;
     });
 
     return newAssignment;
@@ -498,44 +507,19 @@ export class TaskEngineService {
       weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC',
     });
 
-    const lines: string[] = [];
-    lines.push(`📋 *סיכום יומי — ${dateFormatted}*`);
-    lines.push('');
-
-    if (completed.length > 0) {
-      lines.push('✅ *הושלם היום:*');
-      completed.forEach((a) => lines.push(`• ${a.task.title}`));
-      lines.push('');
-    }
-
-    if (incomplete.length > 0) {
-      lines.push('⏳ *לא הושלם:*');
-      incomplete.forEach((a) => lines.push(`• ${a.task.title}`));
-      lines.push('');
-    }
-
-    if (carriedForward.length > 0) {
-      lines.push('↪️ *הועבר לתאריך אחר:*');
-      carriedForward.forEach((a) => lines.push(`• ${a.task.title}`));
-      lines.push('');
-    }
-
-    if (tomorrowAssignments.length > 0) {
-      lines.push('📅 *תוכנית למחר:*');
-      tomorrowAssignments.forEach((a) => {
-        const timeStr = a.startTime ? ` (${a.startTime})` : '';
-        lines.push(`• ${a.task.title}${timeStr}`);
-      });
-    }
-
-    return {
+    const summaryData: DailySummaryData = {
       participantName: participant ? `${participant.firstName} ${participant.lastName ?? ''}`.trim() : '',
       date: dateStr,
+      dateFormatted,
       completed: completed.map((a) => ({ taskId: a.taskId, title: a.task.title })),
       incomplete: incomplete.map((a) => ({ taskId: a.taskId, title: a.task.title })),
       carriedForward: carriedForward.map((a) => ({ taskId: a.taskId, title: a.task.title })),
       tomorrowPlan: tomorrowAssignments.map((a) => ({ taskId: a.taskId, title: a.task.title, startTime: a.startTime })),
-      messagePreview: lines.join('\n'),
+    };
+
+    return {
+      ...summaryData,
+      messagePreview: buildDailySummaryMessage(summaryData),
     };
   }
 
@@ -586,37 +570,20 @@ export class TaskEngineService {
     const weekEndStr = formatDate(addDays(plan.weekStart, 6));
     const weekStartStr = formatDate(plan.weekStart);
 
-    const lines: string[] = [];
-    lines.push(`📋 *סיכום שבועי — ${weekStartStr} עד ${weekEndStr}*`);
-    lines.push('');
-
-    if (goalStats.length > 0) {
-      lines.push('🎯 *יעדים שבועיים:*');
-      goalStats.forEach((gs) => {
-        lines.push(`• ${gs.goal.title}: ${gs.completed}/${gs.total} משימות הושלמו`);
-      });
-      lines.push('');
-    }
-
-    if (completedTasks.length > 0) {
-      lines.push('✅ *הושלם השבוע:*');
-      completedTasks.forEach((t) => lines.push(`• ${t.title}`));
-      lines.push('');
-    }
-
-    if (incompleteTasks.length > 0) {
-      lines.push('⏭️ *עובר לשבוע הבא:*');
-      incompleteTasks.forEach((t) => lines.push(`• ${t.title}`));
-    }
-
-    return {
+    const summaryData: WeeklySummaryData = {
       participantName: `${plan.participant.firstName} ${plan.participant.lastName ?? ''}`.trim(),
       weekStart: weekStartStr,
       weekEnd: weekEndStr,
       goalStats,
+      completedTasks: completedTasks.map((t) => ({ title: t.title })),
+      incompleteTasks: incompleteTasks.map((t) => ({ title: t.title })),
+    };
+
+    return {
+      ...summaryData,
       completedCount: completedTasks.length,
       incompleteCount: incompleteTasks.length,
-      messagePreview: lines.join('\n'),
+      messagePreview: buildWeeklySummaryMessage(summaryData),
     };
   }
 }

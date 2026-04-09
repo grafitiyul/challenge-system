@@ -963,6 +963,8 @@ model TaskAssignment {
 
   @@index([participantId, scheduledDate])
   @@index([taskId])
+  // Supports carry-forward streak query: findFirst(taskId, isCompleted=true) ORDER BY completedAt DESC
+  @@index([taskId, completedAt])
   @@map("task_assignments")
 }
 

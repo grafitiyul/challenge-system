@@ -77,11 +77,6 @@ function weekDays(sunday: Date): Date[] {
   return Array.from({ length: 7 }, (_, i) => addDays(sunday, i));
 }
 
-function dayLabel(d: Date): string {
-  const day = d.getDay();
-  return `${DAYS_HE[day]} ${d.getDate()}/${d.getMonth() + 1}`;
-}
-
 function formatDateHe(dateStr: string): string {
   const d = new Date(dateStr + 'T00:00:00');
   return `${d.getDate()}/${d.getMonth() + 1}`;
@@ -120,21 +115,6 @@ function getAssignmentsForDay(plan: WeekPlan, dateStr: string): Array<{ task: Ta
   });
 
   return result;
-}
-
-function getAllTasks(plan: WeekPlan): TaskShape[] {
-  const all: TaskShape[] = [];
-  for (const g of plan.goals) all.push(...g.tasks);
-  all.push(...plan.ungroupedTasks);
-  return all;
-}
-
-function getUnassignedTasks(plan: WeekPlan, weekDayStrs: string[]): TaskShape[] {
-  const all = getAllTasks(plan);
-  return all.filter((t) =>
-    !t.isAbandoned &&
-    !t.assignments.some((a) => weekDayStrs.includes(a.scheduledDate) && a.status !== 'carried_forward'),
-  );
 }
 
 // ─── Modal base ───────────────────────────────────────────────────────────────
@@ -579,6 +559,59 @@ function SummaryModal({ planId, participantId, mode, onClose }: {
   );
 }
 
+// ─── SVG icon buttons for assignment chip ────────────────────────────────────
+
+// Consistent 32×32 tap target, no emoji, cross-platform rendering
+function ChipIconBtn({
+  onClick, title, color, children,
+}: {
+  onClick: () => void;
+  title: string;
+  color: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        width: 32, height: 32, background: 'none', border: 'none',
+        borderRadius: 6, cursor: 'pointer', color, flexShrink: 0,
+        transition: 'background 0.1s',
+      }}
+      onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#f1f5f9'; }}
+      onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'none'; }}
+    >
+      {children}
+    </button>
+  );
+}
+
+// Clock icon (set time)
+const IconClock = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="10" />
+    <polyline points="12 6 12 12 16 14" />
+  </svg>
+);
+
+// Arrow forward icon (carry forward)
+const IconForward = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="15 17 20 12 15 7" />
+    <path d="M4 18v-2a4 4 0 0 1 4-4h12" />
+  </svg>
+);
+
+// X / remove icon
+const IconRemove = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+    <line x1="18" y1="6" x2="6" y2="18" />
+    <line x1="6" y1="6" x2="18" y2="18" />
+  </svg>
+);
+
 // ─── Assignment chip ──────────────────────────────────────────────────────────
 
 function AssignmentChip({
@@ -597,48 +630,47 @@ function AssignmentChip({
     <div style={{
       background: isCarried ? '#f8fafc' : '#fff',
       border: `1px solid ${isCarried ? '#e2e8f0' : assignment.isCompleted ? '#bbf7d0' : '#e2e8f0'}`,
-      borderRadius: 8, padding: '10px 12px', opacity: isCarried ? 0.6 : 1,
+      borderRadius: 8, padding: '8px 10px', opacity: isCarried ? 0.6 : 1,
     }}>
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         {!isCarried && (
           <input
             type="checkbox"
             checked={assignment.isCompleted}
             onChange={onToggle}
-            style={{ marginTop: 2, width: 16, height: 16, cursor: 'pointer', flexShrink: 0 }}
+            style={{ width: 16, height: 16, cursor: 'pointer', flexShrink: 0, accentColor: '#2563eb' }}
           />
         )}
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{
             fontSize: 13, fontWeight: 500, color: assignment.isCompleted ? '#94a3b8' : '#0f172a',
             textDecoration: assignment.isCompleted ? 'line-through' : 'none',
-            wordBreak: 'break-word',
+            wordBreak: 'break-word', lineHeight: 1.4,
           }}>
             {task.title}
           </div>
           {item.goalTitle && (
-            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>{item.goalTitle}</div>
+            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 1 }}>{item.goalTitle}</div>
           )}
           {(assignment.startTime || isCarried) && (
-            <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
-              {isCarried ? '↪️ הועבר' : `${assignment.startTime}${assignment.endTime ? ` — ${assignment.endTime}` : ''}`}
+            <div style={{ fontSize: 11, color: '#64748b', marginTop: 1 }}>
+              {isCarried
+                ? 'הועבר'
+                : `${assignment.startTime}${assignment.endTime ? ` — ${assignment.endTime}` : ''}`}
             </div>
           )}
         </div>
         {!isCarried && (
-          <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-            <button onClick={onEditTime} title="עדכן שעה" style={{
-              background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8',
-              fontSize: 13, padding: '2px 4px',
-            }}>🕐</button>
-            <button onClick={onCarry} title="העבר" style={{
-              background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8',
-              fontSize: 13, padding: '2px 4px',
-            }}>↪</button>
-            <button onClick={onRemove} title="הסר" style={{
-              background: 'none', border: 'none', cursor: 'pointer', color: '#fca5a5',
-              fontSize: 12, padding: '2px 4px',
-            }}>✕</button>
+          <div style={{ display: 'flex', gap: 0, flexShrink: 0 }}>
+            <ChipIconBtn onClick={onEditTime} title="עדכן שעה" color="#94a3b8">
+              <IconClock />
+            </ChipIconBtn>
+            <ChipIconBtn onClick={onCarry} title="העבר ליום אחר" color="#64748b">
+              <IconForward />
+            </ChipIconBtn>
+            <ChipIconBtn onClick={onRemove} title="הסר מיום זה" color="#f87171">
+              <IconRemove />
+            </ChipIconBtn>
           </div>
         )}
       </div>
@@ -651,11 +683,21 @@ function AssignmentChip({
 function TasksPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
+
+  // Derive initial state from URL — makes refresh deterministic
   const participantIdParam = searchParams.get('participantId') ?? '';
+  const weekParam = searchParams.get('week') ?? '';
 
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [participantId, setParticipantId] = useState(participantIdParam);
-  const [currentSunday, setCurrentSunday] = useState<Date>(() => weekSunday(new Date()));
+  const [currentSunday, setCurrentSunday] = useState<Date>(() => {
+    if (weekParam) {
+      // Parse the URL week param and snap to Sunday
+      const d = new Date(weekParam + 'T00:00:00');
+      return weekSunday(d);
+    }
+    return weekSunday(new Date());
+  });
   const [plan, setPlan] = useState<WeekPlan | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
@@ -673,7 +715,6 @@ function TasksPageInner() {
   const [summaryModal, setSubmmaryModal] = useState<'daily' | 'weekly' | null>(null);
 
   const days = weekDays(currentSunday);
-  const dayStrs = days.map(toDateStr);
   const today = toDateStr(new Date());
 
   // Load participants
@@ -703,14 +744,14 @@ function TasksPageInner() {
 
   useEffect(() => { loadPlan(); }, [loadPlan]);
 
-  // Sync participantId to URL
+  // Keep URL in sync with both participantId and currentSunday (week).
+  // This makes refresh, copy-link, and back-navigation all deterministic.
   useEffect(() => {
-    if (participantId) {
-      const url = new URL(window.location.href);
-      url.searchParams.set('participantId', participantId);
-      router.replace(url.pathname + url.search, { scroll: false });
-    }
-  }, [participantId, router]);
+    const params = new URLSearchParams();
+    if (participantId) params.set('participantId', participantId);
+    params.set('week', toDateStr(currentSunday));
+    router.replace(`/tasks?${params.toString()}`, { scroll: false });
+  }, [participantId, currentSunday, router]);
 
   async function handleToggleComplete(a: AssignmentShape) {
     try {
