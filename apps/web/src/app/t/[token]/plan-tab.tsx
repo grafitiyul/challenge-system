@@ -261,17 +261,34 @@ export function PlanTab({ token }: { token: string }) {
 
   // ─── Render: loading / error / disabled ─────────────────────────────────────
 
+  const rootStyle: React.CSSProperties = {
+    minHeight: '100vh',
+    background: '#f9fafb',
+    fontFamily: 'Arial, Helvetica, sans-serif',
+    direction: 'rtl',
+    maxWidth: 480,
+    margin: '0 auto',
+    position: 'relative',
+    overflowX: 'hidden',
+  };
+
   if (ctxLoading) return (
-    <div style={{ textAlign: 'center', padding: 40, color: '#9ca3af' }}>טוען...</div>
+    <div style={{ ...rootStyle, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ textAlign: 'center', padding: 40, color: '#9ca3af' }}>טוען...</div>
+    </div>
   );
   if (ctxErr || !ctx) return (
-    <div style={{ textAlign: 'center', padding: 40, color: '#ef4444', fontSize: 14 }}>{ctxErr || 'שגיאה'}</div>
+    <div style={{ ...rootStyle, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ textAlign: 'center', padding: 40, color: '#ef4444', fontSize: 14 }}>{ctxErr || 'שגיאה'}</div>
+    </div>
   );
   if (!ctx.taskEngineEnabled) return (
-    <div style={{ textAlign: 'center', padding: 40 }}>
-      <div style={{ fontSize: 40, marginBottom: 12 }}>🔒</div>
-      <div style={{ fontSize: 16, fontWeight: 600, color: '#374151', marginBottom: 8 }}>תוכנית אישית</div>
-      <div style={{ fontSize: 14, color: '#9ca3af' }}>התכונה הזו עדיין לא פעילה עבורך</div>
+    <div style={{ ...rootStyle, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ textAlign: 'center', padding: 40 }}>
+        <div style={{ fontSize: 40, marginBottom: 12 }}>🔒</div>
+        <div style={{ fontSize: 16, fontWeight: 600, color: '#374151', marginBottom: 8 }}>תוכנית אישית</div>
+        <div style={{ fontSize: 14, color: '#9ca3af' }}>התכונה הזו עדיין לא פעילה עבורך</div>
+      </div>
     </div>
   );
 
@@ -282,6 +299,7 @@ export function PlanTab({ token }: { token: string }) {
   // ─── Render ─────────────────────────────────────────────────────────────────
 
   return (
+    <div style={{ ...rootStyle, paddingBottom: 16 }}>
     <div style={{ padding: '0 0 16px' }}>
 
       {/* Week navigation */}
@@ -606,6 +624,7 @@ export function PlanTab({ token }: { token: string }) {
           onCarry={handleCarry}
         />
       )}
+    </div>
     </div>
   );
 }
