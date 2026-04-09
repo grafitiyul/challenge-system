@@ -853,7 +853,7 @@ export default function GroupDetailPage() {
                 {participants.map((pg, idx) => {
                   const p = pg.participant;
                   const portalUrl = pg.accessToken
-                    ? `${typeof window !== 'undefined' ? window.location.origin : ''}/t/${pg.accessToken}`
+                    ? `${typeof window !== 'undefined' ? window.location.origin : ''}/tg/${pg.accessToken}`
                     : null;
                   return (
                     <div key={pg.id} style={{

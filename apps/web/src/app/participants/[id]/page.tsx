@@ -396,7 +396,7 @@ function GoalsTab({ participantId, participantGroups }: {
   const taskGroups = participantGroups.filter((pg) => pg.group.taskEngineEnabled);
 
   function copyLink(token: string) {
-    const url = `${window.location.origin}/t/${token}`;
+    const url = `${window.location.origin}/tg/${token}`;
     navigator.clipboard.writeText(url).then(() => {
       setCopied(token);
       setTimeout(() => setCopied(null), 2000);
@@ -421,7 +421,7 @@ function GoalsTab({ participantId, participantGroups }: {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {taskGroups.map((pg) => {
               const token = pg.accessToken;
-              const url = token ? `${window.location.origin}/t/${token}` : null;
+              const url = token ? `${window.location.origin}/tg/${token}` : null;
               return (
                 <div key={pg.id} style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
                   {/* Group name bar */}
