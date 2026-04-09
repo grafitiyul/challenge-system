@@ -56,7 +56,11 @@ const DAYS_HE = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי
 const DAYS_SHORT = ['א׳', 'ב׳', 'ג׳', 'ד׳', 'ה׳', 'ו׳', 'ש׳'];
 
 function toDateStr(d: Date): string {
-  return d.toISOString().split('T')[0];
+  // Use LOCAL date methods — toISOString() returns UTC which is off-by-one for UTC+ timezones
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 }
 
 function weekSunday(d: Date): Date {
@@ -79,7 +83,7 @@ function weekDays(sunday: Date): Date[] {
 
 function formatDateHe(dateStr: string): string {
   const d = new Date(dateStr + 'T00:00:00');
-  return `${d.getDate()}/${d.getMonth() + 1}`;
+  return `${d.getDate()}/${d.getMonth() + 1}/${String(d.getFullYear()).slice(2)}`;
 }
 
 function isSameDay(a: Date, b: Date): boolean {
@@ -628,9 +632,11 @@ function AssignmentChip({
 
   return (
     <div style={{
-      background: isCarried ? '#f8fafc' : '#fff',
-      border: `1px solid ${isCarried ? '#e2e8f0' : assignment.isCompleted ? '#bbf7d0' : '#e2e8f0'}`,
-      borderRadius: 8, padding: '8px 10px', opacity: isCarried ? 0.6 : 1,
+      background: isCarried ? '#fffbeb' : assignment.isCompleted ? '#f0fdf4' : '#fff',
+      border: `1px solid ${isCarried ? '#fde68a' : assignment.isCompleted ? '#86efac' : '#e2e8f0'}`,
+      borderLeft: `3px solid ${isCarried ? '#f59e0b' : assignment.isCompleted ? '#22c55e' : '#e2e8f0'}`,
+      borderRadius: 8, padding: '8px 10px', opacity: isCarried ? 0.75 : 1,
+      boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         {!isCarried && (
@@ -689,7 +695,14 @@ function TasksPageInner() {
   const weekParam = searchParams.get('week') ?? '';
 
   const [participants, setParticipants] = useState<Participant[]>([]);
-  const [participantId, setParticipantId] = useState(participantIdParam);
+  const [participantId, setParticipantId] = useState<string>(() => {
+    // Priority: URL param → localStorage → empty
+    if (participantIdParam) return participantIdParam;
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('tasks_participantId') ?? '';
+    }
+    return '';
+  });
   const [currentSunday, setCurrentSunday] = useState<Date>(() => {
     if (weekParam) {
       // Parse the URL week param and snap to Sunday
@@ -720,12 +733,9 @@ function TasksPageInner() {
   // Load participants
   useEffect(() => {
     apiFetch<Participant[]>(`${BASE_URL}/participants?limit=200`, { cache: 'no-store' })
-      .then((data) => {
-        setParticipants(data);
-        if (!participantId && data.length > 0) setParticipantId(data[0].id);
-      })
+      .then((data) => { setParticipants(data); })
       .catch(() => {});
-  }, [participantId]);
+  }, []);
 
   // Load plan
   const loadPlan = useCallback(() => {
@@ -744,14 +754,22 @@ function TasksPageInner() {
 
   useEffect(() => { loadPlan(); }, [loadPlan]);
 
-  // Keep URL in sync with both participantId and currentSunday (week).
-  // This makes refresh, copy-link, and back-navigation all deterministic.
+  // Keep URL + localStorage in sync with participantId and currentSunday.
   useEffect(() => {
     const params = new URLSearchParams();
-    if (participantId) params.set('participantId', participantId);
+    if (participantId) {
+      params.set('participantId', participantId);
+      localStorage.setItem('tasks_participantId', participantId);
+    }
     params.set('week', toDateStr(currentSunday));
     router.replace(`/tasks?${params.toString()}`, { scroll: false });
   }, [participantId, currentSunday, router]);
+
+  function handleChangeParticipant(id: string) {
+    setParticipantId(id);
+    if (id) localStorage.setItem('tasks_participantId', id);
+    else localStorage.removeItem('tasks_participantId');
+  }
 
   async function handleToggleComplete(a: AssignmentShape) {
     try {
@@ -825,10 +843,13 @@ function TasksPageInner() {
       }}>
         {/* Day header */}
         <div style={{
-          background: isToday ? '#2563eb' : '#f8fafc',
-          border: `1px solid ${isToday ? '#2563eb' : '#e2e8f0'}`,
+          background: isToday
+            ? 'linear-gradient(135deg, #2563eb 0%, #0ea5e9 100%)'
+            : '#f8fafc',
+          border: `1.5px solid ${isToday ? '#2563eb' : '#e2e8f0'}`,
           borderRadius: 8, padding: compact ? '6px 10px' : '8px 12px',
           textAlign: 'center' as const,
+          boxShadow: isToday ? '0 2px 8px rgba(37,99,235,0.25)' : 'none',
         }}>
           <div style={{
             fontSize: compact ? 11 : 12, fontWeight: 700,
@@ -842,6 +863,9 @@ function TasksPageInner() {
           }}>
             {formatDateHe(str)}
           </div>
+          {isToday && !compact && (
+            <div style={{ fontSize: 9, color: '#93c5fd', marginTop: 2, letterSpacing: '0.04em' }}>היום</div>
+          )}
         </div>
 
         {/* Assignments */}
@@ -849,10 +873,12 @@ function TasksPageInner() {
           {items.map(renderAssignmentChip)}
           {items.length === 0 && (
             <div style={{
-              border: '1.5px dashed #e2e8f0', borderRadius: 8,
-              padding: '14px 0', textAlign: 'center' as const, color: '#cbd5e1', fontSize: 11,
+              border: `1.5px dashed ${isToday ? '#bfdbfe' : '#e2e8f0'}`,
+              borderRadius: 8,
+              padding: '14px 0', textAlign: 'center' as const,
+              color: isToday ? '#93c5fd' : '#cbd5e1', fontSize: 11,
             }}>
-              אין משימות
+              {isToday ? 'פנוי!' : '—'}
             </div>
           )}
         </div>
@@ -865,16 +891,24 @@ function TasksPageInner() {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         {/* Goals list */}
-        {plan.goals.map((goal) => (
+        {plan.goals.map((goal, gIdx) => {
+          const goalColors = [
+            { bg: 'linear-gradient(90deg, #eff6ff, #f8fafc)', border: '#bfdbfe', title: '#1d4ed8' },
+            { bg: 'linear-gradient(90deg, #f0fdf4, #f8fafc)', border: '#86efac', title: '#15803d' },
+            { bg: 'linear-gradient(90deg, #fdf4ff, #f8fafc)', border: '#e9d5ff', title: '#7e22ce' },
+            { bg: 'linear-gradient(90deg, #fff7ed, #f8fafc)', border: '#fed7aa', title: '#c2410c' },
+          ];
+          const gc = goalColors[gIdx % goalColors.length];
+          return (
           <div key={goal.id} style={{
             background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10,
-            overflow: 'hidden',
+            overflow: 'hidden', boxShadow: '0 1px 4px rgba(0,0,0,0.04)',
           }}>
             <div style={{
               display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              padding: '10px 14px', background: '#f8fafc', borderBottom: '1px solid #e2e8f0',
+              padding: '10px 14px', background: gc.bg, borderBottom: `1px solid ${gc.border}`,
             }}>
-              <span style={{ fontSize: 13, fontWeight: 700, color: '#0f172a' }}>{goal.title}</span>
+              <span style={{ fontSize: 13, fontWeight: 700, color: gc.title }}>{goal.title}</span>
               <div style={{ display: 'flex', gap: 6 }}>
                 <button onClick={() => setAddTaskModal({ open: true, goalId: goal.id })} style={{
                   background: 'none', border: 'none', cursor: 'pointer', color: '#2563eb',
@@ -908,7 +942,8 @@ function TasksPageInner() {
               )}
             </div>
           </div>
-        ))}
+          );
+        })}
 
         {/* Ungrouped tasks */}
         {plan.ungroupedTasks.length > 0 && (
@@ -1105,61 +1140,94 @@ function TasksPageInner() {
   return (
     <div style={{ maxWidth: 1400, margin: '0 auto' }}>
       {/* Page header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0f172a', margin: 0 }}>תכנון שבועי</h1>
-          {participantName && (
-            <div style={{ fontSize: 13, color: '#64748b', marginTop: 2 }}>מתכנן עבור: {participantName}</div>
-          )}
-        </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          {/* Participant selector */}
-          <select
-            value={participantId}
-            onChange={(e) => setParticipantId(e.target.value)}
-            style={{ ...inputSt, width: 'auto', minWidth: 150, fontSize: 13, padding: '7px 10px' }}
-          >
-            <option value="">— בחר משתתפת —</option>
-            {participants.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.firstName} {p.lastName ?? ''}
-              </option>
-            ))}
-          </select>
-          {/* Summary buttons */}
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginBottom: 12 }}>
+          <h1 style={{ fontSize: 24, fontWeight: 800, color: '#0f172a', margin: 0, letterSpacing: '-0.3px' }}>תכנון שבועי</h1>
           {plan && (
-            <>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <button onClick={() => setSubmmaryModal('daily')} style={{ ...btnSecondary, fontSize: 12, padding: '7px 12px' }}>
                 סיכום יומי
               </button>
               <button onClick={() => setSubmmaryModal('weekly')} style={{ ...btnSecondary, fontSize: 12, padding: '7px 12px' }}>
                 סיכום שבועי
               </button>
-            </>
+            </div>
           )}
         </div>
+
+        {/* Participant context strip */}
+        {participantId && selectedParticipant ? (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 12,
+            background: 'linear-gradient(135deg, #eff6ff 0%, #f0fdf4 100%)',
+            border: '1px solid #bfdbfe', borderRadius: 10,
+            padding: '10px 16px',
+          }}>
+            <div style={{
+              width: 36, height: 36, borderRadius: '50%',
+              background: 'linear-gradient(135deg, #2563eb, #0ea5e9)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: '#fff', fontSize: 15, fontWeight: 700, flexShrink: 0,
+            }}>
+              {selectedParticipant.firstName.charAt(0)}
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: '#1e40af' }}>{participantName}</div>
+              <div style={{ fontSize: 11, color: '#60a5fa', marginTop: 1 }}>מתכנן שבועי פעיל</div>
+            </div>
+            <select
+              value={participantId}
+              onChange={(e) => handleChangeParticipant(e.target.value)}
+              style={{ ...inputSt, width: 'auto', minWidth: 100, fontSize: 12, padding: '5px 8px', background: 'transparent', border: '1px solid #93c5fd', color: '#1d4ed8' }}
+            >
+              {participants.map((p) => (
+                <option key={p.id} value={p.id}>{p.firstName} {p.lastName ?? ''}</option>
+              ))}
+            </select>
+          </div>
+        ) : (
+          <div style={{
+            background: '#fafafa', border: '2px dashed #cbd5e1', borderRadius: 12,
+            padding: '20px 24px', textAlign: 'center' as const,
+          }}>
+            <div style={{ fontSize: 14, color: '#64748b', marginBottom: 12 }}>בחרי משתתפת כדי להתחיל את התכנון השבועי</div>
+            <select
+              value={participantId}
+              onChange={(e) => handleChangeParticipant(e.target.value)}
+              style={{ ...inputSt, width: 'auto', minWidth: 220, fontSize: 14, padding: '9px 12px', margin: '0 auto' }}
+            >
+              <option value="">— בחר משתתפת —</option>
+              {participants.map((p) => (
+                <option key={p.id} value={p.id}>{p.firstName} {p.lastName ?? ''}</option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
       {/* Week navigation */}
       <div style={{
-        display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20,
-        background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10,
-        padding: '10px 16px',
+        display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20,
+        background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12,
+        padding: '10px 16px', boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
       }}>
         <button onClick={() => setCurrentSunday(addDays(currentSunday, -7))} style={{
-          background: 'none', border: '1px solid #e2e8f0', borderRadius: 6,
-          padding: '5px 12px', cursor: 'pointer', fontSize: 13, color: '#374151',
+          background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8,
+          padding: '6px 14px', cursor: 'pointer', fontSize: 13, color: '#374151', fontWeight: 600,
         }}>← קודם</button>
-        <div style={{ flex: 1, textAlign: 'center', fontSize: 14, fontWeight: 600, color: '#0f172a' }}>
-          {weekLabel}
+        <div style={{ flex: 1, textAlign: 'center' as const }}>
+          <span style={{
+            display: 'inline-block', fontSize: 15, fontWeight: 700, color: '#1e293b',
+            background: '#f1f5f9', borderRadius: 8, padding: '4px 16px',
+          }}>{weekLabel}</span>
         </div>
         <button onClick={() => setCurrentSunday(weekSunday(new Date()))} style={{
-          background: 'none', border: '1px solid #e2e8f0', borderRadius: 6,
-          padding: '5px 12px', cursor: 'pointer', fontSize: 12, color: '#64748b',
+          background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8,
+          padding: '6px 12px', cursor: 'pointer', fontSize: 12, color: '#2563eb', fontWeight: 600,
         }}>השבוע</button>
         <button onClick={() => setCurrentSunday(addDays(currentSunday, 7))} style={{
-          background: 'none', border: '1px solid #e2e8f0', borderRadius: 6,
-          padding: '5px 12px', cursor: 'pointer', fontSize: 13, color: '#374151',
+          background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8,
+          padding: '6px 14px', cursor: 'pointer', fontSize: 13, color: '#374151', fontWeight: 600,
         }}>הבא →</button>
       </div>
 
@@ -1170,13 +1238,7 @@ function TasksPageInner() {
         }}>{err}</div>
       )}
 
-      {!participantId ? (
-        <div style={{
-          textAlign: 'center', padding: 60, color: '#94a3b8', fontSize: 15,
-        }}>
-          בחרי משתתפת כדי לראות ולערוך את התכנון השבועי
-        </div>
-      ) : (
+      {participantId && (
         <>
           {/* Desktop vs mobile */}
           <div className="tasks-desktop">{renderDesktop()}</div>
