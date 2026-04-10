@@ -961,14 +961,14 @@ export function TaskBoard({
         <div style={{
           background: isToday ? 'linear-gradient(135deg, #2563eb 0%, #0ea5e9 100%)' : '#f8fafc',
           border: `1.5px solid ${isToday ? '#2563eb' : '#e2e8f0'}`,
-          borderRadius: 8, padding: compact ? '6px 10px' : '8px 12px',
+          borderRadius: 8, padding: compact ? '6px 10px' : '8px 6px',
           textAlign: 'center' as const,
           boxShadow: isToday ? '0 2px 8px rgba(37,99,235,0.25)' : 'none',
         }}>
           <div style={{ fontSize: compact ? 11 : 12, fontWeight: 700, color: isToday ? '#fff' : '#374151' }}>
             {compact ? DAYS_SHORT[dayIdx] : DAYS_HE[dayIdx]}
           </div>
-          <div style={{ fontSize: compact ? 10 : 11, color: isToday ? '#dbeafe' : '#64748b', marginTop: 1, whiteSpace: 'nowrap' }} dir="ltr">
+          <div style={{ fontSize: compact ? 10 : 12, fontWeight: compact ? 400 : 600, color: isToday ? '#fff' : '#1e293b', marginTop: 2, whiteSpace: 'nowrap' }} dir="ltr">
             {formatDateHe(str)}
           </div>
           {isToday && !compact && (
