@@ -330,24 +330,54 @@ export function PlanTab({ token }: { token: string }) {
       {/* ── Participant header ─────────────────────────────────────────────── */}
       <div style={{
         background: 'linear-gradient(135deg, #1d4ed8 0%, #2563eb 100%)',
-        padding: '16px 16px 18px',
+        padding: '12px 16px 14px',
         display: 'flex', alignItems: 'center', gap: 12,
       }}>
         <div style={{
-          width: 46, height: 46, borderRadius: '50%',
+          width: 44, height: 44, borderRadius: '50%',
           background: 'rgba(255,255,255,0.22)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 20, fontWeight: 700, color: '#fff', flexShrink: 0,
+          fontSize: 18, fontWeight: 700, color: '#fff', flexShrink: 0,
           border: '2px solid rgba(255,255,255,0.35)',
         }}>
           {ctx.participantFirstName.charAt(0)}
         </div>
-        <div>
-          <div style={{ fontSize: 17, fontWeight: 700, color: '#fff', lineHeight: 1.2 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: '#fff', lineHeight: 1.2, overflowWrap: 'break-word' }}>
             {ctx.participantName}
           </div>
-          <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.75)', marginTop: 3 }}>תכנון שבועי</div>
+          <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>תכנון שבועי</div>
         </div>
+        {plan && (() => {
+          const dayNormal = selectedItems.filter(i => i.assignment.status !== 'carried_forward');
+          const dayDone = dayNormal.filter(i => i.assignment.isCompleted).length;
+          const allWeek = days.flatMap(d => getAssignmentsForDay(plan, toDateStr(d))).filter(i => i.assignment.status !== 'carried_forward');
+          const weekDone = allWeek.filter(i => i.assignment.isCompleted).length;
+          return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-start', flexShrink: 0 }}>
+              {dayNormal.length > 0 && (
+                <div style={{
+                  fontSize: 11, fontWeight: 600,
+                  color: dayDone === dayNormal.length ? '#bbf7d0' : 'rgba(255,255,255,0.9)',
+                  background: 'rgba(255,255,255,0.15)', borderRadius: 6, padding: '3px 8px',
+                  whiteSpace: 'nowrap',
+                }}>
+                  יומי {dayDone}/{dayNormal.length}
+                </div>
+              )}
+              {allWeek.length > 0 && (
+                <div style={{
+                  fontSize: 11, fontWeight: 600,
+                  color: weekDone === allWeek.length ? '#bbf7d0' : 'rgba(255,255,255,0.9)',
+                  background: 'rgba(255,255,255,0.15)', borderRadius: 6, padding: '3px 8px',
+                  whiteSpace: 'nowrap',
+                }}>
+                  שבועי {weekDone}/{allWeek.length}
+                </div>
+              )}
+            </div>
+          );
+        })()}
       </div>
 
       {/* ── Week navigation ────────────────────────────────────────────────── */}
@@ -426,24 +456,49 @@ export function PlanTab({ token }: { token: string }) {
         )}
       </div>
 
-      {/* ── Daily summary ─────────────────────────────────────────────────── */}
+      {/* ── Summaries (daily + weekly grouped together) ───────────────────── */}
       {plan && (() => {
         const dayItems = selectedItems.filter(i => i.assignment.status !== 'carried_forward');
-        const total = dayItems.length;
-        if (total === 0) return null;
-        const done = dayItems.filter(i => i.assignment.isCompleted).length;
-        const pct = Math.round((done / total) * 100);
+        const allWeek = days.flatMap(d => getAssignmentsForDay(plan, toDateStr(d))).filter(i => i.assignment.status !== 'carried_forward');
+        const dayTotal = dayItems.length;
+        const dayDone = dayItems.filter(i => i.assignment.isCompleted).length;
+        const weekTotal = allWeek.length;
+        const weekDone = allWeek.filter(i => i.assignment.isCompleted).length;
+        if (dayTotal === 0 && weekTotal === 0) return null;
         return (
-          <div style={{ margin: '0 16px 8px', background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '10px 14px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-              <span style={{ fontSize: 12, fontWeight: 700, color: '#374151' }}>סיכום יומי</span>
-              <span style={{ fontSize: 12, color: pct === 100 ? '#15803d' : '#6b7280', fontWeight: 600 }}>
-                {done}/{total} {pct === 100 ? '✅ הכול הושלם!' : `(${pct}%)`}
-              </span>
-            </div>
-            <div style={{ height: 6, background: '#f3f4f6', borderRadius: 3, overflow: 'hidden' }}>
-              <div style={{ height: '100%', width: `${pct}%`, background: pct === 100 ? '#22c55e' : '#1d4ed8', borderRadius: 3, transition: 'width 0.3s' }} />
-            </div>
+          <div style={{ margin: '0 16px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {dayTotal > 0 && (() => {
+              const pct = Math.round((dayDone / dayTotal) * 100);
+              return (
+                <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '10px 14px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: '#374151' }}>סיכום יומי</span>
+                    <span style={{ fontSize: 12, color: pct === 100 ? '#15803d' : '#6b7280', fontWeight: 600 }}>
+                      {dayDone}/{dayTotal} {pct === 100 ? '✅ הכול הושלם!' : `(${pct}%)`}
+                    </span>
+                  </div>
+                  <div style={{ height: 6, background: '#f3f4f6', borderRadius: 3, overflow: 'hidden' }}>
+                    <div style={{ height: '100%', width: `${pct}%`, background: pct === 100 ? '#22c55e' : '#1d4ed8', borderRadius: 3, transition: 'width 0.3s' }} />
+                  </div>
+                </div>
+              );
+            })()}
+            {weekTotal > 0 && (() => {
+              const pct = Math.round((weekDone / weekTotal) * 100);
+              return (
+                <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '10px 14px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: '#374151' }}>סיכום שבועי</span>
+                    <span style={{ fontSize: 12, color: pct === 100 ? '#15803d' : '#6b7280', fontWeight: 600 }}>
+                      {weekDone}/{weekTotal} {pct === 100 ? '✅' : `(${pct}%)`}
+                    </span>
+                  </div>
+                  <div style={{ height: 6, background: '#f3f4f6', borderRadius: 3, overflow: 'hidden' }}>
+                    <div style={{ height: '100%', width: `${pct}%`, background: pct === 100 ? '#22c55e' : '#1d4ed8', borderRadius: 3, transition: 'width 0.3s' }} />
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         );
       })()}
@@ -504,28 +559,6 @@ export function PlanTab({ token }: { token: string }) {
                 </div>
               </div>
             )}
-
-            {/* Weekly summary */}
-            {(() => {
-              const allItems = days.flatMap(d => getAssignmentsForDay(plan, toDateStr(d))).filter(i => i.assignment.status !== 'carried_forward');
-              const weekTotal = allItems.length;
-              if (weekTotal === 0) return null;
-              const weekDone = allItems.filter(i => i.assignment.isCompleted).length;
-              const weekPct = Math.round((weekDone / weekTotal) * 100);
-              return (
-                <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '10px 14px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                    <span style={{ fontSize: 12, fontWeight: 700, color: '#374151' }}>סיכום שבועי</span>
-                    <span style={{ fontSize: 12, color: weekPct === 100 ? '#15803d' : '#6b7280', fontWeight: 600 }}>
-                      {weekDone}/{weekTotal} {weekPct === 100 ? '✅' : `(${weekPct}%)`}
-                    </span>
-                  </div>
-                  <div style={{ height: 6, background: '#f3f4f6', borderRadius: 3, overflow: 'hidden' }}>
-                    <div style={{ height: '100%', width: `${weekPct}%`, background: weekPct === 100 ? '#22c55e' : '#1d4ed8', borderRadius: 3, transition: 'width 0.3s' }} />
-                  </div>
-                </div>
-              );
-            })()}
 
             {/* Add buttons */}
             <div style={{ display: 'flex', gap: 8 }}>

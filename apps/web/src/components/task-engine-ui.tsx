@@ -159,12 +159,12 @@ export function TaskPoolRow({
               border: 'none',
               cursor: 'pointer',
               color: '#fca5a5',
-              fontSize: compact ? 11 : 16,
+              fontSize: compact ? 11 : 14,
               padding: '2px 3px',
               lineHeight: 1,
             }}
             title="מחק משימה"
-          >✕</button>
+          >🗑️</button>
         </div>
       )}
     </div>
@@ -270,10 +270,10 @@ export function DayTaskCard({
                 cursor: 'pointer',
                 color: '#fca5a5',
                 padding: '2px 4px',
-                fontSize: 16,
+                fontSize: 14,
               }}
               title="הסר מהיום"
-            >✕</button>
+            >🗑️</button>
           </div>
         )}
       </div>
