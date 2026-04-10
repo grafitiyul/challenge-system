@@ -33,6 +33,7 @@ interface TaskShape {
   id: string;
   title: string;
   notes: string | null;
+  startTime?: string | null;
   sortOrder: number;
   isAbandoned: boolean;
   goalId: string | null;
@@ -178,7 +179,7 @@ export function PlanTab({ token }: { token: string }) {
   const [addGoalOpen, setAddGoalOpen] = useState(false);
   const [addTaskGoalId, setAddTaskGoalId] = useState<string | undefined>(undefined);
   const [addTaskOpen, setAddTaskOpen] = useState(false);
-  const [carryTarget, setCarryTarget] = useState<{ assignmentId: string; taskTitle: string } | null>(null);
+  const [scheduleTarget, setScheduleTarget] = useState<{ task: TaskShape } | null>(null);
   const [editGoal, setEditGoal] = useState<GoalShape | null>(null);
   const [editTask, setEditTask] = useState<TaskShape | null>(null);
   const [confirmState, setConfirmState] = useState<{
@@ -255,14 +256,6 @@ export function PlanTab({ token }: { token: string }) {
       setNewNote('');
       loadNotes();
     } finally { setSendingNote(false); }
-  }
-
-  async function handleCarry(assignmentId: string, toDate: string) {
-    await apiFetch(`${BASE_URL}/task-engine/assignments/${assignmentId}/carry`, {
-      method: 'POST', body: JSON.stringify({ toDate }),
-    }).catch(() => {});
-    setCarryTarget(null);
-    loadPlan();
   }
 
   function handleDeleteGoal(goalId: string) {
@@ -362,7 +355,7 @@ export function PlanTab({ token }: { token: string }) {
           const dayIdx = d.getDay();
           const assignCount = plan ? getAssignmentsForDay(plan, str).filter(i => !i.assignment.isCompleted && i.assignment.status !== 'carried_forward').length : 0;
           return (
-            <button key={str} onClick={() => setSelectedDay(str)} style={{
+            <button key={str} data-day={str} onClick={() => setSelectedDay(str)} style={{
               flexShrink: 0, minWidth: 48, padding: '8px 4px', borderRadius: 10, cursor: 'pointer',
               textAlign: 'center' as const, border: `1.5px solid ${isSel ? '#1d4ed8' : isToday ? '#93c5fd' : '#e5e7eb'}`,
               background: isSel ? '#1d4ed8' : isToday ? '#eff6ff' : '#f9fafb',
@@ -431,11 +424,6 @@ export function PlanTab({ token }: { token: string }) {
                     {!isCarried && !assignment.isCompleted && (
                       <div style={{ display: 'flex', gap: 2, flexShrink: 0 }}>
                         <button
-                          onClick={() => setCarryTarget({ assignmentId: assignment.id, taskTitle: task.title })}
-                          style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af', padding: '2px 4px', fontSize: 16 }}
-                          title="העבר ליום אחר"
-                        >↩</button>
-                        <button
                           onClick={() => handleRemoveAssignment(assignment.id)}
                           style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#fca5a5', padding: '2px 4px', fontSize: 16 }}
                           title="הסר מהיום"
@@ -482,7 +470,7 @@ export function PlanTab({ token }: { token: string }) {
                   </div>
                   <div style={{ padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 4 }}>
                     {goal.tasks.map((t) => (
-                      <div key={t.id} style={{
+                      <div key={t.id} data-task-id={t.id} style={{
                         display: 'flex', alignItems: 'center', gap: 6,
                         padding: '8px 10px', background: '#f9fafb', borderRadius: 8,
                       }}>
@@ -497,14 +485,9 @@ export function PlanTab({ token }: { token: string }) {
                             title="ערוך משימה"
                           >✏️</button>
                           <button
-                            onClick={() => {
-                              apiFetch(`${BASE_URL}/task-engine/tasks/${t.id}/assign`, {
-                                method: 'POST',
-                                body: JSON.stringify({ scheduledDate: selectedDay }),
-                              }).then(() => loadPlan()).catch(() => {});
-                            }}
-                            style={{ background: 'none', border: '1px solid #e5e7eb', borderRadius: 6, cursor: 'pointer', color: '#1d4ed8', fontSize: 11, padding: '3px 8px' }}
-                          >+ שבץ</button>
+                            onClick={() => setScheduleTarget({ task: t })}
+                            style={{ background: 'none', border: '1px solid #bfdbfe', borderRadius: 6, cursor: 'pointer', color: '#1d4ed8', fontSize: 11, padding: '3px 8px', fontWeight: 600 }}
+                          >{t.assignments.length === 0 ? '📅 שבץ' : '📅 העבר יום'}</button>
                           <button
                             onClick={() => handleDeleteTask(t.id)}
                             style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#fca5a5', fontSize: 16, padding: '2px 3px', lineHeight: 1 }}
@@ -533,7 +516,7 @@ export function PlanTab({ token }: { token: string }) {
                 </div>
                 <div style={{ padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 4 }}>
                   {plan.ungroupedTasks.map((t) => (
-                    <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 10px', background: '#f9fafb', borderRadius: 8 }}>
+                    <div key={t.id} data-task-id={t.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 10px', background: '#f9fafb', borderRadius: 8 }}>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 13, color: '#374151' }}>{t.title}</div>
                         {t.notes && <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>{t.notes}</div>}
@@ -545,14 +528,9 @@ export function PlanTab({ token }: { token: string }) {
                           title="ערוך משימה"
                         >✏️</button>
                         <button
-                          onClick={() => {
-                            apiFetch(`${BASE_URL}/task-engine/tasks/${t.id}/assign`, {
-                              method: 'POST',
-                              body: JSON.stringify({ scheduledDate: selectedDay }),
-                            }).then(() => loadPlan()).catch(() => {});
-                          }}
-                          style={{ background: 'none', border: '1px solid #e5e7eb', borderRadius: 6, cursor: 'pointer', color: '#1d4ed8', fontSize: 11, padding: '3px 8px' }}
-                        >+ שבץ</button>
+                          onClick={() => setScheduleTarget({ task: t })}
+                          style={{ background: 'none', border: '1px solid #bfdbfe', borderRadius: 6, cursor: 'pointer', color: '#1d4ed8', fontSize: 11, padding: '3px 8px', fontWeight: 600 }}
+                        >{t.assignments.length === 0 ? '📅 שבץ' : '📅 העבר יום'}</button>
                         <button
                           onClick={() => handleDeleteTask(t.id)}
                           style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#fca5a5', fontSize: 16, padding: '2px 3px', lineHeight: 1 }}
@@ -720,15 +698,14 @@ export function PlanTab({ token }: { token: string }) {
         />
       )}
 
-      {/* Carry Forward */}
-      {carryTarget && (
-        <CarryModal
-          assignmentId={carryTarget.assignmentId}
-          taskTitle={carryTarget.taskTitle}
+      {/* Schedule / Move */}
+      {scheduleTarget && (
+        <ScheduleModal
+          task={scheduleTarget.task}
           days={days}
           today={today}
-          onClose={() => setCarryTarget(null)}
-          onCarry={handleCarry}
+          onClose={() => setScheduleTarget(null)}
+          onDone={() => { setScheduleTarget(null); loadPlan(); }}
         />
       )}
     </div>
@@ -920,6 +897,7 @@ function EditTaskModal({ task, goals, onClose, onDone }: { task: TaskShape; goal
   const [title, setTitle] = useState(task.title);
   const [goalId, setGoalId] = useState(task.goalId ?? '');
   const [notes, setNotes] = useState(task.notes ?? '');
+  const [startTime, setStartTime] = useState(task.startTime ?? '');
   const [saving, setSaving] = useState(false);
 
   async function handleSave() {
@@ -928,7 +906,12 @@ function EditTaskModal({ task, goals, onClose, onDone }: { task: TaskShape; goal
     try {
       await apiFetch(`${BASE_URL}/task-engine/tasks/${task.id}`, {
         method: 'PATCH',
-        body: JSON.stringify({ title: title.trim(), goalId: goalId || null, notes: notes.trim() || null }),
+        body: JSON.stringify({
+          title: title.trim(),
+          goalId: goalId || null,
+          notes: notes.trim() || null,
+          startTime: startTime || null,
+        }),
       });
       onDone();
     } finally { setSaving(false); }
@@ -943,6 +926,15 @@ function EditTaskModal({ task, goals, onClose, onDone }: { task: TaskShape; goal
           {goals.map((g) => <option key={g.id} value={g.id}>{g.title}</option>)}
         </select>
         <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="הערות (אופציונלי)" style={{ ...inp, minHeight: 60, resize: 'vertical' as const }} />
+        <div>
+          <div style={{ fontSize: 13, color: '#6b7280', marginBottom: 4 }}>שעה (אופציונלי)</div>
+          <input
+            type="time"
+            value={startTime}
+            onChange={(e) => setStartTime(e.target.value)}
+            style={{ ...inp, direction: 'ltr' }}
+          />
+        </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button onClick={onClose} style={{ ...btnS, flex: 1 }}>ביטול</button>
           <button onClick={handleSave} disabled={saving || !title.trim()} style={{ ...btnP, flex: 1, opacity: saving || !title.trim() ? 0.6 : 1 }}>{saving ? '...' : 'שמור'}</button>
@@ -952,22 +944,42 @@ function EditTaskModal({ task, goals, onClose, onDone }: { task: TaskShape; goal
   );
 }
 
-// ─── Carry Forward Modal ──────────────────────────────────────────────────────
+// ─── Schedule Modal ───────────────────────────────────────────────────────────
+// Shared modal for both "שבץ" (new assignment) and "העבר יום" (move existing).
+// No outside-click dismiss — uses Modal's ✕ button only.
 
-function CarryModal({ assignmentId, taskTitle, days, today, onClose, onCarry }: {
-  assignmentId: string; taskTitle: string; days: Date[]; today: string;
-  onClose: () => void; onCarry: (id: string, toDate: string) => void;
+function ScheduleModal({ task, days, today, onClose, onDone }: {
+  task: TaskShape; days: Date[]; today: string;
+  onClose: () => void; onDone: () => void;
 }) {
+  const isNew = task.assignments.length === 0;
+
+  async function handleSelect(dateStr: string) {
+    if (isNew) {
+      await apiFetch(`${BASE_URL}/task-engine/tasks/${task.id}/assign`, {
+        method: 'POST',
+        body: JSON.stringify({ scheduledDate: dateStr }),
+      }).catch(() => {});
+    } else {
+      const assignmentId = task.assignments[0].id;
+      await apiFetch(`${BASE_URL}/task-engine/assignments/${assignmentId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ scheduledDate: dateStr }),
+      }).catch(() => {});
+    }
+    onDone();
+  }
+
   return (
-    <Modal title="העבר למתי?" onClose={onClose}>
-      <div style={{ fontSize: 14, fontWeight: 600, color: '#374151', marginBottom: 14 }}>{taskTitle}</div>
+    <Modal title={isNew ? 'שיבוץ משימה' : 'העברת משימה ליום אחר'} onClose={onClose}>
+      <div style={{ fontSize: 14, fontWeight: 600, color: '#374151', marginBottom: 14 }}>{task.title}</div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         {days.map((d) => {
           const str = toDateStr(d);
           const dayIdx = d.getDay();
           const isToday = str === today;
           return (
-            <button key={str} onClick={() => onCarry(assignmentId, str)} style={{
+            <button key={str} onClick={() => handleSelect(str)} style={{
               ...btnS, textAlign: 'right' as const, fontSize: 14,
               background: isToday ? '#eff6ff' : '#f9fafb',
               borderColor: isToday ? '#bfdbfe' : '#e5e7eb',
