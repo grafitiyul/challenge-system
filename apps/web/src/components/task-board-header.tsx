@@ -1,20 +1,28 @@
 'use client';
 
 /**
- * TaskBoardHeader — top header for the weekly task planner.
+ * TaskBoardHeader — shared top header for the weekly task planner.
  *
- * Renders:
- *   1. Title row — "תכנון שבועי" + optional summary buttons
- *   2. Participant strip — avatar, name, subtitle
+ * Used by TaskBoard (task-board.tsx) in both:
+ *   - /tasks             (admin planner — shows summary buttons)
+ *   - /tg/[token]        (participant portal — shows completion pills)
  *
  * Fully stateless / prop-driven. No internal fetching, no width constraints.
- * Used inside TaskBoard (task-board.tsx) when participantName is provided.
+ *
+ * Props:
+ *   participantName     — always required (drives avatar letter + name display)
+ *   onDailySummary      — optional; renders "סיכום יומי" button when provided
+ *   onWeeklySummary     — optional; renders "סיכום שבועי" button when provided
+ *   stats               — optional; renders יומי/שבועי completion pills when provided
  */
+
+import type { BoardStats } from '@components/task-board';
 
 export interface TaskBoardHeaderProps {
   participantName: string;
-  onDailySummary: () => void;
-  onWeeklySummary: () => void;
+  onDailySummary?: () => void;
+  onWeeklySummary?: () => void;
+  stats?: BoardStats;
 }
 
 const btnSm: React.CSSProperties = {
@@ -22,42 +30,58 @@ const btnSm: React.CSSProperties = {
   borderRadius: 8, padding: '7px 12px', fontSize: 12, cursor: 'pointer', fontWeight: 500,
 };
 
-export function TaskBoardHeader({ participantName, onDailySummary, onWeeklySummary }: TaskBoardHeaderProps) {
+function PillStat({ label, done, total }: { label: string; done: number; total: number }) {
+  const isDone = done === total;
+  return (
+    <div style={{
+      display: 'flex', flexDirection: 'column', alignItems: 'center',
+      fontSize: 11, fontWeight: 700, lineHeight: 1.2,
+      color: isDone ? '#15803d' : '#1d4ed8',
+      background: isDone ? 'rgba(34,197,94,0.12)' : 'rgba(37,99,235,0.08)',
+      border: `1px solid ${isDone ? '#86efac' : '#bfdbfe'}`,
+      borderRadius: 8, padding: '4px 9px', whiteSpace: 'nowrap' as const,
+      flexShrink: 0,
+    }}>
+      <div style={{ fontSize: 9, opacity: 0.7, marginBottom: 1 }}>{label}</div>
+      <div>{done}/{total}</div>
+    </div>
+  );
+}
+
+export function TaskBoardHeader({
+  participantName,
+  onDailySummary,
+  onWeeklySummary,
+  stats,
+}: TaskBoardHeaderProps) {
   const firstLetter = participantName.trim().charAt(0);
+  const showSummaryButtons = onDailySummary !== undefined || onWeeklySummary !== undefined;
+  const showStats = stats && (stats.dayTotal > 0 || stats.weekTotal > 0);
 
   return (
     <div style={{ marginBottom: 20 }}>
 
-      {/* ── Row 1: title + summary buttons ─────────────────────────────── */}
+      {/* ── Row 1: title + optional summary buttons ─────────────────────── */}
       <div style={{
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        marginBottom: 12,
-        flexWrap: 'wrap',
-        gap: 8,
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        marginBottom: 12, flexWrap: 'wrap', gap: 8,
       }}>
-        <h1 style={{
-          fontSize: 24, fontWeight: 800, color: '#0f172a',
-          margin: 0, letterSpacing: '-0.3px',
-        }}>
+        <h1 style={{ fontSize: 24, fontWeight: 800, color: '#0f172a', margin: 0, letterSpacing: '-0.3px' }}>
           תכנון שבועי
         </h1>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={onDailySummary} style={btnSm}>סיכום יומי</button>
-          <button onClick={onWeeklySummary} style={btnSm}>סיכום שבועי</button>
-        </div>
+        {showSummaryButtons && (
+          <div style={{ display: 'flex', gap: 8 }}>
+            {onDailySummary && <button onClick={onDailySummary} style={btnSm}>סיכום יומי</button>}
+            {onWeeklySummary && <button onClick={onWeeklySummary} style={btnSm}>סיכום שבועי</button>}
+          </div>
+        )}
       </div>
 
       {/* ── Row 2: participant strip ─────────────────────────────────────── */}
       <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 12,
+        display: 'flex', alignItems: 'center', gap: 12,
         background: 'linear-gradient(135deg, #eff6ff 0%, #f0fdf4 100%)',
-        border: '1px solid #bfdbfe',
-        borderRadius: 10,
-        padding: '10px 16px',
+        border: '1px solid #bfdbfe', borderRadius: 10, padding: '10px 16px',
       }}>
         {/* Avatar */}
         <div style={{
@@ -79,6 +103,18 @@ export function TaskBoardHeader({ participantName, onDailySummary, onWeeklySumma
           </div>
           <div style={{ fontSize: 11, color: '#60a5fa', marginTop: 1 }}>מתכנן שבועי פעיל</div>
         </div>
+
+        {/* Optional completion pills (participant portal) */}
+        {showStats && (
+          <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+            {stats!.dayTotal > 0 && (
+              <PillStat label="יומי" done={stats!.dayDone} total={stats!.dayTotal} />
+            )}
+            {stats!.weekTotal > 0 && (
+              <PillStat label="שבועי" done={stats!.weekDone} total={stats!.weekTotal} />
+            )}
+          </div>
+        )}
       </div>
 
     </div>

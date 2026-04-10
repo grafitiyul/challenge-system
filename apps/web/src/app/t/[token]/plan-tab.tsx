@@ -4,13 +4,16 @@
  * PlanTab — participant task planner inside the personal portal (/t/[token])
  * and the dedicated task portal (/tg/[token]).
  *
- * Owns: token resolution, portal context loading, blue header, chat panel.
- * Delegates: all board rendering (kanban, modals, week nav) to <TaskBoard>.
+ * Owns: token resolution, portal context loading, chat panel.
+ * Delegates: header (TaskBoardHeader), all board rendering (TaskBoard).
+ *
+ * The top header is rendered by TaskBoard via TaskBoardHeader — same shared
+ * component as the admin /tasks surface. No duplicate header here.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { BASE_URL, apiFetch } from '@lib/api';
-import { TaskBoard, BoardStats } from '@components/task-board';
+import { TaskBoard } from '@components/task-board';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -50,9 +53,6 @@ export function PlanTab({ token }: { token: string }) {
   const [ctx, setCtx] = useState<PortalCtx | null>(null);
   const [ctxLoading, setCtxLoading] = useState(true);
   const [ctxErr, setCtxErr] = useState('');
-
-  // Stats from TaskBoard for header pills
-  const [stats, setStats] = useState<BoardStats | null>(null);
 
   // Chat
   const [notes, setNotes] = useState<TaskNote[]>([]);
@@ -137,70 +137,16 @@ export function PlanTab({ token }: { token: string }) {
     </div>
   );
 
-  // ─── Stat pills helper ───────────────────────────────────────────────────
-
-  const pillStyle = (done: number, total: number): React.CSSProperties => ({
-    fontSize: 11, fontWeight: 700,
-    color: done === total ? '#bbf7d0' : '#fff',
-    background: done === total ? 'rgba(34,197,94,0.25)' : 'rgba(255,255,255,0.18)',
-    borderRadius: 8, padding: '5px 9px',
-    whiteSpace: 'nowrap' as const,
-    lineHeight: 1.2,
-    border: `1px solid ${done === total ? 'rgba(34,197,94,0.4)' : 'rgba(255,255,255,0.25)'}`,
-  });
-
   // ─── Render ──────────────────────────────────────────────────────────────
 
   return (
     <div style={{ ...rootStyle, paddingBottom: 32 }}>
 
-      {/* ── Participant header ─────────────────────────────────────────────── */}
-      <div style={{
-        background: 'linear-gradient(135deg, #1d4ed8 0%, #2563eb 100%)',
-        padding: '14px 16px',
-        display: 'flex', alignItems: 'center', gap: 12,
-      }}>
-        <div style={{
-          width: 44, height: 44, borderRadius: '50%',
-          background: 'rgba(255,255,255,0.2)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 18, fontWeight: 700, color: '#fff', flexShrink: 0,
-          border: '2px solid rgba(255,255,255,0.4)',
-        }}>
-          {ctx.participantFirstName.charAt(0)}
-        </div>
-
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 16, fontWeight: 700, color: '#fff', lineHeight: 1.25, overflowWrap: 'break-word' }}>
-            {ctx.participantName}
-          </div>
-          <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.7)', marginTop: 3, lineHeight: 1 }}>תכנון שבועי</div>
-        </div>
-
-        {/* Stat pills from TaskBoard */}
-        {stats && (stats.dayTotal > 0 || stats.weekTotal > 0) && (
-          <div style={{ display: 'flex', flexDirection: 'row', gap: 6, alignItems: 'center', flexShrink: 0 }}>
-            {stats.dayTotal > 0 && (
-              <div style={pillStyle(stats.dayDone, stats.dayTotal)}>
-                <div style={{ fontSize: 9, opacity: 0.8, marginBottom: 1 }}>יומי</div>
-                <div>{stats.dayDone}/{stats.dayTotal}</div>
-              </div>
-            )}
-            {stats.weekTotal > 0 && (
-              <div style={pillStyle(stats.weekDone, stats.weekTotal)}>
-                <div style={{ fontSize: 9, opacity: 0.8, marginBottom: 1 }}>שבועי</div>
-                <div>{stats.weekDone}/{stats.weekTotal}</div>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* ── Task board ────────────────────────────────────────────────────── */}
+      {/* ── Task board (header is rendered internally by TaskBoard → TaskBoardHeader) */}
       <div style={{ padding: '16px 16px 0' }}>
         <TaskBoard
           participantId={ctx.participantId}
-          onStats={setStats}
+          participantName={ctx.participantName}
         />
       </div>
 

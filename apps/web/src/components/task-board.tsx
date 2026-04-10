@@ -776,6 +776,9 @@ export function TaskBoard({
   const [mobileTab, setMobileTab] = useState<'goals' | 'week' | 'today'>('today');
   const [selectedMobileDay, setSelectedMobileDay] = useState<string>(() => toDateStr(new Date()));
 
+  // Internal stats — fed to TaskBoardHeader for completion pills
+  const [boardStats, setBoardStats] = useState<BoardStats | null>(null);
+
   // Modals
   const [addGoalOpen, setAddGoalOpen] = useState(false);
   const [addTaskModal, setAddTaskModal] = useState<{ open: boolean; goalId?: string } | null>(null);
@@ -813,14 +816,16 @@ export function TaskBoard({
 
   useEffect(() => { loadPlan(); }, [loadPlan]);
 
-  // Emit stats to parent (e.g. plan-tab.tsx header pills) whenever plan or today changes
+  // Compute stats whenever plan loads/changes — used by TaskBoardHeader pills
   useEffect(() => {
-    if (!onStats || !plan) return;
+    if (!plan) return;
     const todayItems = getAssignmentsForDay(plan, today).filter(i => i.assignment.status !== 'carried_forward');
     const dayDone = todayItems.filter(i => i.assignment.isCompleted).length;
     const allWeek = days.flatMap(d => getAssignmentsForDay(plan, toDateStr(d))).filter(i => i.assignment.status !== 'carried_forward');
     const weekDone = allWeek.filter(i => i.assignment.isCompleted).length;
-    onStats({ dayDone, dayTotal: todayItems.length, weekDone, weekTotal: allWeek.length });
+    const s: BoardStats = { dayDone, dayTotal: todayItems.length, weekDone, weekTotal: allWeek.length };
+    setBoardStats(s);
+    onStats?.(s);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [plan, today]);
 
@@ -1106,12 +1111,13 @@ export function TaskBoard({
 
   return (
     <div>
-      {/* Header — shown when participantName is provided (admin /tasks view) */}
-      {participantName && showSummaryButtons && (
+      {/* Header — shown whenever participantName is provided */}
+      {participantName && (
         <TaskBoardHeader
           participantName={participantName}
-          onDailySummary={() => setSummaryModal('daily')}
-          onWeeklySummary={() => setSummaryModal('weekly')}
+          stats={boardStats ?? undefined}
+          onDailySummary={showSummaryButtons ? () => setSummaryModal('daily') : undefined}
+          onWeeklySummary={showSummaryButtons ? () => setSummaryModal('weekly') : undefined}
         />
       )}
 
