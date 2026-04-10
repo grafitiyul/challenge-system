@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense } from 'react';
 import { BASE_URL, apiFetch } from '@lib/api';
+import { TaskPoolRow, GoalSection } from '@components/task-engine-ui';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -816,6 +817,7 @@ function TasksPageInner() {
   const [editTaskModal, setEditTaskModal] = useState<TaskShape | null>(null);
 
   const days = weekDays(currentSunday);
+  const weekDateSet = new Set(days.map(d => toDateStr(d)));
   const today = toDateStr(new Date());
 
   // Load participants
@@ -979,71 +981,31 @@ function TasksPageInner() {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         {/* Goals list */}
-        {plan.goals.map((goal, gIdx) => {
-          const goalColors = [
-            { bg: 'linear-gradient(90deg, #eff6ff, #f8fafc)', border: '#bfdbfe', title: '#1d4ed8' },
-            { bg: 'linear-gradient(90deg, #f0fdf4, #f8fafc)', border: '#86efac', title: '#15803d' },
-            { bg: 'linear-gradient(90deg, #fdf4ff, #f8fafc)', border: '#e9d5ff', title: '#7e22ce' },
-            { bg: 'linear-gradient(90deg, #fff7ed, #f8fafc)', border: '#fed7aa', title: '#c2410c' },
-          ];
-          const gc = goalColors[gIdx % goalColors.length];
-          return (
-          <div key={goal.id} style={{
-            background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10,
-            overflow: 'hidden', boxShadow: '0 1px 4px rgba(0,0,0,0.04)',
-          }}>
-            <div style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              padding: '10px 14px', background: gc.bg, borderBottom: `1px solid ${gc.border}`,
-            }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: gc.title }}>{goal.title}</div>
-                {goal.description && <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>{goal.description}</div>}
-              </div>
-              <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-                <button onClick={() => setEditGoalModal(goal)} style={{
-                  background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', fontSize: 12,
-                }} title="ערוך יעד">✏️</button>
-                <button onClick={() => setAddTaskModal({ open: true, goalId: goal.id })} style={{
-                  background: 'none', border: 'none', cursor: 'pointer', color: '#2563eb',
-                  fontSize: 12, fontWeight: 600,
-                }}>+ משימה</button>
-                <button onClick={() => handleDeleteGoal(goal.id)} style={{
-                  background: 'none', border: 'none', cursor: 'pointer', color: '#fca5a5', fontSize: 12,
-                }}>✕</button>
-              </div>
-            </div>
-            <div style={{ padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 4 }}>
-              {goal.tasks.map((t) => (
-                <div key={t.id} style={{
-                  display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between',
-                  padding: '6px 8px', background: '#f8fafc', borderRadius: 6, gap: 8,
-                }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 12, color: '#374151', wordBreak: 'break-word' }}>{t.title}</div>
-                    {t.notes && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2, fontStyle: 'italic' }}>{t.notes}</div>}
-                  </div>
-                  <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-                    <button onClick={() => setEditTaskModal(t)} style={{
-                      background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', fontSize: 11,
-                    }} title="ערוך משימה">✏️</button>
-                    <button onClick={() => setAssignModal(t)} style={{
-                      background: 'none', border: '1px solid #e2e8f0', borderRadius: 5,
-                      cursor: 'pointer', color: '#2563eb', fontSize: 11, padding: '2px 7px',
-                    }}>שבץ</button>
-                    <button onClick={() => handleDeleteTask(t.id)} style={{
-                      background: 'none', border: 'none', cursor: 'pointer', color: '#fca5a5', fontSize: 11,
-                    }}>✕</button>
-                  </div>
-                </div>
-              ))}
-              {goal.tasks.length === 0 && (
-                <div style={{ fontSize: 11, color: '#cbd5e1', padding: '6px 8px' }}>אין משימות עדיין</div>
-              )}
-            </div>
-          </div>
-          );
-        })}
+        {plan.goals.map((goal, gIdx) => (
+          <GoalSection
+            key={goal.id}
+            goal={goal}
+            goalIndex={gIdx}
+            onEditGoal={() => setEditGoalModal(goal)}
+            onDeleteGoal={() => handleDeleteGoal(goal.id)}
+            onAddTask={() => setAddTaskModal({ open: true, goalId: goal.id })}
+            showInlineAddTask={false}
+            renderTask={(t) => {
+              const ts = t as unknown as TaskShape;
+              return (
+                <TaskPoolRow
+                  key={t.id}
+                  task={t}
+                  isAssigned={t.assignments.some(a => weekDateSet.has(a.scheduledDate))}
+                  onEdit={() => setEditTaskModal(ts)}
+                  onSchedule={() => setAssignModal(ts)}
+                  onDelete={() => handleDeleteTask(t.id)}
+                  compact
+                />
+              );
+            }}
+          />
+        ))}
 
         {/* Ungrouped tasks */}
         {plan.ungroupedTasks.length > 0 && (
@@ -1053,27 +1015,15 @@ function TasksPageInner() {
             </div>
             <div style={{ padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 4 }}>
               {plan.ungroupedTasks.map((t) => (
-                <div key={t.id} style={{
-                  display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between',
-                  padding: '6px 8px', background: '#f8fafc', borderRadius: 6, gap: 8,
-                }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 12, color: '#374151', wordBreak: 'break-word' }}>{t.title}</div>
-                    {t.notes && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2, fontStyle: 'italic' }}>{t.notes}</div>}
-                  </div>
-                  <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-                    <button onClick={() => setEditTaskModal(t)} style={{
-                      background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', fontSize: 11,
-                    }} title="ערוך">✏️</button>
-                    <button onClick={() => setAssignModal(t)} style={{
-                      background: 'none', border: '1px solid #e2e8f0', borderRadius: 5,
-                      cursor: 'pointer', color: '#2563eb', fontSize: 11, padding: '2px 7px',
-                    }}>שבץ</button>
-                    <button onClick={() => handleDeleteTask(t.id)} style={{
-                      background: 'none', border: 'none', cursor: 'pointer', color: '#fca5a5', fontSize: 11,
-                    }}>✕</button>
-                  </div>
-                </div>
+                <TaskPoolRow
+                  key={t.id}
+                  task={t}
+                  isAssigned={t.assignments.some(a => weekDateSet.has(a.scheduledDate))}
+                  onEdit={() => setEditTaskModal(t as unknown as TaskShape)}
+                  onSchedule={() => setAssignModal(t as unknown as TaskShape)}
+                  onDelete={() => handleDeleteTask(t.id)}
+                  compact
+                />
               ))}
             </div>
           </div>
