@@ -179,7 +179,7 @@ export function PlanTab({ token }: { token: string }) {
   const [addGoalOpen, setAddGoalOpen] = useState(false);
   const [addTaskGoalId, setAddTaskGoalId] = useState<string | undefined>(undefined);
   const [addTaskOpen, setAddTaskOpen] = useState(false);
-  const [scheduleTarget, setScheduleTarget] = useState<{ task: TaskShape } | null>(null);
+  const [scheduleTarget, setScheduleTarget] = useState<{ task: TaskShape; activeAssignment: AssignmentShape | null } | null>(null);
   const [editGoal, setEditGoal] = useState<GoalShape | null>(null);
   const [editTask, setEditTask] = useState<TaskShape | null>(null);
   const [confirmState, setConfirmState] = useState<{
@@ -189,6 +189,7 @@ export function PlanTab({ token }: { token: string }) {
 
   const today = toDateStr(new Date());
   const days = weekDays(currentSunday);
+  const weekDateSet = new Set(days.map(d => toDateStr(d)));
 
   // ─── Load context ───────────────────────────────────────────────────────────
 
@@ -469,7 +470,9 @@ export function PlanTab({ token }: { token: string }) {
                     </div>
                   </div>
                   <div style={{ padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 4 }}>
-                    {goal.tasks.map((t) => (
+                    {goal.tasks.map((t) => {
+                      const activeAssignment = t.assignments.find(a => weekDateSet.has(a.scheduledDate)) ?? null;
+                      return (
                       <div key={t.id} data-task-id={t.id} style={{
                         display: 'flex', alignItems: 'center', gap: 6,
                         padding: '8px 10px', background: '#f9fafb', borderRadius: 8,
@@ -485,9 +488,9 @@ export function PlanTab({ token }: { token: string }) {
                             title="ערוך משימה"
                           >✏️</button>
                           <button
-                            onClick={() => setScheduleTarget({ task: t })}
+                            onClick={() => setScheduleTarget({ task: t, activeAssignment })}
                             style={{ background: 'none', border: '1px solid #bfdbfe', borderRadius: 6, cursor: 'pointer', color: '#1d4ed8', fontSize: 11, padding: '3px 8px', fontWeight: 600 }}
-                          >{t.assignments.length === 0 ? '📅 שבץ' : '📅 העבר יום'}</button>
+                          >{activeAssignment ? '📅 העבר יום' : '📅 שבץ'}</button>
                           <button
                             onClick={() => handleDeleteTask(t.id)}
                             style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#fca5a5', fontSize: 16, padding: '2px 3px', lineHeight: 1 }}
@@ -495,7 +498,7 @@ export function PlanTab({ token }: { token: string }) {
                           >✕</button>
                         </div>
                       </div>
-                    ))}
+                    );})}
                     {goal.tasks.length === 0 && (
                       <div style={{ fontSize: 12, color: '#d1d5db', padding: '4px 8px' }}>אין משימות עדיין</div>
                     )}
@@ -515,7 +518,9 @@ export function PlanTab({ token }: { token: string }) {
                   <div style={{ fontSize: 13, fontWeight: 700, color: '#6b7280' }}>משימות ללא יעד</div>
                 </div>
                 <div style={{ padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  {plan.ungroupedTasks.map((t) => (
+                  {plan.ungroupedTasks.map((t) => {
+                    const activeAssignment = t.assignments.find(a => weekDateSet.has(a.scheduledDate)) ?? null;
+                    return (
                     <div key={t.id} data-task-id={t.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 10px', background: '#f9fafb', borderRadius: 8 }}>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 13, color: '#374151' }}>{t.title}</div>
@@ -528,9 +533,9 @@ export function PlanTab({ token }: { token: string }) {
                           title="ערוך משימה"
                         >✏️</button>
                         <button
-                          onClick={() => setScheduleTarget({ task: t })}
+                          onClick={() => setScheduleTarget({ task: t, activeAssignment })}
                           style={{ background: 'none', border: '1px solid #bfdbfe', borderRadius: 6, cursor: 'pointer', color: '#1d4ed8', fontSize: 11, padding: '3px 8px', fontWeight: 600 }}
-                        >{t.assignments.length === 0 ? '📅 שבץ' : '📅 העבר יום'}</button>
+                        >{activeAssignment ? '📅 העבר יום' : '📅 שבץ'}</button>
                         <button
                           onClick={() => handleDeleteTask(t.id)}
                           style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#fca5a5', fontSize: 16, padding: '2px 3px', lineHeight: 1 }}
@@ -538,7 +543,8 @@ export function PlanTab({ token }: { token: string }) {
                         >✕</button>
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -702,6 +708,7 @@ export function PlanTab({ token }: { token: string }) {
       {scheduleTarget && (
         <ScheduleModal
           task={scheduleTarget.task}
+          activeAssignment={scheduleTarget.activeAssignment}
           days={days}
           today={today}
           onClose={() => setScheduleTarget(null)}
@@ -948,21 +955,18 @@ function EditTaskModal({ task, goals, onClose, onDone }: { task: TaskShape; goal
 // Shared modal for both "שבץ" (new assignment) and "העבר יום" (move existing).
 // No outside-click dismiss — uses Modal's ✕ button only.
 
-function ScheduleModal({ task, days, today, onClose, onDone }: {
-  task: TaskShape; days: Date[]; today: string;
+function ScheduleModal({ task, activeAssignment, days, today, onClose, onDone }: {
+  task: TaskShape; activeAssignment: AssignmentShape | null; days: Date[]; today: string;
   onClose: () => void; onDone: () => void;
 }) {
-  const isNew = task.assignments.length === 0;
-
   async function handleSelect(dateStr: string) {
-    if (isNew) {
+    if (!activeAssignment) {
       await apiFetch(`${BASE_URL}/task-engine/tasks/${task.id}/assign`, {
         method: 'POST',
         body: JSON.stringify({ scheduledDate: dateStr }),
       }).catch(() => {});
     } else {
-      const assignmentId = task.assignments[0].id;
-      await apiFetch(`${BASE_URL}/task-engine/assignments/${assignmentId}`, {
+      await apiFetch(`${BASE_URL}/task-engine/assignments/${activeAssignment.id}`, {
         method: 'PATCH',
         body: JSON.stringify({ scheduledDate: dateStr }),
       }).catch(() => {});
@@ -971,7 +975,7 @@ function ScheduleModal({ task, days, today, onClose, onDone }: {
   }
 
   return (
-    <Modal title={isNew ? 'שיבוץ משימה' : 'העברת משימה ליום אחר'} onClose={onClose}>
+    <Modal title={!activeAssignment ? 'שיבוץ משימה' : 'העברת משימה ליום אחר'} onClose={onClose}>
       <div style={{ fontSize: 14, fontWeight: 600, color: '#374151', marginBottom: 14 }}>{task.title}</div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         {days.map((d) => {
