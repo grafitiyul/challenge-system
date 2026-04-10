@@ -328,23 +328,48 @@ export function PlanTab({ token }: { token: string }) {
     <div style={{ ...rootStyle, paddingBottom: 16 }}>
     <div style={{ padding: '0 0 16px' }}>
 
-      {/* Week navigation */}
+      {/* ── Participant header ─────────────────────────────────────────────── */}
+      <div style={{
+        background: 'linear-gradient(135deg, #1d4ed8 0%, #2563eb 100%)',
+        padding: '16px 16px 18px',
+        display: 'flex', alignItems: 'center', gap: 12,
+      }}>
+        <div style={{
+          width: 46, height: 46, borderRadius: '50%',
+          background: 'rgba(255,255,255,0.22)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: 20, fontWeight: 700, color: '#fff', flexShrink: 0,
+          border: '2px solid rgba(255,255,255,0.35)',
+        }}>
+          {ctx.participantFirstName.charAt(0)}
+        </div>
+        <div>
+          <div style={{ fontSize: 17, fontWeight: 700, color: '#fff', lineHeight: 1.2 }}>
+            {ctx.participantName}
+          </div>
+          <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.75)', marginTop: 3 }}>תכנון שבועי</div>
+        </div>
+      </div>
+
+      {/* ── Week navigation ────────────────────────────────────────────────── */}
       <div style={{
         display: 'flex', alignItems: 'center', gap: 8,
-        background: '#fff', borderBottom: '1px solid #f3f4f6', padding: '10px 16px',
+        background: '#fff', borderBottom: '1px solid #f3f4f6', padding: '10px 12px',
         position: 'sticky', top: 0, zIndex: 10,
       }}>
         <button onClick={() => setCurrentSunday(addDays(currentSunday, -7))} style={{
-          background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: '#374151', padding: '2px 6px',
-        }}>›</button>
+          background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 7,
+          cursor: 'pointer', fontSize: 12, color: '#374151', padding: '5px 10px', fontWeight: 600,
+        }}>קודם ›</button>
         <div style={{ flex: 1, textAlign: 'center', fontSize: 13, fontWeight: 600, color: '#374151' }}>{weekLabel}</div>
         <button onClick={() => { setCurrentSunday(weekSunday(new Date())); setSelectedDay(today); }} style={{
-          fontSize: 11, color: '#1d4ed8', background: '#eff6ff', border: 'none', borderRadius: 6,
-          padding: '3px 8px', cursor: 'pointer',
+          fontSize: 11, color: '#1d4ed8', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 6,
+          padding: '4px 8px', cursor: 'pointer',
         }}>השבוע</button>
         <button onClick={() => setCurrentSunday(addDays(currentSunday, 7))} style={{
-          background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: '#374151', padding: '2px 6px',
-        }}>‹</button>
+          background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 7,
+          cursor: 'pointer', fontSize: 12, color: '#374151', padding: '5px 10px', fontWeight: 600,
+        }}>‹ הבא</button>
       </div>
 
       {/* Day selector strip */}
@@ -407,11 +432,12 @@ export function PlanTab({ token }: { token: string }) {
                         style={{ marginTop: 2, width: 18, height: 18, cursor: 'pointer', accentColor: '#1d4ed8', flexShrink: 0 }}
                       />
                     )}
-                    <div style={{ flex: 1 }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{
                         fontSize: 15, fontWeight: 500,
                         color: assignment.isCompleted ? '#9ca3af' : '#111827',
                         textDecoration: assignment.isCompleted ? 'line-through' : 'none',
+                        wordBreak: 'normal' as const, overflowWrap: 'break-word' as const,
                       }}>{task.title}</div>
                       {goalTitle && <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 2 }}>{goalTitle}</div>}
                       {task.notes && !assignment.isCompleted && (
@@ -438,6 +464,28 @@ export function PlanTab({ token }: { token: string }) {
           </div>
         )}
       </div>
+
+      {/* ── Daily summary ─────────────────────────────────────────────────── */}
+      {plan && (() => {
+        const dayItems = selectedItems.filter(i => i.assignment.status !== 'carried_forward');
+        const total = dayItems.length;
+        if (total === 0) return null;
+        const done = dayItems.filter(i => i.assignment.isCompleted).length;
+        const pct = Math.round((done / total) * 100);
+        return (
+          <div style={{ margin: '0 16px 8px', background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '10px 14px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: '#374151' }}>סיכום יומי</span>
+              <span style={{ fontSize: 12, color: pct === 100 ? '#15803d' : '#6b7280', fontWeight: 600 }}>
+                {done}/{total} {pct === 100 ? '✅ הכול הושלם!' : `(${pct}%)`}
+              </span>
+            </div>
+            <div style={{ height: 6, background: '#f3f4f6', borderRadius: 3, overflow: 'hidden' }}>
+              <div style={{ height: '100%', width: `${pct}%`, background: pct === 100 ? '#22c55e' : '#1d4ed8', borderRadius: 3, transition: 'width 0.3s' }} />
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Goals + task pool */}
       {plan && (
@@ -478,8 +526,8 @@ export function PlanTab({ token }: { token: string }) {
                         padding: '8px 10px', background: '#f9fafb', borderRadius: 8,
                       }}>
                         <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontSize: 13, color: '#374151' }}>{t.title}</div>
-                          {t.notes && <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>{t.notes}</div>}
+                          <div style={{ fontSize: 13, color: '#374151', wordBreak: 'normal' as const, overflowWrap: 'break-word' as const }}>{t.title}</div>
+                          {t.notes && <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2, wordBreak: 'normal' as const, overflowWrap: 'break-word' as const }}>{t.notes}</div>}
                         </div>
                         <div style={{ display: 'flex', gap: 3, flexShrink: 0 }}>
                           <button
@@ -523,8 +571,8 @@ export function PlanTab({ token }: { token: string }) {
                     return (
                     <div key={t.id} data-task-id={t.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 10px', background: '#f9fafb', borderRadius: 8 }}>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 13, color: '#374151' }}>{t.title}</div>
-                        {t.notes && <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>{t.notes}</div>}
+                        <div style={{ fontSize: 13, color: '#374151', wordBreak: 'normal' as const, overflowWrap: 'break-word' as const }}>{t.title}</div>
+                        {t.notes && <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2, wordBreak: 'normal' as const, overflowWrap: 'break-word' as const }}>{t.notes}</div>}
                       </div>
                       <div style={{ display: 'flex', gap: 3, flexShrink: 0 }}>
                         <button
@@ -548,6 +596,28 @@ export function PlanTab({ token }: { token: string }) {
                 </div>
               </div>
             )}
+
+            {/* ── Weekly summary ─────────────────────────────────────────── */}
+            {(() => {
+              const allItems = days.flatMap(d => getAssignmentsForDay(plan, toDateStr(d))).filter(i => i.assignment.status !== 'carried_forward');
+              const weekTotal = allItems.length;
+              if (weekTotal === 0) return null;
+              const weekDone = allItems.filter(i => i.assignment.isCompleted).length;
+              const weekPct = Math.round((weekDone / weekTotal) * 100);
+              return (
+                <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '10px 14px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: '#374151' }}>סיכום שבועי</span>
+                    <span style={{ fontSize: 12, color: weekPct === 100 ? '#15803d' : '#6b7280', fontWeight: 600 }}>
+                      {weekDone}/{weekTotal} {weekPct === 100 ? '✅' : `(${weekPct}%)`}
+                    </span>
+                  </div>
+                  <div style={{ height: 6, background: '#f3f4f6', borderRadius: 3, overflow: 'hidden' }}>
+                    <div style={{ height: '100%', width: `${weekPct}%`, background: weekPct === 100 ? '#22c55e' : '#1d4ed8', borderRadius: 3, transition: 'width 0.3s' }} />
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Add buttons */}
             <div style={{ display: 'flex', gap: 8 }}>
