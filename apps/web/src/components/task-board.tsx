@@ -886,13 +886,34 @@ export function TaskBoard({
     dragInfo.current = null;
     setDragOverDay(null);
     if (!info || info.fromDate === targetDate) return;
+
+    // Optimistic update — move the card instantly, no loading state change, no flicker
+    setPlan(prev => {
+      if (!prev) return prev;
+      const patchTasks = (tasks: TaskShape[]) =>
+        tasks.map(t => ({
+          ...t,
+          assignments: t.assignments.map(a =>
+            a.id === info.assignmentId ? { ...a, scheduledDate: targetDate } : a,
+          ),
+        }));
+      return {
+        ...prev,
+        goals: prev.goals.map(g => ({ ...g, tasks: patchTasks(g.tasks) })),
+        ungroupedTasks: patchTasks(prev.ungroupedTasks),
+      };
+    });
+
     try {
       await apiFetch(`${BASE_URL}/task-engine/assignments/${info.assignmentId}`, {
         method: 'PATCH',
         body: JSON.stringify({ scheduledDate: targetDate }),
       });
+      // Success — optimistic state is correct, no reload needed
+    } catch {
+      // Revert on error by reloading true state
       loadPlan();
-    } catch {}
+    }
   }
 
   // ─── Week label ────────────────────────────────────────────────────────────
@@ -947,7 +968,7 @@ export function TaskBoard({
           <div style={{ fontSize: compact ? 11 : 12, fontWeight: 700, color: isToday ? '#fff' : '#374151' }}>
             {compact ? DAYS_SHORT[dayIdx] : DAYS_HE[dayIdx]}
           </div>
-          <div style={{ fontSize: compact ? 10 : 11, color: isToday ? '#bfdbfe' : '#94a3b8', marginTop: 1, whiteSpace: 'nowrap' }} dir="ltr">
+          <div style={{ fontSize: compact ? 10 : 11, color: isToday ? '#dbeafe' : '#64748b', marginTop: 1, whiteSpace: 'nowrap' }} dir="ltr">
             {formatDateHe(str)}
           </div>
           {isToday && !compact && (
@@ -1060,8 +1081,10 @@ export function TaskBoard({
           {loading ? (
             <div style={{ color: '#94a3b8', fontSize: 13, textAlign: 'center', padding: 40 }}>טוען...</div>
           ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 8 }}>
-              {days.map((d) => renderDayColumn(d))}
+            <div style={{ overflowX: 'auto' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(85px, 1fr))', gap: 8, minWidth: 643 }}>
+                {days.map((d) => renderDayColumn(d))}
+              </div>
             </div>
           )}
         </div>
