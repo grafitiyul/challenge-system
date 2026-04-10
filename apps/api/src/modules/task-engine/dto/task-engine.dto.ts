@@ -103,6 +103,10 @@ export class AssignTaskDto {
 
 export class UpdateAssignmentDto {
   @IsOptional()
+  @IsDateString()
+  scheduledDate?: string; // "YYYY-MM-DD" — used by drag-and-drop to move to a new day
+
+  @IsOptional()
   @IsString()
   startTime?: string;
 

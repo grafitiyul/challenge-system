@@ -312,6 +312,7 @@ export class TaskEngineService {
     return this.prisma.taskAssignment.update({
       where: { id: assignmentId },
       data: {
+        ...(dto.scheduledDate !== undefined ? { scheduledDate: toMidnightUTC(dto.scheduledDate) } : {}),
         ...(dto.startTime !== undefined ? { startTime: dto.startTime } : {}),
         ...(dto.endTime !== undefined ? { endTime: dto.endTime } : {}),
         ...(dto.isCompleted !== undefined

@@ -947,7 +947,7 @@ export function TaskBoard({
           <div style={{ fontSize: compact ? 11 : 12, fontWeight: 700, color: isToday ? '#fff' : '#374151' }}>
             {compact ? DAYS_SHORT[dayIdx] : DAYS_HE[dayIdx]}
           </div>
-          <div style={{ fontSize: compact ? 10 : 11, color: isToday ? '#bfdbfe' : '#94a3b8', marginTop: 1 }}>
+          <div style={{ fontSize: compact ? 10 : 11, color: isToday ? '#bfdbfe' : '#94a3b8', marginTop: 1, whiteSpace: 'nowrap' }} dir="ltr">
             {formatDateHe(str)}
           </div>
           {isToday && !compact && (
