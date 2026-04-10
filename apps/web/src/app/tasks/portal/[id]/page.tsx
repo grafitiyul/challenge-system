@@ -16,6 +16,7 @@
 import { use, useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { BASE_URL, apiFetch } from '@lib/api';
+import { TaskPoolRow, DayTaskCard, GoalSection } from '@components/task-engine-ui';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -427,6 +428,7 @@ export default function AdminPortalView({ params }: { params: Promise<{ id: stri
 
   const today = toDateStr(new Date());
   const days = weekDays(currentSunday);
+  const weekDateSet = new Set(days.map(d => toDateStr(d)));
   const weekLabel = `${formatShort(toDateStr(currentSunday))} — ${formatShort(toDateStr(addDays(currentSunday, 6)))}`;
   const participantName = participant ? `${participant.firstName} ${participant.lastName ?? ''}`.trim() : '';
 
@@ -602,50 +604,33 @@ export default function AdminPortalView({ params }: { params: Promise<{ id: stri
             <div style={{ color: '#94a3b8', textAlign: 'center', padding: 24 }}>טוען...</div>
           ) : plan ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {plan.goals.map((goal, gIdx) => {
-                const colors = [
-                  { bg: 'linear-gradient(90deg,#eff6ff,#f8fafc)', border: '#bfdbfe', title: '#1d4ed8' },
-                  { bg: 'linear-gradient(90deg,#f0fdf4,#f8fafc)', border: '#86efac', title: '#15803d' },
-                  { bg: 'linear-gradient(90deg,#fdf4ff,#f8fafc)', border: '#e9d5ff', title: '#7e22ce' },
-                  { bg: 'linear-gradient(90deg,#fff7ed,#f8fafc)', border: '#fed7aa', title: '#c2410c' },
-                ];
-                const gc = colors[gIdx % colors.length];
-                return (
-                  <div key={goal.id} style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden', boxShadow: '0 1px 4px rgba(0,0,0,0.04)' }}>
-                    <div style={{ background: gc.bg, borderBottom: `1px solid ${gc.border}`, padding: '8px 12px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: 13, fontWeight: 700, color: gc.title }}>{goal.title}</div>
-                        {goal.description && <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>{goal.description}</div>}
-                      </div>
-                      {!viewOnly && (
-                        <div style={{ display: 'flex', gap: 4, flexShrink: 0, marginRight: 6 }}>
-                          <button onClick={() => setEditGoal(goal)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', fontSize: 12 }} title="ערוך">✏️</button>
-                          <button onClick={() => setAddTaskModal({ goalId: goal.id })} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#2563eb', fontSize: 12 }}>+ משימה</button>
-                          <button onClick={() => handleDeleteGoal(goal.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#fca5a5', fontSize: 12 }}>✕</button>
-                        </div>
-                      )}
-                    </div>
-                    <div style={{ padding: '6px 8px', display: 'flex', flexDirection: 'column', gap: 3 }}>
-                      {goal.tasks.map((t) => (
-                        <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 8px', background: '#f8fafc', borderRadius: 6 }}>
-                          <div style={{ flex: 1 }}>
-                            <div style={{ fontSize: 12, color: '#374151' }}>{t.title}</div>
-                            {t.notes && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 1 }}>{t.notes}</div>}
-                          </div>
-                          {!viewOnly && (
-                            <div style={{ display: 'flex', gap: 2, flexShrink: 0 }}>
-                              <button onClick={() => setEditTask(t)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', fontSize: 11 }}>✏️</button>
-                              <button onClick={() => setAssignModal(t)} style={{ background: 'none', border: '1px solid #e2e8f0', borderRadius: 5, cursor: 'pointer', color: '#2563eb', fontSize: 11, padding: '1px 6px' }}>שבץ</button>
-                              <button onClick={() => handleDeleteTask(t.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#fca5a5', fontSize: 11 }}>✕</button>
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                      {goal.tasks.length === 0 && <div style={{ fontSize: 11, color: '#cbd5e1', padding: '3px 6px' }}>אין משימות עדיין</div>}
-                    </div>
-                  </div>
-                );
-              })}
+              {plan.goals.map((goal, gIdx) => (
+                <GoalSection
+                  key={goal.id}
+                  goal={goal}
+                  goalIndex={gIdx}
+                  onEditGoal={() => setEditGoal(goal)}
+                  onDeleteGoal={() => handleDeleteGoal(goal.id)}
+                  onAddTask={() => setAddTaskModal({ goalId: goal.id })}
+                  viewOnly={viewOnly}
+                  showInlineAddTask={false}
+                  renderTask={(t) => {
+                    const ts = t as unknown as TaskShape;
+                    return (
+                      <TaskPoolRow
+                        key={t.id}
+                        task={t}
+                        isAssigned={t.assignments.some(a => weekDateSet.has(a.scheduledDate))}
+                        onEdit={() => setEditTask(ts)}
+                        onSchedule={() => setAssignModal(ts)}
+                        onDelete={() => handleDeleteTask(t.id)}
+                        viewOnly={viewOnly}
+                        compact
+                      />
+                    );
+                  }}
+                />
+              ))}
 
               {plan.ungroupedTasks.length > 0 && (
                 <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
@@ -654,19 +639,16 @@ export default function AdminPortalView({ params }: { params: Promise<{ id: stri
                   </div>
                   <div style={{ padding: '6px 8px', display: 'flex', flexDirection: 'column', gap: 3 }}>
                     {plan.ungroupedTasks.map((t) => (
-                      <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 8px', background: '#f8fafc', borderRadius: 6 }}>
-                        <div style={{ flex: 1 }}>
-                          <div style={{ fontSize: 12, color: '#374151' }}>{t.title}</div>
-                          {t.notes && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 1 }}>{t.notes}</div>}
-                        </div>
-                        {!viewOnly && (
-                          <div style={{ display: 'flex', gap: 2, flexShrink: 0 }}>
-                            <button onClick={() => setEditTask(t)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', fontSize: 11 }}>✏️</button>
-                            <button onClick={() => setAssignModal(t)} style={{ background: 'none', border: '1px solid #e2e8f0', borderRadius: 5, cursor: 'pointer', color: '#2563eb', fontSize: 11, padding: '1px 6px' }}>שבץ</button>
-                            <button onClick={() => handleDeleteTask(t.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#fca5a5', fontSize: 11 }}>✕</button>
-                          </div>
-                        )}
-                      </div>
+                      <TaskPoolRow
+                        key={t.id}
+                        task={t}
+                        isAssigned={t.assignments.some(a => weekDateSet.has(a.scheduledDate))}
+                        onEdit={() => setEditTask(t)}
+                        onSchedule={() => setAssignModal(t)}
+                        onDelete={() => handleDeleteTask(t.id)}
+                        viewOnly={viewOnly}
+                        compact
+                      />
                     ))}
                   </div>
                 </div>
@@ -731,40 +713,17 @@ export default function AdminPortalView({ params }: { params: Promise<{ id: stri
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {selectedItems.map(({ task, assignment, goalTitle }) => {
-                  const isCarried = assignment.status === 'carried_forward';
-                  return (
-                    <div key={assignment.id} style={{
-                      background: isCarried ? '#fffbeb' : assignment.isCompleted ? '#f0fdf4' : '#fff',
-                      border: `1px solid ${isCarried ? '#fde68a' : assignment.isCompleted ? '#86efac' : '#e2e8f0'}`,
-                      borderLeft: `3px solid ${isCarried ? '#f59e0b' : assignment.isCompleted ? '#22c55e' : '#e2e8f0'}`,
-                      borderRadius: 8, padding: '8px 10px', boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
-                    }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        {!isCarried && (
-                          <input
-                            type="checkbox"
-                            checked={assignment.isCompleted}
-                            onChange={() => toggleComplete(assignment)}
-                            disabled={viewOnly}
-                            style={{ width: 16, height: 16, cursor: viewOnly ? 'not-allowed' : 'pointer', accentColor: '#2563eb', flexShrink: 0 }}
-                          />
-                        )}
-                        <div style={{ flex: 1 }}>
-                          <div style={{ fontSize: 13, fontWeight: 500, color: assignment.isCompleted ? '#94a3b8' : '#0f172a', textDecoration: assignment.isCompleted ? 'line-through' : 'none' }}>
-                            {task.title}
-                          </div>
-                          {goalTitle && <div style={{ fontSize: 11, color: '#94a3b8' }}>{goalTitle}</div>}
-                          {task.notes && <div style={{ fontSize: 11, color: '#64748b', fontStyle: 'italic', marginTop: 1 }}>{task.notes}</div>}
-                          {isCarried && <div style={{ fontSize: 11, color: '#d97706' }}>הועבר</div>}
-                        </div>
-                        {!viewOnly && !isCarried && (
-                          <button onClick={() => handleRemoveAssignment(assignment.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#fca5a5', fontSize: 14 }}>✕</button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
+                {selectedItems.map(({ task, assignment, goalTitle }) => (
+                  <DayTaskCard
+                    key={assignment.id}
+                    task={task}
+                    assignment={assignment}
+                    goalTitle={goalTitle}
+                    onToggleComplete={() => toggleComplete(assignment)}
+                    onRemove={() => handleRemoveAssignment(assignment.id)}
+                    viewOnly={viewOnly}
+                  />
+                ))}
               </div>
             )}
           </div>

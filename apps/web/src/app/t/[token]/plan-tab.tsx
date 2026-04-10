@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { BASE_URL, apiFetch } from '@lib/api';
+import { TaskPoolRow, DayTaskCard, GoalSection } from '@components/task-engine-ui';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -318,15 +319,13 @@ export function PlanTab({ token }: { token: string }) {
     </div>
   );
 
-  const todayItems = plan ? getAssignmentsForDay(plan, today) : [];
   const selectedItems = plan ? getAssignmentsForDay(plan, selectedDay) : [];
   const weekLabel = `${formatShort(toDateStr(currentSunday))} — ${formatShort(toDateStr(addDays(currentSunday, 6)))}`;
 
   // ─── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <div style={{ ...rootStyle, paddingBottom: 16 }}>
-    <div style={{ padding: '0 0 16px' }}>
+    <div style={{ ...rootStyle, paddingBottom: 32 }}>
 
       {/* ── Participant header ─────────────────────────────────────────────── */}
       <div style={{
@@ -413,54 +412,16 @@ export function PlanTab({ token }: { token: string }) {
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {selectedItems.map(({ task, assignment, goalTitle }) => {
-              const isCarried = assignment.status === 'carried_forward';
-              return (
-                <div key={assignment.id} style={{
-                  background: isCarried ? '#fffbeb' : assignment.isCompleted ? '#f0fdf4' : '#fff',
-                  border: `1px solid ${isCarried ? '#fde68a' : assignment.isCompleted ? '#86efac' : '#e5e7eb'}`,
-                  borderLeft: `3px solid ${isCarried ? '#f59e0b' : assignment.isCompleted ? '#22c55e' : '#d1d5db'}`,
-                  borderRadius: 10, padding: '12px 14px',
-                  boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
-                }}>
-                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-                    {!isCarried && (
-                      <input
-                        type="checkbox"
-                        checked={assignment.isCompleted}
-                        onChange={() => toggleComplete(assignment)}
-                        style={{ marginTop: 2, width: 18, height: 18, cursor: 'pointer', accentColor: '#1d4ed8', flexShrink: 0 }}
-                      />
-                    )}
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{
-                        fontSize: 15, fontWeight: 500,
-                        color: assignment.isCompleted ? '#9ca3af' : '#111827',
-                        textDecoration: assignment.isCompleted ? 'line-through' : 'none',
-                        wordBreak: 'normal' as const, overflowWrap: 'break-word' as const,
-                      }}>{task.title}</div>
-                      {goalTitle && <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 2 }}>{goalTitle}</div>}
-                      {task.notes && !assignment.isCompleted && (
-                        <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4, fontStyle: 'italic' }}>{task.notes}</div>
-                      )}
-                      {isCarried && <div style={{ fontSize: 11, color: '#d97706', marginTop: 2 }}>הועבר</div>}
-                      {assignment.startTime && !isCarried && (
-                        <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>{assignment.startTime}</div>
-                      )}
-                    </div>
-                    {!isCarried && !assignment.isCompleted && (
-                      <div style={{ display: 'flex', gap: 2, flexShrink: 0 }}>
-                        <button
-                          onClick={() => handleRemoveAssignment(assignment.id)}
-                          style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#fca5a5', padding: '2px 4px', fontSize: 16 }}
-                          title="הסר מהיום"
-                        >✕</button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
+            {selectedItems.map(({ task, assignment, goalTitle }) => (
+              <DayTaskCard
+                key={assignment.id}
+                task={task}
+                assignment={assignment}
+                goalTitle={goalTitle}
+                onToggleComplete={() => toggleComplete(assignment)}
+                onRemove={() => handleRemoveAssignment(assignment.id)}
+              />
+            ))}
           </div>
         )}
       </div>
@@ -494,72 +455,33 @@ export function PlanTab({ token }: { token: string }) {
             יעדים ומשימות השבוע
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {plan.goals.map((goal, gIdx) => {
-              const colors = [
-                { bg: '#eff6ff', border: '#bfdbfe', title: '#1d4ed8' },
-                { bg: '#f0fdf4', border: '#86efac', title: '#15803d' },
-                { bg: '#fdf4ff', border: '#e9d5ff', title: '#7e22ce' },
-                { bg: '#fff7ed', border: '#fed7aa', title: '#c2410c' },
-              ];
-              const gc = colors[gIdx % colors.length];
-              return (
-                <div key={goal.id} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden' }}>
-                  <div style={{ background: gc.bg, borderBottom: `1px solid ${gc.border}`, padding: '10px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 14, fontWeight: 700, color: gc.title }}>{goal.title}</div>
-                      {goal.description && (
-                        <div style={{ fontSize: 12, color: '#6b7280', marginTop: 3 }}>{goal.description}</div>
-                      )}
-                    </div>
-                    <div style={{ display: 'flex', gap: 2, flexShrink: 0, marginRight: 8 }}>
-                      <button onClick={() => setEditGoal(goal)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, padding: '2px 4px', lineHeight: 1 }} title="ערוך יעד">✏️</button>
-                      <button onClick={() => { setAddTaskGoalId(goal.id); setAddTaskOpen(true); }} style={{ background: 'none', border: 'none', color: '#1d4ed8', fontSize: 12, cursor: 'pointer', padding: '2px 6px', fontWeight: 600 }}>+ משימה</button>
-                      <button onClick={() => handleDeleteGoal(goal.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#fca5a5', fontSize: 16, padding: '2px 4px', lineHeight: 1 }} title="מחק יעד">✕</button>
-                    </div>
-                  </div>
-                  <div style={{ padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 4 }}>
-                    {goal.tasks.map((t) => {
-                      const activeAssignment = t.assignments.find(a => weekDateSet.has(a.scheduledDate)) ?? null;
-                      return (
-                      <div key={t.id} data-task-id={t.id} style={{
-                        display: 'flex', alignItems: 'center', gap: 6,
-                        padding: '8px 10px', background: '#f9fafb', borderRadius: 8,
-                      }}>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontSize: 13, color: '#374151', wordBreak: 'normal' as const, overflowWrap: 'break-word' as const }}>{t.title}</div>
-                          {t.notes && <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2, wordBreak: 'normal' as const, overflowWrap: 'break-word' as const }}>{t.notes}</div>}
-                        </div>
-                        <div style={{ display: 'flex', gap: 3, flexShrink: 0 }}>
-                          <button
-                            onClick={() => setEditTask(t)}
-                            style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, padding: '2px 3px', lineHeight: 1 }}
-                            title="ערוך משימה"
-                          >✏️</button>
-                          <button
-                            onClick={() => setScheduleTarget({ task: t, activeAssignment })}
-                            style={{ background: 'none', border: '1px solid #bfdbfe', borderRadius: 6, cursor: 'pointer', color: '#1d4ed8', fontSize: 11, padding: '3px 8px', fontWeight: 600 }}
-                          >{activeAssignment ? '📅 העבר יום' : '📅 שבץ'}</button>
-                          <button
-                            onClick={() => handleDeleteTask(t.id)}
-                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#fca5a5', fontSize: 16, padding: '2px 3px', lineHeight: 1 }}
-                            title="מחק משימה"
-                          >✕</button>
-                        </div>
-                      </div>
-                    );})}
-                    {goal.tasks.length === 0 && (
-                      <div style={{ fontSize: 12, color: '#d1d5db', padding: '4px 8px' }}>אין משימות עדיין</div>
-                    )}
-                    <button
-                      onClick={() => { setAddTaskGoalId(goal.id); setAddTaskOpen(true); }}
-                      style={{ background: 'none', border: 'none', color: '#1d4ed8', fontSize: 12, cursor: 'pointer', textAlign: 'right' as const, padding: '4px 8px' }}
-                    >+ הוסף משימה</button>
-                  </div>
-                </div>
-              );
-            })}
 
-            {/* Ungrouped */}
+            {/* Goal sections */}
+            {plan.goals.map((goal, gIdx) => (
+              <GoalSection
+                key={goal.id}
+                goal={goal}
+                goalIndex={gIdx}
+                onEditGoal={() => setEditGoal(goal)}
+                onDeleteGoal={() => handleDeleteGoal(goal.id)}
+                onAddTask={() => { setAddTaskGoalId(goal.id); setAddTaskOpen(true); }}
+                renderTask={(t) => {
+                  const activeAssignment = t.assignments.find(a => weekDateSet.has(a.scheduledDate)) ?? null;
+                  return (
+                    <TaskPoolRow
+                      key={t.id}
+                      task={t}
+                      isAssigned={activeAssignment !== null}
+                      onEdit={() => setEditTask(t)}
+                      onSchedule={() => setScheduleTarget({ task: t, activeAssignment })}
+                      onDelete={() => handleDeleteTask(t.id)}
+                    />
+                  );
+                }}
+              />
+            ))}
+
+            {/* Ungrouped tasks */}
             {plan.ungroupedTasks.length > 0 && (
               <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden' }}>
                 <div style={{ background: '#f9fafb', borderBottom: '1px solid #f3f4f6', padding: '10px 14px' }}>
@@ -569,35 +491,21 @@ export function PlanTab({ token }: { token: string }) {
                   {plan.ungroupedTasks.map((t) => {
                     const activeAssignment = t.assignments.find(a => weekDateSet.has(a.scheduledDate)) ?? null;
                     return (
-                    <div key={t.id} data-task-id={t.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 10px', background: '#f9fafb', borderRadius: 8 }}>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 13, color: '#374151', wordBreak: 'normal' as const, overflowWrap: 'break-word' as const }}>{t.title}</div>
-                        {t.notes && <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2, wordBreak: 'normal' as const, overflowWrap: 'break-word' as const }}>{t.notes}</div>}
-                      </div>
-                      <div style={{ display: 'flex', gap: 3, flexShrink: 0 }}>
-                        <button
-                          onClick={() => setEditTask(t)}
-                          style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, padding: '2px 3px', lineHeight: 1 }}
-                          title="ערוך משימה"
-                        >✏️</button>
-                        <button
-                          onClick={() => setScheduleTarget({ task: t, activeAssignment })}
-                          style={{ background: 'none', border: '1px solid #bfdbfe', borderRadius: 6, cursor: 'pointer', color: '#1d4ed8', fontSize: 11, padding: '3px 8px', fontWeight: 600 }}
-                        >{activeAssignment ? '📅 העבר יום' : '📅 שבץ'}</button>
-                        <button
-                          onClick={() => handleDeleteTask(t.id)}
-                          style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#fca5a5', fontSize: 16, padding: '2px 3px', lineHeight: 1 }}
-                          title="מחק משימה"
-                        >✕</button>
-                      </div>
-                    </div>
+                      <TaskPoolRow
+                        key={t.id}
+                        task={t}
+                        isAssigned={activeAssignment !== null}
+                        onEdit={() => setEditTask(t)}
+                        onSchedule={() => setScheduleTarget({ task: t, activeAssignment })}
+                        onDelete={() => handleDeleteTask(t.id)}
+                      />
                     );
                   })}
                 </div>
               </div>
             )}
 
-            {/* ── Weekly summary ─────────────────────────────────────────── */}
+            {/* Weekly summary */}
             {(() => {
               const allItems = days.flatMap(d => getAssignmentsForDay(plan, toDateStr(d))).filter(i => i.assignment.status !== 'carried_forward');
               const weekTotal = allItems.length;
@@ -785,7 +693,6 @@ export function PlanTab({ token }: { token: string }) {
           onDone={() => { setScheduleTarget(null); loadPlan(); }}
         />
       )}
-    </div>
     </div>
   );
 }
