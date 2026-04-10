@@ -14,7 +14,7 @@
  * Mobile:  3-tab bar (היום / שבוע / יעדים).
  */
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { BASE_URL, apiFetch } from '@lib/api';
 import { TaskPoolRow, GoalSection } from '@components/task-engine-ui';
 import { TaskBoardHeader } from '@components/task-board-header';
@@ -694,22 +694,30 @@ const IconRemove = () => (
 
 // ─── Assignment Chip ──────────────────────────────────────────────────────────
 
-function AssignmentChip({ item, onToggle, onCarry, onRemove, onEditTime }: {
+function AssignmentChip({ item, onToggle, onCarry, onRemove, onEditTime, onDragStart, onDragEnd }: {
   item: { task: TaskShape; assignment: AssignmentShape; goalTitle: string | null };
   onToggle: () => void; onCarry: () => void; onRemove: () => void; onEditTime: () => void;
+  onDragStart?: () => void; onDragEnd?: () => void;
 }) {
   const { task, assignment } = item;
   const isCarried = assignment.status === 'carried_forward';
+  const isDraggable = !isCarried && !assignment.isCompleted;
 
   return (
-    <div style={{
-      display: 'flex', flexDirection: 'column',
-      background: isCarried ? '#fffbeb' : assignment.isCompleted ? '#f0fdf4' : '#fff',
-      border: `1px solid ${isCarried ? '#fde68a' : assignment.isCompleted ? '#86efac' : '#e2e8f0'}`,
-      borderLeft: `3px solid ${isCarried ? '#f59e0b' : assignment.isCompleted ? '#22c55e' : '#e2e8f0'}`,
-      borderRadius: 8, padding: '10px 12px', opacity: isCarried ? 0.75 : 1,
-      boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
-    }}>
+    <div
+      draggable={isDraggable}
+      onDragStart={isDraggable ? onDragStart : undefined}
+      onDragEnd={isDraggable ? onDragEnd : undefined}
+      style={{
+        display: 'flex', flexDirection: 'column',
+        background: isCarried ? '#fffbeb' : assignment.isCompleted ? '#f0fdf4' : '#fff',
+        border: `1px solid ${isCarried ? '#fde68a' : assignment.isCompleted ? '#86efac' : '#e2e8f0'}`,
+        borderLeft: `3px solid ${isCarried ? '#f59e0b' : assignment.isCompleted ? '#22c55e' : '#e2e8f0'}`,
+        borderRadius: 8, padding: '10px 12px', opacity: isCarried ? 0.75 : 1,
+        boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+        cursor: isDraggable ? 'grab' : 'default',
+      }}
+    >
 
       {/* ── Row 1: checkbox + full-width text ─────────────────────────────── */}
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
@@ -800,6 +808,10 @@ export function TaskBoard({
   const [editTaskModal, setEditTaskModal] = useState<TaskShape | null>(null);
   const [confirmState, setConfirmState] = useState<{ type: 'goal' | 'task' | 'assignment'; id: string } | null>(null);
 
+  // Drag and drop state
+  const dragInfo = useRef<{ assignmentId: string; fromDate: string } | null>(null);
+  const [dragOverDay, setDragOverDay] = useState<string | null>(null);
+
   const days = weekDays(currentSunday);
   const weekDateSet = new Set(days.map(d => toDateStr(d)));
   const today = toDateStr(new Date());
@@ -869,6 +881,20 @@ export function TaskBoard({
     loadPlan();
   }
 
+  async function handleDrop(targetDate: string) {
+    const info = dragInfo.current;
+    dragInfo.current = null;
+    setDragOverDay(null);
+    if (!info || info.fromDate === targetDate) return;
+    try {
+      await apiFetch(`${BASE_URL}/task-engine/assignments/${info.assignmentId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ scheduledDate: targetDate }),
+      });
+      loadPlan();
+    } catch {}
+  }
+
   // ─── Week label ────────────────────────────────────────────────────────────
 
   const weekLabel = `${formatShort(toDateStr(currentSunday))} — ${formatShort(toDateStr(addDays(currentSunday, 6)))}`;
@@ -884,6 +910,8 @@ export function TaskBoard({
         onCarry={() => setCarryModal({ assignment: item.assignment, task: item.task })}
         onRemove={() => setConfirmState({ type: 'assignment', id: item.assignment.id })}
         onEditTime={() => setTimeModal({ assignment: item.assignment, task: item.task })}
+        onDragStart={() => { dragInfo.current = { assignmentId: item.assignment.id, fromDate: item.assignment.scheduledDate }; }}
+        onDragEnd={() => { dragInfo.current = null; setDragOverDay(null); }}
       />
     );
   }
@@ -895,7 +923,20 @@ export function TaskBoard({
     const dayIdx = date.getDay();
 
     return (
-      <div key={str} style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0, flex: 1 }}>
+      <div
+        key={str}
+        style={{
+          display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0, flex: 1,
+          borderRadius: 8,
+          outline: dragOverDay === str ? '2px solid #2563eb' : '2px solid transparent',
+          transition: 'outline 0.1s',
+        }}
+        onDragOver={(e) => { e.preventDefault(); if (dragOverDay !== str) setDragOverDay(str); }}
+        onDrop={(e) => { e.preventDefault(); handleDrop(str); }}
+        onDragLeave={(e) => {
+          if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node)) setDragOverDay(null);
+        }}
+      >
         <div style={{
           background: isToday ? 'linear-gradient(135deg, #2563eb 0%, #0ea5e9 100%)' : '#f8fafc',
           border: `1.5px solid ${isToday ? '#2563eb' : '#e2e8f0'}`,

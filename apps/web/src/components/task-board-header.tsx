@@ -66,7 +66,7 @@ export function TaskBoardHeader({
         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
         marginBottom: 12, flexWrap: 'wrap', gap: 8,
       }}>
-        <h1 style={{ fontSize: 24, fontWeight: 800, color: '#0f172a', margin: 0, letterSpacing: '-0.3px' }}>
+        <h1 style={{ fontSize: 20, fontWeight: 700, color: '#0f172a', margin: 0 }}>
           תכנון שבועי
         </h1>
         {showSummaryButtons && (
@@ -101,7 +101,6 @@ export function TaskBoardHeader({
           }}>
             {participantName}
           </div>
-          <div style={{ fontSize: 11, color: '#60a5fa', marginTop: 1 }}>מתכנן שבועי פעיל</div>
         </div>
 
         {/* Optional completion pills (participant portal) */}
