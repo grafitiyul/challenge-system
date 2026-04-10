@@ -181,6 +181,10 @@ export function PlanTab({ token }: { token: string }) {
   const [carryTarget, setCarryTarget] = useState<{ assignmentId: string; taskTitle: string } | null>(null);
   const [editGoal, setEditGoal] = useState<GoalShape | null>(null);
   const [editTask, setEditTask] = useState<TaskShape | null>(null);
+  const [confirmState, setConfirmState] = useState<{
+    type: 'goal' | 'task' | 'assignment';
+    id: string;
+  } | null>(null);
 
   const today = toDateStr(new Date());
   const days = weekDays(currentSunday);
@@ -261,20 +265,29 @@ export function PlanTab({ token }: { token: string }) {
     loadPlan();
   }
 
-  async function handleDeleteGoal(goalId: string) {
-    if (!confirm('מחוק יעד זה? כל המשימות שלו יימחקו גם כן.')) return;
-    await apiFetch(`${BASE_URL}/task-engine/goals/${goalId}`, { method: 'DELETE' }).catch(() => {});
-    loadPlan();
+  function handleDeleteGoal(goalId: string) {
+    setConfirmState({ type: 'goal', id: goalId });
   }
 
-  async function handleDeleteTask(taskId: string) {
-    if (!confirm('מחוק משימה זו?')) return;
-    await apiFetch(`${BASE_URL}/task-engine/tasks/${taskId}`, { method: 'DELETE' }).catch(() => {});
-    loadPlan();
+  function handleDeleteTask(taskId: string) {
+    setConfirmState({ type: 'task', id: taskId });
   }
 
-  async function handleRemoveAssignment(assignmentId: string) {
-    await apiFetch(`${BASE_URL}/task-engine/assignments/${assignmentId}`, { method: 'DELETE' }).catch(() => {});
+  function handleRemoveAssignment(assignmentId: string) {
+    setConfirmState({ type: 'assignment', id: assignmentId });
+  }
+
+  async function executeConfirmedDelete() {
+    if (!confirmState) return;
+    const { type, id } = confirmState;
+    setConfirmState(null);
+    if (type === 'goal') {
+      await apiFetch(`${BASE_URL}/task-engine/goals/${id}`, { method: 'DELETE' }).catch(() => {});
+    } else if (type === 'task') {
+      await apiFetch(`${BASE_URL}/task-engine/tasks/${id}`, { method: 'DELETE' }).catch(() => {});
+    } else if (type === 'assignment') {
+      await apiFetch(`${BASE_URL}/task-engine/assignments/${id}`, { method: 'DELETE' }).catch(() => {});
+    }
     loadPlan();
   }
 
@@ -648,6 +661,25 @@ export function PlanTab({ token }: { token: string }) {
 
       {/* ─── Modals ──────────────────────────────────────────────────────────── */}
 
+      {/* Confirm delete */}
+      {confirmState && (
+        <ConfirmModal
+          title={
+            confirmState.type === 'goal' ? 'מחיקת יעד' :
+            confirmState.type === 'task' ? 'מחיקת משימה' :
+            'הסרת שיבוץ'
+          }
+          description={
+            confirmState.type === 'goal' ? 'האם את בטוחה שתרצי למחוק את היעד הזה?' :
+            confirmState.type === 'task' ? 'האם את בטוחה שתרצי למחוק את המשימה?' :
+            'האם להסיר את המשימה מהיום הזה?'
+          }
+          confirmText={confirmState.type === 'assignment' ? 'הסר' : 'מחק'}
+          onConfirm={executeConfirmedDelete}
+          onCancel={() => setConfirmState(null)}
+        />
+      )}
+
       {/* Add Goal */}
       {addGoalOpen && plan && (
         <AddGoalModal
@@ -700,6 +732,71 @@ export function PlanTab({ token }: { token: string }) {
         />
       )}
     </div>
+    </div>
+  );
+}
+
+// ─── Confirm Modal ────────────────────────────────────────────────────────────
+// No ✕ button, no outside-click dismiss — closes ONLY via buttons.
+
+function ConfirmModal({
+  title,
+  description,
+  confirmText = 'מחק',
+  cancelText = 'ביטול',
+  onConfirm,
+  onCancel,
+}: {
+  title: string;
+  description?: string;
+  confirmText?: string;
+  cancelText?: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 300,
+        display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+      }}
+      // No onClick on backdrop — intentionally does NOT close on outside click
+    >
+      <div style={{
+        background: '#fff', borderRadius: '16px 16px 0 0', width: '100%',
+        maxWidth: 480, padding: '24px 20px 36px',
+      }}>
+        <div style={{ fontSize: 16, fontWeight: 700, color: '#111827', marginBottom: description ? 8 : 20 }}>
+          {title}
+        </div>
+        {description && (
+          <div style={{ fontSize: 14, color: '#6b7280', marginBottom: 20, lineHeight: 1.5 }}>
+            {description}
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button
+            onClick={onCancel}
+            style={{
+              flex: 1, padding: '12px', borderRadius: 10,
+              background: '#f3f4f6', color: '#374151',
+              border: '1px solid #e5e7eb', fontSize: 15, fontWeight: 600, cursor: 'pointer',
+            }}
+          >
+            {cancelText}
+          </button>
+          <button
+            onClick={onConfirm}
+            style={{
+              flex: 1, padding: '12px', borderRadius: 10,
+              background: '#dc2626', color: '#fff',
+              border: 'none', fontSize: 15, fontWeight: 700, cursor: 'pointer',
+            }}
+          >
+            {confirmText}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
