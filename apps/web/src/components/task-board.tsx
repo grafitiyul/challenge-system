@@ -92,7 +92,9 @@ export function addDays(d: Date, n: number): Date {
 
 function formatDateHe(dateStr: string): string {
   const d = new Date(dateStr + 'T00:00:00');
-  return `${d.getDate()}/${d.getMonth() + 1}/${String(d.getFullYear()).slice(2)}`;
+  const day = String(d.getDate()).padStart(2, '0');
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  return `${day}/${month}/${d.getFullYear()}`;
 }
 
 function formatShort(dateStr: string): string {
@@ -749,7 +751,6 @@ function AssignmentChip({ item, onToggle, onCarry, onRemove, onEditTime }: {
           paddingRight: 26, /* align under text, past checkbox+gap */
         }}>
           <ChipIconBtn onClick={onEditTime} title="עדכן שעה" color="#94a3b8"><IconClock /></ChipIconBtn>
-          <ChipIconBtn onClick={onCarry} title="העבר ליום אחר" color="#64748b"><IconForward /></ChipIconBtn>
           <ChipIconBtn onClick={onRemove} title="הסר מיום זה" color="#f87171"><IconRemove /></ChipIconBtn>
         </div>
       )}
@@ -1139,7 +1140,7 @@ export function TaskBoard({
         <button onClick={() => setCurrentSunday(addDays(currentSunday, -7))} style={{
           background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8,
           padding: '6px 14px', cursor: 'pointer', fontSize: 13, color: '#374151', fontWeight: 600,
-        }}>קודם ›</button>
+        }}>‹ קודם</button>
         <div style={{ flex: 1, textAlign: 'center' as const }}>
           <span style={{
             display: 'inline-block', fontSize: 15, fontWeight: 700, color: '#1e293b',
@@ -1153,7 +1154,7 @@ export function TaskBoard({
         <button onClick={() => setCurrentSunday(addDays(currentSunday, 7))} style={{
           background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8,
           padding: '6px 14px', cursor: 'pointer', fontSize: 13, color: '#374151', fontWeight: 600,
-        }}>‹ הבא</button>
+        }}>הבא ›</button>
       </div>
 
       {err && (
