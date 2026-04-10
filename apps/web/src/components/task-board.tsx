@@ -17,6 +17,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { BASE_URL, apiFetch } from '@lib/api';
 import { TaskPoolRow, GoalSection } from '@components/task-engine-ui';
+import { TaskBoardHeader } from '@components/task-board-header';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -751,6 +752,7 @@ function AssignmentChip({ item, onToggle, onCarry, onRemove, onEditTime }: {
 
 export interface TaskBoardProps {
   participantId: string;
+  participantName?: string;
   showSummaryButtons?: boolean;
   initialSunday?: Date;
   onWeekChange?: (sunday: Date) => void;
@@ -759,6 +761,7 @@ export interface TaskBoardProps {
 
 export function TaskBoard({
   participantId,
+  participantName,
   showSummaryButtons = false,
   initialSunday,
   onWeekChange,
@@ -1103,6 +1106,15 @@ export function TaskBoard({
 
   return (
     <div>
+      {/* Header — shown when participantName is provided (admin /tasks view) */}
+      {participantName && showSummaryButtons && (
+        <TaskBoardHeader
+          participantName={participantName}
+          onDailySummary={() => setSummaryModal('daily')}
+          onWeeklySummary={() => setSummaryModal('weekly')}
+        />
+      )}
+
       {/* Week navigation */}
       <div style={{
         display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20,
@@ -1128,18 +1140,6 @@ export function TaskBoard({
           padding: '6px 14px', cursor: 'pointer', fontSize: 13, color: '#374151', fontWeight: 600,
         }}>‹ הבא</button>
       </div>
-
-      {/* Summary buttons (admin only) */}
-      {showSummaryButtons && plan && (
-        <div style={{ display: 'flex', gap: 8, marginBottom: 16, justifyContent: 'flex-end' }}>
-          <button onClick={() => setSummaryModal('daily')} style={{ ...btnSecondary, fontSize: 12, padding: '7px 12px' }}>
-            סיכום יומי
-          </button>
-          <button onClick={() => setSummaryModal('weekly')} style={{ ...btnSecondary, fontSize: 12, padding: '7px 12px' }}>
-            סיכום שבועי
-          </button>
-        </div>
-      )}
 
       {err && (
         <div style={{

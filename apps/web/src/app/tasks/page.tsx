@@ -82,68 +82,46 @@ function TasksPageInner() {
 
   return (
     <div style={{ maxWidth: 1400, margin: '0 auto' }}>
-      {/* Page header */}
-      <div style={{ marginBottom: 20 }}>
-        <h1 style={{ fontSize: 24, fontWeight: 800, color: '#0f172a', margin: '0 0 12px', letterSpacing: '-0.3px' }}>
-          תכנון שבועי
-        </h1>
-
-        {/* Participant selector */}
-        {participantId && selectedParticipant ? (
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 12,
-            background: 'linear-gradient(135deg, #eff6ff 0%, #f0fdf4 100%)',
-            border: '1px solid #bfdbfe', borderRadius: 10,
-            padding: '10px 16px',
-          }}>
-            <div style={{
-              width: 36, height: 36, borderRadius: '50%',
-              background: 'linear-gradient(135deg, #2563eb, #0ea5e9)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              color: '#fff', fontSize: 15, fontWeight: 700, flexShrink: 0,
-            }}>
-              {selectedParticipant.firstName.charAt(0)}
-            </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 15, fontWeight: 700, color: '#1e40af' }}>{participantName}</div>
-              <div style={{ fontSize: 11, color: '#60a5fa', marginTop: 1 }}>מתכנן שבועי פעיל</div>
-            </div>
-            <select
-              value={participantId}
-              onChange={(e) => handleChangeParticipant(e.target.value)}
-              style={{ ...inputSt, width: 'auto', minWidth: 100, fontSize: 12, padding: '5px 8px', background: 'transparent', border: '1px solid #93c5fd', color: '#1d4ed8' }}
-            >
-              {participants.map((p) => (
-                <option key={p.id} value={p.id}>{p.firstName} {p.lastName ?? ''}</option>
-              ))}
-            </select>
+      {/* Participant picker — compact dropdown when selected, empty-state when not */}
+      {!participantId ? (
+        <div style={{
+          background: '#fafafa', border: '2px dashed #cbd5e1', borderRadius: 12,
+          padding: '20px 24px', textAlign: 'center' as const, marginBottom: 20,
+        }}>
+          <div style={{ fontSize: 14, color: '#64748b', marginBottom: 12 }}>
+            בחרי משתתפת כדי להתחיל את התכנון השבועי
           </div>
-        ) : (
-          <div style={{
-            background: '#fafafa', border: '2px dashed #cbd5e1', borderRadius: 12,
-            padding: '20px 24px', textAlign: 'center' as const,
-          }}>
-            <div style={{ fontSize: 14, color: '#64748b', marginBottom: 12 }}>
-              בחרי משתתפת כדי להתחיל את התכנון השבועי
-            </div>
-            <select
-              value={participantId}
-              onChange={(e) => handleChangeParticipant(e.target.value)}
-              style={{ ...inputSt, width: 'auto', minWidth: 220, fontSize: 14, padding: '9px 12px', margin: '0 auto' }}
-            >
-              <option value="">— בחר משתתפת —</option>
-              {participants.map((p) => (
-                <option key={p.id} value={p.id}>{p.firstName} {p.lastName ?? ''}</option>
-              ))}
-            </select>
-          </div>
-        )}
-      </div>
+          <select
+            value={participantId}
+            onChange={(e) => handleChangeParticipant(e.target.value)}
+            style={{ ...inputSt, width: 'auto', minWidth: 220, fontSize: 14, padding: '9px 12px', margin: '0 auto' }}
+          >
+            <option value="">— בחר משתתפת —</option>
+            {participants.map((p) => (
+              <option key={p.id} value={p.id}>{p.firstName} {p.lastName ?? ''}</option>
+            ))}
+          </select>
+        </div>
+      ) : (
+        /* Compact switcher — sits inside TaskBoardHeader's participant strip area */
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 4 }}>
+          <select
+            value={participantId}
+            onChange={(e) => handleChangeParticipant(e.target.value)}
+            style={{ ...inputSt, width: 'auto', minWidth: 160, fontSize: 12, padding: '5px 8px', border: '1px solid #e2e8f0', color: '#374151' }}
+          >
+            {participants.map((p) => (
+              <option key={p.id} value={p.id}>{p.firstName} {p.lastName ?? ''}</option>
+            ))}
+          </select>
+        </div>
+      )}
 
       {/* Task board — only when participant selected */}
       {participantId && (
         <TaskBoard
           participantId={participantId}
+          participantName={participantName}
           showSummaryButtons
           initialSunday={currentSunday}
           onWeekChange={handleWeekChange}
