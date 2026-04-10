@@ -330,49 +330,56 @@ export function PlanTab({ token }: { token: string }) {
       {/* ── Participant header ─────────────────────────────────────────────── */}
       <div style={{
         background: 'linear-gradient(135deg, #1d4ed8 0%, #2563eb 100%)',
-        padding: '12px 16px 14px',
+        padding: '14px 16px',
         display: 'flex', alignItems: 'center', gap: 12,
       }}>
+        {/* Avatar */}
         <div style={{
           width: 44, height: 44, borderRadius: '50%',
-          background: 'rgba(255,255,255,0.22)',
+          background: 'rgba(255,255,255,0.2)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           fontSize: 18, fontWeight: 700, color: '#fff', flexShrink: 0,
-          border: '2px solid rgba(255,255,255,0.35)',
+          border: '2px solid rgba(255,255,255,0.4)',
         }}>
           {ctx.participantFirstName.charAt(0)}
         </div>
+
+        {/* Name + subtitle */}
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 16, fontWeight: 700, color: '#fff', lineHeight: 1.2, overflowWrap: 'break-word' }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: '#fff', lineHeight: 1.25, overflowWrap: 'break-word' }}>
             {ctx.participantName}
           </div>
-          <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>תכנון שבועי</div>
+          <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.7)', marginTop: 3, lineHeight: 1 }}>תכנון שבועי</div>
         </div>
+
+        {/* Stat pills — horizontal, vertically centered, only when plan loaded */}
         {plan && (() => {
           const dayNormal = selectedItems.filter(i => i.assignment.status !== 'carried_forward');
           const dayDone = dayNormal.filter(i => i.assignment.isCompleted).length;
           const allWeek = days.flatMap(d => getAssignmentsForDay(plan, toDateStr(d))).filter(i => i.assignment.status !== 'carried_forward');
           const weekDone = allWeek.filter(i => i.assignment.isCompleted).length;
+          if (dayNormal.length === 0 && allWeek.length === 0) return null;
+          const pillStyle = (done: number, total: number): React.CSSProperties => ({
+            fontSize: 11, fontWeight: 700,
+            color: done === total ? '#bbf7d0' : '#fff',
+            background: done === total ? 'rgba(34,197,94,0.25)' : 'rgba(255,255,255,0.18)',
+            borderRadius: 8, padding: '5px 9px',
+            whiteSpace: 'nowrap' as const,
+            lineHeight: 1.2,
+            border: `1px solid ${done === total ? 'rgba(34,197,94,0.4)' : 'rgba(255,255,255,0.25)'}`,
+          });
           return (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-start', flexShrink: 0 }}>
+            <div style={{ display: 'flex', flexDirection: 'row', gap: 6, alignItems: 'center', flexShrink: 0 }}>
               {dayNormal.length > 0 && (
-                <div style={{
-                  fontSize: 11, fontWeight: 600,
-                  color: dayDone === dayNormal.length ? '#bbf7d0' : 'rgba(255,255,255,0.9)',
-                  background: 'rgba(255,255,255,0.15)', borderRadius: 6, padding: '3px 8px',
-                  whiteSpace: 'nowrap',
-                }}>
-                  יומי {dayDone}/{dayNormal.length}
+                <div style={pillStyle(dayDone, dayNormal.length)}>
+                  <div style={{ fontSize: 9, opacity: 0.8, marginBottom: 1 }}>יומי</div>
+                  <div>{dayDone}/{dayNormal.length}</div>
                 </div>
               )}
               {allWeek.length > 0 && (
-                <div style={{
-                  fontSize: 11, fontWeight: 600,
-                  color: weekDone === allWeek.length ? '#bbf7d0' : 'rgba(255,255,255,0.9)',
-                  background: 'rgba(255,255,255,0.15)', borderRadius: 6, padding: '3px 8px',
-                  whiteSpace: 'nowrap',
-                }}>
-                  שבועי {weekDone}/{allWeek.length}
+                <div style={pillStyle(weekDone, allWeek.length)}>
+                  <div style={{ fontSize: 9, opacity: 0.8, marginBottom: 1 }}>שבועי</div>
+                  <div>{weekDone}/{allWeek.length}</div>
                 </div>
               )}
             </div>
@@ -456,52 +463,6 @@ export function PlanTab({ token }: { token: string }) {
         )}
       </div>
 
-      {/* ── Summaries (daily + weekly grouped together) ───────────────────── */}
-      {plan && (() => {
-        const dayItems = selectedItems.filter(i => i.assignment.status !== 'carried_forward');
-        const allWeek = days.flatMap(d => getAssignmentsForDay(plan, toDateStr(d))).filter(i => i.assignment.status !== 'carried_forward');
-        const dayTotal = dayItems.length;
-        const dayDone = dayItems.filter(i => i.assignment.isCompleted).length;
-        const weekTotal = allWeek.length;
-        const weekDone = allWeek.filter(i => i.assignment.isCompleted).length;
-        if (dayTotal === 0 && weekTotal === 0) return null;
-        return (
-          <div style={{ margin: '0 16px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {dayTotal > 0 && (() => {
-              const pct = Math.round((dayDone / dayTotal) * 100);
-              return (
-                <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '10px 14px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                    <span style={{ fontSize: 12, fontWeight: 700, color: '#374151' }}>סיכום יומי</span>
-                    <span style={{ fontSize: 12, color: pct === 100 ? '#15803d' : '#6b7280', fontWeight: 600 }}>
-                      {dayDone}/{dayTotal} {pct === 100 ? '✅ הכול הושלם!' : `(${pct}%)`}
-                    </span>
-                  </div>
-                  <div style={{ height: 6, background: '#f3f4f6', borderRadius: 3, overflow: 'hidden' }}>
-                    <div style={{ height: '100%', width: `${pct}%`, background: pct === 100 ? '#22c55e' : '#1d4ed8', borderRadius: 3, transition: 'width 0.3s' }} />
-                  </div>
-                </div>
-              );
-            })()}
-            {weekTotal > 0 && (() => {
-              const pct = Math.round((weekDone / weekTotal) * 100);
-              return (
-                <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '10px 14px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                    <span style={{ fontSize: 12, fontWeight: 700, color: '#374151' }}>סיכום שבועי</span>
-                    <span style={{ fontSize: 12, color: pct === 100 ? '#15803d' : '#6b7280', fontWeight: 600 }}>
-                      {weekDone}/{weekTotal} {pct === 100 ? '✅' : `(${pct}%)`}
-                    </span>
-                  </div>
-                  <div style={{ height: 6, background: '#f3f4f6', borderRadius: 3, overflow: 'hidden' }}>
-                    <div style={{ height: '100%', width: `${pct}%`, background: pct === 100 ? '#22c55e' : '#1d4ed8', borderRadius: 3, transition: 'width 0.3s' }} />
-                  </div>
-                </div>
-              );
-            })()}
-          </div>
-        );
-      })()}
 
       {/* Goals + task pool */}
       {plan && (
