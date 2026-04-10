@@ -701,19 +701,22 @@ function AssignmentChip({ item, onToggle, onCarry, onRemove, onEditTime }: {
 
   return (
     <div style={{
+      display: 'flex', flexDirection: 'column',
       background: isCarried ? '#fffbeb' : assignment.isCompleted ? '#f0fdf4' : '#fff',
       border: `1px solid ${isCarried ? '#fde68a' : assignment.isCompleted ? '#86efac' : '#e2e8f0'}`,
       borderLeft: `3px solid ${isCarried ? '#f59e0b' : assignment.isCompleted ? '#22c55e' : '#e2e8f0'}`,
-      borderRadius: 8, padding: '8px 10px', opacity: isCarried ? 0.75 : 1,
+      borderRadius: 8, padding: '10px 12px', opacity: isCarried ? 0.75 : 1,
       boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+
+      {/* ── Row 1: checkbox + full-width text ─────────────────────────────── */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
         {!isCarried && (
           <input
             type="checkbox"
             checked={assignment.isCompleted}
             onChange={onToggle}
-            style={{ width: 16, height: 16, cursor: 'pointer', flexShrink: 0, accentColor: '#2563eb' }}
+            style={{ width: 16, height: 16, marginTop: 2, cursor: 'pointer', flexShrink: 0, accentColor: '#2563eb' }}
           />
         )}
         <div style={{ flex: 1, minWidth: 0 }}>
@@ -721,29 +724,35 @@ function AssignmentChip({ item, onToggle, onCarry, onRemove, onEditTime }: {
             fontSize: 13, fontWeight: 500,
             color: assignment.isCompleted ? '#94a3b8' : '#0f172a',
             textDecoration: assignment.isCompleted ? 'line-through' : 'none',
-            wordBreak: 'break-word', lineHeight: 1.4,
+            lineHeight: 1.5, wordBreak: 'break-word',
           }}>
             {task.title}
           </div>
           {item.goalTitle && (
-            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 1 }}>{item.goalTitle}</div>
+            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>{item.goalTitle}</div>
           )}
           {(assignment.startTime || isCarried) && (
-            <div style={{ fontSize: 11, color: '#64748b', marginTop: 1 }}>
+            <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
               {isCarried
                 ? 'הועבר'
                 : `${assignment.startTime}${assignment.endTime ? ` — ${assignment.endTime}` : ''}`}
             </div>
           )}
         </div>
-        {!isCarried && (
-          <div style={{ display: 'flex', gap: 0, flexShrink: 0 }}>
-            <ChipIconBtn onClick={onEditTime} title="עדכן שעה" color="#94a3b8"><IconClock /></ChipIconBtn>
-            <ChipIconBtn onClick={onCarry} title="העבר ליום אחר" color="#64748b"><IconForward /></ChipIconBtn>
-            <ChipIconBtn onClick={onRemove} title="הסר מיום זה" color="#f87171"><IconRemove /></ChipIconBtn>
-          </div>
-        )}
       </div>
+
+      {/* ── Row 2: action icons (only for non-carried tasks) ──────────────── */}
+      {!isCarried && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 4,
+          marginTop: 6,
+          paddingRight: 26, /* align under text, past checkbox+gap */
+        }}>
+          <ChipIconBtn onClick={onEditTime} title="עדכן שעה" color="#94a3b8"><IconClock /></ChipIconBtn>
+          <ChipIconBtn onClick={onCarry} title="העבר ליום אחר" color="#64748b"><IconForward /></ChipIconBtn>
+          <ChipIconBtn onClick={onRemove} title="הסר מיום זה" color="#f87171"><IconRemove /></ChipIconBtn>
+        </div>
+      )}
     </div>
   );
 }
