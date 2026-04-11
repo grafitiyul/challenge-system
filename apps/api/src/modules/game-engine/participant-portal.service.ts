@@ -6,6 +6,10 @@ export interface PortalContext {
   participant: { id: string; firstName: string; lastName: string | null };
   group: { id: string; name: string; startDate: Date | null; endDate: Date | null };
   program: { id: string; name: string; isActive: boolean };
+  // Portal opening gate — both null means always open (backward compatible)
+  // UTC ISO strings; frontend resolves state A/B/C purely by comparing now() to these values
+  portalCallTime: string | null;
+  portalOpenTime: string | null;
   actions: {
     id: string;
     name: string;
@@ -91,6 +95,7 @@ export class ParticipantPortalService {
             program: true,
             challenge: { select: { startDate: true, endDate: true } },
           },
+          // portalCallTime + portalOpenTime are on Group — included via the relation above
         },
       },
     });
@@ -140,6 +145,8 @@ export class ParticipantPortalService {
         name: pg.group.program.name,
         isActive: pg.group.program.isActive,
       },
+      portalCallTime: pg.group.portalCallTime ? pg.group.portalCallTime.toISOString() : null,
+      portalOpenTime: pg.group.portalOpenTime ? pg.group.portalOpenTime.toISOString() : null,
       actions,
       todayScore: scoreAgg._sum.points ?? 0,
       todayValues,

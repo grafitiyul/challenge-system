@@ -199,6 +199,13 @@ model Group {
   // Task engine — controls whether the personal task portal is available for this group's participants
   taskEngineEnabled Boolean @default(false)
 
+  // Participant portal opening flow (both nullable — null means portal is always open)
+  // portalCallTime: the scheduled opening-call moment (State A countdown target)
+  // portalOpenTime: when the portal actually becomes accessible (State C unlock)
+  // Stored as UTC. Frontend sends ISO UTC strings; comparison is always UTC vs UTC.
+  portalCallTime DateTime?
+  portalOpenTime DateTime?
+
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
 

@@ -48,6 +48,8 @@ interface Group {
   program: { id: string; name: string; isActive: boolean; type: ProgramType } | null;
   startDate: string | null;
   endDate: string | null;
+  portalCallTime: string | null;
+  portalOpenTime: string | null;
   challenge: { id: string; name: string };
   participantGroups: ParticipantGroupRow[];
 }
@@ -173,6 +175,25 @@ interface ParticipantRankRow {
   rank: number;
 }
 
+interface AdminParticipantStats {
+  todayScore: number;
+  weekScore: number;
+  totalScore: number;
+  currentStreak: number;
+  bestStreak: number;
+  dailyTrend: { date: string; points: number }[];
+}
+
+interface AdminFeedEvent {
+  id: string;
+  participantId: string;
+  groupId: string;
+  points: number;
+  message: string;
+  createdAt: string;
+  participant: { id: string; firstName: string; lastName: string | null };
+}
+
 export default function GroupDetailPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
@@ -197,6 +218,16 @@ export default function GroupDetailPage() {
   const [participantRanks, setParticipantRanks] = useState<ParticipantRankRow[]>([]);
   const [ranksLoading, setRanksLoading] = useState(false);
   const [ranksError, setRanksError] = useState(false);
+
+  // Admin inspect panel (inside leaderboard tab)
+  const [inspectedParticipantId, setInspectedParticipantId] = useState<string | null>(null);
+  const [adminStats, setAdminStats] = useState<AdminParticipantStats | null>(null);
+  const [adminStatsLoading, setAdminStatsLoading] = useState(false);
+  const [adminFeed, setAdminFeed] = useState<AdminFeedEvent[]>([]);
+  const [adminFeedLoading, setAdminFeedLoading] = useState(false);
+  const [selectedFeedIds, setSelectedFeedIds] = useState<Set<string>>(new Set());
+  const [deletingFeedIds, setDeletingFeedIds] = useState<Set<string>>(new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
   // Group message modal
   const [msgModalOpen, setMsgModalOpen] = useState(false);
@@ -236,7 +267,7 @@ export default function GroupDetailPage() {
 
   // Edit group modal
   const [editModalOpen, setEditModalOpen] = useState(false);
-  const [editForm, setEditForm] = useState({ name: '', startDate: '', endDate: '', isActive: true });
+  const [editForm, setEditForm] = useState({ name: '', startDate: '', endDate: '', isActive: true, portalCallTime: '', portalOpenTime: '' });
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState('');
 
@@ -316,12 +347,113 @@ export default function GroupDetailPage() {
     setRanksLoading(true);
     setRanksError(false);
     apiFetch<ParticipantRankRow[]>(`${BASE_URL}/game/leaderboard/group/${id}`, { cache: 'no-store' })
-      .then((data) => setParticipantRanks(Array.isArray(data) ? data : []))
+      .then((data) => {
+        const rows = Array.isArray(data) ? data : [];
+        setParticipantRanks(rows);
+        // Auto-select rank 1 participant for the inspect panel
+        if (rows.length > 0 && !inspectedParticipantId) {
+          setInspectedParticipantId(rows[0].participantId);
+        }
+      })
       .catch(() => setRanksError(true))
       .finally(() => setRanksLoading(false));
   }, [tab, id]);
 
+  // ─── Admin inspect panel: load stats + feed when participant changes ────────
+
+  useEffect(() => {
+    if (!inspectedParticipantId || !id) return;
+    setAdminStats(null);
+    setAdminFeed([]);
+    setSelectedFeedIds(new Set());
+
+    setAdminStatsLoading(true);
+    apiFetch<AdminParticipantStats>(
+      `${BASE_URL}/game/admin/participant-stats?participantId=${inspectedParticipantId}&groupId=${id}`,
+      { cache: 'no-store' },
+    )
+      .then((data) => setAdminStats(data))
+      .catch(() => {})
+      .finally(() => setAdminStatsLoading(false));
+
+    setAdminFeedLoading(true);
+    apiFetch<AdminFeedEvent[]>(
+      `${BASE_URL}/game/admin/feed?groupId=${id}&participantId=${inspectedParticipantId}&limit=50`,
+      { cache: 'no-store' },
+    )
+      .then((data) => setAdminFeed(Array.isArray(data) ? data : []))
+      .catch(() => {})
+      .finally(() => setAdminFeedLoading(false));
+  }, [inspectedParticipantId, id]);
+
+  // ─── Admin: reload leaderboard + feed after deletion ──────────────────────
+
+  function reloadAfterDelete() {
+    if (!id) return;
+    // Reload ranks
+    apiFetch<ParticipantRankRow[]>(`${BASE_URL}/game/leaderboard/group/${id}`, { cache: 'no-store' })
+      .then((data) => setParticipantRanks(Array.isArray(data) ? data : []))
+      .catch(() => {});
+    // Reload feed
+    if (!inspectedParticipantId) return;
+    apiFetch<AdminFeedEvent[]>(
+      `${BASE_URL}/game/admin/feed?groupId=${id}&participantId=${inspectedParticipantId}&limit=50`,
+      { cache: 'no-store' },
+    )
+      .then((data) => setAdminFeed(Array.isArray(data) ? data : []))
+      .catch(() => {});
+    // Reload stats
+    apiFetch<AdminParticipantStats>(
+      `${BASE_URL}/game/admin/participant-stats?participantId=${inspectedParticipantId}&groupId=${id}`,
+      { cache: 'no-store' },
+    )
+      .then((data) => setAdminStats(data))
+      .catch(() => {});
+  }
+
+  async function handleDeleteFeedEvent(feedEventId: string) {
+    setDeletingFeedIds((prev) => new Set(prev).add(feedEventId));
+    try {
+      await apiFetch(`${BASE_URL}/game/admin/feed/${feedEventId}`, { method: 'DELETE' });
+      setAdminFeed((prev) => prev.filter((e) => e.id !== feedEventId));
+      setSelectedFeedIds((prev) => { const n = new Set(prev); n.delete(feedEventId); return n; });
+      reloadAfterDelete();
+    } catch {
+      // silent — row stays, user can retry
+    } finally {
+      setDeletingFeedIds((prev) => { const n = new Set(prev); n.delete(feedEventId); return n; });
+    }
+  }
+
+  async function handleBulkDelete() {
+    const ids = Array.from(selectedFeedIds);
+    if (ids.length === 0) return;
+    setBulkDeleting(true);
+    try {
+      await apiFetch(`${BASE_URL}/game/admin/feed/bulk-delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      });
+      setAdminFeed((prev) => prev.filter((e) => !selectedFeedIds.has(e.id)));
+      setSelectedFeedIds(new Set());
+      reloadAfterDelete();
+    } catch {
+      // silent
+    } finally {
+      setBulkDeleting(false);
+    }
+  }
+
   // ─── Edit group ────────────────────────────────────────────────────────────
+
+  // Convert a UTC ISO string to a value suitable for a datetime-local input (local time).
+  function toDatetimeLocal(iso: string | null | undefined): string {
+    if (!iso) return '';
+    const d = new Date(iso);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
 
   function openEditModal() {
     if (!group) return;
@@ -330,6 +462,8 @@ export default function GroupDetailPage() {
       startDate: group.startDate ? group.startDate.slice(0, 10) : '',
       endDate: group.endDate ? group.endDate.slice(0, 10) : '',
       isActive: group.isActive,
+      portalCallTime: toDatetimeLocal(group.portalCallTime),
+      portalOpenTime: toDatetimeLocal(group.portalOpenTime),
     });
     setEditError('');
     setEditModalOpen(true);
@@ -337,9 +471,16 @@ export default function GroupDetailPage() {
 
   async function handleEditSave() {
     if (!editForm.name.trim()) { setEditError('שם הקבוצה הוא שדה חובה'); return; }
+    // Validate: if portalOpenTime is set, portalCallTime must also be set (or empty)
+    // This is a UX guard, not a hard constraint — both are optional
     setEditSaving(true);
     try {
-      const updated = await apiFetch<{ name: string; startDate: string | null; endDate: string | null; isActive: boolean }>(
+      // Convert datetime-local values (local time) to UTC ISO strings before sending.
+      // new Date("YYYY-MM-DDTHH:MM") is parsed as LOCAL time by the browser → .toISOString() = UTC.
+      const portalCallTime = editForm.portalCallTime ? new Date(editForm.portalCallTime).toISOString() : null;
+      const portalOpenTime = editForm.portalOpenTime ? new Date(editForm.portalOpenTime).toISOString() : null;
+
+      const updated = await apiFetch<Group>(
         `${BASE_URL}/groups/${id}`, {
           method: 'PATCH',
           body: JSON.stringify({
@@ -347,10 +488,12 @@ export default function GroupDetailPage() {
             startDate: editForm.startDate || null,
             endDate: editForm.endDate || null,
             isActive: editForm.isActive,
+            portalCallTime,
+            portalOpenTime,
           }),
         },
       );
-      setGroup((prev) => prev ? { ...prev, name: updated.name, startDate: updated.startDate, endDate: updated.endDate, isActive: updated.isActive } : prev);
+      setGroup((prev) => prev ? { ...prev, name: updated.name, startDate: updated.startDate, endDate: updated.endDate, isActive: updated.isActive, portalCallTime: updated.portalCallTime, portalOpenTime: updated.portalOpenTime } : prev);
       setEditModalOpen(false);
     } catch (err) {
       setEditError(err instanceof Error ? err.message : 'שגיאה בשמירה');
@@ -1180,17 +1323,28 @@ export default function GroupDetailPage() {
                 </thead>
                 <tbody>
                   {participantRanks.map((p) => {
+                    const isInspected = inspectedParticipantId === p.participantId;
                     const medalColor = p.rank === 1 ? '#f59e0b' : p.rank === 2 ? '#94a3b8' : p.rank === 3 ? '#b45309' : '#e2e8f0';
                     const medalText = p.rank <= 3 ? '#fff' : '#64748b';
                     return (
-                      <tr key={p.participantId} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                      <tr
+                        key={p.participantId}
+                        onClick={() => setInspectedParticipantId(p.participantId)}
+                        style={{
+                          borderBottom: '1px solid #f1f5f9',
+                          cursor: 'pointer',
+                          background: isInspected ? '#eff6ff' : undefined,
+                          transition: 'background 0.1s',
+                        }}
+                      >
                         <td style={{ padding: '11px 14px' }}>
                           <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 26, height: 26, borderRadius: '50%', background: medalColor, color: medalText, fontSize: 12, fontWeight: 700 }}>
                             {p.rank}
                           </span>
                         </td>
-                        <td style={{ padding: '11px 14px', fontWeight: 600, color: '#0f172a' }}>
+                        <td style={{ padding: '11px 14px', fontWeight: 600, color: isInspected ? '#1d4ed8' : '#0f172a' }}>
                           {p.firstName}{p.lastName ? ' ' + p.lastName : ''}
+                          {isInspected && <span style={{ fontSize: 10, marginRight: 6, color: '#2563eb' }}>▶</span>}
                         </td>
                         <td style={{ padding: '11px 14px', fontWeight: 700, color: '#2563eb' }}>{p.totalScore}</td>
                         <td style={{ padding: '11px 14px', color: '#374151' }}>{p.weekScore}</td>
@@ -1205,6 +1359,191 @@ export default function GroupDetailPage() {
                   })}
                 </tbody>
               </table>
+            </div>
+          )}
+
+          {/* ── Admin inspect panel ───────────────────────────────────────────── */}
+          {inspectedParticipantId && (
+            <div style={{ marginTop: 24, display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+              {/* Participant selector */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: 13, fontWeight: 600, color: '#374151', whiteSpace: 'nowrap' }}>פרטי משתתף:</span>
+                <select
+                  value={inspectedParticipantId}
+                  onChange={(e) => setInspectedParticipantId(e.target.value)}
+                  style={{ border: '1px solid #e2e8f0', borderRadius: 7, padding: '6px 10px', fontSize: 13, background: '#fff', color: '#0f172a', cursor: 'pointer' }}
+                >
+                  {participantRanks.map((p) => (
+                    <option key={p.participantId} value={p.participantId}>
+                      #{p.rank} {p.firstName}{p.lastName ? ' ' + p.lastName : ''} ({p.totalScore} נק׳)
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* נתונים — score cards */}
+              <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10, padding: 16 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a', marginBottom: 12 }}>נתונים</div>
+                {adminStatsLoading ? (
+                  <div style={{ color: '#94a3b8', fontSize: 13 }}>טוען...</div>
+                ) : adminStats ? (
+                  <>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(110px, 1fr))', gap: 10, marginBottom: 14 }}>
+                      {[
+                        { label: 'היום', value: adminStats.todayScore, color: '#2563eb', bg: '#eff6ff' },
+                        { label: 'השבוע', value: adminStats.weekScore, color: '#7c3aed', bg: '#f5f3ff' },
+                        { label: 'סה״כ', value: adminStats.totalScore, color: '#0f172a', bg: '#f1f5f9' },
+                        { label: 'רצף נוכחי', value: adminStats.currentStreak, color: '#c2410c', bg: '#fff7ed', suffix: ' 🔥' },
+                        { label: 'רצף שיא', value: adminStats.bestStreak, color: '#92400e', bg: '#fef3c7', suffix: ' ★' },
+                      ].map(({ label, value, color, bg, suffix }) => (
+                        <div key={label} style={{ background: bg, border: '1px solid #e2e8f0', borderRadius: 8, padding: '10px 12px', textAlign: 'center' }}>
+                          <div style={{ fontSize: 11, color: '#64748b', marginBottom: 4 }}>{label}</div>
+                          <div style={{ fontSize: 20, fontWeight: 800, color }}>{value}{suffix ?? ''}</div>
+                        </div>
+                      ))}
+                    </div>
+                    {/* 14-day trend bar chart */}
+                    {adminStats.dailyTrend.length > 0 && (
+                      <div>
+                        <div style={{ fontSize: 11, color: '#64748b', marginBottom: 6 }}>14 ימים אחרונים</div>
+                        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 3, height: 40 }}>
+                          {adminStats.dailyTrend.map((d) => {
+                            const maxPts = Math.max(...adminStats.dailyTrend.map((x) => x.points), 1);
+                            const heightPct = (d.points / maxPts) * 100;
+                            return (
+                              <div
+                                key={d.date}
+                                title={`${d.date}: ${d.points} נק׳`}
+                                style={{
+                                  flex: 1, borderRadius: '2px 2px 0 0',
+                                  background: d.points > 0 ? '#2563eb' : '#e2e8f0',
+                                  height: `${Math.max(heightPct, d.points > 0 ? 8 : 3)}%`,
+                                  minHeight: 3,
+                                  transition: 'height 0.2s',
+                                }}
+                              />
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div style={{ color: '#94a3b8', fontSize: 13 }}>אין נתונים</div>
+                )}
+              </div>
+
+              {/* מבזק — feed events */}
+              <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: '1px solid #f1f5f9', background: '#f8fafc' }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a' }}>מבזק פעילות</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    {selectedFeedIds.size > 0 && (
+                      <button
+                        onClick={handleBulkDelete}
+                        disabled={bulkDeleting}
+                        style={{
+                          background: bulkDeleting ? '#fca5a5' : '#ef4444',
+                          color: '#fff', border: 'none', borderRadius: 6,
+                          padding: '5px 12px', fontSize: 12, fontWeight: 600,
+                          cursor: bulkDeleting ? 'not-allowed' : 'pointer',
+                        }}
+                      >
+                        {bulkDeleting ? 'מוחק...' : `מחק ${selectedFeedIds.size} נבחרות`}
+                      </button>
+                    )}
+                    {selectedFeedIds.size > 0 && (
+                      <button
+                        onClick={() => setSelectedFeedIds(new Set())}
+                        style={{ background: 'none', border: 'none', fontSize: 12, color: '#64748b', cursor: 'pointer', padding: '5px 6px' }}
+                      >
+                        בטל בחירה
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {adminFeedLoading ? (
+                  <div style={{ padding: '20px 16px', color: '#94a3b8', fontSize: 13, textAlign: 'center' }}>טוען מבזק...</div>
+                ) : adminFeed.length === 0 ? (
+                  <div style={{ padding: '24px 16px', color: '#94a3b8', fontSize: 13, textAlign: 'center' }}>
+                    אין פעולות להציג
+                  </div>
+                ) : (
+                  <div style={{ maxHeight: 320, overflowY: 'auto' }}>
+                    {adminFeed.map((event) => {
+                      const isSelected = selectedFeedIds.has(event.id);
+                      const isDeleting = deletingFeedIds.has(event.id);
+                      const dt = new Date(event.createdAt);
+                      const timeStr = dt.toLocaleString('he-IL', { day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' });
+                      return (
+                        <div
+                          key={event.id}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: 10,
+                            padding: '9px 14px',
+                            borderBottom: '1px solid #f8fafc',
+                            background: isSelected ? '#fef2f2' : isDeleting ? '#fef9c3' : undefined,
+                            opacity: isDeleting ? 0.5 : 1,
+                            transition: 'background 0.1s, opacity 0.2s',
+                          }}
+                        >
+                          {/* Checkbox */}
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            disabled={isDeleting}
+                            onChange={(e) => {
+                              setSelectedFeedIds((prev) => {
+                                const n = new Set(prev);
+                                if (e.target.checked) n.add(event.id); else n.delete(event.id);
+                                return n;
+                              });
+                            }}
+                            style={{ width: 16, height: 16, flexShrink: 0, cursor: 'pointer' }}
+                          />
+
+                          {/* Points badge */}
+                          <span style={{
+                            flexShrink: 0, minWidth: 36, textAlign: 'center',
+                            background: '#eff6ff', color: '#1d4ed8',
+                            border: '1px solid #bfdbfe', borderRadius: 6,
+                            fontSize: 12, fontWeight: 700, padding: '2px 6px',
+                          }}>
+                            +{event.points}
+                          </span>
+
+                          {/* Message */}
+                          <span style={{ flex: 1, fontSize: 13, color: '#374151', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {event.message}
+                          </span>
+
+                          {/* Time */}
+                          <span style={{ flexShrink: 0, fontSize: 11, color: '#94a3b8', whiteSpace: 'nowrap' }}>
+                            {timeStr}
+                          </span>
+
+                          {/* Delete */}
+                          <button
+                            onClick={() => handleDeleteFeedEvent(event.id)}
+                            disabled={isDeleting}
+                            title="מחק ונכה נקודות"
+                            style={{
+                              flexShrink: 0, background: 'none', border: 'none',
+                              color: '#ef4444', cursor: isDeleting ? 'not-allowed' : 'pointer',
+                              padding: '4px 6px', borderRadius: 5, fontSize: 14, lineHeight: 1,
+                              opacity: isDeleting ? 0.4 : 1,
+                            }}
+                          >
+                            🗑
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -1301,6 +1640,50 @@ export default function GroupDetailPage() {
               />
               <label htmlFor="edit-isActive" style={{ fontSize: 14, color: '#374151', cursor: 'pointer' }}>קבוצה פעילה</label>
             </div>
+
+            {/* ── Portal opening flow ──────────────────────────────────────── */}
+            <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: 16, marginTop: 4 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a', marginBottom: 4 }}>פתיחת הפורטל</div>
+              <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12, lineHeight: 1.5 }}>
+                כשהשדות ריקים — הפורטל פתוח תמיד. כשמוגדרים — המשתתפות יראו מסך המתנה עד הזמן שנקבע.
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div>
+                  <label style={{ ...S.fieldLabel, display: 'block', marginBottom: 4 }}>מועד שיחת הפתיחה</label>
+                  <input
+                    type="datetime-local"
+                    style={{ ...S.input, direction: 'ltr', fontSize: 13 }}
+                    value={editForm.portalCallTime}
+                    onChange={(e) => setEditForm((p) => ({ ...p, portalCallTime: e.target.value }))}
+                  />
+                  <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 3 }}>
+                    עד לזמן זה — ספירה לאחור. לאחריו — מסך ביניים.
+                  </div>
+                </div>
+                <div>
+                  <label style={{ ...S.fieldLabel, display: 'block', marginBottom: 4 }}>שעת פתיחה בפועל</label>
+                  <input
+                    type="datetime-local"
+                    style={{ ...S.input, direction: 'ltr', fontSize: 13 }}
+                    value={editForm.portalOpenTime}
+                    onChange={(e) => setEditForm((p) => ({ ...p, portalOpenTime: e.target.value }))}
+                  />
+                  <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 3 }}>
+                    מהזמן הזה — הפורטל נפתח לחלוטין.
+                  </div>
+                </div>
+                {(editForm.portalCallTime || editForm.portalOpenTime) && (
+                  <button
+                    type="button"
+                    onClick={() => setEditForm((p) => ({ ...p, portalCallTime: '', portalOpenTime: '' }))}
+                    style={{ background: 'none', border: 'none', color: '#ef4444', fontSize: 12, cursor: 'pointer', padding: 0, textAlign: 'right' }}
+                  >
+                    נקה זמני פתיחה ←
+                  </button>
+                )}
+              </div>
+            </div>
+
             {editError && <div style={{ color: '#dc2626', fontSize: 13 }}>{editError}</div>}
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 4 }}>
               <button onClick={() => setEditModalOpen(false)} style={S.btnSecondary}>ביטול</button>

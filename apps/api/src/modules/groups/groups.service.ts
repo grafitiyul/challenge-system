@@ -61,6 +61,8 @@ export class GroupsService {
         ...(dto.endDate !== undefined ? { endDate: dto.endDate ? new Date(dto.endDate) : null } : {}),
         ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
         ...(dto.taskEngineEnabled !== undefined ? { taskEngineEnabled: dto.taskEngineEnabled } : {}),
+        ...(dto.portalCallTime !== undefined ? { portalCallTime: dto.portalCallTime ? new Date(dto.portalCallTime) : null } : {}),
+        ...(dto.portalOpenTime !== undefined ? { portalOpenTime: dto.portalOpenTime ? new Date(dto.portalOpenTime) : null } : {}),
       },
     });
   }

@@ -151,4 +151,35 @@ export class GameEngineController {
   programSummary(@Param('programId') programId: string) {
     return this.svc.getProgramSummary(programId);
   }
+
+  // GET /api/game/admin/participant-stats?participantId=&groupId=
+  @Get('admin/participant-stats')
+  adminParticipantStats(
+    @Query('participantId') participantId: string,
+    @Query('groupId') groupId: string,
+  ) {
+    return this.svc.getAdminParticipantStats(participantId, groupId);
+  }
+
+  // GET /api/game/admin/feed?groupId=&participantId=&limit=
+  @Get('admin/feed')
+  adminFeed(
+    @Query('groupId') groupId: string,
+    @Query('participantId') participantId?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.svc.getAdminFeed(groupId, participantId, limit ? parseInt(limit) : 50);
+  }
+
+  // DELETE /api/game/admin/feed/:feedEventId
+  @Delete('admin/feed/:feedEventId')
+  deleteFeedEvent(@Param('feedEventId') feedEventId: string) {
+    return this.svc.deleteFeedEvent(feedEventId);
+  }
+
+  // POST /api/game/admin/feed/bulk-delete
+  @Post('admin/feed/bulk-delete')
+  bulkDeleteFeedEvents(@Body() body: { ids: string[] }) {
+    return this.svc.bulkDeleteFeedEvents(body.ids);
+  }
 }

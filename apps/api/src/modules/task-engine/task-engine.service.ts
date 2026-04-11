@@ -601,7 +601,7 @@ export class TaskEngineService {
           select: { id: true, firstName: true, lastName: true },
         },
         group: {
-          select: { id: true, name: true, taskEngineEnabled: true },
+          select: { id: true, name: true, taskEngineEnabled: true, portalCallTime: true, portalOpenTime: true },
         },
       },
     });
@@ -616,6 +616,8 @@ export class TaskEngineService {
       groupName: pg.group.name,
       taskEngineEnabled: pg.group.taskEngineEnabled,
       memberIsActive: pg.isActive,
+      portalCallTime: pg.group.portalCallTime ? pg.group.portalCallTime.toISOString() : null,
+      portalOpenTime: pg.group.portalOpenTime ? pg.group.portalOpenTime.toISOString() : null,
     };
   }
 

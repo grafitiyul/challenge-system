@@ -20,6 +20,9 @@ interface PortalContext {
   participant: { id: string; firstName: string; lastName: string | null };
   group: { id: string; name: string; startDate: string | null; endDate: string | null };
   program: { id: string; name: string; isActive: boolean };
+  // Portal opening gate — null means portal is always open
+  portalCallTime: string | null;
+  portalOpenTime: string | null;
   actions: Action[];
   todayScore: number;
   todayValues: Record<string, number>;
@@ -208,7 +211,9 @@ function TrendChart({ data }: { data: { date: string; points: number }[] }) {
 export default function ParticipantPortal({ params }: { params: Promise<{ token: string }> }) {
   const { token } = use(params);
 
-  const [state, setState] = useState<'loading' | 'invalid' | 'inactive' | 'ready'>('loading');
+  const [state, setState] = useState<'loading' | 'invalid' | 'inactive' | 'waiting_a' | 'waiting_b' | 'ready'>('loading');
+  // Countdown for waiting_a state — updated every second
+  const [countdown, setCountdown] = useState({ days: 0, hours: 0, minutes: 0, seconds: 0 });
   const [ctx, setCtx] = useState<PortalContext | null>(null);
   const [loadError, setLoadError] = useState('');
   const [activeTab, setActiveTab] = useState<TabId>('report');
@@ -245,8 +250,24 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
     apiFetch<PortalContext>(`${BASE_URL}/public/participant/${token}`, { cache: 'no-store' })
       .then((data) => {
         setCtx(data);
-        setState('ready');
-        loadedTabs.current.add('report');
+        // ── Resolve portal opening state ─────────────────────────────────
+        // All comparisons are in UTC (both sides are Date objects).
+        const now = Date.now();
+        const callTime = data.portalCallTime ? new Date(data.portalCallTime).getTime() : null;
+        const openTime = data.portalOpenTime ? new Date(data.portalOpenTime).getTime() : null;
+
+        if (openTime !== null && now < openTime) {
+          // Portal not yet open. Decide A or B.
+          if (callTime !== null && now < callTime) {
+            setState('waiting_a'); // pre-call: show countdown
+          } else {
+            setState('waiting_b'); // call has happened, portal opening soon
+          }
+        } else {
+          // Portal is open (or no restriction set)
+          setState('ready');
+          loadedTabs.current.add('report');
+        }
       })
       .catch((err) => {
         const msg = typeof err === 'object' && err !== null && 'message' in err
@@ -289,6 +310,52 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
       .catch(() => setRulesError('שגיאה בטעינת החוקים'))
       .finally(() => setRulesLoading(false));
   }, [token]);
+
+  // ─── Waiting state: countdown + auto-advance ──────────────────────────────
+  // Runs only in waiting_a and waiting_b states.
+  // Ticks every second. When a threshold is crossed, advances state automatically.
+
+  useEffect(() => {
+    if (state !== 'waiting_a' && state !== 'waiting_b') return;
+    if (!ctx) return;
+
+    const callTime = ctx.portalCallTime ? new Date(ctx.portalCallTime).getTime() : null;
+    const openTime = ctx.portalOpenTime ? new Date(ctx.portalOpenTime).getTime() : null;
+
+    const tick = () => {
+      const now = Date.now();
+
+      // Check if portal should now be open
+      if (openTime !== null && now >= openTime) {
+        setState('ready');
+        loadedTabs.current.add('report');
+        return;
+      }
+
+      // Check if we should advance from A → B
+      if (state === 'waiting_a' && callTime !== null && now >= callTime) {
+        setState('waiting_b');
+        return;
+      }
+
+      // Update countdown (only meaningful in waiting_a)
+      if (state === 'waiting_a' && callTime !== null) {
+        const diff = callTime - now;
+        if (diff > 0) {
+          setCountdown({
+            days: Math.floor(diff / 86_400_000),
+            hours: Math.floor((diff % 86_400_000) / 3_600_000),
+            minutes: Math.floor((diff % 3_600_000) / 60_000),
+            seconds: Math.floor((diff % 60_000) / 1_000),
+          });
+        }
+      }
+    };
+
+    tick(); // Run immediately on mount
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [state, ctx]);
 
   function switchTab(tab: TabId) {
     setActiveTab(tab);
@@ -408,6 +475,92 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
           <div style={{ fontSize: 40, marginBottom: 16 }}>🏁</div>
           <p style={s.statusTitle}>התוכנית הסתיימה</p>
           <p style={s.statusText}>תודה על ההשתתפות</p>
+        </div>
+      </div>
+    );
+  }
+
+  // ── State A: before the opening call ──────────────────────────────────────
+  if (state === 'waiting_a' && ctx) {
+    const firstName = ctx.participant.firstName;
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return (
+      <div style={{
+        minHeight: '100vh', background: 'linear-gradient(160deg, #0f172a 0%, #1e3a5f 60%, #0f172a 100%)',
+        fontFamily: 'Arial, Helvetica, sans-serif', direction: 'rtl',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        padding: '32px 24px',
+      }}>
+        <style>{`@keyframes pulse-glow { 0%,100%{opacity:0.6;} 50%{opacity:1;} } @keyframes spin { to{transform:rotate(360deg);} }`}</style>
+        <div style={{ maxWidth: 400, width: '100%', textAlign: 'center' }}>
+
+          {/* Animated spark */}
+          <div style={{ fontSize: 52, marginBottom: 20, animation: 'pulse-glow 2.4s ease-in-out infinite' }}>⚡</div>
+
+          {/* Headline */}
+          <h1 style={{ fontSize: 22, fontWeight: 800, color: '#f0f9ff', lineHeight: 1.45, margin: '0 0 28px' }}>
+            כן {firstName}, כולנו כבר לא יכולות לחכות להתחיל — אבל זה קורה ממש עוד
+          </h1>
+
+          {/* Live countdown */}
+          <div style={{
+            display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 28,
+          }}>
+            {[
+              { value: countdown.days,    label: 'ימים'   },
+              { value: countdown.hours,   label: 'שעות'   },
+              { value: countdown.minutes, label: 'דקות'   },
+              { value: countdown.seconds, label: 'שניות'  },
+            ].map(({ value, label }) => (
+              <div key={label} style={{
+                background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)',
+                borderRadius: 12, padding: '14px 8px',
+              }}>
+                <div style={{ fontSize: 32, fontWeight: 800, color: '#38bdf8', lineHeight: 1, fontVariantNumeric: 'tabular-nums' }}>
+                  {pad(value)}
+                </div>
+                <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6, letterSpacing: '0.05em' }}>{label}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Footer text */}
+          <p style={{ fontSize: 15, color: '#94a3b8', lineHeight: 1.65, margin: 0 }}>
+            בינתיים נשאר רק לחכות בסבלנות,<br />אנחנו ממש מתחילות עוד רגע ✨
+          </p>
+
+        </div>
+      </div>
+    );
+  }
+
+  // ── State B: after call time, before actual open ───────────────────────────
+  if (state === 'waiting_b' && ctx) {
+    return (
+      <div style={{
+        minHeight: '100vh', background: 'linear-gradient(160deg, #0f172a 0%, #1e3a5f 60%, #0f172a 100%)',
+        fontFamily: 'Arial, Helvetica, sans-serif', direction: 'rtl',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        padding: '32px 24px',
+      }}>
+        <style>{`@keyframes bounce-soft { 0%,100%{transform:translateY(0);} 50%{transform:translateY(-6px);} } @keyframes spin { to{transform:rotate(360deg);} }`}</style>
+        <div style={{ maxWidth: 380, width: '100%', textAlign: 'center' }}>
+
+          <div style={{ fontSize: 52, marginBottom: 20, display: 'inline-block', animation: 'bounce-soft 1.8s ease-in-out infinite' }}>🎉</div>
+
+          <h1 style={{ fontSize: 20, fontWeight: 800, color: '#f0f9ff', lineHeight: 1.55, margin: '0 0 24px' }}>
+            אולי במקום להציץ תקשיבי לשיחה?<br />
+            <span style={{ color: '#38bdf8' }}>סתםםםם</span>, הכל טוב 😉<br />
+            תכף זה קורה!!
+          </h1>
+
+          {/* Subtle spinner to signal "almost there" */}
+          <div style={{
+            width: 40, height: 40, border: '3px solid rgba(255,255,255,0.15)',
+            borderTopColor: '#38bdf8', borderRadius: '50%',
+            animation: 'spin 1s linear infinite', margin: '0 auto',
+          }} />
+
         </div>
       </div>
     );

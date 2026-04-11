@@ -768,6 +768,114 @@ export class GameEngineService {
     };
   }
 
+  // ─── Admin: participant stats (for group management panel) ───────────────────
+
+  async getAdminParticipantStats(participantId: string, groupId: string) {
+    const group = await this.prisma.group.findUnique({
+      where: { id: groupId },
+      select: { programId: true },
+    });
+    if (!group?.programId) throw new NotFoundException('Group or program not found');
+    const programId = group.programId;
+
+    const now = new Date();
+    const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
+    const weekStart = new Date(now); weekStart.setDate(now.getDate() - now.getDay()); weekStart.setHours(0, 0, 0, 0);
+    const since14 = new Date(now); since14.setDate(now.getDate() - 13); since14.setHours(0, 0, 0, 0);
+
+    const [todayAgg, weekAgg, totalAgg, state, trendEvents] = await Promise.all([
+      this.prisma.scoreEvent.aggregate({ _sum: { points: true }, where: { participantId, programId, createdAt: { gte: todayStart } } }),
+      this.prisma.scoreEvent.aggregate({ _sum: { points: true }, where: { participantId, programId, createdAt: { gte: weekStart } } }),
+      this.prisma.scoreEvent.aggregate({ _sum: { points: true }, where: { participantId, programId } }),
+      this.prisma.participantGameState.findUnique({ where: { participantId_programId: { participantId, programId } } }),
+      this.prisma.scoreEvent.findMany({ where: { participantId, programId, createdAt: { gte: since14 } }, select: { points: true, createdAt: true } }),
+    ]);
+
+    // Build 14-day trend
+    const trendMap: Record<string, number> = {};
+    for (const e of trendEvents) {
+      const key = e.createdAt.toISOString().slice(0, 10);
+      trendMap[key] = (trendMap[key] ?? 0) + e.points;
+    }
+    const dailyTrend: { date: string; points: number }[] = [];
+    for (let i = 0; i < 14; i++) {
+      const d = new Date(since14); d.setDate(since14.getDate() + i);
+      const key = d.toISOString().slice(0, 10);
+      dailyTrend.push({ date: key, points: trendMap[key] ?? 0 });
+    }
+
+    return {
+      todayScore: todayAgg._sum.points ?? 0,
+      weekScore: weekAgg._sum.points ?? 0,
+      totalScore: totalAgg._sum.points ?? 0,
+      currentStreak: state?.currentStreak ?? 0,
+      bestStreak: state?.bestStreak ?? 0,
+      dailyTrend,
+    };
+  }
+
+  // ─── Admin: feed for one participant (with optional participantId filter) ─────
+
+  getAdminFeed(groupId: string, participantId?: string, limit = 50) {
+    return this.prisma.feedEvent.findMany({
+      where: {
+        groupId,
+        isPublic: true,
+        ...(participantId ? { participantId } : {}),
+      },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      include: {
+        participant: { select: { id: true, firstName: true, lastName: true } },
+      },
+    });
+  }
+
+  // ─── Admin: delete feed event + matching score events ────────────────────────
+
+  async deleteFeedEvent(feedEventId: string) {
+    const event = await this.prisma.feedEvent.findUnique({ where: { id: feedEventId } });
+    if (!event) throw new NotFoundException(`Feed event ${feedEventId} not found`);
+
+    // Find score events created within a 10-second window around this feed event
+    // with matching participantId + groupId + points. This covers both 'action' and
+    // 'rule' feed events — each has exactly one corresponding ScoreEvent.
+    const windowMs = 10_000;
+    const windowStart = new Date(event.createdAt.getTime() - windowMs);
+    const windowEnd = new Date(event.createdAt.getTime() + windowMs);
+
+    const matchingScoreEvents = await this.prisma.scoreEvent.findMany({
+      where: {
+        participantId: event.participantId,
+        groupId: event.groupId,
+        points: event.points,
+        createdAt: { gte: windowStart, lte: windowEnd },
+      },
+      select: { id: true },
+    });
+
+    // Delete in a transaction: feed event first, then score events
+    await this.prisma.$transaction([
+      this.prisma.feedEvent.delete({ where: { id: feedEventId } }),
+      ...matchingScoreEvents.map((se) =>
+        this.prisma.scoreEvent.delete({ where: { id: se.id } }),
+      ),
+    ]);
+
+    return { deleted: true, scoreEventsRemoved: matchingScoreEvents.length };
+  }
+
+  // ─── Admin: bulk delete feed events ──────────────────────────────────────────
+
+  async bulkDeleteFeedEvents(feedEventIds: string[]) {
+    let totalScoreEventsRemoved = 0;
+    for (const id of feedEventIds) {
+      const result = await this.deleteFeedEvent(id);
+      totalScoreEventsRemoved += result.scoreEventsRemoved;
+    }
+    return { deleted: feedEventIds.length, scoreEventsRemoved: totalScoreEventsRemoved };
+  }
+
   // ─── Private helpers ────────────────────────────────────────────────────────
 
   // ─── Effective daily value ──────────────────────────────────────────────────
