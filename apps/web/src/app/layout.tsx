@@ -3,14 +3,38 @@ import type { ReactNode } from 'react';
 import { SidebarLayout } from '@components/sidebar-layout';
 
 export const metadata: Metadata = {
-  title: 'Challenge System — Admin',
-  description: 'Admin panel for managing habit challenges',
+  title: 'Challenge System',
+  description: 'פורטל משתתפים — תכנון, יעדים, ומשימות שבועיות',
+  manifest: '/manifest.json',
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: 'default',
+    title: 'Challenge',
+  },
+  icons: {
+    icon: [
+      { url: '/icon-192.png', sizes: '192x192', type: 'image/png' },
+      { url: '/icon-512.png', sizes: '512x512', type: 'image/png' },
+    ],
+    apple: [
+      { url: '/icon-192.png', sizes: '192x192', type: 'image/png' },
+    ],
+  },
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="he" dir="rtl">
       <head>
+        <meta name="theme-color" content="#2563eb" />
+        <meta name="mobile-web-app-capable" content="yes" />
+        <script dangerouslySetInnerHTML={{ __html: `
+          if ('serviceWorker' in navigator) {
+            window.addEventListener('load', function() {
+              navigator.serviceWorker.register('/sw.js');
+            });
+          }
+        ` }} />
         <style>{`
           *, *::before, *::after { box-sizing: border-box; }
           html, body { margin: 0; padding: 0; }
