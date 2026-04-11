@@ -18,6 +18,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { BASE_URL, apiFetch } from '@lib/api';
 import { TaskPoolRow, GoalSection } from '@components/task-engine-ui';
 import { TaskBoardHeader } from '@components/task-board-header';
+import WhatsAppEditor from '@components/whatsapp-editor';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -651,6 +652,123 @@ function SummaryModal({ planId, participantId, mode, onClose }: {
   );
 }
 
+// ─── Report message builder ───────────────────────────────────────────────────
+
+type ReportTemplate = 'daily_summary';
+
+function buildDayReportMessage(
+  items: Array<{ task: TaskShape; assignment: AssignmentShape; goalTitle: string | null }>,
+  dateStr: string,
+): string {
+  const d = new Date(dateStr + 'T00:00:00');
+  const dayName = DAYS_HE[d.getDay()];
+  const day = String(d.getDate()).padStart(2, '0');
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const fullDate = `${day}/${month}/${d.getFullYear()}`;
+
+  const relevant = items.filter(i => i.assignment.status !== 'carried_forward');
+  const completed = relevant.filter(i => i.assignment.isCompleted);
+  const incomplete = relevant.filter(i => !i.assignment.isCompleted);
+
+  const lines: string[] = [];
+  lines.push(`*סיכום ${dayName} ${fullDate}*`);
+  lines.push('');
+
+  if (completed.length > 0) {
+    lines.push('בוצע:');
+    completed.forEach(i => lines.push(`✅ ${i.task.title}`));
+  } else {
+    lines.push('בוצע:');
+    lines.push('—');
+  }
+
+  lines.push('');
+
+  if (incomplete.length > 0) {
+    lines.push('לא בוצע:');
+    incomplete.forEach(i => lines.push(`❌ ${i.task.title}`));
+  } else {
+    lines.push('לא בוצע:');
+    lines.push('—');
+  }
+
+  return lines.join('\n');
+}
+
+// ─── Report Picker Modal ──────────────────────────────────────────────────────
+
+const REPORT_TEMPLATES: { key: ReportTemplate; label: string; description: string }[] = [
+  { key: 'daily_summary', label: 'הודעת סיכום יום', description: 'משימות שבוצעו ולא בוצעו ביום הנבחר' },
+];
+
+function ReportPickerModal({ onSelect, onClose }: {
+  onSelect: (template: ReportTemplate) => void;
+  onClose: () => void;
+}) {
+  return (
+    <Modal onClose={onClose} title="שלח דיווח" width={420}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ fontSize: 13, color: '#64748b', marginBottom: 4 }}>בחרי סוג הודעה:</div>
+        {REPORT_TEMPLATES.map(t => (
+          <button
+            key={t.key}
+            onClick={() => onSelect(t.key)}
+            style={{
+              display: 'flex', flexDirection: 'column', alignItems: 'flex-start',
+              width: '100%', background: '#f8fafc', border: '1.5px solid #e2e8f0',
+              borderRadius: 10, padding: '14px 16px', cursor: 'pointer',
+              textAlign: 'right' as const, transition: 'border-color 0.15s',
+            }}
+            onMouseEnter={e => (e.currentTarget.style.borderColor = '#93c5fd')}
+            onMouseLeave={e => (e.currentTarget.style.borderColor = '#e2e8f0')}
+          >
+            <div style={{ fontSize: 14, fontWeight: 700, color: '#0f172a', marginBottom: 3 }}>{t.label}</div>
+            <div style={{ fontSize: 12, color: '#64748b' }}>{t.description}</div>
+          </button>
+        ))}
+      </div>
+    </Modal>
+  );
+}
+
+// ─── Report Editor Modal ──────────────────────────────────────────────────────
+
+function ReportEditorModal({ initialMessage, onClose }: {
+  initialMessage: string;
+  onClose: () => void;
+}) {
+  const [message, setMessage] = useState(initialMessage);
+  const [copied, setCopied] = useState(false);
+
+  function handleCopy() {
+    navigator.clipboard.writeText(message);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
+  function handleSend() {
+    const encoded = encodeURIComponent(message);
+    window.open(`https://wa.me/?text=${encoded}`, '_blank');
+  }
+
+  return (
+    <Modal onClose={onClose} title="הודעת סיכום יום" width={520}>
+      <div style={{ marginBottom: 16 }}>
+        <WhatsAppEditor value={message} onChange={setMessage} minHeight={180} />
+      </div>
+      <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+        <button onClick={onClose} style={btnSecondary}>סגור</button>
+        <button onClick={handleCopy} style={{ ...btnSecondary, minWidth: 110 }}>
+          {copied ? '✓ הועתק' : 'העתק'}
+        </button>
+        <button onClick={handleSend} style={{ ...btnPrimary, background: '#16a34a' }}>
+          שלח WhatsApp
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
 // ─── SVG icon buttons for AssignmentChip ─────────────────────────────────────
 
 function ChipIconBtn({ onClick, title, color, children }: {
@@ -804,6 +922,8 @@ export function TaskBoard({
   const [timeModal, setTimeModal] = useState<{ assignment: AssignmentShape; task: TaskShape } | null>(null);
   const [assignModal, setAssignModal] = useState<TaskShape | null>(null);
   const [summaryModal, setSummaryModal] = useState<'daily' | 'weekly' | null>(null);
+  const [reportPickerOpen, setReportPickerOpen] = useState(false);
+  const [reportEditorMessage, setReportEditorMessage] = useState<string | null>(null);
   const [editGoalModal, setEditGoalModal] = useState<GoalShape | null>(null);
   const [editTaskModal, setEditTaskModal] = useState<TaskShape | null>(null);
   const [confirmState, setConfirmState] = useState<{ type: 'goal' | 'task' | 'assignment'; id: string } | null>(null);
@@ -879,6 +999,21 @@ export function TaskBoard({
       else if (type === 'assignment') await apiFetch(`${BASE_URL}/task-engine/assignments/${id}`, { method: 'DELETE' });
     } catch {}
     loadPlan();
+  }
+
+  function handleReportSelect(template: ReportTemplate) {
+    if (!plan) return;
+    // Use selectedMobileDay when the user is reviewing a specific day on mobile,
+    // otherwise fall back to today's date.
+    const dayForReport = selectedMobileDay !== today
+      ? selectedMobileDay
+      : today;
+    const items = getAssignmentsForDay(plan, dayForReport);
+    const msg = template === 'daily_summary'
+      ? buildDayReportMessage(items, dayForReport)
+      : '';
+    setReportPickerOpen(false);
+    setReportEditorMessage(msg);
   }
 
   async function handleDrop(targetDate: string) {
@@ -1192,6 +1327,7 @@ export function TaskBoard({
           stats={boardStats ?? undefined}
           onDailySummary={showSummaryButtons ? () => setSummaryModal('daily') : undefined}
           onWeeklySummary={showSummaryButtons ? () => setSummaryModal('weekly') : undefined}
+          onReport={plan ? () => setReportPickerOpen(true) : undefined}
         />
       )}
 
@@ -1306,6 +1442,18 @@ export function TaskBoard({
           participantId={participantId}
           mode={summaryModal}
           onClose={() => setSummaryModal(null)}
+        />
+      )}
+      {reportPickerOpen && (
+        <ReportPickerModal
+          onSelect={handleReportSelect}
+          onClose={() => setReportPickerOpen(false)}
+        />
+      )}
+      {reportEditorMessage !== null && (
+        <ReportEditorModal
+          initialMessage={reportEditorMessage}
+          onClose={() => setReportEditorMessage(null)}
         />
       )}
       {editGoalModal && (

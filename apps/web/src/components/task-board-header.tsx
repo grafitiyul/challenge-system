@@ -22,6 +22,7 @@ export interface TaskBoardHeaderProps {
   participantName: string;
   onDailySummary?: () => void;
   onWeeklySummary?: () => void;
+  onReport?: () => void;
   stats?: BoardStats;
 }
 
@@ -52,6 +53,7 @@ export function TaskBoardHeader({
   participantName,
   onDailySummary,
   onWeeklySummary,
+  onReport,
   stats,
 }: TaskBoardHeaderProps) {
   const firstLetter = participantName.trim().charAt(0);
@@ -69,12 +71,18 @@ export function TaskBoardHeader({
         <h1 style={{ fontSize: 20, fontWeight: 700, color: '#0f172a', margin: 0 }}>
           תכנון שבועי
         </h1>
-        {showSummaryButtons && (
-          <div style={{ display: 'flex', gap: 8 }}>
-            {onDailySummary && <button onClick={onDailySummary} style={btnSm}>סיכום יומי</button>}
-            {onWeeklySummary && <button onClick={onWeeklySummary} style={btnSm}>סיכום שבועי</button>}
-          </div>
-        )}
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {showSummaryButtons && onDailySummary && <button onClick={onDailySummary} style={btnSm}>סיכום יומי</button>}
+          {showSummaryButtons && onWeeklySummary && <button onClick={onWeeklySummary} style={btnSm}>סיכום שבועי</button>}
+          {onReport && (
+            <button onClick={onReport} style={{
+              ...btnSm,
+              background: '#dcfce7', color: '#15803d', borderColor: '#86efac',
+            }}>
+              שלח דיווח 📤
+            </button>
+          )}
+        </div>
       </div>
 
       {/* ── Row 2: participant strip ─────────────────────────────────────── */}
