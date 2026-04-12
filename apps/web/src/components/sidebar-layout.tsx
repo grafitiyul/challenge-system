@@ -86,6 +86,14 @@ function IconSettings() {
   );
 }
 
+function IconShield() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+    </svg>
+  );
+}
+
 function IconMenu() {
   return (
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -107,6 +115,7 @@ const NAV_MAIN: NavItemDef[] = [
 ];
 
 const NAV_BOTTOM: NavItemDef[] = [
+  { href: '/admin/admins', label: 'מנהלים', icon: <IconShield /> },
   { href: '/admin/settings', label: 'הגדרות', icon: <IconSettings /> },
 ];
 
@@ -145,7 +154,14 @@ export function SidebarLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
 
   // Public pages (fill flow, game portal, task portal) must render without admin chrome
-  if (pathname.startsWith('/fill/') || pathname.startsWith('/t/') || pathname.startsWith('/tg/')) {
+  if (
+    pathname === '/login' ||
+    pathname === '/reset-password' ||
+    pathname === '/setup' ||
+    pathname.startsWith('/fill/') ||
+    pathname.startsWith('/t/') ||
+    pathname.startsWith('/tg/')
+  ) {
     return <>{children}</>;
   }
 
