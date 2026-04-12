@@ -386,6 +386,19 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
       if (current && current > 0) setInputValue(String(current));
     }
     setTimeout(() => inputRef.current?.focus(), 80);
+
+    // Silently refresh ctx so todayValues is current (handles the case where admin
+    // deleted/reset the participant's data while this page was already open).
+    apiFetch<PortalContext>(`${BASE_URL}/public/participant/${token}`, { cache: 'no-store' })
+      .then((fresh) => {
+        setCtx((prev) => prev ? { ...prev, todayScore: fresh.todayScore, todayValues: fresh.todayValues } : prev);
+        // Update the pre-fill with the fresh value for latest_value actions
+        if (action.inputType === 'number' && action.aggregationMode === 'latest_value') {
+          const freshCurrent = fresh.todayValues[action.id] ?? 0;
+          setInputValue(freshCurrent > 0 ? String(freshCurrent) : '');
+        }
+      })
+      .catch(() => { /* ignore — stale data is acceptable fallback */ });
   }
 
   function closeSheet() {
@@ -406,13 +419,6 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
       if (!value || isNaN(num) || num < 0) {
         setInputError('יש להזין מספר תקין');
         return;
-      }
-      if (activeAction.aggregationMode === 'latest_value') {
-        const current = ctx.todayValues[activeAction.id] ?? 0;
-        if (num < current) {
-          setInputError(`הערך לא יכול לרדת. הסה"כ הנוכחי שלך: ${current}${activeAction.unit ? ' ' + activeAction.unit : ''}`);
-          return;
-        }
       }
     }
 

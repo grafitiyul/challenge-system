@@ -203,33 +203,37 @@ export class GameEngineService {
       }
     }
 
-    // 1. Create the log entry
-    const log = await this.prisma.userActionLog.create({
-      data: {
-        participantId: dto.participantId,
-        programId: dto.programId,
-        actionId: dto.actionId,
-        value: dto.value ?? 'true',
-      },
-    });
-
-    // 2. Create ledger ScoreEvent
-    const scoreEvent = await this.prisma.scoreEvent.create({
-      data: {
-        participantId: dto.participantId,
-        programId: dto.programId,
-        groupId: dto.groupId ?? null,
-        sourceType: 'action',
-        sourceId: dto.actionId,
-        points: pointsForThisLog,
-        metadata: { logId: log.id, actionName: action.name, value: dto.value ?? 'true' },
-      },
+    // 1 + 2. Create UAL and ScoreEvent atomically so they are never orphaned.
+    // If either write fails, neither is committed — no stale daily value can accumulate.
+    const { log, scoreEvent } = await this.prisma.$transaction(async (tx) => {
+      const log = await tx.userActionLog.create({
+        data: {
+          participantId: dto.participantId,
+          programId: dto.programId,
+          actionId: dto.actionId,
+          value: dto.value ?? 'true',
+        },
+      });
+      const scoreEvent = await tx.scoreEvent.create({
+        data: {
+          participantId: dto.participantId,
+          programId: dto.programId,
+          groupId: dto.groupId ?? null,
+          sourceType: 'action',
+          sourceId: dto.actionId,
+          points: pointsForThisLog,
+          metadata: { logId: log.id, actionName: action.name, value: dto.value ?? 'true' },
+        },
+      });
+      return { log, scoreEvent };
     });
 
     // 3. Update participant game state (streak + lastActionDate)
     await this.updateParticipantStreak(dto.participantId, dto.programId, now);
 
-    // 4. Create feed event (if groupId provided)
+    // 4. Create feed event (if groupId provided).
+    // Store { logId, scoreEventId } in metadata so deleteFeedEvent can cascade
+    // directly without fragile time-window + points matching.
     if (dto.groupId) {
       const hasNumericValue = action.inputType === 'number' && dto.value && dto.value !== 'true';
       const valueStr = hasNumericValue
@@ -244,6 +248,7 @@ export class GameEngineService {
           message: `דיווחה על ${action.name}${valueStr}`,
           points: pointsForThisLog,
           isPublic: true,
+          metadata: { logId: log.id, scoreEventId: scoreEvent.id },
         },
       });
     }
@@ -842,64 +847,21 @@ export class GameEngineService {
     const event = await this.prisma.feedEvent.findUnique({ where: { id: feedEventId } });
     if (!event) throw new NotFoundException(`Feed event ${feedEventId} not found`);
 
-    // Find score events created within a 10-second window around this feed event
-    // with matching participantId + groupId + points. This covers both 'action' and
-    // 'rule' feed events — each has exactly one corresponding ScoreEvent.
-    const windowMs = 10_000;
-    const windowStart = new Date(event.createdAt.getTime() - windowMs);
-    const windowEnd = new Date(event.createdAt.getTime() + windowMs);
+    // Prefer direct lookup from FeedEvent.metadata (set by logAction for all new action events).
+    // Fall back to time-window matching for legacy rows that predate this field.
+    const eventMeta = event.metadata as Record<string, unknown> | null;
+    const directScoreEventId = typeof eventMeta?.['scoreEventId'] === 'string' ? eventMeta['scoreEventId'] : null;
+    const directLogId = typeof eventMeta?.['logId'] === 'string' ? eventMeta['logId'] : null;
 
-    const matchingScoreEvents = await this.prisma.scoreEvent.findMany({
-      where: {
-        participantId: event.participantId,
-        groupId: event.groupId,
-        points: event.points,
-        createdAt: { gte: windowStart, lte: windowEnd },
-      },
-      select: { id: true, metadata: true },
-    });
+    let scoreEventIds: string[];
+    let logIds: string[];
 
-    // Extract UserActionLog IDs stored in ScoreEvent.metadata by logAction
-    const logIds: string[] = matchingScoreEvents
-      .map((se) => {
-        const meta = se.metadata as Record<string, unknown> | null;
-        return typeof meta?.['logId'] === 'string' ? meta['logId'] : null;
-      })
-      .filter((id): id is string => id !== null);
-
-    // Delete in a transaction: feed event, score events, and orphaned action logs
-    await this.prisma.$transaction([
-      this.prisma.feedEvent.delete({ where: { id: feedEventId } }),
-      ...matchingScoreEvents.map((se) =>
-        this.prisma.scoreEvent.delete({ where: { id: se.id } }),
-      ),
-      ...(logIds.length > 0
-        ? [this.prisma.userActionLog.deleteMany({ where: { id: { in: logIds } } })]
-        : []),
-    ]);
-
-    // Recompute streak from scratch so deletion cascades to participant state
-    const programId = event.programId;
-    if (programId) {
-      await this.recomputeParticipantStreak(event.participantId, programId);
-    }
-
-    return { deleted: true, scoreEventsRemoved: matchingScoreEvents.length };
-  }
-
-  // ─── Admin: bulk delete feed events ──────────────────────────────────────────
-
-  async bulkDeleteFeedEvents(feedEventIds: string[]) {
-    // Collect all events first so we know which participants need recompute
-    const events = await this.prisma.feedEvent.findMany({
-      where: { id: { in: feedEventIds } },
-      select: { id: true, participantId: true, programId: true, groupId: true, points: true, createdAt: true },
-    });
-
-    let totalScoreEventsRemoved = 0;
-    const affectedPairs = new Map<string, { participantId: string; programId: string }>();
-
-    for (const event of events) {
+    if (directScoreEventId) {
+      // Fast path: exact IDs stored in metadata — no ambiguity possible
+      scoreEventIds = [directScoreEventId];
+      logIds = directLogId ? [directLogId] : [];
+    } else {
+      // Legacy fallback: time-window + points match (fragile but backwards-compatible)
       const windowMs = 10_000;
       const windowStart = new Date(event.createdAt.getTime() - windowMs);
       const windowEnd = new Date(event.createdAt.getTime() + windowMs);
@@ -914,24 +876,94 @@ export class GameEngineService {
         select: { id: true, metadata: true },
       });
 
-      const logIds: string[] = matchingScoreEvents
+      scoreEventIds = matchingScoreEvents.map((se) => se.id);
+      logIds = matchingScoreEvents
         .map((se) => {
           const meta = se.metadata as Record<string, unknown> | null;
           return typeof meta?.['logId'] === 'string' ? meta['logId'] : null;
         })
         .filter((id): id is string => id !== null);
+    }
+
+    // Delete atomically: feed event + its ScoreEvent(s) + the linked UAL
+    await this.prisma.$transaction([
+      this.prisma.feedEvent.delete({ where: { id: feedEventId } }),
+      ...scoreEventIds.map((id) =>
+        this.prisma.scoreEvent.delete({ where: { id } }),
+      ),
+      ...(logIds.length > 0
+        ? [this.prisma.userActionLog.deleteMany({ where: { id: { in: logIds } } })]
+        : []),
+    ]);
+
+    // Recompute streak from scratch so deletion cascades to participant state
+    const programId = event.programId;
+    if (programId) {
+      await this.recomputeParticipantStreak(event.participantId, programId);
+    }
+
+    return { deleted: true, scoreEventsRemoved: scoreEventIds.length };
+  }
+
+  // ─── Admin: bulk delete feed events ──────────────────────────────────────────
+
+  async bulkDeleteFeedEvents(feedEventIds: string[]) {
+    // Collect all events first so we know which participants need recompute
+    const events = await this.prisma.feedEvent.findMany({
+      where: { id: { in: feedEventIds } },
+      select: { id: true, participantId: true, programId: true, groupId: true, points: true, createdAt: true, metadata: true },
+    });
+
+    let totalScoreEventsRemoved = 0;
+    const affectedPairs = new Map<string, { participantId: string; programId: string }>();
+
+    for (const event of events) {
+      // Prefer direct lookup from FeedEvent.metadata; fall back to time-window for legacy rows
+      const eventMeta = event.metadata as Record<string, unknown> | null;
+      const directScoreEventId = typeof eventMeta?.['scoreEventId'] === 'string' ? eventMeta['scoreEventId'] : null;
+      const directLogId = typeof eventMeta?.['logId'] === 'string' ? eventMeta['logId'] : null;
+
+      let scoreEventIds: string[];
+      let logIds: string[];
+
+      if (directScoreEventId) {
+        scoreEventIds = [directScoreEventId];
+        logIds = directLogId ? [directLogId] : [];
+      } else {
+        const windowMs = 10_000;
+        const windowStart = new Date(event.createdAt.getTime() - windowMs);
+        const windowEnd = new Date(event.createdAt.getTime() + windowMs);
+
+        const matchingScoreEvents = await this.prisma.scoreEvent.findMany({
+          where: {
+            participantId: event.participantId,
+            groupId: event.groupId,
+            points: event.points,
+            createdAt: { gte: windowStart, lte: windowEnd },
+          },
+          select: { id: true, metadata: true },
+        });
+
+        scoreEventIds = matchingScoreEvents.map((se) => se.id);
+        logIds = matchingScoreEvents
+          .map((se) => {
+            const meta = se.metadata as Record<string, unknown> | null;
+            return typeof meta?.['logId'] === 'string' ? meta['logId'] : null;
+          })
+          .filter((id): id is string => id !== null);
+      }
 
       await this.prisma.$transaction([
         this.prisma.feedEvent.delete({ where: { id: event.id } }),
-        ...matchingScoreEvents.map((se) =>
-          this.prisma.scoreEvent.delete({ where: { id: se.id } }),
+        ...scoreEventIds.map((id) =>
+          this.prisma.scoreEvent.delete({ where: { id } }),
         ),
         ...(logIds.length > 0
           ? [this.prisma.userActionLog.deleteMany({ where: { id: { in: logIds } } })]
           : []),
       ]);
 
-      totalScoreEventsRemoved += matchingScoreEvents.length;
+      totalScoreEventsRemoved += scoreEventIds.length;
 
       if (event.programId) {
         const key = `${event.participantId}:${event.programId}`;

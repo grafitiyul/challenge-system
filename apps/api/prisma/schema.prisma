@@ -874,6 +874,8 @@ model FeedEvent {
   message       String
   points        Int         @default(0)
   isPublic      Boolean     @default(true)
+  // For action events: { logId, scoreEventId } — enables direct cascading deletion
+  metadata      Json?
   createdAt     DateTime    @default(now())
 
   @@index([groupId])
