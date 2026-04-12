@@ -97,17 +97,17 @@ function IconMenu() {
 }
 
 const NAV_MAIN: NavItemDef[] = [
-  { href: '/dashboard', label: 'דשבורד', icon: <IconGrid /> },
-  { href: '/programs', label: 'תוכניות', icon: <IconZap /> },
-  { href: '/groups', label: 'קבוצות', icon: <IconUsers /> },
-  { href: '/participants', label: 'משתתפות', icon: <IconUser /> },
-  { href: '/chats', label: "צ'אטים", icon: <IconMessageCircle /> },
-  { href: '/tasks', label: 'משימות', icon: <IconCheckSquare /> },
-  { href: '/questionnaires', label: 'שאלונים', icon: <IconFileText /> },
+  { href: '/admin/dashboard', label: 'דשבורד', icon: <IconGrid /> },
+  { href: '/admin/programs', label: 'תוכניות', icon: <IconZap /> },
+  { href: '/admin/groups', label: 'קבוצות', icon: <IconUsers /> },
+  { href: '/admin/participants', label: 'משתתפות', icon: <IconUser /> },
+  { href: '/admin/chats', label: "צ'אטים", icon: <IconMessageCircle /> },
+  { href: '/admin/tasks', label: 'משימות', icon: <IconCheckSquare /> },
+  { href: '/admin/questionnaires', label: 'שאלונים', icon: <IconFileText /> },
 ];
 
 const NAV_BOTTOM: NavItemDef[] = [
-  { href: '/settings', label: 'הגדרות', icon: <IconSettings /> },
+  { href: '/admin/settings', label: 'הגדרות', icon: <IconSettings /> },
 ];
 
 interface NavItemProps extends NavItemDef {

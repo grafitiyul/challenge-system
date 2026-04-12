@@ -957,23 +957,36 @@ export class GameEngineService {
       select: { programId: true },
     });
     if (!group) throw new NotFoundException(`Group ${groupId} not found`);
-    const { programId } = group;
+    const programId = group.programId ?? undefined;
+
+    // Collect the logIds stored in ScoreEvent.metadata before deleting, so we can
+    // remove the corresponding UserActionLog entries. Only delete UALs for actions in
+    // THIS group — preserve UALs from other groups in the same program.
+    const groupScoreEvents = await this.prisma.scoreEvent.findMany({
+      where: { participantId, groupId },
+      select: { metadata: true },
+    });
+
+    const logIds: string[] = groupScoreEvents
+      .map((se) => {
+        const meta = se.metadata as Record<string, unknown> | null;
+        return typeof meta?.['logId'] === 'string' ? meta['logId'] : null;
+      })
+      .filter((id): id is string => id !== null);
 
     await this.prisma.$transaction([
-      // Delete all feed events for this participant in this group
       this.prisma.feedEvent.deleteMany({ where: { participantId, groupId } }),
-      // Delete all score events for this participant in this program (scoped to group too)
       this.prisma.scoreEvent.deleteMany({ where: { participantId, groupId } }),
-      // Delete all action logs for this participant in this program
-      this.prisma.userActionLog.deleteMany({ where: { participantId, programId } }),
+      ...(logIds.length > 0
+        ? [this.prisma.userActionLog.deleteMany({ where: { id: { in: logIds } } })]
+        : []),
     ]);
 
-    // Reset game state completely
-    await this.prisma.participantGameState.upsert({
-      where: { participantId_programId: { participantId, programId } },
-      create: { participantId, programId, currentStreak: 0, bestStreak: 0, lastActionDate: null },
-      update: { currentStreak: 0, bestStreak: 0, lastActionDate: null },
-    });
+    // Recompute streak from remaining ScoreEvents across the program.
+    // Correctly zeroes out if this was the only active group.
+    if (programId) {
+      await this.recomputeParticipantStreak(participantId, programId);
+    }
 
     return { reset: true, participantId, groupId, programId };
   }
