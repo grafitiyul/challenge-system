@@ -195,4 +195,15 @@ export class GameEngineController {
   getBypassLink(@Query('accessToken') accessToken: string) {
     return this.svc.getBypassLink(accessToken);
   }
+
+  // POST /api/game/admin/reset-participant?participantId=&groupId=
+  // Atomically deletes all FeedEvents, ScoreEvents, and UserActionLogs for this
+  // participant in the given group, then zeroes out their game state.
+  @Post('admin/reset-participant')
+  resetParticipantProgress(
+    @Query('participantId') participantId: string,
+    @Query('groupId') groupId: string,
+  ) {
+    return this.svc.resetParticipantProgress(participantId, groupId);
+  }
 }

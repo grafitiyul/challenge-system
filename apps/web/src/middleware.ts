@@ -1,40 +1,39 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
-// Routes that are ALWAYS public — no session required
-const PUBLIC_PREFIXES = [
-  '/t/',        // participant game portal
-  '/tg/',       // participant task portal
-  '/fill/',     // public questionnaire fill
-  '/login',
-  '/reset-password',
+// Only these explicit admin path prefixes require a session cookie.
+// Everything else — public portals, fill flows, API proxy, Next.js internals — passes through untouched.
+// Security is enforced at the API level (AdminSessionGuard). This middleware is UX only.
+const PROTECTED_PREFIXES = [
+  '/dashboard',
+  '/groups',
+  '/participants',
+  '/programs',
+  '/questionnaires',
+  '/challenges',
+  '/chats',
+  '/settings',
+  '/tasks',
+  '/admin',
 ];
 
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  // Always pass through Next.js internals, static files and the API proxy
-  if (
-    pathname.startsWith('/_next/') ||
-    pathname.startsWith('/favicon') ||
-    pathname.startsWith('/api-proxy/')  // Next.js rewrite target — never a page
-  ) {
+  // Is this path under a protected prefix?
+  const isProtected = PROTECTED_PREFIXES.some(
+    (prefix) => pathname === prefix || pathname.startsWith(prefix + '/'),
+  );
+
+  if (!isProtected) {
     return NextResponse.next();
   }
 
-  // Pass through all explicitly public pages/routes
-  for (const prefix of PUBLIC_PREFIXES) {
-    if (pathname === prefix || pathname.startsWith(prefix + '/') || pathname === prefix.replace(/\/$/, '')) {
-      return NextResponse.next();
-    }
-  }
-
-  // Check for admin session cookie
+  // Protected path — require admin_session cookie (presence check only; validity is API's job)
   const session = req.cookies.get('admin_session');
   if (!session?.value) {
     const loginUrl = new URL('/login', req.url);
-    // Preserve the intended destination so we can redirect back after login
-    if (pathname !== '/') loginUrl.searchParams.set('from', pathname);
+    loginUrl.searchParams.set('from', pathname);
     return NextResponse.redirect(loginUrl);
   }
 
@@ -42,6 +41,5 @@ export function middleware(req: NextRequest) {
 }
 
 export const config = {
-  // Run on all non-static, non-api routes
   matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
 };

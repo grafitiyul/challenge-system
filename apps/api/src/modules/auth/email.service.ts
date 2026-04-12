@@ -22,18 +22,25 @@ export class EmailService {
       this.logger.log(`Email transport configured via ${host}:${port}`);
     } else {
       this.logger.warn(
-        'SMTP not configured (SMTP_HOST/SMTP_USER/SMTP_PASS missing) — emails will be logged to console only',
+        'SMTP not configured (SMTP_HOST/SMTP_USER/SMTP_PASS missing). ' +
+        'OTP login and password reset will be unavailable until SMTP is configured.',
       );
     }
   }
 
-  async sendEmail(to: string, subject: string, html: string): Promise<void> {
-    const from = process.env['SMTP_FROM'] ?? 'Challenge System <noreply@example.com>';
+  get isConfigured(): boolean {
+    return this.transporter !== null;
+  }
 
+  async sendEmail(to: string, subject: string, html: string): Promise<void> {
     if (!this.transporter) {
-      this.logger.log(`[DEV EMAIL] To: ${to} | Subject: ${subject}\n${html}`);
-      return;
+      throw new Error(
+        'Email service is not configured (SMTP_HOST/SMTP_USER/SMTP_PASS missing). ' +
+        'Cannot send email.',
+      );
     }
+
+    const from = process.env['SMTP_FROM'] ?? 'Challenge System <noreply@example.com>';
 
     try {
       await this.transporter.sendMail({ from, to, subject, html });

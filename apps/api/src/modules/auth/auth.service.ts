@@ -45,10 +45,17 @@ export class AuthService {
   // ─── Email OTP ────────────────────────────────────────────────────────────
 
   async requestEmailCode(emailInput: string): Promise<void> {
+    // Fail immediately if email is not configured — do not simulate success
+    if (!this.email.isConfigured) {
+      throw new BadRequestException(
+        'שליחת קוד אינה זמינה — שירות האימייל אינו מוגדר. פנה למנהל המערכת.',
+      );
+    }
+
     const admin = await this.prisma.adminUser.findUnique({
       where: { email: emailInput.toLowerCase().trim() },
     });
-    // Always succeed to prevent email enumeration
+    // Always succeed to prevent email enumeration (only after the SMTP check above)
     if (!admin || !admin.isActive) return;
 
     const code = String(Math.floor(100000 + Math.random() * 900000));
@@ -58,11 +65,8 @@ export class AuthService {
       data: { adminId: admin.id, code, expiresAt },
     });
 
-    try {
-      await this.email.sendLoginCode(admin.email, code);
-    } catch (err) {
-      this.logger.error(`Failed to send code to ${admin.email}: ${String(err)}`);
-    }
+    // Propagate — a failed send means the code was never delivered
+    await this.email.sendLoginCode(admin.email, code);
   }
 
   async verifyEmailCode(emailInput: string, code: string) {
@@ -96,10 +100,17 @@ export class AuthService {
   // ─── Password reset ───────────────────────────────────────────────────────
 
   async requestPasswordReset(emailInput: string): Promise<void> {
+    // Fail immediately if email is not configured — do not simulate success
+    if (!this.email.isConfigured) {
+      throw new BadRequestException(
+        'שחזור סיסמה אינו זמין — שירות האימייל אינו מוגדר. פנה למנהל המערכת.',
+      );
+    }
+
     const admin = await this.prisma.adminUser.findUnique({
       where: { email: emailInput.toLowerCase().trim() },
     });
-    // Always succeed to prevent email enumeration
+    // Always succeed to prevent email enumeration (only after the SMTP check above)
     if (!admin || !admin.isActive) return;
 
     const token = crypto.randomBytes(32).toString('hex');
@@ -112,11 +123,8 @@ export class AuthService {
     const baseUrl = process.env['FRONTEND_URL'] ?? 'http://localhost:3000';
     const resetUrl = `${baseUrl}/reset-password?token=${token}`;
 
-    try {
-      await this.email.sendPasswordReset(admin.email, resetUrl);
-    } catch (err) {
-      this.logger.error(`Failed to send reset email to ${admin.email}: ${String(err)}`);
-    }
+    // Propagate — a failed send means the reset link was never delivered
+    await this.email.sendPasswordReset(admin.email, resetUrl);
   }
 
   async resetPassword(token: string, newPassword: string): Promise<void> {

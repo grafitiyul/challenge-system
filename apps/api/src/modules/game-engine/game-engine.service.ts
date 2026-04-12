@@ -856,16 +856,33 @@ export class GameEngineService {
         points: event.points,
         createdAt: { gte: windowStart, lte: windowEnd },
       },
-      select: { id: true },
+      select: { id: true, metadata: true },
     });
 
-    // Delete in a transaction: feed event first, then score events
+    // Extract UserActionLog IDs stored in ScoreEvent.metadata by logAction
+    const logIds: string[] = matchingScoreEvents
+      .map((se) => {
+        const meta = se.metadata as Record<string, unknown> | null;
+        return typeof meta?.['logId'] === 'string' ? meta['logId'] : null;
+      })
+      .filter((id): id is string => id !== null);
+
+    // Delete in a transaction: feed event, score events, and orphaned action logs
     await this.prisma.$transaction([
       this.prisma.feedEvent.delete({ where: { id: feedEventId } }),
       ...matchingScoreEvents.map((se) =>
         this.prisma.scoreEvent.delete({ where: { id: se.id } }),
       ),
+      ...(logIds.length > 0
+        ? [this.prisma.userActionLog.deleteMany({ where: { id: { in: logIds } } })]
+        : []),
     ]);
+
+    // Recompute streak from scratch so deletion cascades to participant state
+    const programId = event.programId;
+    if (programId) {
+      await this.recomputeParticipantStreak(event.participantId, programId);
+    }
 
     return { deleted: true, scoreEventsRemoved: matchingScoreEvents.length };
   }
@@ -873,12 +890,92 @@ export class GameEngineService {
   // ─── Admin: bulk delete feed events ──────────────────────────────────────────
 
   async bulkDeleteFeedEvents(feedEventIds: string[]) {
+    // Collect all events first so we know which participants need recompute
+    const events = await this.prisma.feedEvent.findMany({
+      where: { id: { in: feedEventIds } },
+      select: { id: true, participantId: true, programId: true, groupId: true, points: true, createdAt: true },
+    });
+
     let totalScoreEventsRemoved = 0;
-    for (const id of feedEventIds) {
-      const result = await this.deleteFeedEvent(id);
-      totalScoreEventsRemoved += result.scoreEventsRemoved;
+    const affectedPairs = new Map<string, { participantId: string; programId: string }>();
+
+    for (const event of events) {
+      const windowMs = 10_000;
+      const windowStart = new Date(event.createdAt.getTime() - windowMs);
+      const windowEnd = new Date(event.createdAt.getTime() + windowMs);
+
+      const matchingScoreEvents = await this.prisma.scoreEvent.findMany({
+        where: {
+          participantId: event.participantId,
+          groupId: event.groupId,
+          points: event.points,
+          createdAt: { gte: windowStart, lte: windowEnd },
+        },
+        select: { id: true, metadata: true },
+      });
+
+      const logIds: string[] = matchingScoreEvents
+        .map((se) => {
+          const meta = se.metadata as Record<string, unknown> | null;
+          return typeof meta?.['logId'] === 'string' ? meta['logId'] : null;
+        })
+        .filter((id): id is string => id !== null);
+
+      await this.prisma.$transaction([
+        this.prisma.feedEvent.delete({ where: { id: event.id } }),
+        ...matchingScoreEvents.map((se) =>
+          this.prisma.scoreEvent.delete({ where: { id: se.id } }),
+        ),
+        ...(logIds.length > 0
+          ? [this.prisma.userActionLog.deleteMany({ where: { id: { in: logIds } } })]
+          : []),
+      ]);
+
+      totalScoreEventsRemoved += matchingScoreEvents.length;
+
+      if (event.programId) {
+        const key = `${event.participantId}:${event.programId}`;
+        affectedPairs.set(key, { participantId: event.participantId, programId: event.programId });
+      }
     }
+
+    // Recompute streak once per affected participant (not once per deleted event)
+    await Promise.all(
+      Array.from(affectedPairs.values()).map(({ participantId, programId }) =>
+        this.recomputeParticipantStreak(participantId, programId),
+      ),
+    );
+
     return { deleted: feedEventIds.length, scoreEventsRemoved: totalScoreEventsRemoved };
+  }
+
+  // ─── Admin: reset all progress for a participant in a group ──────────────────
+
+  async resetParticipantProgress(participantId: string, groupId: string) {
+    const group = await this.prisma.group.findUnique({
+      where: { id: groupId },
+      select: { programId: true },
+    });
+    if (!group) throw new NotFoundException(`Group ${groupId} not found`);
+    const { programId } = group;
+
+    await this.prisma.$transaction([
+      // Delete all feed events for this participant in this group
+      this.prisma.feedEvent.deleteMany({ where: { participantId, groupId } }),
+      // Delete all score events for this participant in this program (scoped to group too)
+      this.prisma.scoreEvent.deleteMany({ where: { participantId, groupId } }),
+      // Delete all action logs for this participant in this program
+      this.prisma.userActionLog.deleteMany({ where: { participantId, programId } }),
+    ]);
+
+    // Reset game state completely
+    await this.prisma.participantGameState.upsert({
+      where: { participantId_programId: { participantId, programId } },
+      create: { participantId, programId, currentStreak: 0, bestStreak: 0, lastActionDate: null },
+      update: { currentStreak: 0, bestStreak: 0, lastActionDate: null },
+    });
+
+    return { reset: true, participantId, groupId, programId };
   }
 
   // ─── Private helpers ────────────────────────────────────────────────────────
@@ -985,6 +1082,78 @@ export class GameEngineService {
     await this.prisma.participantGameState.update({
       where: { participantId_programId: { participantId, programId } },
       data: { currentStreak: newStreak, bestStreak: newBest, lastActionDate: now },
+    });
+  }
+
+  /**
+   * Full recompute of currentStreak, bestStreak, lastActionDate from ScoreEvent history.
+   * Called after any deletion so stored values always reflect actual event data.
+   */
+  private async recomputeParticipantStreak(participantId: string, programId: string) {
+    // Fetch all action ScoreEvents for this participant in this program, oldest first
+    const scoreEvents = await this.prisma.scoreEvent.findMany({
+      where: { participantId, programId, sourceType: 'action' },
+      select: { createdAt: true },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    if (scoreEvents.length === 0) {
+      await this.prisma.participantGameState.upsert({
+        where: { participantId_programId: { participantId, programId } },
+        create: { participantId, programId, currentStreak: 0, bestStreak: 0, lastActionDate: null },
+        update: { currentStreak: 0, bestStreak: 0, lastActionDate: null },
+      });
+      return;
+    }
+
+    // Build a sorted set of unique calendar days (UTC midnight timestamps)
+    const daySet = new Set<number>();
+    for (const se of scoreEvents) {
+      const d = new Date(se.createdAt);
+      d.setHours(0, 0, 0, 0);
+      daySet.add(d.getTime());
+    }
+    const days = Array.from(daySet).sort((a, b) => a - b);
+
+    // Compute bestStreak across all history
+    let best = 1;
+    let run = 1;
+    const DAY_MS = 86_400_000;
+    for (let i = 1; i < days.length; i++) {
+      if (days[i] - days[i - 1] === DAY_MS) {
+        run++;
+        if (run > best) best = run;
+      } else {
+        run = 1;
+      }
+    }
+
+    // Compute currentStreak — consecutive days ending today or yesterday
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+    const yesterday = new Date(now.getTime() - DAY_MS);
+
+    const lastDay = days[days.length - 1];
+    let currentStreak = 0;
+
+    // Streak is live only if the last action was today or yesterday
+    if (lastDay === now.getTime() || lastDay === yesterday.getTime()) {
+      currentStreak = 1;
+      for (let i = days.length - 2; i >= 0; i--) {
+        if (days[i + 1] - days[i] === DAY_MS) {
+          currentStreak++;
+        } else {
+          break;
+        }
+      }
+    }
+
+    const lastActionDate = scoreEvents[scoreEvents.length - 1].createdAt;
+
+    await this.prisma.participantGameState.upsert({
+      where: { participantId_programId: { participantId, programId } },
+      create: { participantId, programId, currentStreak, bestStreak: best, lastActionDate },
+      update: { currentStreak, bestStreak: best, lastActionDate },
     });
   }
 
