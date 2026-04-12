@@ -1,6 +1,8 @@
 'use client';
 
 import { use, useCallback, useEffect, useRef, useState } from 'react';
+// REFRESH_INTERVAL_MS: background refresh cadence while portal is open
+const REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 import { BASE_URL, apiFetch } from '@lib/api';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -218,8 +220,8 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
   const [loadError, setLoadError] = useState('');
   const [activeTab, setActiveTab] = useState<TabId>('report');
 
-  // Lazy-load flags: track which tabs have been loaded at least once
-  const loadedTabs = useRef<Set<TabId>>(new Set());
+  // Rules: load only once (rarely changes mid-session)
+  const rulesLoaded = useRef(false);
 
   // Bottom sheet state (report tab)
   const [activeAction, setActiveAction] = useState<Action | null>(null);
@@ -266,7 +268,6 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
         } else {
           // Portal is open (or no restriction set)
           setState('ready');
-          loadedTabs.current.add('report');
         }
       })
       .catch((err) => {
@@ -279,37 +280,47 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
       });
   }, [token]);
 
-  // ─── Lazy tab loaders ──────────────────────────────────────────────────────
+  // ─── Data loaders ──────────────────────────────────────────────────────────
+  // Stats and feed: always re-fetch (fresh on entry, fresh on tab-switch).
+  // silent=true → no loading spinner; used for background refresh and post-submit refresh.
+  // silent=false (default) → show spinner when there is no data yet.
 
-  const loadStats = useCallback(() => {
-    if (loadedTabs.current.has('stats')) return;
-    loadedTabs.current.add('stats');
-    setStatsLoading(true);
+  const refreshStats = useCallback((silent = false) => {
+    if (!silent) setStatsLoading(true);
     apiFetch<PortalStats>(`${BASE_URL}/public/participant/${token}/stats`, { cache: 'no-store' })
-      .then(setStats)
+      .then((data) => { setStats(data); setStatsError(''); })
       .catch(() => setStatsError('שגיאה בטעינת הנתונים'))
       .finally(() => setStatsLoading(false));
   }, [token]);
 
-  const loadFeed = useCallback(() => {
-    if (loadedTabs.current.has('feed')) return;
-    loadedTabs.current.add('feed');
-    setFeedLoading(true);
+  const refreshFeed = useCallback((silent = false) => {
+    if (!silent) setFeedLoading(true);
     apiFetch<FeedItem[]>(`${BASE_URL}/public/participant/${token}/feed`, { cache: 'no-store' })
-      .then(setFeed)
+      .then((data) => { setFeed(data); setFeedError(''); })
       .catch(() => setFeedError('שגיאה בטעינת המבזק'))
       .finally(() => setFeedLoading(false));
   }, [token]);
 
   const loadRules = useCallback(() => {
-    if (loadedTabs.current.has('rules')) return;
-    loadedTabs.current.add('rules');
+    if (rulesLoaded.current) return;
+    rulesLoaded.current = true;
     setRulesLoading(true);
     apiFetch<PortalRules>(`${BASE_URL}/public/participant/${token}/rules`, { cache: 'no-store' })
       .then(setRules)
       .catch(() => setRulesError('שגיאה בטעינת החוקים'))
       .finally(() => setRulesLoading(false));
   }, [token]);
+
+  // ─── 5-minute background refresh while portal is open ─────────────────────
+
+  useEffect(() => {
+    if (state !== 'ready') return;
+    const id = setInterval(() => {
+      refreshStats(true); // silent — no spinner
+      refreshFeed(true);  // silent — no spinner
+    }, REFRESH_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [state, refreshStats, refreshFeed]);
 
   // ─── Waiting state: countdown + auto-advance ──────────────────────────────
   // Runs only in waiting_a and waiting_b states.
@@ -328,7 +339,6 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
       // Check if portal should now be open
       if (openTime !== null && now >= openTime) {
         setState('ready');
-        loadedTabs.current.add('report');
         return;
       }
 
@@ -359,9 +369,10 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
 
   function switchTab(tab: TabId) {
     setActiveTab(tab);
-    if (tab === 'stats') loadStats();
-    if (tab === 'feed') loadFeed();
-    if (tab === 'rules') loadRules();
+    // stats and feed: always fetch fresh (no spinner if data already present)
+    if (tab === 'stats') refreshStats(stats !== null);
+    if (tab === 'feed') refreshFeed(feed.length > 0);
+    if (tab === 'rules') loadRules(); // once-only — rules are static mid-session
   }
 
   // ─── Action sheet ──────────────────────────────────────────────────────────
@@ -427,6 +438,10 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
       const actionId = activeAction.id;
       const pointsEarned = result.pointsEarned;
       closeSheet();
+
+      // Immediately refresh נתונים and מבזק so they reflect this action
+      refreshStats(true);
+      refreshFeed(true);
 
       setFeedback((prev) => ({ ...prev, [actionId]: { points: pointsEarned, visible: true } }));
       setTimeout(() => {
@@ -502,15 +517,15 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
             כן {firstName}, כולנו כבר לא יכולות לחכות להתחיל — אבל זה קורה ממש עוד
           </h1>
 
-          {/* Live countdown */}
+          {/* Live countdown — RTL order: seconds far right → days far left */}
           <div style={{
             display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 28,
           }}>
             {[
-              { value: countdown.days,    label: 'ימים'   },
-              { value: countdown.hours,   label: 'שעות'   },
-              { value: countdown.minutes, label: 'דקות'   },
               { value: countdown.seconds, label: 'שניות'  },
+              { value: countdown.minutes, label: 'דקות'   },
+              { value: countdown.hours,   label: 'שעות'   },
+              { value: countdown.days,    label: 'ימים'   },
             ].map(({ value, label }) => (
               <div key={label} style={{
                 background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)',
@@ -543,23 +558,31 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         padding: '32px 24px',
       }}>
-        <style>{`@keyframes bounce-soft { 0%,100%{transform:translateY(0);} 50%{transform:translateY(-6px);} } @keyframes spin { to{transform:rotate(360deg);} }`}</style>
+        <style>{`
+          @keyframes sparkle-pulse {
+            0%,100% { opacity: 0.25; transform: scale(0.8) translateY(0); }
+            50%      { opacity: 0.9;  transform: scale(1.1) translateY(-5px); }
+          }
+        `}</style>
         <div style={{ maxWidth: 380, width: '100%', textAlign: 'center' }}>
 
-          <div style={{ fontSize: 52, marginBottom: 20, display: 'inline-block', animation: 'bounce-soft 1.8s ease-in-out infinite' }}>🎉</div>
+          <div style={{ fontSize: 52, marginBottom: 20 }}>🎉</div>
 
-          <h1 style={{ fontSize: 20, fontWeight: 800, color: '#f0f9ff', lineHeight: 1.55, margin: '0 0 24px' }}>
+          <h1 style={{ fontSize: 20, fontWeight: 800, color: '#f0f9ff', lineHeight: 1.55, margin: '0 0 32px' }}>
             אולי במקום להציץ תקשיבי לשיחה?<br />
             <span style={{ color: '#38bdf8' }}>סתםםםם</span>, הכל טוב 😉<br />
             תכף זה קורה!!
           </h1>
 
-          {/* Subtle spinner to signal "almost there" */}
-          <div style={{
-            width: 40, height: 40, border: '3px solid rgba(255,255,255,0.15)',
-            borderTopColor: '#38bdf8', borderRadius: '50%',
-            animation: 'spin 1s linear infinite', margin: '0 auto',
-          }} />
+          {/* Decorative pulsing sparkles — alive but not a loader */}
+          <div style={{ display: 'flex', justifyContent: 'center', gap: 20, fontSize: 24 }}>
+            {[0, 0.7, 1.4].map((delay) => (
+              <span key={delay} style={{
+                display: 'inline-block',
+                animation: `sparkle-pulse 2.2s ease-in-out ${delay}s infinite`,
+              }}>✨</span>
+            ))}
+          </div>
 
         </div>
       </div>

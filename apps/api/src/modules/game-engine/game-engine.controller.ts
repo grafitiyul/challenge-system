@@ -182,4 +182,12 @@ export class GameEngineController {
   bulkDeleteFeedEvents(@Body() body: { ids: string[] }) {
     return this.svc.bulkDeleteFeedEvents(body.ids);
   }
+
+  // GET /api/game/admin/bypass-link?accessToken=xxx
+  // Returns an HMAC sig that lets an admin open the portal bypassing the opening gate.
+  // Scoped to a single access token (one participant-group link) — does not affect the group.
+  @Get('admin/bypass-link')
+  getBypassLink(@Query('accessToken') accessToken: string) {
+    return this.svc.getBypassLink(accessToken);
+  }
 }

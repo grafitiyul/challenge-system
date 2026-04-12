@@ -158,12 +158,13 @@ export function PlanTab({ token }: { token: string }) {
           <h1 style={{ fontSize: 22, fontWeight: 800, color: '#f0f9ff', lineHeight: 1.45, margin: '0 0 28px' }}>
             כן {firstName}, כולנו כבר לא יכולות לחכות להתחיל — אבל זה קורה ממש עוד
           </h1>
+          {/* RTL order: seconds far right → days far left */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 28 }}>
             {[
-              { value: countdown.days,    label: 'ימים'  },
-              { value: countdown.hours,   label: 'שעות'  },
-              { value: countdown.minutes, label: 'דקות'  },
               { value: countdown.seconds, label: 'שניות' },
+              { value: countdown.minutes, label: 'דקות'  },
+              { value: countdown.hours,   label: 'שעות'  },
+              { value: countdown.days,    label: 'ימים'  },
             ].map(({ value, label }) => (
               <div key={label} style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 12, padding: '14px 8px' }}>
                 <div style={{ fontSize: 32, fontWeight: 800, color: '#38bdf8', lineHeight: 1, fontVariantNumeric: 'tabular-nums' }}>
@@ -185,15 +186,19 @@ export function PlanTab({ token }: { token: string }) {
   if (portalState === 'waiting_b') {
     return (
       <div style={waitingRoot}>
-        <style>{`@keyframes bounce-soft{0%,100%{transform:translateY(0);}50%{transform:translateY(-6px);}} @keyframes spin{to{transform:rotate(360deg);}}`}</style>
+        <style>{`@keyframes sparkle-pulse{0%,100%{opacity:0.25;transform:scale(0.8) translateY(0);}50%{opacity:0.9;transform:scale(1.1) translateY(-5px);}}`}</style>
         <div style={{ maxWidth: 380, width: '100%', textAlign: 'center' }}>
-          <div style={{ fontSize: 52, marginBottom: 20, display: 'inline-block', animation: 'bounce-soft 1.8s ease-in-out infinite' }}>🎉</div>
-          <h1 style={{ fontSize: 20, fontWeight: 800, color: '#f0f9ff', lineHeight: 1.55, margin: '0 0 24px' }}>
+          <div style={{ fontSize: 52, marginBottom: 20 }}>🎉</div>
+          <h1 style={{ fontSize: 20, fontWeight: 800, color: '#f0f9ff', lineHeight: 1.55, margin: '0 0 32px' }}>
             אולי במקום להציץ תקשיבי לשיחה?<br />
             <span style={{ color: '#38bdf8' }}>סתםםםם</span>, הכל טוב 😉<br />
             תכף זה קורה!!
           </h1>
-          <div style={{ width: 40, height: 40, border: '3px solid rgba(255,255,255,0.15)', borderTopColor: '#38bdf8', borderRadius: '50%', animation: 'spin 1s linear infinite', margin: '0 auto' }} />
+          <div style={{ display: 'flex', justifyContent: 'center', gap: 20, fontSize: 24 }}>
+            {[0, 0.7, 1.4].map((delay) => (
+              <span key={delay} style={{ display: 'inline-block', animation: `sparkle-pulse 2.2s ease-in-out ${delay}s infinite` }}>✨</span>
+            ))}
+          </div>
         </div>
       </div>
     );

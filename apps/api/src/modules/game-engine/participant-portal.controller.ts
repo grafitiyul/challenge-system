@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { IsOptional, IsString } from 'class-validator';
 import {
   ParticipantPortalService,
@@ -21,10 +21,14 @@ class LogActionPortalDto {
 export class ParticipantPortalController {
   constructor(private readonly portalService: ParticipantPortalService) {}
 
-  // GET /api/public/participant/:token
+  // GET /api/public/participant/:token?_bypass=sig
+  // Optional _bypass query param: HMAC-signed sig enabling admin preview without the opening gate
   @Get(':token')
-  getContext(@Param('token') token: string): Promise<PortalContext> {
-    return this.portalService.getContext(token);
+  getContext(
+    @Param('token') token: string,
+    @Query('_bypass') bypass?: string,
+  ): Promise<PortalContext> {
+    return this.portalService.getContext(token, bypass);
   }
 
   // POST /api/public/participant/:token/log

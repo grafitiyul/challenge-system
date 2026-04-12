@@ -1,3 +1,4 @@
+import { createHmac } from 'crypto';
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateActionDto, UpdateActionDto } from './dto/create-action.dto';
@@ -783,12 +784,16 @@ export class GameEngineService {
     const weekStart = new Date(now); weekStart.setDate(now.getDate() - now.getDay()); weekStart.setHours(0, 0, 0, 0);
     const since14 = new Date(now); since14.setDate(now.getDate() - 13); since14.setHours(0, 0, 0, 0);
 
+    // Score queries MUST use groupId, not programId.
+    // A participant can belong to multiple groups under the same program.
+    // Using programId would merge scores from all groups — wrong for the per-group inspect panel.
+    // Streak (ParticipantGameState) is keyed by programId — intentionally program-level, not per group.
     const [todayAgg, weekAgg, totalAgg, state, trendEvents] = await Promise.all([
-      this.prisma.scoreEvent.aggregate({ _sum: { points: true }, where: { participantId, programId, createdAt: { gte: todayStart } } }),
-      this.prisma.scoreEvent.aggregate({ _sum: { points: true }, where: { participantId, programId, createdAt: { gte: weekStart } } }),
-      this.prisma.scoreEvent.aggregate({ _sum: { points: true }, where: { participantId, programId } }),
+      this.prisma.scoreEvent.aggregate({ _sum: { points: true }, where: { participantId, groupId, createdAt: { gte: todayStart } } }),
+      this.prisma.scoreEvent.aggregate({ _sum: { points: true }, where: { participantId, groupId, createdAt: { gte: weekStart } } }),
+      this.prisma.scoreEvent.aggregate({ _sum: { points: true }, where: { participantId, groupId } }),
       this.prisma.participantGameState.findUnique({ where: { participantId_programId: { participantId, programId } } }),
-      this.prisma.scoreEvent.findMany({ where: { participantId, programId, createdAt: { gte: since14 } }, select: { points: true, createdAt: true } }),
+      this.prisma.scoreEvent.findMany({ where: { participantId, groupId, createdAt: { gte: since14 } }, select: { points: true, createdAt: true } }),
     ]);
 
     // Build 14-day trend
@@ -929,6 +934,21 @@ export class GameEngineService {
       create: { participantId, programId },
       update: {},
     });
+  }
+
+  // ─── Admin bypass link ────────────────────────────────────────────────────
+  // Generates an HMAC-signed sig that lets an admin preview the portal without
+  // the opening-screen gate, without affecting any other participant or the group.
+
+  async getBypassLink(accessToken: string): Promise<{ sig: string }> {
+    const pg = await this.prisma.participantGroup.findUnique({
+      where: { accessToken },
+      select: { id: true },
+    });
+    if (!pg) throw new NotFoundException('Access token not found');
+    const secret = process.env.BYPASS_SECRET ?? 'challenge-bypass-dev-secret';
+    const sig = createHmac('sha256', secret).update(accessToken).digest('hex').slice(0, 24);
+    return { sig };
   }
 
   private async updateParticipantStreak(participantId: string, programId: string, now: Date) {

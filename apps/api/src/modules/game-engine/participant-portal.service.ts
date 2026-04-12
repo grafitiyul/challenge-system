@@ -1,3 +1,4 @@
+import { createHmac } from 'crypto';
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { GameEngineService } from './game-engine.service';
@@ -83,7 +84,14 @@ export class ParticipantPortalService {
 
   // ─── Resolve token → participant context ──────────────────────────────────
 
-  async getContext(token: string): Promise<PortalContext> {
+  async getContext(token: string, bypassSig?: string): Promise<PortalContext> {
+    // Validate bypass sig (HMAC-SHA256 of the access token, first 24 hex chars)
+    let bypass = false;
+    if (bypassSig) {
+      const secret = process.env.BYPASS_SECRET ?? 'challenge-bypass-dev-secret';
+      const expected = createHmac('sha256', secret).update(token).digest('hex').slice(0, 24);
+      bypass = bypassSig === expected;
+    }
     const pg = await this.prisma.participantGroup.findUnique({
       where: { accessToken: token },
       include: {
@@ -145,8 +153,9 @@ export class ParticipantPortalService {
         name: pg.group.program.name,
         isActive: pg.group.program.isActive,
       },
-      portalCallTime: pg.group.portalCallTime ? pg.group.portalCallTime.toISOString() : null,
-      portalOpenTime: pg.group.portalOpenTime ? pg.group.portalOpenTime.toISOString() : null,
+      // bypass=true: return null times so the frontend skips the opening gate (admin preview only)
+      portalCallTime: bypass ? null : (pg.group.portalCallTime ? pg.group.portalCallTime.toISOString() : null),
+      portalOpenTime: bypass ? null : (pg.group.portalOpenTime ? pg.group.portalOpenTime.toISOString() : null),
       actions,
       todayScore: scoreAgg._sum.points ?? 0,
       todayValues,

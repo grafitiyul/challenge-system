@@ -265,6 +265,9 @@ export default function GroupDetailPage() {
   // Token generation
   const [generatingTokenFor, setGeneratingTokenFor] = useState<string | null>(null);
 
+  // Bypass link — per-participant admin preview link that skips the opening gate
+  const [bypassFetchingFor, setBypassFetchingFor] = useState<string | null>(null);
+
   // Edit group modal
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [editForm, setEditForm] = useState({ name: '', startDate: '', endDate: '', isActive: true, portalCallTime: '', portalOpenTime: '' });
@@ -447,12 +450,40 @@ export default function GroupDetailPage() {
 
   // ─── Edit group ────────────────────────────────────────────────────────────
 
-  // Convert a UTC ISO string to a value suitable for a datetime-local input (local time).
-  function toDatetimeLocal(iso: string | null | undefined): string {
+  // Convert a UTC ISO string to a datetime-local input value in Israel time (Asia/Jerusalem).
+  // Always shows the admin Israel clock time, regardless of what timezone the browser is in.
+  function toIsraelDatetimeLocal(iso: string | null | undefined): string {
     if (!iso) return '';
     const d = new Date(iso);
-    const pad = (n: number) => String(n).padStart(2, '0');
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    // Use Intl to extract the Israel wall-clock time components
+    const fmt = new Intl.DateTimeFormat('sv', { // 'sv' gives ISO-like YYYY-MM-DD HH:MM format
+      timeZone: 'Asia/Jerusalem',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit',
+      hour12: false,
+    });
+    return fmt.format(d).replace(' ', 'T').slice(0, 16); // "2026-04-13T13:00"
+  }
+
+  // Convert a datetime-local string entered by admin (interpreted as Israel time) to UTC ISO.
+  // new Date(localStr) would use the browser timezone — we must NOT do that.
+  // Instead: treat the input as Israel wall-clock time and convert to UTC explicitly.
+  function israelLocalToUTC(localStr: string): string {
+    if (!localStr) return '';
+    // Step 1: parse as UTC to get a reference point for offset calculation
+    const utcRef = new Date(localStr + 'Z');
+    // Step 2: find what Israel clock shows for this UTC reference
+    const fmt = new Intl.DateTimeFormat('sv', {
+      timeZone: 'Asia/Jerusalem',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      hour12: false,
+    });
+    const israelStr = fmt.format(utcRef).replace(' ', 'T'); // "2026-04-13T16:00:00"
+    // Step 3: offset in ms = Israel reading (as UTC) − reference
+    const offsetMs = new Date(israelStr + 'Z').getTime() - utcRef.getTime();
+    // Step 4: actual UTC = input read as UTC − offset
+    return new Date(utcRef.getTime() - offsetMs).toISOString();
   }
 
   function openEditModal() {
@@ -462,8 +493,8 @@ export default function GroupDetailPage() {
       startDate: group.startDate ? group.startDate.slice(0, 10) : '',
       endDate: group.endDate ? group.endDate.slice(0, 10) : '',
       isActive: group.isActive,
-      portalCallTime: toDatetimeLocal(group.portalCallTime),
-      portalOpenTime: toDatetimeLocal(group.portalOpenTime),
+      portalCallTime: toIsraelDatetimeLocal(group.portalCallTime),
+      portalOpenTime: toIsraelDatetimeLocal(group.portalOpenTime),
     });
     setEditError('');
     setEditModalOpen(true);
@@ -475,10 +506,11 @@ export default function GroupDetailPage() {
     // This is a UX guard, not a hard constraint — both are optional
     setEditSaving(true);
     try {
-      // Convert datetime-local values (local time) to UTC ISO strings before sending.
-      // new Date("YYYY-MM-DDTHH:MM") is parsed as LOCAL time by the browser → .toISOString() = UTC.
-      const portalCallTime = editForm.portalCallTime ? new Date(editForm.portalCallTime).toISOString() : null;
-      const portalOpenTime = editForm.portalOpenTime ? new Date(editForm.portalOpenTime).toISOString() : null;
+      // Convert datetime-local values — treated as Israel time (Asia/Jerusalem), not browser local.
+      // israelLocalToUTC() uses Intl to find the Israel UTC offset and converts correctly
+      // regardless of what timezone the admin's browser is in.
+      const portalCallTime = editForm.portalCallTime ? israelLocalToUTC(editForm.portalCallTime) : null;
+      const portalOpenTime = editForm.portalOpenTime ? israelLocalToUTC(editForm.portalOpenTime) : null;
 
       const updated = await apiFetch<Group>(
         `${BASE_URL}/groups/${id}`, {
@@ -638,6 +670,23 @@ export default function GroupDetailPage() {
       });
     } catch { /* ignore */ } finally {
       setGeneratingTokenFor(null);
+    }
+  }
+
+  // ─── Bypass portal link (admin preview, skips opening gate) ──────────────
+
+  async function copyBypassLink(accessToken: string, pgId: string) {
+    setBypassFetchingFor(pgId);
+    try {
+      const res = await apiFetch<{ sig: string }>(
+        `${BASE_URL}/game/admin/bypass-link?accessToken=${encodeURIComponent(accessToken)}`,
+      );
+      const url = `${window.location.origin}/t/${accessToken}?_bypass=${res.sig}`;
+      await navigator.clipboard.writeText(url);
+      setCopiedId(`bypass-${pgId}`);
+      setTimeout(() => setCopiedId(null), 2000);
+    } catch { /* ignore */ } finally {
+      setBypassFetchingFor(null);
     }
   }
 
@@ -1154,6 +1203,25 @@ export default function GroupDetailPage() {
                             style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #e2e8f0', color: '#64748b', background: '#f8fafc', fontSize: 12, cursor: generatingTokenFor === p.id ? 'not-allowed' : 'pointer' }}
                           >
                             {generatingTokenFor === p.id ? '...' : 'צור קישור'}
+                          </button>
+                        )}
+
+                        {/* Bypass link — admin-only, skips opening gate for this participant only */}
+                        {hasToken && (
+                          <button
+                            onClick={() => copyBypassLink(pg.accessToken!, pg.id)}
+                            disabled={bypassFetchingFor === pg.id}
+                            title="עקוף מסך פתיחה"
+                            style={{
+                              padding: '5px 8px', borderRadius: 6, flexShrink: 0,
+                              border: `1px solid ${copiedId === `bypass-${pg.id}` ? '#bbf7d0' : '#e2e8f0'}`,
+                              color: copiedId === `bypass-${pg.id}` ? '#16a34a' : '#6b7280',
+                              background: copiedId === `bypass-${pg.id}` ? '#f0fdf4' : 'none',
+                              fontSize: 13, cursor: bypassFetchingFor === pg.id ? 'not-allowed' : 'pointer',
+                              display: 'flex', alignItems: 'center',
+                            }}
+                          >
+                            {copiedId === `bypass-${pg.id}` ? '✓' : bypassFetchingFor === pg.id ? '…' : '↻'}
                           </button>
                         )}
 
