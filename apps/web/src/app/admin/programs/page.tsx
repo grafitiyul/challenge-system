@@ -190,7 +190,7 @@ function ProgramsPageInner() {
           {TYPE_OPTIONS.map((opt) => (
             <button
               key={opt.key}
-              onClick={() => router.replace(`/programs?type=${opt.key}`)}
+              onClick={() => router.replace(`/admin/programs?type=${opt.key}`)}
               style={{
                 background: '#ffffff',
                 border: '1.5px solid #e2e8f0',
