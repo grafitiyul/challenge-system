@@ -989,36 +989,61 @@ export class GameEngineService {
       select: { programId: true },
     });
     if (!group) throw new NotFoundException(`Group ${groupId} not found`);
-    const programId = group.programId ?? undefined;
+    if (!group.programId) throw new NotFoundException(`Group ${groupId} has no program`);
+    const programId = group.programId;
 
-    // Collect the logIds stored in ScoreEvent.metadata before deleting, so we can
-    // remove the corresponding UserActionLog entries. Only delete UALs for actions in
-    // THIS group — preserve UALs from other groups in the same program.
+    // ── Step 1: UALs linked to THIS group's ScoreEvents ─────────────────────
+    // Read logIds from ScoreEvent.metadata before deleting them.
     const groupScoreEvents = await this.prisma.scoreEvent.findMany({
       where: { participantId, groupId },
       select: { metadata: true },
     });
-
-    const logIds: string[] = groupScoreEvents
+    const linkedLogIds: string[] = groupScoreEvents
       .map((se) => {
         const meta = se.metadata as Record<string, unknown> | null;
         return typeof meta?.['logId'] === 'string' ? meta['logId'] : null;
       })
       .filter((id): id is string => id !== null);
 
+    // ── Step 2: Orphaned UALs for this program ───────────────────────────────
+    // UALs have no groupId field — they can only be attributed to a group via
+    // the ScoreEvent.metadata.logId link. If that link is missing (ScoreEvent
+    // already deleted by a prior bulkDelete run, or creation failure), the UAL
+    // becomes an orphan that silently inflates getEffectiveDailyValue forever.
+    // Always sweep these out, regardless of which group triggered the reset.
+    const allProgramScoreEvents = await this.prisma.scoreEvent.findMany({
+      where: { participantId, programId, sourceType: 'action' },
+      select: { metadata: true },
+    });
+    const allLinkedLogIds = new Set<string>(
+      allProgramScoreEvents
+        .map((se) => {
+          const meta = se.metadata as Record<string, unknown> | null;
+          return typeof meta?.['logId'] === 'string' ? meta['logId'] : null;
+        })
+        .filter((id): id is string => id !== null),
+    );
+    const allUALs = await this.prisma.userActionLog.findMany({
+      where: { participantId, programId },
+      select: { id: true },
+    });
+    const orphanedLogIds = allUALs
+      .map((u) => u.id)
+      .filter((id) => !allLinkedLogIds.has(id));
+
+    const ualIdsToDelete = [...new Set([...linkedLogIds, ...orphanedLogIds])];
+
+    // ── Step 3: Atomic deletion ──────────────────────────────────────────────
     await this.prisma.$transaction([
       this.prisma.feedEvent.deleteMany({ where: { participantId, groupId } }),
       this.prisma.scoreEvent.deleteMany({ where: { participantId, groupId } }),
-      ...(logIds.length > 0
-        ? [this.prisma.userActionLog.deleteMany({ where: { id: { in: logIds } } })]
+      ...(ualIdsToDelete.length > 0
+        ? [this.prisma.userActionLog.deleteMany({ where: { id: { in: ualIdsToDelete } } })]
         : []),
     ]);
 
     // Recompute streak from remaining ScoreEvents across the program.
-    // Correctly zeroes out if this was the only active group.
-    if (programId) {
-      await this.recomputeParticipantStreak(participantId, programId);
-    }
+    await this.recomputeParticipantStreak(participantId, programId);
 
     return { reset: true, participantId, groupId, programId };
   }
