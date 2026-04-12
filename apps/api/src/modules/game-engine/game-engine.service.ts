@@ -472,6 +472,8 @@ export class GameEngineService {
             message: `קיבלה בונוס: ${rule.name}`,
             points: pointsToAward,
             isPublic: true,
+            // Store ruleId so deleteFeedEvent can precisely revoke the ScoreEvent
+            metadata: { ruleId: rule.id },
           },
         });
       }
@@ -847,11 +849,40 @@ export class GameEngineService {
     const event = await this.prisma.feedEvent.findUnique({ where: { id: feedEventId } });
     if (!event) throw new NotFoundException(`Feed event ${feedEventId} not found`);
 
+    // For rule FeedEvents (type='rare'), revoke the ScoreEvent directly via metadata.ruleId
+    if (event.type === 'rare') {
+      const meta = event.metadata as Record<string, unknown> | null;
+      const ruleId = typeof meta?.['ruleId'] === 'string' ? meta['ruleId'] : null;
+      await this.prisma.$transaction([
+        this.prisma.feedEvent.delete({ where: { id: feedEventId } }),
+        ...(ruleId
+          ? [this.prisma.scoreEvent.deleteMany({
+              where: { participantId: event.participantId, groupId: event.groupId, sourceType: 'rule', sourceId: ruleId, createdAt: { gte: new Date(event.createdAt.getTime() - 10_000) } },
+            })]
+          : []),
+      ]);
+      if (event.programId) {
+        await this.recomputeParticipantStreak(event.participantId, event.programId);
+      }
+      return { deleted: true, scoreEventsRemoved: ruleId ? 1 : 0 };
+    }
+
     // Prefer direct lookup from FeedEvent.metadata (set by logAction for all new action events).
     // Fall back to time-window matching for legacy rows that predate this field.
     const eventMeta = event.metadata as Record<string, unknown> | null;
     const directScoreEventId = typeof eventMeta?.['scoreEventId'] === 'string' ? eventMeta['scoreEventId'] : null;
     const directLogId = typeof eventMeta?.['logId'] === 'string' ? eventMeta['logId'] : null;
+
+    // Read the action ScoreEvent before deletion to get the actionId (sourceId),
+    // so we can revoke orphaned rule ScoreEvents after the UAL is removed.
+    let actionId: string | null = null;
+    if (directScoreEventId) {
+      const se = await this.prisma.scoreEvent.findUnique({
+        where: { id: directScoreEventId },
+        select: { sourceId: true, sourceType: true },
+      });
+      if (se?.sourceType === 'action') actionId = se.sourceId;
+    }
 
     let scoreEventIds: string[];
     let logIds: string[];
@@ -902,6 +933,16 @@ export class GameEngineService {
       await this.recomputeParticipantStreak(event.participantId, programId);
     }
 
+    // After the UAL is gone, revoke any threshold rule ScoreEvents that are
+    // no longer justified by the participant's current daily value.
+    if (actionId && programId && event.groupId && logIds.length > 0) {
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      await this.revokeOrphanedRuleScoreEvents(
+        event.participantId, programId, event.groupId, actionId, todayStart,
+      );
+    }
+
     return { deleted: true, scoreEventsRemoved: scoreEventIds.length };
   }
 
@@ -911,24 +952,57 @@ export class GameEngineService {
     // Collect all events first so we know which participants need recompute
     const events = await this.prisma.feedEvent.findMany({
       where: { id: { in: feedEventIds } },
-      select: { id: true, participantId: true, programId: true, groupId: true, points: true, createdAt: true, metadata: true },
+      select: { id: true, participantId: true, programId: true, groupId: true, points: true, createdAt: true, metadata: true, type: true },
     });
 
     let totalScoreEventsRemoved = 0;
     const affectedPairs = new Map<string, { participantId: string; programId: string }>();
+    // Track (participantId, programId, groupId, actionId) pairs that need rule revocation
+    const ruleRevocations = new Map<string, { participantId: string; programId: string; groupId: string; actionId: string }>();
+
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
 
     for (const event of events) {
-      // Prefer direct lookup from FeedEvent.metadata; fall back to time-window for legacy rows
+      // Rule FeedEvents (type='rare'): revoke the ScoreEvent via metadata.ruleId directly
+      if (event.type === 'rare') {
+        const meta = event.metadata as Record<string, unknown> | null;
+        const ruleId = typeof meta?.['ruleId'] === 'string' ? meta['ruleId'] : null;
+        await this.prisma.$transaction([
+          this.prisma.feedEvent.delete({ where: { id: event.id } }),
+          ...(ruleId
+            ? [this.prisma.scoreEvent.deleteMany({
+                where: { participantId: event.participantId, groupId: event.groupId,
+                  sourceType: 'rule', sourceId: ruleId,
+                  createdAt: { gte: new Date(event.createdAt.getTime() - 10_000) } },
+              })]
+            : []),
+        ]);
+        if (event.programId) {
+          const key = `${event.participantId}:${event.programId}`;
+          affectedPairs.set(key, { participantId: event.participantId, programId: event.programId });
+        }
+        continue;
+      }
+
+      // Action FeedEvents: prefer direct metadata lookup; fall back to time-window for legacy rows
       const eventMeta = event.metadata as Record<string, unknown> | null;
       const directScoreEventId = typeof eventMeta?.['scoreEventId'] === 'string' ? eventMeta['scoreEventId'] : null;
       const directLogId = typeof eventMeta?.['logId'] === 'string' ? eventMeta['logId'] : null;
 
       let scoreEventIds: string[];
       let logIds: string[];
+      let actionId: string | null = null;
 
       if (directScoreEventId) {
         scoreEventIds = [directScoreEventId];
         logIds = directLogId ? [directLogId] : [];
+        // Read actionId before deletion
+        const se = await this.prisma.scoreEvent.findUnique({
+          where: { id: directScoreEventId },
+          select: { sourceId: true, sourceType: true },
+        });
+        if (se?.sourceType === 'action') actionId = se.sourceId;
       } else {
         const windowMs = 10_000;
         const windowStart = new Date(event.createdAt.getTime() - windowMs);
@@ -941,7 +1015,7 @@ export class GameEngineService {
             points: event.points,
             createdAt: { gte: windowStart, lte: windowEnd },
           },
-          select: { id: true, metadata: true },
+          select: { id: true, metadata: true, sourceId: true, sourceType: true },
         });
 
         scoreEventIds = matchingScoreEvents.map((se) => se.id);
@@ -951,6 +1025,8 @@ export class GameEngineService {
             return typeof meta?.['logId'] === 'string' ? meta['logId'] : null;
           })
           .filter((id): id is string => id !== null);
+        const actionSE = matchingScoreEvents.find((se) => se.sourceType === 'action');
+        if (actionSE) actionId = actionSE.sourceId;
       }
 
       await this.prisma.$transaction([
@@ -968,13 +1044,25 @@ export class GameEngineService {
       if (event.programId) {
         const key = `${event.participantId}:${event.programId}`;
         affectedPairs.set(key, { participantId: event.participantId, programId: event.programId });
+        // Queue rule revocation if this deletion removed a UAL
+        if (actionId && event.groupId && logIds.length > 0) {
+          const ruleKey = `${event.participantId}:${event.programId}:${event.groupId}:${actionId}`;
+          ruleRevocations.set(ruleKey, { participantId: event.participantId, programId: event.programId, groupId: event.groupId, actionId });
+        }
       }
     }
 
-    // Recompute streak once per affected participant (not once per deleted event)
+    // Recompute streak once per affected participant
     await Promise.all(
       Array.from(affectedPairs.values()).map(({ participantId, programId }) =>
         this.recomputeParticipantStreak(participantId, programId),
+      ),
+    );
+
+    // After all UALs are deleted, revoke orphaned rule ScoreEvents once per unique action
+    await Promise.all(
+      Array.from(ruleRevocations.values()).map(({ participantId, programId, groupId, actionId }) =>
+        this.revokeOrphanedRuleScoreEvents(participantId, programId, groupId, actionId, todayStart),
       ),
     );
 
@@ -1088,6 +1176,76 @@ export class GameEngineService {
       return values.reduce((sum, v) => sum + v, 0);
     }
     return 0; // 'none' mode — no meaningful daily total
+  }
+
+  /**
+   * After an action's UAL is deleted, threshold rules that referenced that action
+   * may no longer be justified. Delete ScoreEvents (and their FeedEvents) for any
+   * rule whose threshold the participant no longer meets today.
+   *
+   * Called by deleteFeedEvent and bulkDeleteFeedEvents after UAL deletion.
+   */
+  private async revokeOrphanedRuleScoreEvents(
+    participantId: string,
+    programId: string,
+    groupId: string,
+    actionId: string,
+    todayStart: Date,
+  ): Promise<void> {
+    const allRules = await this.prisma.gameRule.findMany({
+      where: { programId, type: 'conditional' },
+    });
+    // Only threshold rules that check this specific action
+    const thresholdRules = allRules.filter((r) => {
+      const c = r.conditionJson as Record<string, unknown> | null;
+      return (
+        typeof c?.['actionId'] === 'string' &&
+        c['actionId'] === actionId &&
+        typeof c?.['threshold'] === 'number'
+      );
+    });
+    if (thresholdRules.length === 0) return;
+
+    const currentValue = await this.getEffectiveDailyValue(
+      participantId, programId, actionId, todayStart,
+    );
+
+    for (const rule of thresholdRules) {
+      const threshold = (rule.conditionJson as Record<string, unknown>)['threshold'] as number;
+      if (currentValue >= threshold) continue; // rule still justified — leave it
+
+      // Delete the unjustified rule ScoreEvent for today in this group
+      await this.prisma.scoreEvent.deleteMany({
+        where: {
+          participantId, groupId, programId,
+          sourceType: 'rule', sourceId: rule.id,
+          createdAt: { gte: todayStart },
+        },
+      });
+
+      // Delete the corresponding rule FeedEvent (type='rare').
+      // New FeedEvents have metadata.ruleId for exact matching;
+      // legacy ones are matched by points value.
+      const rewardPts =
+        typeof (rule.rewardJson as Record<string, unknown> | null)?.['points'] === 'number'
+          ? ((rule.rewardJson as Record<string, unknown>)['points'] as number)
+          : null;
+
+      const candidates = await this.prisma.feedEvent.findMany({
+        where: { participantId, groupId, programId, type: 'rare', createdAt: { gte: todayStart } },
+        select: { id: true, metadata: true, points: true },
+      });
+      const toDelete = candidates
+        .filter((fe) => {
+          const meta = fe.metadata as Record<string, unknown> | null;
+          if (typeof meta?.['ruleId'] === 'string') return meta['ruleId'] === rule.id;
+          return rewardPts !== null && fe.points === rewardPts; // legacy fallback
+        })
+        .map((fe) => fe.id);
+      if (toDelete.length > 0) {
+        await this.prisma.feedEvent.deleteMany({ where: { id: { in: toDelete } } });
+      }
+    }
   }
 
   private async getGroupDay(groupId: string): Promise<number | null> {
