@@ -495,7 +495,7 @@ function DeleteConfirmModal({
   );
 }
 
-// ─── Sound preview helper (Web Audio API synthesis, no static files needed) ───
+// ─── Sound preview (plays the same static WAV files as the participant portal) ─
 
 const SOUND_OPTIONS = [
   { value: 'none',        label: 'ללא צליל' },
@@ -504,44 +504,20 @@ const SOUND_OPTIONS = [
   { value: 'applause',    label: 'מחיאות כפיים' },
 ];
 
+const SOUND_FILES: Record<string, string> = {
+  ding:        '/sounds/purchase.wav',
+  celebration: '/sounds/tada.wav',
+  applause:    '/sounds/clap.wav',
+};
+
 function playSoundPreview(soundKey: string): void {
+  const src = SOUND_FILES[soundKey];
+  if (!src) return;
   try {
-    const ctx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
-    if (soundKey === 'ding') {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain); gain.connect(ctx.destination);
-      osc.frequency.setValueAtTime(1046, ctx.currentTime); // C6
-      gain.gain.setValueAtTime(0.4, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
-      osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.4);
-    } else if (soundKey === 'celebration') {
-      const notes = [523, 659, 784, 1047]; // C5, E5, G5, C6
-      notes.forEach((freq, i) => {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.connect(gain); gain.connect(ctx.destination);
-        osc.frequency.value = freq;
-        const t = ctx.currentTime + i * 0.1;
-        gain.gain.setValueAtTime(0, t);
-        gain.gain.linearRampToValueAtTime(0.35, t + 0.04);
-        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
-        osc.start(t); osc.stop(t + 0.22);
-      });
-    } else if (soundKey === 'applause') {
-      const bufSize = ctx.sampleRate * 0.5;
-      const buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
-      const data = buf.getChannelData(0);
-      for (let i = 0; i < bufSize; i++) {
-        // shaped noise: bursts every ~30ms, overall envelope
-        const burst = Math.sin((i / ctx.sampleRate) * Math.PI * 33) > 0.4 ? 1 : 0;
-        const env = Math.pow(1 - i / bufSize, 0.5);
-        data[i] = (Math.random() * 2 - 1) * 0.5 * burst * env;
-      }
-      const src = ctx.createBufferSource();
-      src.buffer = buf; src.connect(ctx.destination); src.start();
-    }
-  } catch { /* browser blocked audio — fail silently */ }
+    const audio = new Audio(src);
+    audio.volume = 0.85;
+    audio.play().catch(() => {});
+  } catch { /* fail silently */ }
 }
 
 // ─── Action Modal ─────────────────────────────────────────────────────────────

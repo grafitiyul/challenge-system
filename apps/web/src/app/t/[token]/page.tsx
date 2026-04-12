@@ -5,48 +5,26 @@ import { use, useCallback, useEffect, useRef, useState } from 'react';
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 import { BASE_URL, apiFetch } from '@lib/api';
 
-// ─── Sound helper (Web Audio API synthesis — no static files) ────────────────
+// ─── Sound helper — plays built-in static audio files ────────────────────────
+// Files live in /public/sounds/. Played via HTMLAudioElement so they work
+// on mobile after a user-initiated gesture (the submit tap qualifies).
+// Falls silently if browser blocks audio.
+
+const SOUND_FILES: Record<string, string> = {
+  ding:        '/sounds/purchase.wav',
+  celebration: '/sounds/tada.wav',
+  applause:    '/sounds/clap.wav',
+};
 
 function playActionSound(soundKey: string): void {
   if (!soundKey || soundKey === 'none') return;
+  const src = SOUND_FILES[soundKey];
+  if (!src) return;
   try {
-    const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-    if (!AudioCtx) return;
-    const ctx = new AudioCtx();
-    if (soundKey === 'ding') {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain); gain.connect(ctx.destination);
-      osc.frequency.setValueAtTime(1046, ctx.currentTime);
-      gain.gain.setValueAtTime(0.4, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
-      osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.4);
-    } else if (soundKey === 'celebration') {
-      const notes = [523, 659, 784, 1047];
-      notes.forEach((freq, i) => {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.connect(gain); gain.connect(ctx.destination);
-        osc.frequency.value = freq;
-        const t = ctx.currentTime + i * 0.1;
-        gain.gain.setValueAtTime(0, t);
-        gain.gain.linearRampToValueAtTime(0.35, t + 0.04);
-        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
-        osc.start(t); osc.stop(t + 0.22);
-      });
-    } else if (soundKey === 'applause') {
-      const bufSize = ctx.sampleRate * 0.5;
-      const buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
-      const data = buf.getChannelData(0);
-      for (let i = 0; i < bufSize; i++) {
-        const burst = Math.sin((i / ctx.sampleRate) * Math.PI * 33) > 0.4 ? 1 : 0;
-        const env = Math.pow(1 - i / bufSize, 0.5);
-        data[i] = (Math.random() * 2 - 1) * 0.5 * burst * env;
-      }
-      const src = ctx.createBufferSource();
-      src.buffer = buf; src.connect(ctx.destination); src.start();
-    }
-  } catch { /* audio blocked — fail silently */ }
+    const audio = new Audio(src);
+    audio.volume = 0.85;
+    audio.play().catch(() => { /* browser blocked — fail silently */ });
+  } catch { /* Audio constructor unavailable — fail silently */ }
 }
 
 // ─── Types ───────────────────────────────────────────────────────────────────
