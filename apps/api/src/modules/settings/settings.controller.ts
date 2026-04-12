@@ -1,6 +1,8 @@
-import { Body, Controller, Get, Param, Patch } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, UseGuards } from '@nestjs/common';
+import { AdminSessionGuard } from '../auth/admin-session.guard';
 import { SettingsService } from './settings.service';
 
+@UseGuards(AdminSessionGuard)
 @Controller('settings')
 export class SettingsController {
   constructor(private readonly settingsService: SettingsService) {}

@@ -7,7 +7,9 @@ import {
   Patch,
   Post,
   Query,
+  UseGuards,
 } from '@nestjs/common';
+import { AdminSessionGuard } from '../auth/admin-session.guard';
 import { GameEngineService } from './game-engine.service';
 import { CreateActionDto, UpdateActionDto, ReorderItemsDto } from './dto/create-action.dto';
 import { CreateRuleDto, UpdateRuleDto } from './dto/create-rule.dto';
@@ -18,6 +20,7 @@ import { InitGroupStateDto } from './dto/init-group-state.dto';
 
 // ─── Actions ─────────────────────────────────────────────────────────────────
 
+@UseGuards(AdminSessionGuard)
 @Controller('game/programs/:programId/actions')
 export class GameActionsController {
   constructor(private readonly svc: GameEngineService) {}
@@ -50,6 +53,7 @@ export class GameActionsController {
 
 // ─── Rules ────────────────────────────────────────────────────────────────────
 
+@UseGuards(AdminSessionGuard)
 @Controller('game/programs/:programId/rules')
 export class GameRulesController {
   constructor(private readonly svc: GameEngineService) {}
@@ -82,6 +86,7 @@ export class GameRulesController {
 
 // ─── Core game operations ─────────────────────────────────────────────────────
 
+@UseGuards(AdminSessionGuard)
 @Controller('game')
 export class GameEngineController {
   constructor(private readonly svc: GameEngineService) {}

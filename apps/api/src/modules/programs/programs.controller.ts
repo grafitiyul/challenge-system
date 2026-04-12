@@ -1,4 +1,5 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { AdminSessionGuard } from '../auth/admin-session.guard';
 import { ProgramsService } from './programs.service';
 import { CreateProgramDto } from './dto/create-program.dto';
 import { UpdateProgramDto } from './dto/update-program.dto';
@@ -6,6 +7,7 @@ import { CreateProgramGroupDto } from './dto/create-program-group.dto';
 import { CreateMessageTemplateDto, UpdateMessageTemplateDto } from './dto/create-message-template.dto';
 import { ProgramType } from '@prisma/client';
 
+@UseGuards(AdminSessionGuard)
 @Controller('programs')
 export class ProgramsController {
   constructor(private readonly svc: ProgramsService) {}

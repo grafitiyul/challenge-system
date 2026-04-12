@@ -29,6 +29,20 @@ export async function apiFetch<T = unknown>(path: string, options?: RequestInit)
   });
 
   if (!res.ok) {
+    // 401 on an admin page = session expired — redirect to login
+    if (res.status === 401 && typeof window !== 'undefined') {
+      const current = window.location.pathname;
+      // Don't redirect if we're already on a public/portal route
+      const isPublic =
+        current.startsWith('/t/') ||
+        current.startsWith('/tg/') ||
+        current.startsWith('/fill/') ||
+        current.startsWith('/login') ||
+        current.startsWith('/reset-password');
+      if (!isPublic) {
+        window.location.href = `/login?from=${encodeURIComponent(current)}`;
+      }
+    }
     let message = 'Request failed';
     try {
       const body = await res.json() as Record<string, unknown>;

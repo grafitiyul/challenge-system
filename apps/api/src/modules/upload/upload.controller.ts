@@ -4,7 +4,9 @@ import {
   UploadedFile,
   UseInterceptors,
   BadRequestException,
+  UseGuards,
 } from '@nestjs/common';
+import { AdminSessionGuard } from '../auth/admin-session.guard';
 import { FileInterceptor } from '@nestjs/platform-express';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const multer = require('multer');
@@ -37,6 +39,7 @@ function generateFilename(originalname: string): string {
   return `${ts}_${rand}${ext}`;
 }
 
+@UseGuards(AdminSessionGuard)
 @Controller('upload')
 export class UploadController {
   @Post()

@@ -1,8 +1,10 @@
-import { Controller, Get, Post, Patch, Delete, HttpCode, Body, Query, Param, DefaultValuePipe, ParseIntPipe } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, HttpCode, Body, Query, Param, DefaultValuePipe, ParseIntPipe, UseGuards } from '@nestjs/common';
+import { AdminSessionGuard } from '../auth/admin-session.guard';
 import { ParticipantsService } from './participants.service';
 import { CreateParticipantDto } from './dto/create-participant.dto';
 import { UpdateParticipantDto } from './dto/update-participant.dto';
 
+@UseGuards(AdminSessionGuard)
 @Controller('participants')
 export class ParticipantsController {
   constructor(private readonly participantsService: ParticipantsService) {}

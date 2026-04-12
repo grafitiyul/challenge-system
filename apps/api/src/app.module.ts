@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { PrismaModule } from './prisma/prisma.module';
+import { AuthModule } from './modules/auth/auth.module';
 import { HealthController } from './health.controller';
 import { WassengerController } from './wassenger.controller';
 import { WassengerService } from './wassenger.service';
@@ -20,10 +22,10 @@ import { TaskEngineModule } from './modules/task-engine/task-engine.module';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({
-      isGlobal: true,
-    }),
+    ConfigModule.forRoot({ isGlobal: true }),
+    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }]),
     PrismaModule,
+    AuthModule,
     ChallengesModule,
     ChallengeTypesModule,
     GroupsModule,

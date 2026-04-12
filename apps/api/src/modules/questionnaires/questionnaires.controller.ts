@@ -6,7 +6,9 @@ import {
   Param,
   Patch,
   Post,
+  UseGuards,
 } from '@nestjs/common';
+import { AdminSessionGuard } from '../auth/admin-session.guard';
 import { QuestionnairesService } from './questionnaires.service';
 import { CreateTemplateDto } from './dto/create-template.dto';
 import { UpdateTemplateDto } from './dto/update-template.dto';
@@ -17,6 +19,7 @@ import { CreateExternalLinkDto } from './dto/create-external-link.dto';
 import { UpdateExternalLinkDto } from './dto/update-external-link.dto';
 import { CreateSubmissionDto } from './dto/create-submission.dto';
 
+@UseGuards(AdminSessionGuard)
 @Controller('questionnaires')
 export class QuestionnairesController {
   constructor(private readonly svc: QuestionnairesService) {}
@@ -140,6 +143,7 @@ export class QuestionnairesController {
 
 // ── Standalone submission routes (not nested under a template) ────────────────
 
+@UseGuards(AdminSessionGuard)
 @Controller('submissions')
 export class SubmissionsController {
   constructor(private readonly svc: QuestionnairesService) {}

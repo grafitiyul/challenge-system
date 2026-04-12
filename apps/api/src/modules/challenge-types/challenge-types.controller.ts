@@ -1,7 +1,9 @@
-import { Controller, Get, Post, Body } from '@nestjs/common';
+import { Controller, Get, Post, Body, UseGuards } from '@nestjs/common';
+import { AdminSessionGuard } from '../auth/admin-session.guard';
 import { ChallengeTypesService } from './challenge-types.service';
 import { CreateChallengeTypeDto } from './dto/create-challenge-type.dto';
 
+@UseGuards(AdminSessionGuard)
 @Controller('challenge-types')
 export class ChallengeTypesController {
   constructor(private readonly challengeTypesService: ChallengeTypesService) {}
