@@ -225,8 +225,13 @@ export default function GroupDetailPage() {
   const [adminStatsLoading, setAdminStatsLoading] = useState(false);
   const [adminFeed, setAdminFeed] = useState<AdminFeedEvent[]>([]);
   const [adminFeedLoading, setAdminFeedLoading] = useState(false);
-  // Feed toggle: true = show all participants together (default ON)
-  const [feedShowAll, setFeedShowAll] = useState(true);
+  const [feedToggleLoading, setFeedToggleLoading] = useState(false);
+  // Feed toggle: true = show all participants together (default ON), persisted in localStorage
+  const [feedShowAll, setFeedShowAll] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true;
+    const stored = localStorage.getItem('admin_feed_show_all');
+    return stored === null ? true : stored === 'true';
+  });
   const [selectedFeedIds, setSelectedFeedIds] = useState<Set<string>>(new Set());
   const [deletingFeedIds, setDeletingFeedIds] = useState<Set<string>>(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
@@ -394,16 +399,15 @@ export default function GroupDetailPage() {
       .finally(() => setAdminFeedLoading(false));
   }, [inspectedParticipantId, id]);
 
-  // Reload feed only when toggle changes (stats stays on selected participant)
+  // Reload feed only when toggle changes — keep old data visible until new data arrives
   useEffect(() => {
     if (!inspectedParticipantId || !id) return;
-    setAdminFeed([]);
     setSelectedFeedIds(new Set());
-    setAdminFeedLoading(true);
+    setFeedToggleLoading(true);
     apiFetch<AdminFeedEvent[]>(buildFeedUrl(feedShowAll), { cache: 'no-store' })
       .then((data) => setAdminFeed(Array.isArray(data) ? data : []))
       .catch(() => {})
-      .finally(() => setAdminFeedLoading(false));
+      .finally(() => setFeedToggleLoading(false));
   }, [feedShowAll]);
 
   // ─── Admin: reload leaderboard + feed after deletion ──────────────────────
@@ -798,6 +802,7 @@ export default function GroupDetailPage() {
 
   return (
     <div style={{ maxWidth: 900, margin: '0 auto', padding: '24px 20px' }}>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
 
       {/* ── Back ── */}
       <Link href="/groups" style={{ color: '#64748b', fontSize: 14, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 4, marginBottom: 20 }}>
@@ -1522,7 +1527,7 @@ export default function GroupDetailPage() {
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', borderBottom: '1px solid #f1f5f9', background: '#f8fafc', gap: 10 }}>
                   {/* Toggle — LEFT side in RTL = appears leftmost visually */}
                   <button
-                    onClick={() => setFeedShowAll((v) => !v)}
+                    onClick={() => setFeedShowAll((v) => { const next = !v; localStorage.setItem('admin_feed_show_all', String(next)); return next; })}
                     style={{
                       flexShrink: 0,
                       padding: '4px 10px', borderRadius: 20, fontSize: 11, fontWeight: 600,
@@ -1565,14 +1570,27 @@ export default function GroupDetailPage() {
                   </div>
                 </div>
 
-                {adminFeedLoading ? (
+                {adminFeedLoading && adminFeed.length === 0 ? (
                   <div style={{ padding: '20px 16px', color: '#94a3b8', fontSize: 13, textAlign: 'center' }}>טוען מבזק...</div>
-                ) : adminFeed.length === 0 ? (
+                ) : !adminFeedLoading && !feedToggleLoading && adminFeed.length === 0 ? (
                   <div style={{ padding: '24px 16px', color: '#94a3b8', fontSize: 13, textAlign: 'center' }}>
                     אין פעולות להציג
                   </div>
                 ) : (
-                  <div style={{ maxHeight: 380, overflowY: 'auto' }}>
+                  <div style={{ maxHeight: 380, overflowY: 'auto', position: 'relative' }}>
+                    {feedToggleLoading && (
+                      <div style={{
+                        position: 'absolute', inset: 0, background: 'rgba(255,255,255,0.6)',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        zIndex: 2, borderRadius: 4,
+                      }}>
+                        <div style={{
+                          width: 18, height: 18, border: '2px solid #e2e8f0',
+                          borderTopColor: '#6366f1', borderRadius: '50%',
+                          animation: 'spin 0.7s linear infinite',
+                        }} />
+                      </div>
+                    )}
                     {adminFeed.map((event) => {
                       const isSelected = selectedFeedIds.has(event.id);
                       const isDeleting = deletingFeedIds.has(event.id);
