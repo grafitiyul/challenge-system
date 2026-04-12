@@ -794,13 +794,13 @@ export class GameEngineService {
     // Score queries MUST use groupId, not programId.
     // A participant can belong to multiple groups under the same program.
     // Using programId would merge scores from all groups — wrong for the per-group inspect panel.
-    // Streak (ParticipantGameState) is keyed by programId — intentionally program-level, not per group.
-    const [todayAgg, weekAgg, totalAgg, state, trendEvents] = await Promise.all([
+    // Streak is computed live from ScoreEvents (programId scope) so it's always consistent with actual data.
+    const [todayAgg, weekAgg, totalAgg, trendEvents, streak] = await Promise.all([
       this.prisma.scoreEvent.aggregate({ _sum: { points: true }, where: { participantId, groupId, createdAt: { gte: todayStart } } }),
       this.prisma.scoreEvent.aggregate({ _sum: { points: true }, where: { participantId, groupId, createdAt: { gte: weekStart } } }),
       this.prisma.scoreEvent.aggregate({ _sum: { points: true }, where: { participantId, groupId } }),
-      this.prisma.participantGameState.findUnique({ where: { participantId_programId: { participantId, programId } } }),
       this.prisma.scoreEvent.findMany({ where: { participantId, groupId, createdAt: { gte: since14 } }, select: { points: true, createdAt: true } }),
+      this.getStreakLive(participantId, programId),
     ]);
 
     // Build 14-day trend
@@ -820,8 +820,8 @@ export class GameEngineService {
       todayScore: todayAgg._sum.points ?? 0,
       weekScore: weekAgg._sum.points ?? 0,
       totalScore: totalAgg._sum.points ?? 0,
-      currentStreak: state?.currentStreak ?? 0,
-      bestStreak: state?.bestStreak ?? 0,
+      currentStreak: streak.currentStreak,
+      bestStreak: streak.bestStreak,
       dailyTrend,
     };
   }
@@ -1311,6 +1311,49 @@ export class GameEngineService {
       where: { participantId_programId: { participantId, programId } },
       data: { currentStreak: newStreak, bestStreak: newBest, lastActionDate: now },
     });
+  }
+
+  /**
+   * Compute currentStreak and bestStreak directly from ScoreEvent history without touching the DB.
+   * Used by stats endpoints so streak is always derived from live data, never stale stored state.
+   */
+  async getStreakLive(participantId: string, programId: string): Promise<{ currentStreak: number; bestStreak: number }> {
+    const scoreEvents = await this.prisma.scoreEvent.findMany({
+      where: { participantId, programId, sourceType: 'action' },
+      select: { createdAt: true },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    if (scoreEvents.length === 0) return { currentStreak: 0, bestStreak: 0 };
+
+    const DAY_MS = 86_400_000;
+    const daySet = new Set<number>();
+    for (const se of scoreEvents) {
+      const d = new Date(se.createdAt);
+      d.setHours(0, 0, 0, 0);
+      daySet.add(d.getTime());
+    }
+    const days = Array.from(daySet).sort((a, b) => a - b);
+
+    let best = 1, run = 1;
+    for (let i = 1; i < days.length; i++) {
+      if (days[i] - days[i - 1] === DAY_MS) { run++; if (run > best) best = run; }
+      else run = 1;
+    }
+
+    const now = new Date(); now.setHours(0, 0, 0, 0);
+    const yesterday = new Date(now.getTime() - DAY_MS);
+    const lastDay = days[days.length - 1];
+    let currentStreak = 0;
+    if (lastDay === now.getTime() || lastDay === yesterday.getTime()) {
+      currentStreak = 1;
+      for (let i = days.length - 2; i >= 0; i--) {
+        if (days[i + 1] - days[i] === DAY_MS) currentStreak++;
+        else break;
+      }
+    }
+
+    return { currentStreak, bestStreak: best };
   }
 
   /**

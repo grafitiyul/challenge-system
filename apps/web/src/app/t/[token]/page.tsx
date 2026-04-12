@@ -702,9 +702,13 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                 <div style={s.chartCard}>
                   <p style={s.sectionTitle}>14 ימים אחרונים</p>
                   <TrendChart data={stats.dailyTrend} />
+                  {/* In RTL flexbox, DOM-first item lands on physical RIGHT, DOM-last on physical LEFT.
+                      SVG bars render left-to-right (oldest at physical LEFT, today at physical RIGHT).
+                      So: "היום" must be DOM-first (→ physical RIGHT, matching today's bar),
+                      and the oldest date must be DOM-last (→ physical LEFT, matching oldest bar). */}
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6 }}>
-                    <span style={s.chartAxisLabel}>{stats.dailyTrend[0]?.date ? formatDate(stats.dailyTrend[0].date) : ''}</span>
                     <span style={s.chartAxisLabel}>היום</span>
+                    <span style={s.chartAxisLabel}>{stats.dailyTrend[0]?.date ? formatDate(stats.dailyTrend[0].date) : ''}</span>
                   </div>
                 </div>
 

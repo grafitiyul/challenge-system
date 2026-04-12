@@ -226,15 +226,13 @@ export class ParticipantPortalService {
     const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
     const weekStart = new Date(now); weekStart.setDate(now.getDate() - now.getDay()); weekStart.setHours(0, 0, 0, 0);
 
-    // Personal scores
-    const [todayAgg, weekAgg, totalAgg] = await Promise.all([
+    // Personal scores + streak (computed live so it's always consistent with actual ScoreEvent data)
+    const [todayAgg, weekAgg, totalAgg, streak] = await Promise.all([
       this.prisma.scoreEvent.aggregate({ _sum: { points: true }, where: { participantId, programId, createdAt: { gte: todayStart } } }),
       this.prisma.scoreEvent.aggregate({ _sum: { points: true }, where: { participantId, programId, createdAt: { gte: weekStart } } }),
       this.prisma.scoreEvent.aggregate({ _sum: { points: true }, where: { participantId, programId } }),
+      this.gameEngine.getStreakLive(participantId, programId),
     ]);
-
-    // Streaks
-    const state = await this.prisma.participantGameState.findUnique({ where: { participantId_programId: { participantId, programId } } });
 
     // 14-day daily trend
     const dailyTrend = await this.buildDailyTrend(participantId, programId, 14);
@@ -276,8 +274,8 @@ export class ParticipantPortalService {
       todayScore: todayAgg._sum.points ?? 0,
       weekScore: weekAgg._sum.points ?? 0,
       totalScore: totalAgg._sum.points ?? 0,
-      currentStreak: state?.currentStreak ?? 0,
-      bestStreak: state?.bestStreak ?? 0,
+      currentStreak: streak.currentStreak,
+      bestStreak: streak.bestStreak,
       dailyTrend,
       groupLeaderboard: leaderboard,
     };
