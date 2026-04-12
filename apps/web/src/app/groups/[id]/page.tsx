@@ -235,6 +235,10 @@ export default function GroupDetailPage() {
   const [selectedFeedIds, setSelectedFeedIds] = useState<Set<string>>(new Set());
   const [deletingFeedIds, setDeletingFeedIds] = useState<Set<string>>(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  // Confirm before feed delete — set to trigger modal, null when dismissed
+  const [feedDeleteConfirm, setFeedDeleteConfirm] = useState<
+    { type: 'single'; id: string } | { type: 'bulk'; ids: string[] } | null
+  >(null);
 
   // Group message modal
   const [msgModalOpen, setMsgModalOpen] = useState(false);
@@ -432,7 +436,21 @@ export default function GroupDetailPage() {
       .catch(() => {});
   }
 
-  async function handleDeleteFeedEvent(feedEventId: string) {
+  // ── Gate functions: open confirm modal instead of deleting directly ──────
+
+  function handleDeleteFeedEvent(feedEventId: string) {
+    setFeedDeleteConfirm({ type: 'single', id: feedEventId });
+  }
+
+  function handleBulkDelete() {
+    const ids = Array.from(selectedFeedIds);
+    if (ids.length === 0) return;
+    setFeedDeleteConfirm({ type: 'bulk', ids });
+  }
+
+  // ── Actual delete — only called after modal confirmation ─────────────────
+
+  async function doDeleteFeedEvent(feedEventId: string) {
     setDeletingFeedIds((prev) => new Set(prev).add(feedEventId));
     try {
       await apiFetch(`${BASE_URL}/game/admin/feed/${feedEventId}`, { method: 'DELETE' });
@@ -446,8 +464,7 @@ export default function GroupDetailPage() {
     }
   }
 
-  async function handleBulkDelete() {
-    const ids = Array.from(selectedFeedIds);
+  async function doBulkDelete(ids: string[]) {
     if (ids.length === 0) return;
     setBulkDeleting(true);
     try {
@@ -456,13 +473,24 @@ export default function GroupDetailPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids }),
       });
-      setAdminFeed((prev) => prev.filter((e) => !selectedFeedIds.has(e.id)));
+      setAdminFeed((prev) => prev.filter((e) => !ids.includes(e.id)));
       setSelectedFeedIds(new Set());
       reloadAfterDelete();
     } catch {
       // silent
     } finally {
       setBulkDeleting(false);
+    }
+  }
+
+  async function confirmFeedDelete() {
+    if (!feedDeleteConfirm) return;
+    const pending = feedDeleteConfirm;
+    setFeedDeleteConfirm(null);
+    if (pending.type === 'single') {
+      await doDeleteFeedEvent(pending.id);
+    } else {
+      await doBulkDelete(pending.ids);
     }
   }
 
@@ -1523,28 +1551,26 @@ export default function GroupDetailPage() {
 
               {/* מבזק — feed events */}
               <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
-                {/* Header row: toggle (left) · title (center/right) · bulk actions (right) */}
+                {/* Header row: title (right, first in DOM) · controls (left, last in DOM) */}
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', borderBottom: '1px solid #f1f5f9', background: '#f8fafc', gap: 10 }}>
-                  {/* Toggle — LEFT side in RTL = appears leftmost visually */}
-                  <button
-                    onClick={() => setFeedShowAll((v) => { const next = !v; localStorage.setItem('admin_feed_show_all', String(next)); return next; })}
-                    style={{
-                      flexShrink: 0,
-                      padding: '4px 10px', borderRadius: 20, fontSize: 11, fontWeight: 600,
-                      cursor: 'pointer', whiteSpace: 'nowrap' as const,
-                      border: feedShowAll ? '1px solid #6366f1' : '1px solid #e2e8f0',
-                      background: feedShowAll ? '#eef2ff' : '#f8fafc',
-                      color: feedShowAll ? '#4338ca' : '#94a3b8',
-                      transition: 'all 0.15s',
-                    }}
-                  >
-                    {feedShowAll ? '✓ צפה בכולם יחד' : 'צפה בכולם יחד'}
-                  </button>
+                  {/* Title — first in DOM = rightmost in RTL */}
+                  <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a', flexShrink: 0 }}>מבזק פעילות</div>
 
-                  <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a', flex: 1, textAlign: 'right' }}>מבזק פעילות</div>
-
-                  {/* Bulk actions */}
+                  {/* Controls — last in DOM = leftmost in RTL */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                    {/* Select All / Deselect All */}
+                    {adminFeed.length > 0 && (
+                      <button
+                        onClick={() => {
+                          const allSelected = adminFeed.length > 0 && adminFeed.every((e) => selectedFeedIds.has(e.id));
+                          setSelectedFeedIds(allSelected ? new Set() : new Set(adminFeed.map((e) => e.id)));
+                        }}
+                        style={{ background: 'none', border: 'none', fontSize: 12, color: '#64748b', cursor: 'pointer', padding: '5px 4px', whiteSpace: 'nowrap' as const }}
+                      >
+                        {adminFeed.length > 0 && adminFeed.every((e) => selectedFeedIds.has(e.id)) ? 'בטל בחירה' : 'סמן הכל'}
+                      </button>
+                    )}
+                    {/* Bulk delete */}
                     {selectedFeedIds.size > 0 && (
                       <button
                         onClick={handleBulkDelete}
@@ -1559,14 +1585,25 @@ export default function GroupDetailPage() {
                         {bulkDeleting ? 'מוחק...' : `מחק ${selectedFeedIds.size}`}
                       </button>
                     )}
+                    {/* Divider before toggle when actions visible */}
                     {selectedFeedIds.size > 0 && (
-                      <button
-                        onClick={() => setSelectedFeedIds(new Set())}
-                        style={{ background: 'none', border: 'none', fontSize: 12, color: '#64748b', cursor: 'pointer', padding: '5px 4px' }}
-                      >
-                        בטל
-                      </button>
+                      <div style={{ width: 1, height: 16, background: '#e2e8f0', flexShrink: 0 }} />
                     )}
+                    {/* Toggle — צפה בכולם יחד */}
+                    <button
+                      onClick={() => setFeedShowAll((v) => { const next = !v; localStorage.setItem('admin_feed_show_all', String(next)); return next; })}
+                      style={{
+                        flexShrink: 0,
+                        padding: '4px 10px', borderRadius: 20, fontSize: 11, fontWeight: 600,
+                        cursor: 'pointer', whiteSpace: 'nowrap' as const,
+                        border: feedShowAll ? '1px solid #6366f1' : '1px solid #e2e8f0',
+                        background: feedShowAll ? '#eef2ff' : '#f8fafc',
+                        color: feedShowAll ? '#4338ca' : '#94a3b8',
+                        transition: 'all 0.15s',
+                      }}
+                    >
+                      {feedShowAll ? '✓ צפה בכולם יחד' : 'צפה בכולם יחד'}
+                    </button>
                   </div>
                 </div>
 
@@ -1867,6 +1904,32 @@ export default function GroupDetailPage() {
                 style={{ padding: '9px 22px', borderRadius: 8, border: 'none', background: deleting ? '#fca5a5' : '#ef4444', color: '#fff', fontSize: 14, fontWeight: 600, cursor: deleting ? 'not-allowed' : 'pointer' }}
               >
                 {deleting ? 'מוחק...' : 'מחק קבוצה'}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════════════
+          MODAL — FEED DELETE CONFIRMATION
+      ══════════════════════════════════════════════════════════════════════ */}
+      {feedDeleteConfirm && (
+        <Modal onClose={() => setFeedDeleteConfirm(null)} disableBackdropClose>
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: 36, marginBottom: 12 }}>🗑️</div>
+            <h3 style={{ ...S.modalTitle, marginBottom: 8 }}>מחיקת פעילות</h3>
+            <p style={{ fontSize: 14, color: '#374151', margin: '0 0 24px', lineHeight: 1.6 }}>
+              {feedDeleteConfirm.type === 'single'
+                ? 'האם למחוק את הפעילות הזו?'
+                : `האם למחוק ${feedDeleteConfirm.ids.length} פעילויות?`}
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'center', gap: 10 }}>
+              <button onClick={() => setFeedDeleteConfirm(null)} style={S.btnSecondary}>ביטול</button>
+              <button
+                onClick={confirmFeedDelete}
+                style={{ padding: '9px 22px', borderRadius: 8, border: 'none', background: '#ef4444', color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}
+              >
+                מחק
               </button>
             </div>
           </div>
