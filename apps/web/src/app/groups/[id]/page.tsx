@@ -225,6 +225,8 @@ export default function GroupDetailPage() {
   const [adminStatsLoading, setAdminStatsLoading] = useState(false);
   const [adminFeed, setAdminFeed] = useState<AdminFeedEvent[]>([]);
   const [adminFeedLoading, setAdminFeedLoading] = useState(false);
+  // Feed toggle: true = show all participants together (default ON)
+  const [feedShowAll, setFeedShowAll] = useState(true);
   const [selectedFeedIds, setSelectedFeedIds] = useState<Set<string>>(new Set());
   const [deletingFeedIds, setDeletingFeedIds] = useState<Set<string>>(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
@@ -362,7 +364,13 @@ export default function GroupDetailPage() {
       .finally(() => setRanksLoading(false));
   }, [tab, id]);
 
-  // ─── Admin inspect panel: load stats + feed when participant changes ────────
+  // ─── Admin inspect panel: load stats + feed when participant or feed-mode changes ─
+
+  // Builds the feed URL: omit participantId when feedShowAll=true to get all participants
+  function buildFeedUrl(showAll: boolean) {
+    const base = `${BASE_URL}/game/admin/feed?groupId=${id}&limit=50`;
+    return showAll ? base : `${base}&participantId=${inspectedParticipantId}`;
+  }
 
   useEffect(() => {
     if (!inspectedParticipantId || !id) return;
@@ -380,14 +388,23 @@ export default function GroupDetailPage() {
       .finally(() => setAdminStatsLoading(false));
 
     setAdminFeedLoading(true);
-    apiFetch<AdminFeedEvent[]>(
-      `${BASE_URL}/game/admin/feed?groupId=${id}&participantId=${inspectedParticipantId}&limit=50`,
-      { cache: 'no-store' },
-    )
+    apiFetch<AdminFeedEvent[]>(buildFeedUrl(feedShowAll), { cache: 'no-store' })
       .then((data) => setAdminFeed(Array.isArray(data) ? data : []))
       .catch(() => {})
       .finally(() => setAdminFeedLoading(false));
   }, [inspectedParticipantId, id]);
+
+  // Reload feed only when toggle changes (stats stays on selected participant)
+  useEffect(() => {
+    if (!inspectedParticipantId || !id) return;
+    setAdminFeed([]);
+    setSelectedFeedIds(new Set());
+    setAdminFeedLoading(true);
+    apiFetch<AdminFeedEvent[]>(buildFeedUrl(feedShowAll), { cache: 'no-store' })
+      .then((data) => setAdminFeed(Array.isArray(data) ? data : []))
+      .catch(() => {})
+      .finally(() => setAdminFeedLoading(false));
+  }, [feedShowAll]);
 
   // ─── Admin: reload leaderboard + feed after deletion ──────────────────────
 
@@ -397,15 +414,12 @@ export default function GroupDetailPage() {
     apiFetch<ParticipantRankRow[]>(`${BASE_URL}/game/leaderboard/group/${id}`, { cache: 'no-store' })
       .then((data) => setParticipantRanks(Array.isArray(data) ? data : []))
       .catch(() => {});
-    // Reload feed
     if (!inspectedParticipantId) return;
-    apiFetch<AdminFeedEvent[]>(
-      `${BASE_URL}/game/admin/feed?groupId=${id}&participantId=${inspectedParticipantId}&limit=50`,
-      { cache: 'no-store' },
-    )
+    // Reload feed — respects current toggle state
+    apiFetch<AdminFeedEvent[]>(buildFeedUrl(feedShowAll), { cache: 'no-store' })
       .then((data) => setAdminFeed(Array.isArray(data) ? data : []))
       .catch(() => {});
-    // Reload stats
+    // Reload stats — always scoped to selected participant
     apiFetch<AdminParticipantStats>(
       `${BASE_URL}/game/admin/participant-stats?participantId=${inspectedParticipantId}&groupId=${id}`,
       { cache: 'no-store' },
@@ -1504,9 +1518,28 @@ export default function GroupDetailPage() {
 
               {/* מבזק — feed events */}
               <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: '1px solid #f1f5f9', background: '#f8fafc' }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a' }}>מבזק פעילות</div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                {/* Header row: toggle (left) · title (center/right) · bulk actions (right) */}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', borderBottom: '1px solid #f1f5f9', background: '#f8fafc', gap: 10 }}>
+                  {/* Toggle — LEFT side in RTL = appears leftmost visually */}
+                  <button
+                    onClick={() => setFeedShowAll((v) => !v)}
+                    style={{
+                      flexShrink: 0,
+                      padding: '4px 10px', borderRadius: 20, fontSize: 11, fontWeight: 600,
+                      cursor: 'pointer', whiteSpace: 'nowrap' as const,
+                      border: feedShowAll ? '1px solid #6366f1' : '1px solid #e2e8f0',
+                      background: feedShowAll ? '#eef2ff' : '#f8fafc',
+                      color: feedShowAll ? '#4338ca' : '#94a3b8',
+                      transition: 'all 0.15s',
+                    }}
+                  >
+                    {feedShowAll ? '✓ צפה בכולם יחד' : 'צפה בכולם יחד'}
+                  </button>
+
+                  <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a', flex: 1, textAlign: 'right' }}>מבזק פעילות</div>
+
+                  {/* Bulk actions */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
                     {selectedFeedIds.size > 0 && (
                       <button
                         onClick={handleBulkDelete}
@@ -1514,19 +1547,19 @@ export default function GroupDetailPage() {
                         style={{
                           background: bulkDeleting ? '#fca5a5' : '#ef4444',
                           color: '#fff', border: 'none', borderRadius: 6,
-                          padding: '5px 12px', fontSize: 12, fontWeight: 600,
-                          cursor: bulkDeleting ? 'not-allowed' : 'pointer',
+                          padding: '5px 10px', fontSize: 12, fontWeight: 600,
+                          cursor: bulkDeleting ? 'not-allowed' : 'pointer', whiteSpace: 'nowrap' as const,
                         }}
                       >
-                        {bulkDeleting ? 'מוחק...' : `מחק ${selectedFeedIds.size} נבחרות`}
+                        {bulkDeleting ? 'מוחק...' : `מחק ${selectedFeedIds.size}`}
                       </button>
                     )}
                     {selectedFeedIds.size > 0 && (
                       <button
                         onClick={() => setSelectedFeedIds(new Set())}
-                        style={{ background: 'none', border: 'none', fontSize: 12, color: '#64748b', cursor: 'pointer', padding: '5px 6px' }}
+                        style={{ background: 'none', border: 'none', fontSize: 12, color: '#64748b', cursor: 'pointer', padding: '5px 4px' }}
                       >
-                        בטל בחירה
+                        בטל
                       </button>
                     )}
                   </div>
@@ -1539,17 +1572,27 @@ export default function GroupDetailPage() {
                     אין פעולות להציג
                   </div>
                 ) : (
-                  <div style={{ maxHeight: 320, overflowY: 'auto' }}>
+                  <div style={{ maxHeight: 380, overflowY: 'auto' }}>
                     {adminFeed.map((event) => {
                       const isSelected = selectedFeedIds.has(event.id);
                       const isDeleting = deletingFeedIds.has(event.id);
                       const dt = new Date(event.createdAt);
-                      const timeStr = dt.toLocaleString('he-IL', { day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' });
+                      // Full date + time: "יום/חודש/שנה, HH:MM" in Israel timezone
+                      const dateStr = dt.toLocaleDateString('he-IL', {
+                        timeZone: 'Asia/Jerusalem',
+                        day: '2-digit', month: '2-digit', year: 'numeric',
+                      });
+                      const timeStr = dt.toLocaleTimeString('he-IL', {
+                        timeZone: 'Asia/Jerusalem',
+                        hour: '2-digit', minute: '2-digit',
+                      });
+                      const fullDatetime = `${dateStr} ${timeStr}`;
+                      const participantName = `${event.participant.firstName}${event.participant.lastName ? ' ' + event.participant.lastName : ''}`;
                       return (
                         <div
                           key={event.id}
                           style={{
-                            display: 'flex', alignItems: 'center', gap: 10,
+                            display: 'flex', alignItems: 'flex-start', gap: 10,
                             padding: '9px 14px',
                             borderBottom: '1px solid #f8fafc',
                             background: isSelected ? '#fef2f2' : isDeleting ? '#fef9c3' : undefined,
@@ -1569,7 +1612,7 @@ export default function GroupDetailPage() {
                                 return n;
                               });
                             }}
-                            style={{ width: 16, height: 16, flexShrink: 0, cursor: 'pointer' }}
+                            style={{ width: 16, height: 16, flexShrink: 0, cursor: 'pointer', marginTop: 2 }}
                           />
 
                           {/* Points badge */}
@@ -1577,20 +1620,30 @@ export default function GroupDetailPage() {
                             flexShrink: 0, minWidth: 36, textAlign: 'center',
                             background: '#eff6ff', color: '#1d4ed8',
                             border: '1px solid #bfdbfe', borderRadius: 6,
-                            fontSize: 12, fontWeight: 700, padding: '2px 6px',
+                            fontSize: 12, fontWeight: 700, padding: '2px 6px', marginTop: 1,
                           }}>
                             +{event.points}
                           </span>
 
-                          {/* Message */}
-                          <span style={{ flex: 1, fontSize: 13, color: '#374151', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {event.message}
-                          </span>
-
-                          {/* Time */}
-                          <span style={{ flexShrink: 0, fontSize: 11, color: '#94a3b8', whiteSpace: 'nowrap' }}>
-                            {timeStr}
-                          </span>
+                          {/* Main content: message + participant name (when all-together) + datetime */}
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            {/* Participant name — shown prominently in all-together mode */}
+                            {feedShowAll && (
+                              <div style={{
+                                fontSize: 11, fontWeight: 700, color: '#6366f1',
+                                marginBottom: 2, whiteSpace: 'nowrap' as const,
+                                overflow: 'hidden', textOverflow: 'ellipsis',
+                              }}>
+                                {participantName}
+                              </div>
+                            )}
+                            <div style={{ fontSize: 13, color: '#374151', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>
+                              {event.message}
+                            </div>
+                            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>
+                              {fullDatetime}
+                            </div>
+                          </div>
 
                           {/* Delete */}
                           <button
@@ -1601,7 +1654,7 @@ export default function GroupDetailPage() {
                               flexShrink: 0, background: 'none', border: 'none',
                               color: '#ef4444', cursor: isDeleting ? 'not-allowed' : 'pointer',
                               padding: '4px 6px', borderRadius: 5, fontSize: 14, lineHeight: 1,
-                              opacity: isDeleting ? 0.4 : 1,
+                              opacity: isDeleting ? 0.4 : 1, marginTop: 1,
                             }}
                           >
                             🗑
