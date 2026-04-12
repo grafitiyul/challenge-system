@@ -36,6 +36,7 @@ export class GameEngineService {
         showInPortal: dto.showInPortal ?? true,
         blockedMessage: dto.blockedMessage ?? null,
         explanationContent: dto.explanationContent ?? null,
+        soundKey: dto.soundKey ?? 'none',
         sortOrder: count,
       },
     });
@@ -76,6 +77,7 @@ export class GameEngineService {
         ...(dto.blockedMessage !== undefined ? { blockedMessage: dto.blockedMessage } : {}),
         ...(dto.explanationContent !== undefined ? { explanationContent: dto.explanationContent } : {}),
         ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
+        ...(dto.soundKey !== undefined ? { soundKey: dto.soundKey } : {}),
       },
     });
   }

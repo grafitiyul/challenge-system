@@ -360,6 +360,7 @@ interface GameAction {
   showInPortal: boolean;
   blockedMessage: string | null;
   explanationContent: string | null;
+  soundKey: string;
   isActive: boolean;
   sortOrder: number;
 }
@@ -494,6 +495,55 @@ function DeleteConfirmModal({
   );
 }
 
+// ─── Sound preview helper (Web Audio API synthesis, no static files needed) ───
+
+const SOUND_OPTIONS = [
+  { value: 'none',        label: 'ללא צליל' },
+  { value: 'ding',        label: 'טינג' },
+  { value: 'celebration', label: 'חגיגי' },
+  { value: 'applause',    label: 'מחיאות כפיים' },
+];
+
+function playSoundPreview(soundKey: string): void {
+  try {
+    const ctx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+    if (soundKey === 'ding') {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.frequency.setValueAtTime(1046, ctx.currentTime); // C6
+      gain.gain.setValueAtTime(0.4, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+      osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.4);
+    } else if (soundKey === 'celebration') {
+      const notes = [523, 659, 784, 1047]; // C5, E5, G5, C6
+      notes.forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.frequency.value = freq;
+        const t = ctx.currentTime + i * 0.1;
+        gain.gain.setValueAtTime(0, t);
+        gain.gain.linearRampToValueAtTime(0.35, t + 0.04);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+        osc.start(t); osc.stop(t + 0.22);
+      });
+    } else if (soundKey === 'applause') {
+      const bufSize = ctx.sampleRate * 0.5;
+      const buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < bufSize; i++) {
+        // shaped noise: bursts every ~30ms, overall envelope
+        const burst = Math.sin((i / ctx.sampleRate) * Math.PI * 33) > 0.4 ? 1 : 0;
+        const env = Math.pow(1 - i / bufSize, 0.5);
+        data[i] = (Math.random() * 2 - 1) * 0.5 * burst * env;
+      }
+      const src = ctx.createBufferSource();
+      src.buffer = buf; src.connect(ctx.destination); src.start();
+    }
+  } catch { /* browser blocked audio — fail silently */ }
+}
+
 // ─── Action Modal ─────────────────────────────────────────────────────────────
 
 function ActionModal({
@@ -515,6 +565,7 @@ function ActionModal({
     showInPortal: action?.showInPortal ?? true,
     blockedMessage: action?.blockedMessage ?? '',
     explanationContent: action?.explanationContent ?? '',
+    soundKey: action?.soundKey ?? 'none',
   });
   const [form, setForm] = useState(initialForm.current);
   const [saving, setSaving] = useState(false);
@@ -563,6 +614,7 @@ function ActionModal({
         showInPortal: form.showInPortal,
         blockedMessage: form.blockedMessage.trim() || null,
         explanationContent: form.explanationContent.trim() || null,
+        soundKey: form.soundKey,
       };
       const url = action
         ? `${BASE_URL}/game/programs/${programId}/actions/${action.id}`
@@ -721,6 +773,35 @@ function ActionModal({
                 </div>
               </div>
             </label>
+          </div>
+
+          {/* ── Sound feedback ── */}
+          <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10, padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div style={sectionHead}>הצליל שיושמע</div>
+            <div style={{ fontSize: 12, color: '#64748b', marginBottom: 2 }}>
+              הצליל שיושמע בפורטל המשתתפת לאחר דיווח מוצלח
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <select
+                style={{ ...inputStyle, flex: 1 }}
+                value={form.soundKey}
+                onChange={(e) => setForm((p) => ({ ...p, soundKey: e.target.value }))}
+              >
+                {SOUND_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+              {form.soundKey !== 'none' && (
+                <button
+                  type="button"
+                  onClick={() => playSoundPreview(form.soundKey)}
+                  title="השמע צליל"
+                  style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 7, padding: '7px 12px', fontSize: 13, cursor: 'pointer', color: '#1d4ed8', flexShrink: 0 }}
+                >
+                  ▶ נגן
+                </button>
+              )}
+            </div>
           </div>
 
           {/* ── Explanation content (rules tab) ── */}

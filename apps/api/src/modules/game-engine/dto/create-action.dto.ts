@@ -58,6 +58,10 @@ export class CreateActionDto {
   @IsOptional()
   @IsString()
   explanationContent?: string | null;
+
+  @IsOptional()
+  @IsString()
+  soundKey?: string; // "none" | "ding" | "celebration" | "applause"
 }
 
 export class UpdateActionDto {
@@ -107,4 +111,8 @@ export class UpdateActionDto {
   @IsOptional()
   @IsString()
   explanationContent?: string | null;
+
+  @IsOptional()
+  @IsString()
+  soundKey?: string;
 }

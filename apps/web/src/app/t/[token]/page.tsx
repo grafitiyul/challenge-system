@@ -5,6 +5,50 @@ import { use, useCallback, useEffect, useRef, useState } from 'react';
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 import { BASE_URL, apiFetch } from '@lib/api';
 
+// ─── Sound helper (Web Audio API synthesis — no static files) ────────────────
+
+function playActionSound(soundKey: string): void {
+  if (!soundKey || soundKey === 'none') return;
+  try {
+    const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    if (soundKey === 'ding') {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.frequency.setValueAtTime(1046, ctx.currentTime);
+      gain.gain.setValueAtTime(0.4, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+      osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.4);
+    } else if (soundKey === 'celebration') {
+      const notes = [523, 659, 784, 1047];
+      notes.forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.frequency.value = freq;
+        const t = ctx.currentTime + i * 0.1;
+        gain.gain.setValueAtTime(0, t);
+        gain.gain.linearRampToValueAtTime(0.35, t + 0.04);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+        osc.start(t); osc.stop(t + 0.22);
+      });
+    } else if (soundKey === 'applause') {
+      const bufSize = ctx.sampleRate * 0.5;
+      const buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < bufSize; i++) {
+        const burst = Math.sin((i / ctx.sampleRate) * Math.PI * 33) > 0.4 ? 1 : 0;
+        const env = Math.pow(1 - i / bufSize, 0.5);
+        data[i] = (Math.random() * 2 - 1) * 0.5 * burst * env;
+      }
+      const src = ctx.createBufferSource();
+      src.buffer = buf; src.connect(ctx.destination); src.start();
+    }
+  } catch { /* audio blocked — fail silently */ }
+}
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 interface Action {
@@ -16,6 +60,7 @@ interface Action {
   unit: string | null;
   points: number;
   maxPerDay: number | null;
+  soundKey: string;
 }
 
 interface PortalContext {
@@ -229,6 +274,7 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
   const [inputError, setInputError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [feedback, setFeedback] = useState<Record<string, { points: number; visible: boolean }>>({});
+  const [glowActionId, setGlowActionId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Stats tab
@@ -443,11 +489,21 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
 
       const actionId = activeAction.id;
       const pointsEarned = result.pointsEarned;
+      const soundKey = activeAction.soundKey ?? 'none';
       closeSheet();
 
       // Immediately refresh נתונים and מבזק so they reflect this action
       refreshStats(true);
       refreshFeed(true);
+
+      if (pointsEarned > 0) {
+        // Play configured sound (after confirmed success, not optimistically)
+        playActionSound(soundKey);
+
+        // Glow: highlight the action card for 600ms
+        setGlowActionId(actionId);
+        setTimeout(() => setGlowActionId(null), 600);
+      }
 
       setFeedback((prev) => ({ ...prev, [actionId]: { points: pointsEarned, visible: true } }));
       setTimeout(() => {
@@ -612,6 +668,12 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
           75%  { opacity: 1; transform: scale(1); }
           100% { opacity: 0; transform: scale(1.02); }
         }
+        @keyframes successGlow {
+          0%   { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
+          30%  { box-shadow: 0 0 0 6px rgba(34, 197, 94, 0.28); }
+          100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
+        }
+        .action-glow { animation: successGlow 0.6s ease-out forwards; }
         * { box-sizing: border-box; }
       `}</style>
 
@@ -643,6 +705,7 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                 <button
                   key={action.id}
                   onClick={() => openAction(action)}
+                  className={glowActionId === action.id ? 'action-glow' : undefined}
                   style={{ ...s.actionRow, ...(done ? s.actionRowDone : {}) }}
                   aria-label={`דווחי על: ${action.name}`}
                 >

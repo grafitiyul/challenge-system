@@ -736,6 +736,9 @@ model GameAction {
   blockedMessage      String?
   // Rich HTML explanation shown in participant portal rules tab
   explanationContent  String?
+  // Built-in sound played on the participant portal after a successful action
+  // "none" | "ding" | "celebration" | "applause"
+  soundKey            String   @default("none")
   isActive    Boolean  @default(true)
   sortOrder   Int      @default(0)
   createdAt   DateTime @default(now())
