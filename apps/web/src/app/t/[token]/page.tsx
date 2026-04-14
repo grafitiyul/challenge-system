@@ -180,11 +180,21 @@ function ruleDescription(rule: PortalRules['rules'][0]): string {
   return ptsStr;
 }
 
-// ─── SVG Bar Chart ────────────────────────────────────────────────────────────
+// ─── SVG Bar Chart with per-bar date labels ───────────────────────────────────
+
+function shortBarDate(iso: string): string {
+  // "2026-04-14" → "14/4"
+  const parts = iso.split('-');
+  const day = parseInt(parts[2], 10);
+  const month = parseInt(parts[1], 10);
+  return `${day}/${month}`;
+}
 
 function TrendChart({ data }: { data: { date: string; points: number }[] }) {
   const WIDTH = 320;
-  const HEIGHT = 80;
+  const BAR_H = 72;        // height of bar drawing area
+  const LABEL_H = 26;      // space below bars for rotated labels
+  const SVG_H = BAR_H + LABEL_H;
   const BAR_GAP = 2;
   const n = data.length;
   const barW = Math.floor((WIDTH - BAR_GAP * (n - 1)) / n);
@@ -193,17 +203,20 @@ function TrendChart({ data }: { data: { date: string; points: number }[] }) {
   return (
     <svg
       width="100%"
-      viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
+      viewBox={`0 0 ${WIDTH} ${SVG_H}`}
       style={{ display: 'block', overflow: 'visible' }}
       aria-label="גרף נקודות 14 ימים"
     >
       {data.map((d, i) => {
-        const barH = Math.max(2, Math.round((d.points / maxVal) * (HEIGHT - 14)));
+        const barH = Math.max(2, Math.round((d.points / maxVal) * (BAR_H - 14)));
         const x = i * (barW + BAR_GAP);
-        const y = HEIGHT - barH;
+        const y = BAR_H - barH;
+        const cx = x + barW / 2;
         const isToday = i === n - 1;
+        const label = shortBarDate(d.date);
         return (
           <g key={d.date}>
+            {/* Bar */}
             <rect
               x={x}
               y={y}
@@ -212,9 +225,10 @@ function TrendChart({ data }: { data: { date: string; points: number }[] }) {
               rx={3}
               fill={isToday ? '#1d4ed8' : d.points > 0 ? '#93c5fd' : '#e5e7eb'}
             />
+            {/* Points label above today's bar */}
             {isToday && d.points > 0 && (
               <text
-                x={x + barW / 2}
+                x={cx}
                 y={y - 4}
                 textAnchor="middle"
                 fontSize={9}
@@ -224,6 +238,18 @@ function TrendChart({ data }: { data: { date: string; points: number }[] }) {
                 {d.points}
               </text>
             )}
+            {/* Date label below bar, rotated -40° around its base center */}
+            <text
+              x={cx}
+              y={BAR_H + 10}
+              textAnchor="end"
+              fontSize={7}
+              fill={isToday ? '#1d4ed8' : '#9ca3af'}
+              fontWeight={isToday ? 700 : 400}
+              transform={`rotate(-40, ${cx}, ${BAR_H + 10})`}
+            >
+              {label}
+            </text>
           </g>
         );
       })}
@@ -659,9 +685,10 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
       <div style={s.topBar}>
         <div style={s.topRow}>
           <span style={s.greeting}>{dailyGreeting()}, {firstName}</span>
-          <span style={s.todayScore}>
-            {ctx.todayScore > 0 ? `${ctx.todayScore} נקודות היום` : 'היום: 0 נקודות'}
-          </span>
+          <div style={s.todayScorePill}>
+            <span style={s.todayScoreNumber}>{ctx.todayScore}</span>
+            <span style={s.todayScoreUnit}>נק׳</span>
+          </div>
         </div>
         <div style={s.programMeta}>
           <span style={s.programName}>{ctx.program.name}</span>
@@ -739,18 +766,34 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                   </div>
                 </div>
 
+                {/* Trend vs yesterday — full-width card */}
+                {(() => {
+                  const n = stats.dailyTrend.length;
+                  const todayPts = stats.dailyTrend[n - 1]?.points ?? 0;
+                  const yesterdayPts = stats.dailyTrend[n - 2]?.points ?? 0;
+                  const diff = todayPts - yesterdayPts;
+                  const arrow = diff > 0 ? '↑' : diff < 0 ? '↓' : '—';
+                  const arrowColor = diff > 0 ? '#16a34a' : diff < 0 ? '#dc2626' : '#9ca3af';
+                  const label = diff > 0
+                    ? `+${diff} נקודות מאתמול`
+                    : diff < 0
+                    ? `${diff} נקודות מאתמול`
+                    : 'זהה לאתמול';
+                  return (
+                    <div style={s.trendCard}>
+                      <span style={{ ...s.trendArrow, color: arrowColor }}>{arrow}</span>
+                      <div style={s.trendTextGroup}>
+                        <span style={s.trendCardLabel}>מגמה ביחס לאתמול</span>
+                        <span style={{ ...s.trendDiff, color: arrowColor }}>{label}</span>
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 {/* Trend chart */}
                 <div style={s.chartCard}>
-                  <p style={s.sectionTitle}>14 ימים אחרונים</p>
+                  <p style={s.sectionTitle}>14 ימים אחרונים (פרטי)</p>
                   <TrendChart data={stats.dailyTrend} />
-                  {/* In RTL flexbox, DOM-first item lands on physical RIGHT, DOM-last on physical LEFT.
-                      SVG bars render left-to-right (oldest at physical LEFT, today at physical RIGHT).
-                      So: "היום" must be DOM-first (→ physical RIGHT, matching today's bar),
-                      and the oldest date must be DOM-last (→ physical LEFT, matching oldest bar). */}
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6 }}>
-                    <span style={s.chartAxisLabel}>היום</span>
-                    <span style={s.chartAxisLabel}>{stats.dailyTrend[0]?.date ? formatDate(stats.dailyTrend[0].date) : ''}</span>
-                  </div>
                 </div>
 
                 {/* Leaderboard */}
@@ -1066,10 +1109,28 @@ const s = {
     fontWeight: 600,
   } satisfies React.CSSProperties,
 
-  todayScore: {
+  todayScorePill: {
+    display: 'flex',
+    alignItems: 'baseline',
+    gap: 3,
+    background: 'rgba(251,191,36,0.15)',
+    border: '1px solid rgba(251,191,36,0.35)',
+    borderRadius: 20,
+    paddingInline: 10,
+    paddingBlock: 3,
+  } satisfies React.CSSProperties,
+
+  todayScoreNumber: {
     color: '#fbbf24',
-    fontSize: 15,
-    fontWeight: 700,
+    fontSize: 20,
+    fontWeight: 800,
+    lineHeight: 1,
+  } satisfies React.CSSProperties,
+
+  todayScoreUnit: {
+    color: '#fcd34d',
+    fontSize: 12,
+    fontWeight: 600,
   } satisfies React.CSSProperties,
 
   programMeta: {
@@ -1250,6 +1311,41 @@ const s = {
   chartAxisLabel: {
     fontSize: 11,
     color: '#9ca3af',
+  } satisfies React.CSSProperties,
+
+  trendCard: {
+    background: '#ffffff',
+    border: '1px solid #e5e7eb',
+    borderRadius: 14,
+    padding: '14px 16px',
+    marginBottom: 16,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 14,
+  } satisfies React.CSSProperties,
+
+  trendArrow: {
+    fontSize: 32,
+    fontWeight: 800,
+    lineHeight: 1,
+    flexShrink: 0,
+  } satisfies React.CSSProperties,
+
+  trendTextGroup: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 2,
+  } satisfies React.CSSProperties,
+
+  trendCardLabel: {
+    fontSize: 12,
+    color: '#9ca3af',
+    fontWeight: 500,
+  } satisfies React.CSSProperties,
+
+  trendDiff: {
+    fontSize: 16,
+    fontWeight: 700,
   } satisfies React.CSSProperties,
 
   leaderboardCard: {
