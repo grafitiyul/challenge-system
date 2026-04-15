@@ -29,6 +29,11 @@ class LogActionPortalDto {
   @IsOptional()
   @IsObject()
   contextJson?: Record<string, unknown>;
+
+  /** Phase 4.1: free-text answer to action.participantTextPrompt (if set). */
+  @IsOptional()
+  @IsString()
+  extraText?: string;
 }
 
 @Controller('public/participant')
@@ -57,7 +62,12 @@ export class ParticipantPortalController {
   ): Promise<{ pointsEarned: number; todayScore: number; todayValue: number | null }> {
     return this.portalService.logAction(
       token,
-      { actionId: dto.actionId, value: dto.value, contextJson: dto.contextJson },
+      {
+        actionId: dto.actionId,
+        value: dto.value,
+        contextJson: dto.contextJson,
+        extraText: dto.extraText,
+      },
       idempotencyKey,
     );
   }

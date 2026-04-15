@@ -74,6 +74,15 @@ export class CreateActionDto {
   participantPrompt?: string | null;
 
   /**
+   * Phase 4.1: optional free-text question shown under the main input during
+   * submission (e.g. "מה היה הפיתוי?"). When null/empty the input is not
+   * rendered. NOT used in analytics aggregation.
+   */
+  @IsOptional()
+  @IsString()
+  participantTextPrompt?: string | null;
+
+  /**
    * Phase 3: local (action-only) context dimensions schema. Kept for backward
    * compat. Phase 3.2 prefers reusable definitions via `contextUses` below.
    */
@@ -150,6 +159,11 @@ export class UpdateActionDto {
   @IsOptional()
   @IsString()
   participantPrompt?: string | null;
+
+  /** See CreateActionDto.participantTextPrompt. Pass null/empty to remove. */
+  @IsOptional()
+  @IsString()
+  participantTextPrompt?: string | null;
 
   /** See CreateActionDto.contextSchemaJson. Pass null to clear. */
   @IsOptional()

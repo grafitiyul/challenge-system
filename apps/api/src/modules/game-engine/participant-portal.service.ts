@@ -146,6 +146,8 @@ export interface PortalContext {
     maxPerDay: number | null;
     /** Phase 3.4: admin-editable prompt; null = use derived default. */
     participantPrompt: string | null;
+    /** Phase 4.1: when set, portal renders a free-text input under the main input. */
+    participantTextPrompt: string | null;
     /**
      * Phase 3: dimensions the participant must fill alongside this submission.
      * `null` (or missing `dimensions`) → action has no extra context. Backend
@@ -235,6 +237,8 @@ export interface AnalyticsDayEntry {
   rawValue: string;
   effectiveValue: number | null;
   contextJson: Record<string, unknown> | null;
+  /** Phase 4.1: optional action-level free-text. Surfaces in drill-down. */
+  extraText: string | null;
   points: number;
 }
 
@@ -363,6 +367,7 @@ export class ParticipantPortalService {
         points: a.points,
         maxPerDay: a.maxPerDay,
         participantPrompt: a.participantPrompt ?? null,
+        participantTextPrompt: a.participantTextPrompt ?? null,
         // Phase 3.2: effective schema = reusable attachments + local dimensions.
         // Phase 3.1 hidden-strip applied on top.
         contextSchemaJson: stripHiddenDimensions(effectiveSchemas[idx]),
@@ -377,7 +382,12 @@ export class ParticipantPortalService {
 
   async logAction(
     token: string,
-    dto: { actionId: string; value?: string; contextJson?: Record<string, unknown> },
+    dto: {
+      actionId: string;
+      value?: string;
+      contextJson?: Record<string, unknown>;
+      extraText?: string;
+    },
     idempotencyKey?: string,
   ): Promise<{ pointsEarned: number; todayScore: number; todayValue: number | null }> {
     const pg = await this.prisma.participantGroup.findUnique({
@@ -394,6 +404,7 @@ export class ParticipantPortalService {
       actionId: dto.actionId,
       value: dto.value,
       contextJson: dto.contextJson,
+      extraText: dto.extraText,
       clientSubmissionId: idempotencyKey,
     });
 
@@ -704,6 +715,7 @@ export class ParticipantPortalService {
       rawValue: l.value,
       effectiveValue: l.effectiveValue !== null ? Number(l.effectiveValue) : null,
       contextJson: (l.contextJson as Record<string, unknown> | null) ?? null,
+      extraText: l.extraText ?? null,
       points: pointsByLog[l.id] ?? 0,
     }));
   }

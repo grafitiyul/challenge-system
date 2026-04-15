@@ -99,33 +99,26 @@ export class ContextLibraryService {
     const taken = new Set(existing.map((r) => r.key));
     const key = makeUniqueKey(slugifyLabel(label), taken);
 
-    const options =
-      dto.type === 'select' ? this.buildOptions(dto.options ?? [], []) : null;
-    if (dto.type === 'select' && (!options || options.length === 0)) {
-      throw new BadRequestException('A select context must have at least one option');
+    // Phase 4.2 simplified model: the `type` field is no longer admin-choice.
+    // Visibility drives everything.
+    //   visibleToParticipant  ⇒ inputMode=participant, type=select, options required
+    //   !visibleToParticipant ⇒ inputMode=system_fixed, type=text,   fixedValue required
+    const isVisibleToParticipant = dto.visibleToParticipantByDefault !== false;
+    const type: 'select' | 'text' = isVisibleToParticipant ? 'select' : 'text';
+    const inputMode: 'participant' | 'system_fixed' = isVisibleToParticipant
+      ? 'participant'
+      : 'system_fixed';
+
+    const options = isVisibleToParticipant ? this.buildOptions(dto.options ?? [], []) : null;
+    if (isVisibleToParticipant && (!options || options.length === 0)) {
+      throw new BadRequestException('הקשר שמוצג למשתתפת חייב לפחות אפשרות אחת');
     }
 
-    // Phase 3.3 behavior model. system_fixed requires a concrete fixedValue
-    // (otherwise the "system" would have nothing to inject on submission).
-    // When inputMode is participant, any fixedValue is quietly blanked — it's
-    // irrelevant and keeping it would mislead readers of the stored row.
-    const inputMode: 'participant' | 'system_fixed' = dto.inputMode ?? 'participant';
     let fixedValue: string | null = null;
     if (inputMode === 'system_fixed') {
       const raw = (dto.fixedValue ?? '').trim();
       if (!raw) {
-        throw new BadRequestException(
-          'inputMode=system_fixed requires a non-empty fixedValue',
-        );
-      }
-      // For select dimensions, the fixedValue must match one of the option values.
-      if (dto.type === 'select') {
-        const valid = (options ?? []).some((o) => o.value === raw);
-        if (!valid) {
-          throw new BadRequestException(
-            `fixedValue "${raw}" does not match any option value`,
-          );
-        }
+        throw new BadRequestException('הקשר שנקבע על ידי המערכת חייב ערך קבוע');
       }
       fixedValue = raw;
     }
@@ -145,7 +138,8 @@ export class ContextLibraryService {
         programId,
         label,
         key,
-        type: dto.type,
+        // Phase 4.2: type is derived from visibility, not admin input.
+        type,
         requiredByDefault: dto.requiredByDefault ?? false,
         visibleToParticipantByDefault: dto.visibleToParticipantByDefault ?? true,
         optionsJson: options as unknown as Prisma.InputJsonValue | undefined,
@@ -175,61 +169,51 @@ export class ContextLibraryService {
     }
     if (dto.isActive !== undefined) patch.isActive = dto.isActive;
 
-    // Phase 3.3 behavior. We have to know the RESULTING inputMode + options to
-    // decide whether fixedValue is required and well-formed — peek at the new
-    // dto values, fall back to stored row values.
-    const nextInputMode: 'participant' | 'system_fixed' =
-      dto.inputMode ?? (row.inputMode as 'participant' | 'system_fixed');
-    if (dto.inputMode !== undefined) patch.inputMode = dto.inputMode;
+    // Phase 4.2 simplified model: the RESULTING visibility decides the
+    // inputMode + type + whether options are required.
+    const nextVisible =
+      dto.visibleToParticipantByDefault !== undefined
+        ? dto.visibleToParticipantByDefault
+        : row.visibleToParticipantByDefault;
+    const nextInputMode: 'participant' | 'system_fixed' = nextVisible
+      ? 'participant'
+      : 'system_fixed';
+    patch.inputMode = nextInputMode;
+    if (nextVisible) patch.type = 'select';
+    else patch.type = 'text';
     if (dto.analyticsVisible !== undefined) patch.analyticsVisible = dto.analyticsVisible;
 
     let nextOptions: StoredContextOption[] | null = null;
-    if (dto.options !== undefined) {
-      if (row.type !== 'select') {
-        throw new BadRequestException('Only select definitions accept options');
+    if (nextVisible) {
+      // Participant-visible → must have options after save.
+      if (dto.options !== undefined) {
+        const prevOptions =
+          (row.optionsJson as unknown as StoredContextOption[] | null) ?? [];
+        nextOptions = this.buildOptions(dto.options, prevOptions);
+      } else {
+        nextOptions = (row.optionsJson as unknown as StoredContextOption[] | null) ?? [];
       }
-      const prevOptions =
-        (row.optionsJson as unknown as StoredContextOption[] | null) ?? [];
-      nextOptions = this.buildOptions(dto.options, prevOptions);
       if (nextOptions.length === 0) {
-        throw new BadRequestException('A select context must have at least one option');
+        throw new BadRequestException('הקשר שמוצג למשתתפת חייב לפחות אפשרות אחת');
       }
       patch.optionsJson = nextOptions as unknown as Prisma.InputJsonValue;
+    } else {
+      // System context never has participant-facing options; clear them.
+      patch.optionsJson = Prisma.JsonNull;
     }
 
-    // Resolve fixedValue against nextInputMode.
-    // - Switching to system_fixed: dto.fixedValue required unless stored row already has one AND it's still valid.
-    // - Staying participant: blank out any fixedValue (avoid stale meaningless data).
-    const effectiveOptions =
-      nextOptions ??
-      (row.optionsJson as unknown as StoredContextOption[] | null);
     if (nextInputMode === 'system_fixed') {
-      let candidate: string | null = dto.fixedValue !== undefined
-        ? (dto.fixedValue ?? '').trim() || null
-        : row.fixedValue ?? null;
+      const candidate: string | null =
+        dto.fixedValue !== undefined
+          ? (dto.fixedValue ?? '').trim() || null
+          : row.fixedValue ?? null;
       if (!candidate) {
-        throw new BadRequestException(
-          'inputMode=system_fixed requires a non-empty fixedValue',
-        );
-      }
-      if (row.type === 'select') {
-        const valid = (effectiveOptions ?? []).some((o) => o.value === candidate);
-        if (!valid) {
-          throw new BadRequestException(
-            `fixedValue "${candidate}" does not match any option value`,
-          );
-        }
+        throw new BadRequestException('הקשר שנקבע על ידי המערכת חייב ערך קבוע');
       }
       patch.fixedValue = candidate;
     } else {
-      // nextInputMode === 'participant'. If we're switching away from system_fixed
-      // OR the admin explicitly changed to participant, clear the now-meaningless
-      // fixedValue. Otherwise honor an explicit clear request from the admin.
-      if (dto.inputMode === 'participant' || row.inputMode === 'system_fixed') {
-        patch.fixedValue = null;
-      } else if (dto.fixedValue !== undefined) {
-        patch.fixedValue = dto.fixedValue.trim() || null;
-      }
+      // Participant → fixedValue is meaningless; drop it if present.
+      patch.fixedValue = null;
     }
 
     // Phase 4: presentation-layer patching. All three fields are independent;

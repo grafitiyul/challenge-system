@@ -54,6 +54,8 @@ interface Action {
   // Phase 3.4: admin-editable submission prompt. When null, getInputLabel()
   // falls back to the aggregation-mode default.
   participantPrompt?: string | null;
+  // Phase 4.1: optional free-text question rendered under the main input.
+  participantTextPrompt?: string | null;
   // Phase 3: optional schema. null/undefined → no extra fields prompt.
   contextSchemaJson?: ContextSchemaJson | null;
   contextSchemaVersion?: number;
@@ -127,6 +129,8 @@ interface AnalyticsDayEntry {
   rawValue: string;
   effectiveValue: number | null;
   contextJson: Record<string, unknown> | null;
+  /** Phase 4.1: action-level free-text captured at submission. */
+  extraText: string | null;
   points: number;
 }
 
@@ -734,6 +738,10 @@ function DaySheetGroupedList({ entries }: { entries: AnalyticsDayEntry[] }) {
                   if (s.trim()) contextChips.push(s);
                 }
               }
+              // Phase 4.1: action-level free-text, quoted for distinction.
+              if (entry.extraText && entry.extraText.trim()) {
+                contextChips.push(`"${entry.extraText.trim()}"`);
+              }
               return (
                 <div key={entry.logId} style={s.daySheetGroupRow}>
                   <span style={s.daySheetTime}>{entry.time}</span>
@@ -904,6 +912,8 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
   // open. Keys correspond to ContextField.key. Always strings in state — we
   // coerce to numbers/etc on submit per dimension type.
   const [contextDraft, setContextDraft] = useState<Record<string, string>>({});
+  // Phase 4.1: in-flight value for action.participantTextPrompt.
+  const [extraTextDraft, setExtraTextDraft] = useState<string>('');
   const [submitting, setSubmitting] = useState(false);
   const [feedback, setFeedback] = useState<Record<string, { points: number; visible: boolean }>>({});
   const [glowActionId, setGlowActionId] = useState<string | null>(null);
@@ -1246,6 +1256,7 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
     // Reset context draft to empty per-dimension. For select dimensions we
     // intentionally start blank so the participant must make an explicit choice.
     setContextDraft({});
+    setExtraTextDraft('');
     if (action.inputType === 'number' && action.aggregationMode === 'latest_value' && ctx) {
       const current = ctx.todayValues[action.id];
       if (current && current > 0) setInputValue(String(current));
@@ -1271,6 +1282,7 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
     setInputValue('');
     setInputError('');
     setContextDraft({});
+    setExtraTextDraft('');
   }
 
   async function handleSubmit() {
@@ -1323,9 +1335,10 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
         body: JSON.stringify({
           actionId: activeAction.id,
           value: isNumeric ? value : undefined,
-          // Omit contextJson entirely when the action has no schema, keeping the
-          // payload minimal for the common (no-context) path.
           ...(dims.length > 0 ? { contextJson } : {}),
+          // Phase 4.1: action-level free-text answer. Only sent when the
+          // participant actually typed something into the optional field.
+          ...(extraTextDraft.trim() ? { extraText: extraTextDraft.trim() } : {}),
         }),
       });
 
@@ -2255,6 +2268,23 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                 </div>
               );
             })}
+
+            {/* Phase 4.1: action-level free-text input. Not a context. */}
+            {activeAction.participantTextPrompt && activeAction.participantTextPrompt.trim() && (
+              <div style={s.contextField}>
+                <label style={s.contextLabel}>
+                  {activeAction.participantTextPrompt.trim()}
+                </label>
+                <input
+                  type="text"
+                  style={s.contextInput}
+                  value={extraTextDraft}
+                  onChange={(e) => setExtraTextDraft(e.target.value)}
+                  maxLength={120}
+                  placeholder="הקלידי טקסט קצר..."
+                />
+              </div>
+            )}
 
             {inputError && <p style={s.inputError}>{inputError}</p>}
 

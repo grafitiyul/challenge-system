@@ -363,6 +363,8 @@ interface GameAction {
   soundKey: string;
   // Phase 3.4: admin-editable prompt; null = derive default from aggregation mode.
   participantPrompt: string | null;
+  // Phase 4.1: optional free-text question under the main input; null = not rendered.
+  participantTextPrompt: string | null;
   isActive: boolean;
   sortOrder: number;
   // Phase 3: optional context schema. shape:
@@ -1070,6 +1072,7 @@ function ActionModal({
     explanationContent: action?.explanationContent ?? '',
     soundKey: action?.soundKey ?? 'none',
     participantPrompt: action?.participantPrompt ?? '',
+    participantTextPrompt: action?.participantTextPrompt ?? '',
     contextFields: initialContextFields,
     attachedContexts: initialAttached,
   });
@@ -1202,6 +1205,8 @@ function ActionModal({
         // Phase 3.4: empty string clears the override so the portal falls back
         // to the default derived prompt.
         participantPrompt: form.participantPrompt.trim() || null,
+        // Phase 4.1: empty string means "no text input rendered at all".
+        participantTextPrompt: form.participantTextPrompt.trim() || null,
         // Phase 3: send null to clear, otherwise the schema object.
         contextSchemaJson,
         // Phase 3.2: replace-all reconciliation of attached reusable contexts.
@@ -1362,6 +1367,24 @@ function ActionModal({
               />
               <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>
                 השאלה שתופיע למשתתפת בעת הדיווח. ריק = ייעשה שימוש בברירת המחדל.
+              </div>
+            </div>
+
+            {/* Phase 4.1: optional action-level free-text question. When set,
+                the portal renders a short text input below the main submission
+                input. The value appears in drill-down + feed but never in
+                analytics aggregation (it's not a dimension). */}
+            <div>
+              <label style={labelStyle}>שדה טקסט נוסף למשתתפת (אופציונלי)</label>
+              <input
+                style={inputStyle}
+                value={form.participantTextPrompt}
+                onChange={(e) => setForm((p) => ({ ...p, participantTextPrompt: e.target.value }))}
+                placeholder="למשל: מה היה הפיתוי?"
+                maxLength={120}
+              />
+              <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>
+                אם מוגדר — יופיע שדה טקסט קצר מתחת לבחירה. המידע מוצג במבזק ובפירוט היום, לא באנליטיקות.
               </div>
             </div>
           </div>
@@ -2363,10 +2386,11 @@ function ContextDefinitionForm({
 }) {
   const isNew = definition === null;
   const [label, setLabel] = useState(definition?.label ?? '');
-  // Phase 3.4 UX pass: "type" is hidden entirely when system-managed. For
-  // participant mode we only expose `select` and `text` — `number` is dropped
-  // from the UI but preserved on existing definitions that already used it.
-  const [type, setType] = useState<ContextFieldType>(definition?.type ?? 'select');
+  // Phase 4.2: `type` is derived server-side from visibility; we no longer
+  // expose it in the form. Kept as a read-only ref for any code path that
+  // still inspects the legacy field.
+  const [type] = useState<ContextFieldType>(definition?.type ?? 'select');
+  void type;
   const [requiredByDefault, setRequiredByDefault] = useState(definition?.requiredByDefault ?? true);
   const [visibleByDefault, setVisibleByDefault] = useState(definition?.visibleToParticipantByDefault ?? true);
   const [options, setOptions] = useState<ContextOption[]>(
@@ -2396,7 +2420,8 @@ function ContextDefinitionForm({
 
   async function save() {
     if (!label.trim()) { setError('תווית היא שדה חובה'); return; }
-    if (type === 'select') {
+    // Phase 4.2: participant-visible → options required; system → fixed value required.
+    if (visibleByDefault) {
       const labels = new Set<string>();
       for (const o of options) {
         const lbl = o.label.trim();
@@ -2404,12 +2429,12 @@ function ContextDefinitionForm({
         if (labels.has(lbl)) { setError(`תווית אפשרות כפולה: ${lbl}`); return; }
         labels.add(lbl);
       }
-      if (options.length === 0) { setError('שדה בחירה חייב לפחות אפשרות אחת'); return; }
-    }
-    // Phase 3.4: system-managed (visibleByDefault=false) requires a fixed value.
-    if (derivedInputMode === 'system_fixed' && !fixedValue.trim()) {
-      setError('הקשר המטופל על ידי המערכת חייב ערך קבוע');
-      return;
+      if (options.length === 0) { setError('הקשר שמוצג למשתתפת חייב לפחות אפשרות אחת'); return; }
+    } else {
+      if (!fixedValue.trim()) {
+        setError('הקשר המטופל על ידי המערכת חייב ערך קבוע');
+        return;
+      }
     }
     setSaving(true); setError('');
     try {
@@ -2430,11 +2455,11 @@ function ContextDefinitionForm({
         analyticsGroupKey: analyticsGroupLabel.trim() ? undefined : '',
         analyticsDisplayLabel: analyticsDisplayLabel.trim(),
       };
-      if (isNew) body.type = type;
-      if (type === 'select') {
+      // Phase 4.2: server derives type from visibility. Only participant-
+      // visible contexts carry options; system contexts never do.
+      if (isNew) body.type = visibleByDefault ? 'select' : 'text';
+      if (visibleByDefault) {
         body.options = options.map((o) => ({
-          // Preserve existing option values (stable identity) — the server
-          // auto-derives values only when missing.
           value: o.value?.trim() || undefined,
           label: o.label.trim(),
         }));
@@ -2509,94 +2534,36 @@ function ContextDefinitionForm({
           participant mode, only 'בחירה' and 'שדה פתוח' are exposed; the
           hidden 'number' option survives for legacy definitions that already
           use it but isn't offered on creation. */}
-      {visibleByDefault && (
-        <div>
-          <label style={{ fontSize: 12, fontWeight: 600, color: '#475569', display: 'block', marginBottom: 4 }}>
-            סוג
-          </label>
-          {isNew ? (
-            <select style={inputStyle} value={type} onChange={(e) => setType(e.target.value as ContextFieldType)}>
-              <option value="select">בחירה</option>
-              <option value="text">שדה פתוח</option>
-            </select>
-          ) : (
-            <input
-              style={{ ...inputStyle, background: '#f1f5f9', cursor: 'not-allowed' }}
-              disabled
-              value={type === 'select' ? 'בחירה' : type === 'number' ? 'מספר' : 'שדה פתוח'}
-            />
-          )}
-        </div>
-      )}
+      {/* Phase 4.2: the "סוג" selector is removed. Visibility drives the type:
+          visible = always בחירה (with options); hidden = system fixed value.
+          The rest of the form renders the right block based on visibleByDefault. */}
 
       {!visibleByDefault && (
-        // Phase 3.3 UX pass: the "fixedValue" label exposed implementation
-        // detail and confused admins — replaced with a question-style prompt
-        // that names the thing in terms of meaning (what gets stored) rather
-        // than the backend field name. Per-type helper text nails it down.
+        // Phase 4.2: single simple text input. Accepts any string — admins
+        // can type `sleep`, `42`, `location_gym`, whatever. Validation is
+        // non-emptiness only. No options block, no type branching.
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10, background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 8, padding: 12 }}>
           <div>
             <label style={{ fontSize: 13, fontWeight: 700, color: '#78350f', display: 'block', marginBottom: 4 }}>
-              מה הערך שהמערכת תשמור?
+              ערך שהמערכת תשמור
             </label>
-            {type === 'select' ? (
-              <>
-                {options.length > 0 ? (
-                  <select
-                    style={inputStyle}
-                    value={fixedValue}
-                    onChange={(e) => setFixedValue(e.target.value)}
-                  >
-                    <option value="">— בחרי אפשרות —</option>
-                    {options.map((o, oi) => (
-                      <option key={oi} value={o.value || slugifyLabel(o.label)}>
-                        {o.label}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <div style={{ fontSize: 12, color: '#b45309', fontStyle: 'italic' }}>
-                    הוסיפי קודם אפשרויות בהמשך, ואז תוכלי לבחור אחת.
-                  </div>
-                )}
-                <div style={{ fontSize: 11, color: '#92400e', marginTop: 4, lineHeight: 1.4 }}>
-                  המערכת תשמור את האפשרות הזו אוטומטית בכל דיווח.
-                </div>
-              </>
-            ) : type === 'number' ? (
-              <>
-                <input
-                  type="number"
-                  inputMode="numeric"
-                  style={inputStyle}
-                  value={fixedValue}
-                  onChange={(e) => setFixedValue(e.target.value)}
-                  placeholder="ערך מספרי קבוע"
-                  dir="ltr"
-                />
-                <div style={{ fontSize: 11, color: '#92400e', marginTop: 4, lineHeight: 1.4 }}>
-                  המשתתפת לא תראה שדה זה. המערכת תשמור את הערך המספרי הזה בכל דיווח.
-                </div>
-              </>
-            ) : (
-              <>
-                <input
-                  type="text"
-                  style={inputStyle}
-                  value={fixedValue}
-                  onChange={(e) => setFixedValue(e.target.value)}
-                  placeholder="הערך שיישמר אוטומטית (למשל: sleep)"
-                />
-                <div style={{ fontSize: 11, color: '#92400e', marginTop: 4, lineHeight: 1.4 }}>
-                  המשתתפת לא תראה שדה זה. המערכת תשמור ערך קבוע זה בכל דיווח.
-                </div>
-              </>
-            )}
+            <input
+              type="text"
+              style={inputStyle}
+              value={fixedValue}
+              onChange={(e) => setFixedValue(e.target.value)}
+              placeholder="הערך שיישמר אוטומטית (למשל: sleep או 42)"
+            />
+            <div style={{ fontSize: 11, color: '#92400e', marginTop: 4, lineHeight: 1.4 }}>
+              המשתתפת לא תראה שדה זה. המערכת תשמור את הערך הזה אוטומטית בכל דיווח.
+            </div>
           </div>
         </div>
       )}
 
-      {type === 'select' && (
+      {/* Phase 4.2: options section now shows ONLY when participant-visible.
+          A system context never has participant-facing options. */}
+      {visibleByDefault && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, borderTop: '1px solid #e2e8f0', paddingTop: 10 }}>
           <div style={{ fontSize: 12, fontWeight: 600, color: '#475569' }}>אפשרויות</div>
           {options.map((o, oi) => (

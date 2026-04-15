@@ -743,6 +743,11 @@ model GameAction {
   // behavior). Lets admins replace the default prompt with something specific
   // to this action (e.g. "כמה כוסות מים שתית?").
   participantPrompt   String?
+  // Phase 4.1: optional free-text question the participant answers alongside
+  // the main action submission. Intentionally separate from the context system
+  // — this field is NOT used in analytics aggregation (it's for colour /
+  // journaling). When null, the text input is not rendered.
+  participantTextPrompt String?
   // Built-in sound played on the participant portal after a successful action
   // "none" | "ding" | "celebration" | "applause"
   soundKey            String   @default("none")
@@ -892,6 +897,10 @@ model UserActionLog {
   // All logs in a supersession chain share the same chainRootId (= first log's id).
   // Active-head lookup: WHERE chainRootId = ? AND status = 'active'.
   chainRootId         String
+  // Phase 4.1: optional free-text participant note captured alongside the
+  // submission. Kept OUT of contextJson intentionally — this is action-scoped
+  // extra data, not a queryable dimension.
+  extraText           String?
   createdAt           DateTime    @default(now()) @db.Timestamptz
 
   @@index([participantId, programId])

@@ -159,6 +159,7 @@ export class GameEngineService {
           explanationContent: dto.explanationContent ?? null,
           soundKey: dto.soundKey ?? 'none',
           participantPrompt: dto.participantPrompt ?? null,
+          participantTextPrompt: dto.participantTextPrompt ?? null,
           contextSchemaJson:
             (dto.contextSchemaJson ?? undefined) as Prisma.InputJsonValue | undefined,
           sortOrder: count,
@@ -248,6 +249,7 @@ export class GameEngineService {
           ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
           ...(dto.soundKey !== undefined ? { soundKey: dto.soundKey } : {}),
           ...(dto.participantPrompt !== undefined ? { participantPrompt: dto.participantPrompt } : {}),
+          ...(dto.participantTextPrompt !== undefined ? { participantTextPrompt: dto.participantTextPrompt } : {}),
           ...schemaPatch,
         },
       });
@@ -575,6 +577,8 @@ export class GameEngineService {
               value: dto.value ?? 'true',
               effectiveValue: effectiveValue ?? undefined,
               contextJson: (validatedContext ?? undefined) as Prisma.InputJsonValue | undefined,
+              // Phase 4.1: action-level free-text, capped at 500 chars server-side.
+              extraText: dto.extraText?.trim() ? dto.extraText.trim().slice(0, 500) : null,
               status: 'active',
               clientSubmissionId: dto.clientSubmissionId ?? null,
               schemaVersion: action.contextSchemaVersion,
@@ -622,6 +626,10 @@ export class GameEngineService {
                   textSnippets.push(`"${v.trim()}"`);
                 }
               }
+            }
+            // Phase 4.1: action-level extra text surfaces in the feed too.
+            if (dto.extraText && dto.extraText.trim()) {
+              textSnippets.push(`"${dto.extraText.trim().slice(0, 500)}"`);
             }
             const feedSuffix = textSnippets.length ? ` ${textSnippets.join(' ')}` : '';
             await tx.feedEvent.create({
