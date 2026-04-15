@@ -13,12 +13,18 @@ function startOfDayUTC(d: Date): Date {
 }
 
 /**
- * Phase 3.1: remove hidden context dimensions before sending the action schema
- * to the participant. Hidden = `visibleToParticipant === false`.
- * Also strips the `visibleToParticipant` flag itself from the output so the
- * participant never receives internal metadata.
- * Returns `null` if the resulting dimensions array is empty (participant UI
- * treats `null` as "no context prompt at all").
+ * Remove dimensions the participant should never see or fill.
+ * Hidden if EITHER:
+ *   - `visibleToParticipant === false` (Phase 3.1), OR
+ *   - `inputMode !== 'participant'` (Phase 3.3 — system_fixed dimensions are
+ *     entirely backend-owned).
+ *
+ * Strips internal-only metadata (`visibleToParticipant`, `inputMode`,
+ * `analyticsVisible`, `fixedValue`) from the output so the participant never
+ * receives behavior flags that don't concern her.
+ *
+ * Returns `null` if the resulting dimensions array is empty (the participant
+ * UI treats `null` as "no context prompt at all").
  */
 function stripHiddenDimensions(
   raw: unknown,
@@ -29,12 +35,20 @@ function stripHiddenDimensions(
   const visible = dims
     .filter((d): d is Record<string, unknown> => {
       if (!d || typeof d !== 'object') return false;
-      return (d as { visibleToParticipant?: boolean }).visibleToParticipant !== false;
+      const v = d as {
+        visibleToParticipant?: boolean;
+        inputMode?: string;
+      };
+      if (v.visibleToParticipant === false) return false;
+      if (v.inputMode && v.inputMode !== 'participant') return false;
+      return true;
     })
     .map((d) => {
-      const { visibleToParticipant: _drop, ...rest } = d as Record<string, unknown> & {
-        visibleToParticipant?: boolean;
-      };
+      const rest = { ...(d as Record<string, unknown>) };
+      delete rest.visibleToParticipant;
+      delete rest.inputMode;
+      delete rest.analyticsVisible;
+      delete rest.fixedValue;
       return rest;
     });
   if (visible.length === 0) return null;
@@ -907,7 +921,10 @@ export class ParticipantPortalService {
         select: { contextSchemaJson: true },
       }),
       this.prisma.contextDefinition.findMany({
-        where: { programId },
+        // Phase 3.3: analyticsVisible gates whether a reusable dimension ever
+        // appears in the participant analytics toggle. Archived definitions
+        // are also excluded to avoid ghost dimensions from deprecated setups.
+        where: { programId, analyticsVisible: true, isActive: true },
         select: { key: true, label: true },
       }),
     ]);

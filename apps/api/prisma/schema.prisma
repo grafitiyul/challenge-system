@@ -788,9 +788,23 @@ model ContextDefinition {
   // Default required setting when attached. Individual uses may override.
   requiredByDefault               Boolean  @default(false)
   // Default participant visibility. Individual uses may override.
+  // Semantically equivalent to `participantVisible` in the Phase 3.3 model —
+  // the legacy column name is kept to avoid a migration rename.
   visibleToParticipantByDefault   Boolean  @default(true)
   // For type='select' only. Shape: [{ value: string, label: string }]
   optionsJson                     Json?
+  // ── Phase 3.3 context behavior model ─────────────────────────────────────
+  // `participant`   — participant fills the value in the submission sheet.
+  // `system_fixed`  — backend auto-injects `fixedValue` on every submission.
+  //                   Participant never sees or sends this field.
+  inputMode                       String   @default("participant")
+  // When false, this dimension is excluded from analytics toggles/breakdowns,
+  // even if data is captured. Useful for system dimensions that exist for
+  // downstream integrations but shouldn't clutter the participant analytics UI.
+  analyticsVisible                Boolean  @default(true)
+  // Mandatory when inputMode='system_fixed'; ignored otherwise. The string
+  // value is what the backend writes into UserActionLog.contextJson[key].
+  fixedValue                      String?
   // Archived contexts don't appear in attachment pickers. Existing uses keep
   // resolving so historical data stays interpretable.
   isActive                        Boolean  @default(true)

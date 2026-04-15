@@ -43,6 +43,22 @@ export class CreateContextDefinitionDto {
   @ValidateNested({ each: true })
   @Type(() => ContextDefinitionOptionDto)
   options?: ContextDefinitionOptionDto[];
+
+  // ── Phase 3.3 context behavior model ───────────────────────────────────
+  /** "participant" (default) | "system_fixed". */
+  @IsOptional()
+  @IsIn(['participant', 'system_fixed'])
+  inputMode?: 'participant' | 'system_fixed';
+
+  /** Default true. False = dimension is captured but excluded from analytics UI. */
+  @IsOptional()
+  @IsBoolean()
+  analyticsVisible?: boolean;
+
+  /** Required when inputMode='system_fixed'. Backend writes this into every log. */
+  @IsOptional()
+  @IsString()
+  fixedValue?: string;
 }
 
 export class UpdateContextDefinitionDto {
@@ -57,6 +73,20 @@ export class UpdateContextDefinitionDto {
   @IsOptional()
   @IsBoolean()
   visibleToParticipantByDefault?: boolean;
+
+  /** See CreateContextDefinitionDto.inputMode. */
+  @IsOptional()
+  @IsIn(['participant', 'system_fixed'])
+  inputMode?: 'participant' | 'system_fixed';
+
+  @IsOptional()
+  @IsBoolean()
+  analyticsVisible?: boolean;
+
+  /** Pass empty string to clear; pass a value when inputMode='system_fixed'. */
+  @IsOptional()
+  @IsString()
+  fixedValue?: string;
 
   /**
    * Replaces the full options list for a select definition. Each existing

@@ -66,6 +66,15 @@ export async function resolveEffectiveContextSchema(
       type: d.type,
       required,
       visibleToParticipant: visible,
+      // Phase 3.3 behavior model — surfaced so logAction can inject fixed
+      // values and stripHiddenDimensions can keep system dimensions out of
+      // the participant UI. Defaults handle pre-3.3 rows (where the columns
+      // carry the same "participant / visible / analytics-on" semantics).
+      inputMode: d.inputMode ?? 'participant',
+      analyticsVisible: d.analyticsVisible ?? true,
+      ...(d.fixedValue !== null && d.fixedValue !== undefined
+        ? { fixedValue: d.fixedValue }
+        : {}),
     };
     if (d.type === 'select' && Array.isArray(d.optionsJson)) {
       dim.options = d.optionsJson;
@@ -452,7 +461,40 @@ export class GameEngineService {
     // so reusable-context submissions are accepted and required fields on
     // reusable contexts are enforced.
     const effectiveSchema = await resolveEffectiveContextSchema(this.prisma, action.id);
-    const validatedContext = validateContext(effectiveSchema, dto.contextJson ?? null);
+
+    // Phase 3.3: system_fixed injection.
+    //   1. Identify dimensions with inputMode='system_fixed' (those are
+    //      entirely owned by the backend — the participant never fills them).
+    //   2. Reject any participant payload that tries to write those keys —
+    //      this prevents client spoofing of system-managed dimensions.
+    //   3. Inject each system dimension's `fixedValue` into the payload
+    //      before it reaches validateContext, so the required-check passes
+    //      and the value lands in UserActionLog.contextJson.
+    const systemKeys = new Set<string>();
+    const systemInjections: Record<string, unknown> = {};
+    const dims = (effectiveSchema?.dimensions as Array<Record<string, unknown>> | undefined) ?? [];
+    for (const d of dims) {
+      if (d.inputMode === 'system_fixed' && typeof d.key === 'string') {
+        systemKeys.add(d.key);
+        if (typeof d.fixedValue === 'string' && d.fixedValue !== '') {
+          systemInjections[d.key] = d.fixedValue;
+        }
+      }
+    }
+    if (dto.contextJson) {
+      for (const key of Object.keys(dto.contextJson)) {
+        if (systemKeys.has(key)) {
+          throw new BadRequestException(
+            `Context field "${key}" is system-managed and cannot be set by the client.`,
+          );
+        }
+      }
+    }
+    const mergedContext =
+      systemKeys.size === 0
+        ? (dto.contextJson ?? null)
+        : { ...systemInjections, ...(dto.contextJson ?? {}) };
+    const validatedContext = validateContext(effectiveSchema, mergedContext);
 
     // ── maxPerDay — counts ACTIVE logs only ──────────────────────────────────
     if (action.maxPerDay !== null) {

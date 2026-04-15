@@ -58,7 +58,6 @@ export class ContextLibraryService {
     const label = dto.label?.trim();
     if (!label) throw new BadRequestException('Label is required');
 
-    // Compute a unique `key` scoped to the program.
     const existing = await this.prisma.contextDefinition.findMany({
       where: { programId },
       select: { key: true },
@@ -72,6 +71,31 @@ export class ContextLibraryService {
       throw new BadRequestException('A select context must have at least one option');
     }
 
+    // Phase 3.3 behavior model. system_fixed requires a concrete fixedValue
+    // (otherwise the "system" would have nothing to inject on submission).
+    // When inputMode is participant, any fixedValue is quietly blanked — it's
+    // irrelevant and keeping it would mislead readers of the stored row.
+    const inputMode: 'participant' | 'system_fixed' = dto.inputMode ?? 'participant';
+    let fixedValue: string | null = null;
+    if (inputMode === 'system_fixed') {
+      const raw = (dto.fixedValue ?? '').trim();
+      if (!raw) {
+        throw new BadRequestException(
+          'inputMode=system_fixed requires a non-empty fixedValue',
+        );
+      }
+      // For select dimensions, the fixedValue must match one of the option values.
+      if (dto.type === 'select') {
+        const valid = (options ?? []).some((o) => o.value === raw);
+        if (!valid) {
+          throw new BadRequestException(
+            `fixedValue "${raw}" does not match any option value`,
+          );
+        }
+      }
+      fixedValue = raw;
+    }
+
     const count = await this.prisma.contextDefinition.count({ where: { programId } });
     return this.prisma.contextDefinition.create({
       data: {
@@ -82,6 +106,9 @@ export class ContextLibraryService {
         requiredByDefault: dto.requiredByDefault ?? false,
         visibleToParticipantByDefault: dto.visibleToParticipantByDefault ?? true,
         optionsJson: options as unknown as Prisma.InputJsonValue | undefined,
+        inputMode,
+        analyticsVisible: dto.analyticsVisible ?? true,
+        fixedValue,
         sortOrder: count,
       },
     });
@@ -101,18 +128,64 @@ export class ContextLibraryService {
       patch.visibleToParticipantByDefault = dto.visibleToParticipantByDefault;
     }
     if (dto.isActive !== undefined) patch.isActive = dto.isActive;
+
+    // Phase 3.3 behavior. We have to know the RESULTING inputMode + options to
+    // decide whether fixedValue is required and well-formed — peek at the new
+    // dto values, fall back to stored row values.
+    const nextInputMode: 'participant' | 'system_fixed' =
+      dto.inputMode ?? (row.inputMode as 'participant' | 'system_fixed');
+    if (dto.inputMode !== undefined) patch.inputMode = dto.inputMode;
+    if (dto.analyticsVisible !== undefined) patch.analyticsVisible = dto.analyticsVisible;
+
+    let nextOptions: StoredContextOption[] | null = null;
     if (dto.options !== undefined) {
       if (row.type !== 'select') {
         throw new BadRequestException('Only select definitions accept options');
       }
       const prevOptions =
         (row.optionsJson as unknown as StoredContextOption[] | null) ?? [];
-      const nextOptions = this.buildOptions(dto.options, prevOptions);
+      nextOptions = this.buildOptions(dto.options, prevOptions);
       if (nextOptions.length === 0) {
         throw new BadRequestException('A select context must have at least one option');
       }
       patch.optionsJson = nextOptions as unknown as Prisma.InputJsonValue;
     }
+
+    // Resolve fixedValue against nextInputMode.
+    // - Switching to system_fixed: dto.fixedValue required unless stored row already has one AND it's still valid.
+    // - Staying participant: blank out any fixedValue (avoid stale meaningless data).
+    const effectiveOptions =
+      nextOptions ??
+      (row.optionsJson as unknown as StoredContextOption[] | null);
+    if (nextInputMode === 'system_fixed') {
+      let candidate: string | null = dto.fixedValue !== undefined
+        ? (dto.fixedValue ?? '').trim() || null
+        : row.fixedValue ?? null;
+      if (!candidate) {
+        throw new BadRequestException(
+          'inputMode=system_fixed requires a non-empty fixedValue',
+        );
+      }
+      if (row.type === 'select') {
+        const valid = (effectiveOptions ?? []).some((o) => o.value === candidate);
+        if (!valid) {
+          throw new BadRequestException(
+            `fixedValue "${candidate}" does not match any option value`,
+          );
+        }
+      }
+      patch.fixedValue = candidate;
+    } else {
+      // nextInputMode === 'participant'. If we're switching away from system_fixed
+      // OR the admin explicitly changed to participant, clear the now-meaningless
+      // fixedValue. Otherwise honor an explicit clear request from the admin.
+      if (dto.inputMode === 'participant' || row.inputMode === 'system_fixed') {
+        patch.fixedValue = null;
+      } else if (dto.fixedValue !== undefined) {
+        patch.fixedValue = dto.fixedValue.trim() || null;
+      }
+    }
+
     return this.prisma.contextDefinition.update({ where: { id }, data: patch });
   }
 

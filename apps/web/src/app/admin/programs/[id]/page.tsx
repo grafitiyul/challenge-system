@@ -445,6 +445,11 @@ interface ContextDefinition {
   optionsJson: ContextOption[] | null;   // select only
   isActive: boolean;
   sortOrder: number;
+  // Phase 3.3 context behavior model. Legacy definitions created before 3.3
+  // default to inputMode=participant / analyticsVisible=true / fixedValue=null.
+  inputMode: 'participant' | 'system_fixed';
+  analyticsVisible: boolean;
+  fixedValue: string | null;
 }
 
 interface ActionContextUse {
@@ -685,14 +690,22 @@ function AttachedContextsSection({
         }
         const required = u.requiredOverride ?? def.requiredByDefault;
         const visible = u.visibleToParticipantOverride ?? def.visibleToParticipantByDefault;
+        // Phase 3.3: system_fixed definitions are not participant-rendered, so
+        // the required/visible overrides have no meaning here — hide them.
+        const isSystemFixed = def.inputMode === 'system_fixed';
         return (
           <div key={def.id} style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, flexWrap: 'wrap' as const }}>
                 <div style={{ fontSize: 14, fontWeight: 700, color: '#0f172a' }}>{def.label}</div>
                 <div style={{ fontSize: 11, color: '#6b7280', whiteSpace: 'nowrap' }}>
                   {def.type === 'select' ? `בחירה · ${def.optionsJson?.length ?? 0} אפשרויות` : def.type === 'number' ? 'מספר' : 'טקסט'}
                 </div>
+                {isSystemFixed && (
+                  <span style={{ background: '#fef3c7', color: '#92400e', fontSize: 11, padding: '2px 8px', borderRadius: 20, fontWeight: 600 }}>
+                    מערכת · {def.fixedValue ?? '—'}
+                  </span>
+                )}
               </div>
               <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
                 <button type="button" onClick={() => move(i, -1)} disabled={i === 0} style={fieldBtnStyle(i === 0)} aria-label="הזז למעלה">↑</button>
@@ -701,6 +714,13 @@ function AttachedContextsSection({
               </div>
             </div>
 
+            {isSystemFixed && (
+              <div style={{ fontSize: 12, color: '#78350f', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 6, padding: '8px 10px' }}>
+                ערך זה מוזרק אוטומטית — למשתתפת לא תוצג שאלה.
+              </div>
+            )}
+
+            {!isSystemFixed && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#374151', cursor: 'pointer' }}>
                 <input
@@ -747,6 +767,7 @@ function AttachedContextsSection({
                 )}
               </label>
             </div>
+            )}
           </div>
         );
       })}
@@ -2219,14 +2240,24 @@ function ContextLibrarySection({
                           <span style={{ background: '#eff6ff', color: '#1d4ed8', fontSize: 11, padding: '3px 9px', borderRadius: 20, fontWeight: 500 }}>
                             {typeLabel}{d.type === 'select' ? ` · ${optsCount} אפשרויות` : ''}
                           </span>
-                          {d.requiredByDefault && (
+                          {d.inputMode === 'system_fixed' && (
+                            <span style={{ background: '#fef3c7', color: '#92400e', fontSize: 11, padding: '3px 9px', borderRadius: 20, fontWeight: 500 }}>
+                              מערכת · {d.fixedValue ?? '—'}
+                            </span>
+                          )}
+                          {d.inputMode === 'participant' && d.requiredByDefault && (
                             <span style={{ background: '#fef2f2', color: '#dc2626', fontSize: 11, padding: '3px 9px', borderRadius: 20, fontWeight: 500 }}>
                               חובה כברירת מחדל
                             </span>
                           )}
-                          {!d.visibleToParticipantByDefault && (
+                          {d.inputMode === 'participant' && !d.visibleToParticipantByDefault && (
                             <span style={{ background: '#f3f4f6', color: '#6b7280', fontSize: 11, padding: '3px 9px', borderRadius: 20, fontWeight: 500 }}>
                               מוסתר מהמשתתפת
+                            </span>
+                          )}
+                          {!d.analyticsVisible && (
+                            <span style={{ background: '#f1f5f9', color: '#475569', fontSize: 11, padding: '3px 9px', borderRadius: 20, fontWeight: 500 }}>
+                              לא באנליטיקות
                             </span>
                           )}
                         </>
@@ -2292,6 +2323,12 @@ function ContextDefinitionForm({
   const [options, setOptions] = useState<ContextOption[]>(
     definition?.optionsJson ?? (definition?.type === 'select' ? [] : [{ value: '', label: '' }]),
   );
+  // Phase 3.3 behavior model.
+  const [inputMode, setInputMode] = useState<'participant' | 'system_fixed'>(
+    definition?.inputMode ?? 'participant',
+  );
+  const [analyticsVisible, setAnalyticsVisible] = useState(definition?.analyticsVisible ?? true);
+  const [fixedValue, setFixedValue] = useState(definition?.fixedValue ?? '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -2307,13 +2344,21 @@ function ContextDefinitionForm({
       }
       if (options.length === 0) { setError('שדה בחירה חייב לפחות אפשרות אחת'); return; }
     }
+    // Phase 3.3: system_fixed requires a fixed value.
+    if (inputMode === 'system_fixed' && !fixedValue.trim()) {
+      setError('הקשר שממולא על ידי המערכת חייב ערך קבוע');
+      return;
+    }
     setSaving(true); setError('');
     try {
-      // Create vs update. For updates we don't send `type` (immutable).
       const body: Record<string, unknown> = {
         label: label.trim(),
         requiredByDefault,
         visibleToParticipantByDefault: visibleByDefault,
+        // Phase 3.3 behavior model.
+        inputMode,
+        analyticsVisible,
+        fixedValue: inputMode === 'system_fixed' ? fixedValue.trim() : '',
       };
       if (isNew) body.type = type;
       if (type === 'select') {
@@ -2353,7 +2398,7 @@ function ContextDefinitionForm({
         />
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 10, alignItems: 'end' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
         <div>
           <label style={{ fontSize: 12, fontWeight: 600, color: '#475569', display: 'block', marginBottom: 4 }}>
             סוג
@@ -2368,15 +2413,79 @@ function ContextDefinitionForm({
             <input style={{ ...inputStyle, background: '#f1f5f9', cursor: 'not-allowed' }} disabled value={type === 'select' ? 'בחירה' : type === 'number' ? 'מספר' : 'טקסט'} />
           )}
         </div>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#374151', cursor: 'pointer', whiteSpace: 'nowrap' }}>
-          <input type="checkbox" checked={requiredByDefault} onChange={(e) => setRequiredByDefault(e.target.checked)} />
-          חובה כברירת מחדל
-        </label>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#374151', cursor: 'pointer', whiteSpace: 'nowrap' }}>
-          <input type="checkbox" checked={visibleByDefault} onChange={(e) => setVisibleByDefault(e.target.checked)} />
-          להציג למשתתפת כברירת מחדל
-        </label>
+        {/* Phase 3.3 — who provides the value */}
+        <div>
+          <label style={{ fontSize: 12, fontWeight: 600, color: '#475569', display: 'block', marginBottom: 4 }}>
+            מי ממלא?
+          </label>
+          <select
+            style={inputStyle}
+            value={inputMode}
+            onChange={(e) => setInputMode(e.target.value as 'participant' | 'system_fixed')}
+          >
+            <option value="participant">המשתתפת</option>
+            <option value="system_fixed">המערכת (ערך קבוע)</option>
+          </select>
+        </div>
       </div>
+
+      {/* Phase 3.3 — defaults depend on inputMode. For system_fixed, hide the
+          participant-oriented toggles because they have no effect — the field
+          is never rendered to the participant and the injected value is
+          always present. */}
+      {inputMode === 'participant' ? (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#374151', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+            <input type="checkbox" checked={requiredByDefault} onChange={(e) => setRequiredByDefault(e.target.checked)} />
+            חובה כברירת מחדל
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#374151', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+            <input type="checkbox" checked={visibleByDefault} onChange={(e) => setVisibleByDefault(e.target.checked)} />
+            להציג למשתתפת
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#374151', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+            <input type="checkbox" checked={analyticsVisible} onChange={(e) => setAnalyticsVisible(e.target.checked)} />
+            להציג באנליטיקות
+          </label>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 8, padding: 12 }}>
+          <div style={{ fontSize: 12, color: '#78350f', lineHeight: 1.5 }}>
+            ערך זה מוזרק אוטומטית על ידי המערכת בכל דיווח. המשתתפת לא תראה ולא תמלא אותו.
+          </div>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: '#78350f', display: 'block', marginBottom: 4 }}>
+              ערך קבוע
+            </label>
+            {type === 'select' && options.length > 0 ? (
+              <select
+                style={inputStyle}
+                value={fixedValue}
+                onChange={(e) => setFixedValue(e.target.value)}
+              >
+                <option value="">— בחרי —</option>
+                {options.map((o, oi) => (
+                  <option key={oi} value={o.value || slugifyLabel(o.label)}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                style={inputStyle}
+                value={fixedValue}
+                onChange={(e) => setFixedValue(e.target.value)}
+                placeholder={type === 'number' ? '42' : 'ערך'}
+                dir={type === 'number' ? 'ltr' : undefined}
+              />
+            )}
+          </div>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#374151', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+            <input type="checkbox" checked={analyticsVisible} onChange={(e) => setAnalyticsVisible(e.target.checked)} />
+            להציג באנליטיקות
+          </label>
+        </div>
+      )}
 
       {type === 'select' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, borderTop: '1px solid #e2e8f0', paddingTop: 10 }}>
