@@ -227,6 +227,41 @@ export function validateContextSchemaShape(raw: unknown): void {
   parseSchema(raw);
 }
 
+/**
+ * Transliterate Hebrew → ASCII and slugify. Mirrors the frontend helper so
+ * server-side slug generation stays deterministic and compatible. Keys are
+ * internal — never shown to admins or participants.
+ */
+const HEB_TRANSLIT: Record<string, string> = {
+  'א': 'a', 'ב': 'b', 'ג': 'g', 'ד': 'd', 'ה': 'h',
+  'ו': 'v', 'ז': 'z', 'ח': 'ch', 'ט': 't', 'י': 'y',
+  'כ': 'k', 'ך': 'k', 'ל': 'l', 'מ': 'm', 'ם': 'm',
+  'נ': 'n', 'ן': 'n', 'ס': 's', 'ע': 'a', 'פ': 'p',
+  'ף': 'p', 'צ': 'tz', 'ץ': 'tz', 'ק': 'k', 'ר': 'r',
+  'ש': 'sh', 'ת': 't',
+};
+
+export function slugifyLabel(label: string): string {
+  const lowered = (label ?? '').trim().toLowerCase();
+  let out = '';
+  for (const ch of lowered) {
+    if (HEB_TRANSLIT[ch]) out += HEB_TRANSLIT[ch];
+    else if (/[a-z0-9]/.test(ch)) out += ch;
+    else out += '_';
+  }
+  out = out.replace(/_+/g, '_').replace(/^_|_$/g, '');
+  if (!out || /^[0-9]/.test(out)) out = out ? `field_${out}` : 'field';
+  return out;
+}
+
+/** Dodge collisions by appending _2, _3, etc. until unique. */
+export function makeUniqueKey(base: string, taken: Set<string>): string {
+  if (!taken.has(base)) return base;
+  let n = 2;
+  while (taken.has(`${base}_${n}`)) n += 1;
+  return `${base}_${n}`;
+}
+
 function parseContext(raw: unknown): Record<string, unknown> | null {
   if (raw === null || raw === undefined) return null;
   if (typeof raw !== 'object' || Array.isArray(raw)) {

@@ -1,5 +1,6 @@
 import { IsBoolean, IsInt, IsObject, IsOptional, IsString, Min, ValidateIf, ValidateNested, IsArray } from 'class-validator';
 import { Type } from 'class-transformer';
+import { ActionContextUseDto } from './context-definition.dto';
 
 export class ReorderItemDto {
   @IsString()
@@ -64,16 +65,24 @@ export class CreateActionDto {
   soundKey?: string; // "none" | "ding" | "celebration" | "applause"
 
   /**
-   * Phase 3: context dimensions schema. Free-form JSON validated by the service
-   * via context-validation parseSchema(). Shape:
-   *   { dimensions: [{ key, label, type, required?, options?, min?, max? }] }
-   * Pass `null` to clear an existing schema. Server bumps contextSchemaVersion
-   * on every change so historical UserActionLogs remain attributable to the
-   * schema that was in force at write time.
+   * Phase 3: local (action-only) context dimensions schema. Kept for backward
+   * compat. Phase 3.2 prefers reusable definitions via `contextUses` below.
    */
   @IsOptional()
   @IsObject()
   contextSchemaJson?: Record<string, unknown> | null;
+
+  /**
+   * Phase 3.2: reusable context definitions attached to this action.
+   * Order of the array becomes the presentation order.
+   * Reconciliation is replace-all: definitions present here are attached;
+   * those absent are detached.
+   */
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ActionContextUseDto)
+  contextUses?: ActionContextUseDto[];
 }
 
 export class UpdateActionDto {
@@ -132,4 +141,14 @@ export class UpdateActionDto {
   @IsOptional()
   @IsObject()
   contextSchemaJson?: Record<string, unknown> | null;
+
+  /**
+   * Phase 3.2: see CreateActionDto.contextUses. Omit to leave attachments
+   * untouched; pass [] to detach everything.
+   */
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ActionContextUseDto)
+  contextUses?: ActionContextUseDto[];
 }

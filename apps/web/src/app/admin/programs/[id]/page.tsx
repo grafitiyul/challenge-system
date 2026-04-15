@@ -367,6 +367,8 @@ interface GameAction {
   //   { dimensions: [{ key, label, type, required?, options?: [{value,label}] }] }
   contextSchemaJson: ContextSchemaJson | null;
   contextSchemaVersion: number;
+  // Phase 3.2: reusable context definitions attached to this action.
+  contextUses?: ActionContextUse[];
 }
 
 // ─── Context schema shapes (Phase 3) ─────────────────────────────────────────
@@ -428,6 +430,31 @@ function uniqueKey(base: string, taken: Set<string>): string {
 
 interface ContextSchemaJson {
   dimensions: ContextField[];
+}
+
+// ─── Phase 3.2: Reusable context library ────────────────────────────────────
+
+interface ContextDefinition {
+  id: string;
+  programId: string;
+  label: string;
+  key: string;                           // auto-generated, read-only
+  type: ContextFieldType;
+  requiredByDefault: boolean;
+  visibleToParticipantByDefault: boolean;
+  optionsJson: ContextOption[] | null;   // select only
+  isActive: boolean;
+  sortOrder: number;
+}
+
+interface ActionContextUse {
+  id: string;
+  actionId: string;
+  definitionId: string;
+  requiredOverride: boolean | null;
+  visibleToParticipantOverride: boolean | null;
+  sortOrder: number;
+  definition: ContextDefinition;
 }
 
 interface GameRule {
@@ -586,6 +613,172 @@ function playSoundPreview(soundKey: string): void {
 }
 
 // ─── Action Modal ─────────────────────────────────────────────────────────────
+
+// ─── Phase 3.2: Attach reusable contexts to an action ───────────────────────
+// Picker + per-use overrides (required / visibleToParticipant). Admins pick
+// from the program's library (archived definitions aren't listed). No type /
+// key / option editing here — those live in the library only.
+
+function AttachedContextsSection({
+  definitions,
+  attached,
+  onChange,
+  sectionHead,
+}: {
+  definitions: ContextDefinition[];
+  attached: AttachedContextUseDraft[];
+  onChange: (next: AttachedContextUseDraft[]) => void;
+  sectionHead: React.CSSProperties;
+}) {
+  const attachedIds = new Set(attached.map((a) => a.definitionId));
+  const available = definitions.filter((d) => d.isActive && !attachedIds.has(d.id));
+  const defById = new Map(definitions.map((d) => [d.id, d]));
+
+  function patch(i: number, p: Partial<AttachedContextUseDraft>) {
+    onChange(attached.map((u, idx) => (idx === i ? { ...u, ...p } : u)));
+  }
+  function remove(i: number) {
+    onChange(attached.filter((_, idx) => idx !== i));
+  }
+  function move(i: number, dir: -1 | 1) {
+    const j = i + dir;
+    if (j < 0 || j >= attached.length) return;
+    const next = [...attached];
+    [next[i], next[j]] = [next[j], next[i]];
+    onChange(next);
+  }
+  function attach(definitionId: string) {
+    if (!definitionId) return;
+    onChange([
+      ...attached,
+      {
+        definitionId,
+        // null means "inherit the definition default". Admins can override per-action.
+        requiredOverride: null,
+        visibleToParticipantOverride: null,
+      },
+    ]);
+  }
+
+  return (
+    <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 10, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={sectionHead}>הקשרים משותפים</div>
+      <div style={{ fontSize: 12, color: '#15803d', lineHeight: 1.5 }}>
+        צרפי הגדרות הקשר מהספרייה. אותו הקשר יכול להיות מצורף לפעולות רבות — הנתונים נספרים יחד באנליטיקס.
+      </div>
+
+      {attached.length === 0 && (
+        <div style={{ fontSize: 12, color: '#64748b', fontStyle: 'italic' }}>
+          עדיין לא צורפו הקשרים משותפים.
+        </div>
+      )}
+
+      {attached.map((u, i) => {
+        const def = defById.get(u.definitionId);
+        if (!def) {
+          // Stale reference (e.g. definition deleted mid-session).
+          return (
+            <div key={u.definitionId} style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: 10, fontSize: 12, color: '#b91c1c' }}>
+              הגדרה לא נמצאה. <button type="button" onClick={() => remove(i)} style={{ color: '#b91c1c', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline' }}>הסירי</button>
+            </div>
+          );
+        }
+        const required = u.requiredOverride ?? def.requiredByDefault;
+        const visible = u.visibleToParticipantOverride ?? def.visibleToParticipantByDefault;
+        return (
+          <div key={def.id} style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: '#0f172a' }}>{def.label}</div>
+                <div style={{ fontSize: 11, color: '#6b7280', whiteSpace: 'nowrap' }}>
+                  {def.type === 'select' ? `בחירה · ${def.optionsJson?.length ?? 0} אפשרויות` : def.type === 'number' ? 'מספר' : 'טקסט'}
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+                <button type="button" onClick={() => move(i, -1)} disabled={i === 0} style={fieldBtnStyle(i === 0)} aria-label="הזז למעלה">↑</button>
+                <button type="button" onClick={() => move(i, 1)} disabled={i === attached.length - 1} style={fieldBtnStyle(i === attached.length - 1)} aria-label="הזז למטה">↓</button>
+                <button type="button" onClick={() => remove(i)} style={{ ...fieldBtnStyle(false), color: '#dc2626' }} aria-label="הסירי">×</button>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#374151', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={required}
+                  onChange={(e) => patch(i, { requiredOverride: e.target.checked })}
+                />
+                חובה
+                {u.requiredOverride === null && (
+                  <span style={{ fontSize: 11, color: '#9ca3af' }}>
+                    (ברירת מחדל: {def.requiredByDefault ? 'חובה' : 'לא חובה'})
+                  </span>
+                )}
+                {u.requiredOverride !== null && (
+                  <button
+                    type="button"
+                    onClick={() => patch(i, { requiredOverride: null })}
+                    style={{ fontSize: 11, color: '#2563eb', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline', marginInlineStart: 4 }}
+                  >
+                    אפסי לברירת מחדל
+                  </button>
+                )}
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#374151', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={visible}
+                  onChange={(e) => patch(i, { visibleToParticipantOverride: e.target.checked })}
+                />
+                להציג למשתתפת
+                {u.visibleToParticipantOverride === null && (
+                  <span style={{ fontSize: 11, color: '#9ca3af' }}>
+                    (ברירת מחדל: {def.visibleToParticipantByDefault ? 'להציג' : 'מוסתר'})
+                  </span>
+                )}
+                {u.visibleToParticipantOverride !== null && (
+                  <button
+                    type="button"
+                    onClick={() => patch(i, { visibleToParticipantOverride: null })}
+                    style={{ fontSize: 11, color: '#2563eb', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline', marginInlineStart: 4 }}
+                  >
+                    אפסי לברירת מחדל
+                  </button>
+                )}
+              </label>
+            </div>
+          </div>
+        );
+      })}
+
+      {available.length > 0 ? (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <select
+            style={{ ...inputStyle, flex: 1 }}
+            value=""
+            onChange={(e) => { attach(e.target.value); e.target.value = ''; }}
+          >
+            <option value="">+ צרפי הקשר מהספרייה...</option>
+            {available.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.label}
+                {d.type === 'select' ? ` (בחירה, ${d.optionsJson?.length ?? 0} אפשרויות)` : d.type === 'number' ? ' (מספר)' : ' (טקסט)'}
+              </option>
+            ))}
+          </select>
+        </div>
+      ) : attached.length === 0 ? (
+        <div style={{ fontSize: 12, color: '#6b7280' }}>
+          אין הקשרים משותפים זמינים. הגדירי בספרייה למעלה ואז חזרי לכאן.
+        </div>
+      ) : (
+        <div style={{ fontSize: 12, color: '#6b7280' }}>
+          כל ההקשרים הזמינים כבר מצורפים.
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ─── Context builder (Phase 3) ───────────────────────────────────────────────
 // Visual editor for an action's contextSchemaJson.dimensions list.
@@ -801,11 +994,19 @@ function fieldBtnStyle(disabled: boolean): React.CSSProperties {
   };
 }
 
+// Attached reusable context — mutable form-state shape (overrides track null vs bool).
+interface AttachedContextUseDraft {
+  definitionId: string;
+  requiredOverride: boolean | null;
+  visibleToParticipantOverride: boolean | null;
+}
+
 function ActionModal({
-  programId, action, onSaved, onClose,
+  programId, action, definitions, onSaved, onClose,
 }: {
   programId: string;
   action: GameAction | null;
+  definitions: ContextDefinition[];
   onSaved: (a: GameAction) => void;
   onClose: () => void;
 }) {
@@ -822,6 +1023,15 @@ function ActionModal({
       options: d.options ? d.options.map((o) => ({ value: o.value, label: o.label })) : undefined,
     })) ?? [];
 
+  // Phase 3.2 — attached reusable contexts, ordered. Each entry holds
+  // optional overrides (null = inherit definition default).
+  const initialAttached: AttachedContextUseDraft[] =
+    action?.contextUses?.map((u) => ({
+      definitionId: u.definitionId,
+      requiredOverride: u.requiredOverride,
+      visibleToParticipantOverride: u.visibleToParticipantOverride,
+    })) ?? [];
+
   const initialForm = useRef({
     name: action?.name ?? '',
     description: action?.description ?? '',
@@ -835,6 +1045,7 @@ function ActionModal({
     explanationContent: action?.explanationContent ?? '',
     soundKey: action?.soundKey ?? 'none',
     contextFields: initialContextFields,
+    attachedContexts: initialAttached,
   });
   const [form, setForm] = useState(initialForm.current);
   const [saving, setSaving] = useState(false);
@@ -962,6 +1173,12 @@ function ActionModal({
         soundKey: form.soundKey,
         // Phase 3: send null to clear, otherwise the schema object.
         contextSchemaJson,
+        // Phase 3.2: replace-all reconciliation of attached reusable contexts.
+        contextUses: form.attachedContexts.map((u) => ({
+          definitionId: u.definitionId,
+          requiredOverride: u.requiredOverride,
+          visibleToParticipantOverride: u.visibleToParticipantOverride,
+        })),
       };
       const url = action
         ? `${BASE_URL}/game/programs/${programId}/actions/${action.id}`
@@ -1167,11 +1384,18 @@ function ActionModal({
             />
           </div>
 
-          {/* ── Context fields (Phase 3) ── */}
-          {/* Optional. When the participant submits this action she will be
-              prompted to fill these dimensions. Validation runs both client-
-              and server-side; required fields block submission. Leave empty
-              to keep the action context-free (existing behavior). */}
+          {/* ── Phase 3.2: Attached reusable contexts ── */}
+          <AttachedContextsSection
+            definitions={definitions}
+            attached={form.attachedContexts}
+            onChange={(next) => setForm((p) => ({ ...p, attachedContexts: next }))}
+            sectionHead={sectionHead}
+          />
+
+          {/* ── Context fields (Phase 3) — local-only, backward compat ── */}
+          {/* Keep using for action-specific dimensions that don't warrant a
+              reusable definition. New shared dimensions should go in the
+              library above instead. */}
           <ContextFieldsBuilder
             fields={form.contextFields}
             onChange={(next) => setForm((p) => ({ ...p, contextFields: next }))}
@@ -1902,9 +2126,307 @@ function TemplateEditorModal({
 
 // ─── Game Engine Tab ──────────────────────────────────────────────────────────
 
+// ─── Phase 3.2: Context library management section ──────────────────────────
+// A compact, inline CRUD for the reusable context definitions of a program.
+// Kept simple: list visible above actions, add via inline form, edit via
+// expand-on-click, archive/restore via button. No modal — admins should see
+// the library at a glance while working on actions below.
+
+function ContextLibrarySection({
+  programId,
+  definitions,
+  onChanged,
+}: {
+  programId: string;
+  definitions: ContextDefinition[];
+  onChanged: () => void;
+}) {
+  const [adding, setAdding] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [showArchived, setShowArchived] = useState(false);
+
+  const visible = definitions.filter((d) => showArchived || d.isActive);
+
+  return (
+    <section>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <div>
+          <h3 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', margin: '0 0 2px' }}>
+            ספריית הקשרים משותפים
+          </h3>
+          <p style={{ fontSize: 12, color: '#94a3b8', margin: 0 }}>
+            הגדרות שניתנות לשימוש חוזר במגוון פעולות. שינוי כאן מתעדכן בכל הפעולות.
+          </p>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            type="button"
+            onClick={() => setShowArchived((v) => !v)}
+            style={{ background: '#f1f5f9', color: '#475569', border: '1px solid #e2e8f0', borderRadius: 7, padding: '6px 12px', fontSize: 12, cursor: 'pointer' }}
+          >
+            {showArchived ? 'הסתר ארכיון' : 'הצג ארכיון'}
+          </button>
+          <button
+            type="button"
+            onClick={() => { setEditingId(null); setAdding(true); }}
+            style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '6px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
+          >
+            + הגדרה חדשה
+          </button>
+        </div>
+      </div>
+
+      {adding && (
+        <ContextDefinitionForm
+          programId={programId}
+          definition={null}
+          onSaved={() => { setAdding(false); onChanged(); }}
+          onCancel={() => setAdding(false)}
+        />
+      )}
+
+      {visible.length === 0 && !adding ? (
+        <div style={{ padding: '24px', textAlign: 'center', border: '2px dashed #e2e8f0', borderRadius: 10, color: '#94a3b8', fontSize: 13 }}>
+          עדיין לא הוגדרו הקשרים משותפים
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {visible.map((d) => (
+            <div key={d.id}>
+              <div
+                style={{
+                  background: d.isActive ? '#fff' : '#f8fafc',
+                  border: '1px solid #e2e8f0',
+                  borderRadius: 10,
+                  padding: '12px 16px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  opacity: d.isActive ? 1 : 0.6,
+                }}
+              >
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: '#0f172a', marginBottom: 4 }}>
+                    {d.label}
+                    {!d.isActive && <span style={{ marginInlineStart: 8, fontSize: 11, color: '#94a3b8', fontWeight: 500 }}>(בארכיון)</span>}
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                    {(() => {
+                      const typeLabel = d.type === 'select' ? 'בחירה' : d.type === 'number' ? 'מספר' : 'טקסט';
+                      const optsCount = d.type === 'select' ? (d.optionsJson?.length ?? 0) : 0;
+                      return (
+                        <>
+                          <span style={{ background: '#eff6ff', color: '#1d4ed8', fontSize: 11, padding: '3px 9px', borderRadius: 20, fontWeight: 500 }}>
+                            {typeLabel}{d.type === 'select' ? ` · ${optsCount} אפשרויות` : ''}
+                          </span>
+                          {d.requiredByDefault && (
+                            <span style={{ background: '#fef2f2', color: '#dc2626', fontSize: 11, padding: '3px 9px', borderRadius: 20, fontWeight: 500 }}>
+                              חובה כברירת מחדל
+                            </span>
+                          )}
+                          {!d.visibleToParticipantByDefault && (
+                            <span style={{ background: '#f3f4f6', color: '#6b7280', fontSize: 11, padding: '3px 9px', borderRadius: 20, fontWeight: 500 }}>
+                              מוסתר מהמשתתפת
+                            </span>
+                          )}
+                        </>
+                      );
+                    })()}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                  <button
+                    type="button"
+                    onClick={() => { setAdding(false); setEditingId(editingId === d.id ? null : d.id); }}
+                    style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, padding: '6px 12px', fontSize: 12, color: '#374151', cursor: 'pointer', fontWeight: 500 }}
+                  >
+                    {editingId === d.id ? 'סגור' : 'ערוך'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const path = d.isActive ? 'archive' : 'restore';
+                      await apiFetch(`${BASE_URL}/game/programs/${programId}/context-definitions/${d.id}/${path}`, { method: 'POST', cache: 'no-store' });
+                      onChanged();
+                    }}
+                    style={{ background: 'none', border: '1px solid #e2e8f0', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: '#6b7280', cursor: 'pointer' }}
+                  >
+                    {d.isActive ? 'ארכוב' : 'שחזר'}
+                  </button>
+                </div>
+              </div>
+              {editingId === d.id && (
+                <ContextDefinitionForm
+                  programId={programId}
+                  definition={d}
+                  onSaved={() => { setEditingId(null); onChanged(); }}
+                  onCancel={() => setEditingId(null)}
+                />
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+// Inline create/edit form for a ContextDefinition. Used by both "add new" and
+// "edit existing" flows in the library section.
+function ContextDefinitionForm({
+  programId,
+  definition,
+  onSaved,
+  onCancel,
+}: {
+  programId: string;
+  definition: ContextDefinition | null;
+  onSaved: () => void;
+  onCancel: () => void;
+}) {
+  const isNew = definition === null;
+  const [label, setLabel] = useState(definition?.label ?? '');
+  const [type, setType] = useState<ContextFieldType>(definition?.type ?? 'select');
+  const [requiredByDefault, setRequiredByDefault] = useState(definition?.requiredByDefault ?? true);
+  const [visibleByDefault, setVisibleByDefault] = useState(definition?.visibleToParticipantByDefault ?? true);
+  const [options, setOptions] = useState<ContextOption[]>(
+    definition?.optionsJson ?? (definition?.type === 'select' ? [] : [{ value: '', label: '' }]),
+  );
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  async function save() {
+    if (!label.trim()) { setError('תווית היא שדה חובה'); return; }
+    if (type === 'select') {
+      const labels = new Set<string>();
+      for (const o of options) {
+        const lbl = o.label.trim();
+        if (!lbl) { setError('כל אפשרות צריכה תווית'); return; }
+        if (labels.has(lbl)) { setError(`תווית אפשרות כפולה: ${lbl}`); return; }
+        labels.add(lbl);
+      }
+      if (options.length === 0) { setError('שדה בחירה חייב לפחות אפשרות אחת'); return; }
+    }
+    setSaving(true); setError('');
+    try {
+      // Create vs update. For updates we don't send `type` (immutable).
+      const body: Record<string, unknown> = {
+        label: label.trim(),
+        requiredByDefault,
+        visibleToParticipantByDefault: visibleByDefault,
+      };
+      if (isNew) body.type = type;
+      if (type === 'select') {
+        body.options = options.map((o) => ({
+          // Preserve existing option values (stable identity) — the server
+          // auto-derives values only when missing.
+          value: o.value?.trim() || undefined,
+          label: o.label.trim(),
+        }));
+      }
+      const url = isNew
+        ? `${BASE_URL}/game/programs/${programId}/context-definitions`
+        : `${BASE_URL}/game/programs/${programId}/context-definitions/${definition!.id}`;
+      await apiFetch(url, {
+        method: isNew ? 'POST' : 'PATCH',
+        cache: 'no-store',
+        body: JSON.stringify(body),
+      });
+      onSaved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'שגיאה בשמירה');
+    } finally { setSaving(false); }
+  }
+
+  return (
+    <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10, padding: 14, marginTop: 8, display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div>
+        <label style={{ fontSize: 12, fontWeight: 600, color: '#475569', display: 'block', marginBottom: 4 }}>
+          תווית (מה שהמשתתפת רואה)
+        </label>
+        <input
+          style={inputStyle}
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          placeholder="למשל: ארוחה"
+          autoFocus={isNew}
+        />
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 10, alignItems: 'end' }}>
+        <div>
+          <label style={{ fontSize: 12, fontWeight: 600, color: '#475569', display: 'block', marginBottom: 4 }}>
+            סוג
+          </label>
+          {isNew ? (
+            <select style={inputStyle} value={type} onChange={(e) => setType(e.target.value as ContextFieldType)}>
+              <option value="select">בחירה</option>
+              <option value="text">טקסט</option>
+              <option value="number">מספר</option>
+            </select>
+          ) : (
+            <input style={{ ...inputStyle, background: '#f1f5f9', cursor: 'not-allowed' }} disabled value={type === 'select' ? 'בחירה' : type === 'number' ? 'מספר' : 'טקסט'} />
+          )}
+        </div>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#374151', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+          <input type="checkbox" checked={requiredByDefault} onChange={(e) => setRequiredByDefault(e.target.checked)} />
+          חובה כברירת מחדל
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#374151', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+          <input type="checkbox" checked={visibleByDefault} onChange={(e) => setVisibleByDefault(e.target.checked)} />
+          להציג למשתתפת כברירת מחדל
+        </label>
+      </div>
+
+      {type === 'select' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, borderTop: '1px solid #e2e8f0', paddingTop: 10 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: '#475569' }}>אפשרויות</div>
+          {options.map((o, oi) => (
+            <div key={oi} style={{ display: 'grid', gridTemplateColumns: '1fr 28px', gap: 6 }}>
+              <input
+                style={inputStyle}
+                value={o.label}
+                onChange={(e) => setOptions((prev) => prev.map((p, i) => i === oi ? { ...p, label: e.target.value } : p))}
+                placeholder="תווית (בוקר)"
+              />
+              <button
+                type="button"
+                onClick={() => setOptions((prev) => prev.filter((_, i) => i !== oi))}
+                style={{ width: 28, height: 28, border: '1px solid #e2e8f0', background: '#fff', color: '#dc2626', borderRadius: 6, cursor: 'pointer', fontSize: 14, fontWeight: 700 }}
+                aria-label="מחק אפשרות"
+              >×</button>
+            </div>
+          ))}
+          <button
+            type="button"
+            onClick={() => setOptions((prev) => [...prev, { value: '', label: '' }])}
+            style={{ background: '#f1f5f9', color: '#475569', border: '1px solid #e2e8f0', borderRadius: 6, padding: '6px 10px', fontSize: 12, fontWeight: 600, cursor: 'pointer', alignSelf: 'flex-start' }}
+          >
+            + הוסיפי אפשרות
+          </button>
+        </div>
+      )}
+
+      {error && <div style={{ color: '#dc2626', fontSize: 12, background: '#fef2f2', padding: '6px 10px', borderRadius: 6 }}>{error}</div>}
+
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <button type="button" onClick={onCancel} style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 7, padding: '7px 14px', fontSize: 13, cursor: 'pointer' }}>
+          ביטול
+        </button>
+        <button type="button" onClick={save} disabled={saving} style={{ background: saving ? '#93c5fd' : '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '7px 16px', fontSize: 13, fontWeight: 600, cursor: saving ? 'not-allowed' : 'pointer' }}>
+          {saving ? 'שומר...' : 'שמירה'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function GameEngineTab({ programId }: { programId: string }) {
   const [actions, setActions] = useState<GameAction[]>([]);
   const [rules, setRules] = useState<GameRule[]>([]);
+  // Phase 3.2: reusable context library — loaded alongside actions/rules so
+  // the ActionModal can render the attachment picker without an extra fetch.
+  const [definitions, setDefinitions] = useState<ContextDefinition[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionModal, setActionModal] = useState<{ open: boolean; action: GameAction | null }>({ open: false, action: null });
   const [ruleModal, setRuleModal] = useState<{ open: boolean; rule: GameRule | null }>({ open: false, rule: null });
@@ -1918,11 +2440,21 @@ function GameEngineTab({ programId }: { programId: string }) {
     Promise.all([
       apiFetch(`${BASE_URL}/game/programs/${programId}/actions`, { cache: 'no-store' }),
       apiFetch(`${BASE_URL}/game/programs/${programId}/rules`, { cache: 'no-store' }),
-    ]).then(([a, r]) => {
+      apiFetch(`${BASE_URL}/game/programs/${programId}/context-definitions?includeArchived=true`, { cache: 'no-store' }),
+    ]).then(([a, r, d]) => {
       setActions((a as GameAction[]).filter((x) => x.isActive));
       setRules((r as GameRule[]).filter((x) => x.isActive));
+      setDefinitions(d as ContextDefinition[]);
     }).finally(() => setLoading(false));
   }, [programId]);
+
+  async function refreshDefinitions() {
+    const d = await apiFetch(
+      `${BASE_URL}/game/programs/${programId}/context-definitions?includeArchived=true`,
+      { cache: 'no-store' },
+    );
+    setDefinitions(d as ContextDefinition[]);
+  }
 
   async function handleDeleteAction(a: GameAction) {
     setDeleting(true);
@@ -2017,6 +2549,13 @@ function GameEngineTab({ programId }: { programId: string }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 36 }}>
+
+      {/* ── Phase 3.2: Reusable context library ── */}
+      <ContextLibrarySection
+        programId={programId}
+        definitions={definitions}
+        onChanged={refreshDefinitions}
+      />
 
       {/* ── Actions ── */}
       <section>
@@ -2180,6 +2719,7 @@ function GameEngineTab({ programId }: { programId: string }) {
         <ActionModal
           programId={programId}
           action={actionModal.action}
+          definitions={definitions}
           onSaved={(saved) => {
             setActions((prev) => actionModal.action
               ? prev.map((a) => a.id === saved.id ? saved : a)

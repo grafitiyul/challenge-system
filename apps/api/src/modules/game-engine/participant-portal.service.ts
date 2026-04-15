@@ -2,7 +2,7 @@ import { createHmac } from 'crypto';
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
-import { GameEngineService } from './game-engine.service';
+import { GameEngineService, resolveEffectiveContextSchema } from './game-engine.service';
 
 const DAY_MS = 86_400_000;
 
@@ -273,6 +273,13 @@ export class ParticipantPortalService {
       orderBy: { sortOrder: 'asc' },
     });
 
+    // Phase 3.2: resolve the effective schema (reusable + local merged) for
+    // each action in a single pass, then hand the merged schema to the
+    // participant UI. Preserves the Phase 3.1 visibility strip on the way out.
+    const effectiveSchemas = await Promise.all(
+      actions.map((a) => resolveEffectiveContextSchema(this.prisma, a.id)),
+    );
+
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
 
@@ -315,7 +322,7 @@ export class ParticipantPortalService {
       // bypass=true: return null times so the frontend skips the opening gate (admin preview only)
       portalCallTime: bypass ? null : (pg.group.portalCallTime ? pg.group.portalCallTime.toISOString() : null),
       portalOpenTime: bypass ? null : (pg.group.portalOpenTime ? pg.group.portalOpenTime.toISOString() : null),
-      actions: actions.map((a) => ({
+      actions: actions.map((a, idx) => ({
         id: a.id,
         name: a.name,
         description: a.description,
@@ -324,11 +331,9 @@ export class ParticipantPortalService {
         unit: a.unit,
         points: a.points,
         maxPerDay: a.maxPerDay,
-        // Phase 3: surface the schema so the participant UI can render fields.
-        // Phase 3.1: hidden dimensions (visibleToParticipant === false) are
-        // stripped here — the participant never learns they exist. The
-        // visibility flag itself is also stripped from the output.
-        contextSchemaJson: stripHiddenDimensions(a.contextSchemaJson),
+        // Phase 3.2: effective schema = reusable attachments + local dimensions.
+        // Phase 3.1 hidden-strip applied on top.
+        contextSchemaJson: stripHiddenDimensions(effectiveSchemas[idx]),
         contextSchemaVersion: a.contextSchemaVersion,
       })),
       todayScore: scoreAgg._sum.points ?? 0,
@@ -802,31 +807,53 @@ export class ParticipantPortalService {
       if (se.logId) pointsByLog[se.logId] = se.points;
     }
 
-    // Resolve labels from contextSchemaJson per action, indexed by value.
-    const actionIds = Array.from(new Set(logs.map((l) => l.actionId)));
+    // Phase 3.2: label resolution first tries the program-wide reusable
+    // definition for this key (so the same dimension uses the same option
+    // labels across every action that uses it), then falls back to whichever
+    // action's local schema declares the key.
+    const [definitionForKey, actionIds] = await Promise.all([
+      this.prisma.contextDefinition.findFirst({
+        where: { programId, key: dimensionKey },
+        select: { optionsJson: true, type: true },
+      }),
+      Promise.resolve(Array.from(new Set(logs.map((l) => l.actionId)))),
+    ]);
+    const reusableLabels = new Map<string, string>();
+    if (definitionForKey?.type === 'select' && Array.isArray(definitionForKey.optionsJson)) {
+      for (const o of definitionForKey.optionsJson as Array<{ value?: string; label?: string }>) {
+        if (typeof o?.value === 'string' && typeof o?.label === 'string') {
+          reusableLabels.set(o.value, o.label);
+        }
+      }
+    }
+
     const actions = await this.prisma.gameAction.findMany({
       where: { id: { in: actionIds } },
       select: { id: true, contextSchemaJson: true },
     });
-    // valueLabels[actionId][key][value] → label
-    const valueLabels = new Map<string, Map<string, Map<string, string>>>();
+    const localLabelsByAction = new Map<string, Map<string, string>>();
     for (const a of actions) {
       const schema = a.contextSchemaJson as {
         dimensions?: { key?: string; type?: string; options?: { value?: string; label?: string }[] }[];
       } | null;
-      const perAction = new Map<string, Map<string, string>>();
+      const perKey = new Map<string, string>();
       for (const d of schema?.dimensions ?? []) {
-        if (typeof d.key !== 'string') continue;
-        const perKey = new Map<string, string>();
+        if (d.key !== dimensionKey) continue;
         for (const o of d.options ?? []) {
           if (typeof o.value === 'string' && typeof o.label === 'string') perKey.set(o.value, o.label);
         }
-        perAction.set(d.key, perKey);
       }
-      valueLabels.set(a.id, perAction);
+      localLabelsByAction.set(a.id, perKey);
     }
 
-    // Aggregate by raw value.
+    function resolveLabel(actionId: string, value: string): string {
+      return (
+        reusableLabels.get(value) ??
+        localLabelsByAction.get(actionId)?.get(value) ??
+        value
+      );
+    }
+
     const totals: Record<string, { points: number; count: number; label: string }> = {};
     for (const l of logs) {
       const ctx = l.contextJson as Record<string, unknown> | null;
@@ -834,12 +861,10 @@ export class ParticipantPortalService {
       const raw = ctx[dimensionKey];
       if (raw === undefined || raw === null || raw === '') continue;
       const value = String(raw);
-      const label = valueLabels.get(l.actionId)?.get(dimensionKey)?.get(value) ?? value;
+      const label = resolveLabel(l.actionId, value);
       const entry = totals[value] ?? { points: 0, count: 0, label };
       entry.points += pointsByLog[l.id] ?? 0;
       entry.count += 1;
-      // Prefer the first non-raw label we encounter (all actions declaring the
-      // same dimension should agree; if not, we pick one deterministically).
       if (entry.label === value && label !== value) entry.label = label;
       totals[value] = entry;
     }
@@ -869,11 +894,25 @@ export class ParticipantPortalService {
   ): Promise<{ key: string; label: string }[]> {
     const { participantId, programId } = await this.resolveToken(token);
 
-    const actions = await this.prisma.gameAction.findMany({
-      where: { programId },
-      select: { contextSchemaJson: true },
-    });
-    const declared = new Map<string, string>(); // key → label
+    // Phase 3.2: unify declared dimensions from both layers.
+    //   Layer A — program-wide reusable definitions (ContextDefinition).
+    //             One dimension per unique key, even if attached to many actions.
+    //   Layer B — legacy per-action local dimensions from contextSchemaJson.
+    // Labels come from the reusable definition when available, so cross-action
+    // analytics stay consistent (fixing the "same dimension, different labels"
+    // problem that local-only schemas caused).
+    const [actions, definitions] = await Promise.all([
+      this.prisma.gameAction.findMany({
+        where: { programId },
+        select: { contextSchemaJson: true },
+      }),
+      this.prisma.contextDefinition.findMany({
+        where: { programId },
+        select: { key: true, label: true },
+      }),
+    ]);
+    const declared = new Map<string, string>();
+    for (const d of definitions) declared.set(d.key, d.label);
     for (const a of actions) {
       const schema = a.contextSchemaJson as {
         dimensions?: { key?: string; label?: string }[];

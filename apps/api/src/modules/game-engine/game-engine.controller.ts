@@ -12,7 +12,12 @@ import {
 } from '@nestjs/common';
 import { AdminSessionGuard } from '../auth/admin-session.guard';
 import { GameEngineService } from './game-engine.service';
+import { ContextLibraryService } from './context-library.service';
 import { CreateActionDto, UpdateActionDto, ReorderItemsDto } from './dto/create-action.dto';
+import {
+  CreateContextDefinitionDto,
+  UpdateContextDefinitionDto,
+} from './dto/context-definition.dto';
 import { CreateRuleDto, UpdateRuleDto } from './dto/create-rule.dto';
 import { LogActionDto } from './dto/log-action.dto';
 import { EvaluateRulesDto } from './dto/evaluate-rules.dto';
@@ -218,5 +223,60 @@ export class GameEngineController {
     @Query('groupId') groupId: string,
   ) {
     return this.svc.resetParticipantProgress(participantId, groupId);
+  }
+}
+
+// ─── Phase 3.2: Reusable context library ───────────────────────────────────
+// Program-scoped CRUD for context definitions. Attachment of a definition to
+// a specific action is handled through the existing action update path (the
+// action DTO accepts a `contextUses` list that the service reconciles).
+
+@UseGuards(AdminSessionGuard)
+@Controller('game/programs/:programId/context-definitions')
+export class ContextLibraryController {
+  constructor(private readonly svc: ContextLibraryService) {}
+
+  @Get()
+  list(
+    @Param('programId') programId: string,
+    @Query('includeArchived') includeArchived?: string,
+  ) {
+    return this.svc.list(programId, includeArchived !== 'false');
+  }
+
+  @Post()
+  create(
+    @Param('programId') programId: string,
+    @Body() dto: CreateContextDefinitionDto,
+  ) {
+    return this.svc.create(programId, dto);
+  }
+
+  @Patch(':id')
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateContextDefinitionDto,
+  ) {
+    return this.svc.update(id, dto);
+  }
+
+  // Archiving is preferred to deletion — historical UserActionLog rows keep
+  // resolving to an archived definition's schema.
+  @Post(':id/archive')
+  archive(@Param('id') id: string) {
+    return this.svc.archive(id);
+  }
+
+  @Post(':id/restore')
+  restore(@Param('id') id: string) {
+    return this.svc.restore(id);
+  }
+
+  @Post('reorder')
+  reorder(
+    @Param('programId') programId: string,
+    @Body() body: ReorderItemsDto,
+  ) {
+    return this.svc.reorder(programId, body.items);
   }
 }

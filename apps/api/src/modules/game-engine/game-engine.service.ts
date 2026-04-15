@@ -23,6 +23,74 @@ function isUniqueViolation(e: unknown): boolean {
  */
 type DbClient = Prisma.TransactionClient | PrismaService;
 
+/**
+ * Phase 3.2: resolve an action's effective context schema by merging:
+ *   1. attached reusable ContextDefinitions (per-use override > default)
+ *   2. the action's local contextSchemaJson dimensions (backward compat)
+ *
+ * De-dup by `key`: reusable attachments win over local dimensions with the
+ * same key. Archived definitions are skipped (they drop out of the effective
+ * schema for new submissions, but historical UserActionLog rows with values
+ * under their key still resolve because data is keyed by string, not id).
+ *
+ * The result shape matches what validateContext()/parseSchema() expects.
+ */
+export async function resolveEffectiveContextSchema(
+  db: DbClient,
+  actionId: string,
+): Promise<Record<string, unknown> | null> {
+  const uses = await db.gameActionContextUse.findMany({
+    where: { actionId },
+    include: { definition: true },
+    orderBy: { sortOrder: 'asc' },
+  });
+  const action = await db.gameAction.findUnique({
+    where: { id: actionId },
+    select: { contextSchemaJson: true },
+  });
+
+  const dims: Array<Record<string, unknown>> = [];
+  const seenKeys = new Set<string>();
+
+  // Layer A — reusable attachments first.
+  for (const u of uses) {
+    const d = u.definition;
+    if (!d.isActive) continue;
+    if (seenKeys.has(d.key)) continue;
+    seenKeys.add(d.key);
+    const required = u.requiredOverride ?? d.requiredByDefault;
+    const visible = u.visibleToParticipantOverride ?? d.visibleToParticipantByDefault;
+    const dim: Record<string, unknown> = {
+      key: d.key,
+      label: d.label,
+      type: d.type,
+      required,
+      visibleToParticipant: visible,
+    };
+    if (d.type === 'select' && Array.isArray(d.optionsJson)) {
+      dim.options = d.optionsJson;
+    }
+    dims.push(dim);
+  }
+
+  // Layer B — local dimensions (backward compat for pre-3.2 actions).
+  const local = action?.contextSchemaJson as
+    | { dimensions?: Array<Record<string, unknown>> }
+    | null
+    | undefined;
+  if (local && Array.isArray(local.dimensions)) {
+    for (const d of local.dimensions) {
+      const k = typeof d.key === 'string' ? d.key : null;
+      if (!k || seenKeys.has(k)) continue;
+      seenKeys.add(k);
+      dims.push(d);
+    }
+  }
+
+  if (dims.length === 0) return null;
+  return { dimensions: dims };
+}
+
 /** Deterministic per-day bucket key used for rule dedup (UTC). */
 function dayBucketKey(d: Date): string {
   return d.toISOString().slice(0, 10); // "YYYY-MM-DD"
@@ -43,37 +111,62 @@ export class GameEngineService {
   // ─── Actions CRUD ──────────────────────────────────────────────────────────
 
   listActions(programId: string) {
+    // Phase 3.2: include attached reusable contexts + their definitions so the
+    // admin action modal can render the "הקשרים משותפים" picker with current
+    // state (including per-use overrides).
     return this.prisma.gameAction.findMany({
       where: { programId, isActive: true },
       orderBy: { sortOrder: 'asc' },
+      include: {
+        contextUses: {
+          orderBy: { sortOrder: 'asc' },
+          include: { definition: true },
+        },
+      },
     });
   }
 
   async createAction(programId: string, dto: CreateActionDto) {
-    // Phase 3: validate the schema shape up-front so admins can't save garbage.
-    // Throws BadRequestException on malformed dimensions.
     if (dto.contextSchemaJson !== undefined && dto.contextSchemaJson !== null) {
       validateContextSchemaShape(dto.contextSchemaJson);
     }
     const count = await this.prisma.gameAction.count({ where: { programId } });
-    return this.prisma.gameAction.create({
-      data: {
-        programId,
-        name: dto.name,
-        description: dto.description ?? null,
-        inputType: dto.inputType ?? 'boolean',
-        aggregationMode: dto.aggregationMode ?? 'none',
-        unit: dto.unit ?? null,
-        points: dto.points,
-        maxPerDay: dto.maxPerDay ?? null,
-        showInPortal: dto.showInPortal ?? true,
-        blockedMessage: dto.blockedMessage ?? null,
-        explanationContent: dto.explanationContent ?? null,
-        soundKey: dto.soundKey ?? 'none',
-        contextSchemaJson:
-          (dto.contextSchemaJson ?? undefined) as Prisma.InputJsonValue | undefined,
-        // contextSchemaVersion defaults to 1 in the schema.
-        sortOrder: count,
+
+    // Phase 3.2: create the action + attach contextUses atomically so the
+    // admin save is all-or-nothing even when the attachment list is non-empty.
+    const action = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.gameAction.create({
+        data: {
+          programId,
+          name: dto.name,
+          description: dto.description ?? null,
+          inputType: dto.inputType ?? 'boolean',
+          aggregationMode: dto.aggregationMode ?? 'none',
+          unit: dto.unit ?? null,
+          points: dto.points,
+          maxPerDay: dto.maxPerDay ?? null,
+          showInPortal: dto.showInPortal ?? true,
+          blockedMessage: dto.blockedMessage ?? null,
+          explanationContent: dto.explanationContent ?? null,
+          soundKey: dto.soundKey ?? 'none',
+          contextSchemaJson:
+            (dto.contextSchemaJson ?? undefined) as Prisma.InputJsonValue | undefined,
+          sortOrder: count,
+        },
+      });
+      if (dto.contextUses && dto.contextUses.length > 0) {
+        await this.applyContextUses(tx, created.id, programId, dto.contextUses);
+      }
+      return created;
+    });
+
+    return this.prisma.gameAction.findUnique({
+      where: { id: action.id },
+      include: {
+        contextUses: {
+          orderBy: { sortOrder: 'asc' },
+          include: { definition: true },
+        },
       },
     });
   }
@@ -126,24 +219,128 @@ export class GameEngineService {
       }
     }
 
-    return this.prisma.gameAction.update({
-      where: { id: actionId },
-      data: {
-        ...(dto.name !== undefined ? { name: dto.name } : {}),
-        ...(dto.description !== undefined ? { description: dto.description } : {}),
-        ...(dto.inputType !== undefined ? { inputType: dto.inputType } : {}),
-        ...(dto.aggregationMode !== undefined ? { aggregationMode: dto.aggregationMode } : {}),
-        ...(dto.unit !== undefined ? { unit: dto.unit } : {}),
-        ...(dto.points !== undefined ? { points: dto.points } : {}),
-        ...(dto.maxPerDay !== undefined ? { maxPerDay: dto.maxPerDay } : {}),
-        ...(dto.showInPortal !== undefined ? { showInPortal: dto.showInPortal } : {}),
-        ...(dto.blockedMessage !== undefined ? { blockedMessage: dto.blockedMessage } : {}),
-        ...(dto.explanationContent !== undefined ? { explanationContent: dto.explanationContent } : {}),
-        ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
-        ...(dto.soundKey !== undefined ? { soundKey: dto.soundKey } : {}),
-        ...schemaPatch,
-      },
+    // Phase 3.2: single transaction — action update + context-use reconciliation.
+    // Omitting contextUses leaves attachments untouched; passing [] detaches all.
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.gameAction.update({
+        where: { id: actionId },
+        data: {
+          ...(dto.name !== undefined ? { name: dto.name } : {}),
+          ...(dto.description !== undefined ? { description: dto.description } : {}),
+          ...(dto.inputType !== undefined ? { inputType: dto.inputType } : {}),
+          ...(dto.aggregationMode !== undefined ? { aggregationMode: dto.aggregationMode } : {}),
+          ...(dto.unit !== undefined ? { unit: dto.unit } : {}),
+          ...(dto.points !== undefined ? { points: dto.points } : {}),
+          ...(dto.maxPerDay !== undefined ? { maxPerDay: dto.maxPerDay } : {}),
+          ...(dto.showInPortal !== undefined ? { showInPortal: dto.showInPortal } : {}),
+          ...(dto.blockedMessage !== undefined ? { blockedMessage: dto.blockedMessage } : {}),
+          ...(dto.explanationContent !== undefined ? { explanationContent: dto.explanationContent } : {}),
+          ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
+          ...(dto.soundKey !== undefined ? { soundKey: dto.soundKey } : {}),
+          ...schemaPatch,
+        },
+      });
+
+      if (dto.contextUses !== undefined) {
+        await this.applyContextUses(tx, actionId, action.programId, dto.contextUses);
+      }
+
+      return tx.gameAction.findUnique({
+        where: { id: updated.id },
+        include: {
+          contextUses: {
+            orderBy: { sortOrder: 'asc' },
+            include: { definition: true },
+          },
+        },
+      });
     });
+  }
+
+  /**
+   * Phase 3.2: replace-all reconciliation of a GameAction's attached reusable
+   * contexts. `definitionId`s in `desired` are the new full attachment set; any
+   * existing attachment not present in `desired` is detached.
+   *
+   * Guarantees:
+   *   - Every `definitionId` must belong to the same program as the action.
+   *   - Duplicates within `desired` are rejected.
+   *   - Order in `desired` becomes the presentation order via `sortOrder`.
+   */
+  private async applyContextUses(
+    tx: Prisma.TransactionClient,
+    actionId: string,
+    programId: string,
+    desired: Array<{
+      definitionId: string;
+      requiredOverride?: boolean | null;
+      visibleToParticipantOverride?: boolean | null;
+    }>,
+  ): Promise<void> {
+    // Guard duplicates.
+    const seen = new Set<string>();
+    for (const d of desired) {
+      if (seen.has(d.definitionId)) {
+        throw new BadRequestException(
+          `Duplicate context definition in attachments: ${d.definitionId}`,
+        );
+      }
+      seen.add(d.definitionId);
+    }
+
+    // Sanity: every definition must live in this program.
+    if (desired.length > 0) {
+      const defs = await tx.contextDefinition.findMany({
+        where: { id: { in: desired.map((d) => d.definitionId) } },
+        select: { id: true, programId: true },
+      });
+      if (defs.length !== desired.length) {
+        throw new NotFoundException('One or more context definitions not found');
+      }
+      for (const d of defs) {
+        if (d.programId !== programId) {
+          throw new BadRequestException(
+            `Context definition ${d.id} does not belong to this program`,
+          );
+        }
+      }
+    }
+
+    // Detach anything not in the desired set.
+    const existing = await tx.gameActionContextUse.findMany({
+      where: { actionId },
+      select: { id: true, definitionId: true },
+    });
+    const desiredIds = new Set(desired.map((d) => d.definitionId));
+    const toDelete = existing.filter((u) => !desiredIds.has(u.definitionId)).map((u) => u.id);
+    if (toDelete.length > 0) {
+      await tx.gameActionContextUse.deleteMany({ where: { id: { in: toDelete } } });
+    }
+
+    // Upsert each desired attachment. Using delete+create keeps the logic
+    // trivial (unique on actionId+definitionId) without a separate diff pass
+    // for overrides; since the write is inside the outer transaction the
+    // momentary absence is never observable.
+    if (desired.length > 0) {
+      const existingByDef = new Map(
+        existing.filter((u) => desiredIds.has(u.definitionId)).map((u) => [u.definitionId, u.id]),
+      );
+      const existingIdsStillKept = Array.from(existingByDef.values());
+      if (existingIdsStillKept.length > 0) {
+        await tx.gameActionContextUse.deleteMany({
+          where: { id: { in: existingIdsStillKept } },
+        });
+      }
+      await tx.gameActionContextUse.createMany({
+        data: desired.map((d, idx) => ({
+          actionId,
+          definitionId: d.definitionId,
+          requiredOverride: d.requiredOverride ?? null,
+          visibleToParticipantOverride: d.visibleToParticipantOverride ?? null,
+          sortOrder: idx,
+        })),
+      });
+    }
   }
 
   // ─── Rules CRUD ────────────────────────────────────────────────────────────
@@ -251,7 +448,11 @@ export class GameEngineService {
     // ── Context validation ───────────────────────────────────────────────────
     // Throws BadRequestException on invalid shape / required-field violations /
     // unknown keys / out-of-range numeric / bad select values.
-    const validatedContext = validateContext(action.contextSchemaJson, dto.contextJson ?? null);
+    // Phase 3.2: validate against the EFFECTIVE schema (reusable + local merged)
+    // so reusable-context submissions are accepted and required fields on
+    // reusable contexts are enforced.
+    const effectiveSchema = await resolveEffectiveContextSchema(this.prisma, action.id);
+    const validatedContext = validateContext(effectiveSchema, dto.contextJson ?? null);
 
     // ── maxPerDay — counts ACTIVE logs only ──────────────────────────────────
     if (action.maxPerDay !== null) {

@@ -51,6 +51,8 @@ model Program {
   gameRules            GameRule[]
   participantGameStates ParticipantGameState[]
   feedEvents           FeedEvent[]
+  // Phase 3.2: reusable context library is scoped to a program.
+  contextDefinitions   ContextDefinition[]
 
   // Leaderboard visibility controls
   showIndividualLeaderboard    Boolean @default(true)
@@ -754,9 +756,75 @@ model GameAction {
   updatedAt   DateTime @updatedAt
 
   logs        UserActionLog[]
+  // Phase 3.2: reusable context definitions attached to this action.
+  contextUses GameActionContextUse[]
 
   @@index([programId])
   @@map("game_actions")
+}
+
+// ─── Phase 3.2: Reusable context library ───────────────────────────────────
+//
+// ContextDefinition: a reusable dimension (e.g. "meal_period", "location")
+// defined once per program and attached to many GameActions via
+// GameActionContextUse. The `key` is auto-generated from the admin-provided
+// label and is stable across edits to keep historical UserActionLog.contextJson
+// rows resolvable to the same dimension.
+//
+// Archiving (isActive=false) keeps the row + its uses intact — historical logs
+// remain interpretable — but it disappears from admin attachment pickers.
+// Physical deletion is deliberately NOT exposed: it would orphan any log that
+// already captured a value under this dimension's key.
+
+model ContextDefinition {
+  id                              String   @id @default(cuid())
+  programId                       String
+  program                         Program  @relation(fields: [programId], references: [id])
+  label                           String
+  // Auto-generated slug (program-wide unique). Never exposed to admins.
+  key                             String
+  // "select" | "text" | "number"
+  type                            String
+  // Default required setting when attached. Individual uses may override.
+  requiredByDefault               Boolean  @default(false)
+  // Default participant visibility. Individual uses may override.
+  visibleToParticipantByDefault   Boolean  @default(true)
+  // For type='select' only. Shape: [{ value: string, label: string }]
+  optionsJson                     Json?
+  // Archived contexts don't appear in attachment pickers. Existing uses keep
+  // resolving so historical data stays interpretable.
+  isActive                        Boolean  @default(true)
+  sortOrder                       Int      @default(0)
+  createdAt                       DateTime @default(now()) @db.Timestamptz
+  updatedAt                       DateTime @updatedAt
+
+  uses GameActionContextUse[]
+
+  @@unique([programId, key])
+  @@index([programId])
+  @@map("context_definitions")
+}
+
+// Join row attaching a ContextDefinition to a GameAction, with optional
+// per-use overrides on required/visible (ONLY those two — type, options, etc.
+// must be edited in the library itself).
+// Deleting a definition is blocked while uses exist; admins archive instead.
+
+model GameActionContextUse {
+  id                           String   @id @default(cuid())
+  actionId                     String
+  action                       GameAction        @relation(fields: [actionId], references: [id], onDelete: Cascade)
+  definitionId                 String
+  definition                   ContextDefinition @relation(fields: [definitionId], references: [id])
+  // null = inherit the definition's default.
+  requiredOverride             Boolean?
+  visibleToParticipantOverride Boolean?
+  sortOrder                    Int      @default(0)
+  createdAt                    DateTime @default(now()) @db.Timestamptz
+
+  @@unique([actionId, definitionId])
+  @@index([definitionId])
+  @@map("game_action_context_uses")
 }
 
 // One record per participant action report.
