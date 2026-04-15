@@ -454,9 +454,11 @@ function InteractiveTrendChart({
             <rect x={hitX} y={0} width={hitW} height={BAR_H + TOP_PAD} fill="transparent" />
             <rect x={x} y={y} width={barW} height={barH} rx={2} fill={fill} />
 
-            {/* Per-bar value label. Small and muted for past days; accented for
-                today. Skipped entirely on zero days to avoid clutter. */}
-            {hasPoints && (
+            {/* Per-bar value label. Positive days get muted/accent type; zero
+                days get a very faint "0" so the day reads as "yes, real, just
+                empty" rather than "data missing". The zero label is skipped
+                in populated mode where stride is too tight to fit cleanly. */}
+            {hasPoints ? (
               <text
                 x={cx}
                 y={y - 3}
@@ -467,7 +469,18 @@ function InteractiveTrendChart({
               >
                 {d.points}
               </text>
-            )}
+            ) : stride >= 24 ? (
+              <text
+                x={cx}
+                y={baselineY - 6}
+                textAnchor="middle"
+                fontSize={8}
+                fill="#d1d5db"
+                fontWeight={500}
+              >
+                0
+              </text>
+            ) : null}
 
             {/* Date label below baseline, rotated so many days fit without
                 overlap. textAnchor="end" anchors at the baseline corner. */}
@@ -1603,25 +1616,48 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                 )}
 
                 {/* ── Trend chart ─────────────────────────────────────── */}
-                {/* Product rule (Phase 2A final): the chart is a progress-style
-                    view, not a calendar. We render ONLY days that actually have
-                    activity — points > 0 OR at least one active submission —
-                    up to the range's limit. Missing days are not reserved as
-                    empty slots. This is why we filter here instead of passing
-                    the full dense array the backend returns. */}
+                {/* Product rule: progress-style timeline.
+                    Show a continuous sequence of real days from the timeline's
+                    relevant start through the end of the selected window —
+                    INCLUDING zero-value days that fall inside that sequence.
+                    Trim the PREFIX of the window (everything before the start)
+                    so the chart doesn't render ghost slots for days before the
+                    game/participant actually began.
+
+                    Start-anchor resolution, in priority order:
+                      1. Group.startDate (if set)   — the authoritative timeline
+                         origin; zero days between startDate and the first
+                         submission still render.
+                      2. First day in the window with activity — used as a
+                         fallback when the program doesn't publish a start date.
+                      3. If neither yields a start (all zero, no startDate) →
+                         empty state. */}
                 <div style={s.chartCard}>
                   <p style={s.sectionTitle}>ההתקדמות שלי</p>
                   {(() => {
-                    const populated = (analyticsTrend ?? []).filter(
-                      (d) => d.points > 0 || d.submissionCount > 0,
-                    );
                     if (analyticsTrend === null) return null;
-                    if (populated.length === 0) {
+                    const groupStart = ctx?.group.startDate
+                      ? new Date(ctx.group.startDate).toISOString().slice(0, 10)
+                      : null;
+
+                    let sliceFrom = -1;
+                    if (groupStart) {
+                      // First day in the window whose date is on or after the game start.
+                      sliceFrom = analyticsTrend.findIndex((d) => d.date >= groupStart);
+                    }
+                    if (sliceFrom === -1) {
+                      // Fallback: first day in the window that has any activity.
+                      sliceFrom = analyticsTrend.findIndex(
+                        (d) => d.points > 0 || d.submissionCount > 0,
+                      );
+                    }
+                    if (sliceFrom === -1) {
                       return <p style={s.emptyHint}>טרם נאסף מידע בטווח הזה.</p>;
                     }
+                    const timeline = analyticsTrend.slice(sliceFrom);
                     return (
                       <InteractiveTrendChart
-                        data={populated}
+                        data={timeline}
                         onBarClick={(date) => loadDayDrilldown(date)}
                       />
                     );
