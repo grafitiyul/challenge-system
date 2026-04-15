@@ -279,4 +279,30 @@ export class ContextLibraryController {
   ) {
     return this.svc.reorder(programId, body.items);
   }
+
+  // ─── Attach actions from the context side ────────────────────────────────
+  // Parallel to the action-editor attachment flow. Overrides remain in the
+  // action editor — attaching from here creates a GameActionContextUse row
+  // with both override fields set to null (inherit definition defaults).
+
+  @Get(':id/attached-actions')
+  listAttachedActions(@Param('id') id: string) {
+    return this.svc.listAttachedActions(id);
+  }
+
+  @Post(':id/attach-action')
+  attachToAction(
+    @Param('id') id: string,
+    @Body() body: { actionId: string },
+  ) {
+    return this.svc.attachToAction(id, body.actionId);
+  }
+
+  @Delete(':id/attach-action/:actionId')
+  detachFromAction(
+    @Param('id') id: string,
+    @Param('actionId') actionId: string,
+  ) {
+    return this.svc.detachFromAction(id, actionId);
+  }
 }

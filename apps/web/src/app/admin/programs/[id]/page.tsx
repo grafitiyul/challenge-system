@@ -2156,11 +2156,17 @@ function TemplateEditorModal({
 function ContextLibrarySection({
   programId,
   definitions,
+  actions,
   onChanged,
+  onActionsChanged,
 }: {
   programId: string;
   definitions: ContextDefinition[];
+  // Phase 3.3 UX pass: needed so the in-edit definition form can render the
+  // "מחובר לפעולות" section with a picker + attach/detach controls.
+  actions: GameAction[];
   onChanged: () => void;
+  onActionsChanged: () => void;
 }) {
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -2201,8 +2207,10 @@ function ContextLibrarySection({
         <ContextDefinitionForm
           programId={programId}
           definition={null}
+          actions={actions}
           onSaved={() => { setAdding(false); onChanged(); }}
           onCancel={() => setAdding(false)}
+          onActionsChanged={onActionsChanged}
         />
       )}
 
@@ -2290,8 +2298,10 @@ function ContextLibrarySection({
                 <ContextDefinitionForm
                   programId={programId}
                   definition={d}
+                  actions={actions}
                   onSaved={() => { setEditingId(null); onChanged(); }}
                   onCancel={() => setEditingId(null)}
+                  onActionsChanged={onActionsChanged}
                 />
               )}
             </div>
@@ -2307,13 +2317,17 @@ function ContextLibrarySection({
 function ContextDefinitionForm({
   programId,
   definition,
+  actions,
   onSaved,
   onCancel,
+  onActionsChanged,
 }: {
   programId: string;
   definition: ContextDefinition | null;
+  actions: GameAction[];
   onSaved: () => void;
   onCancel: () => void;
+  onActionsChanged: () => void;
 }) {
   const isNew = definition === null;
   const [label, setLabel] = useState(definition?.label ?? '');
@@ -2413,7 +2427,8 @@ function ContextDefinitionForm({
             <input style={{ ...inputStyle, background: '#f1f5f9', cursor: 'not-allowed' }} disabled value={type === 'select' ? 'בחירה' : type === 'number' ? 'מספר' : 'טקסט'} />
           )}
         </div>
-        {/* Phase 3.3 — who provides the value */}
+        {/* Phase 3.3 UX pass — rename options + helper text so admins understand
+            the two modes at a glance without needing to decode "inputMode". */}
         <div>
           <label style={{ fontSize: 12, fontWeight: 600, color: '#475569', display: 'block', marginBottom: 4 }}>
             מי ממלא?
@@ -2423,16 +2438,17 @@ function ContextDefinitionForm({
             value={inputMode}
             onChange={(e) => setInputMode(e.target.value as 'participant' | 'system_fixed')}
           >
-            <option value="participant">המשתתפת</option>
-            <option value="system_fixed">המערכת (ערך קבוע)</option>
+            <option value="participant">המשתתפת ממלאת</option>
+            <option value="system_fixed">המערכת קובעת אוטומטית</option>
           </select>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4, lineHeight: 1.4 }}>
+            {inputMode === 'participant'
+              ? 'המשתתפת תבחר או תזין ערך בעת דיווח.'
+              : 'הערך ייקבע אוטומטית ולא יוצג למשתתפת.'}
+          </div>
         </div>
       </div>
 
-      {/* Phase 3.3 — defaults depend on inputMode. For system_fixed, hide the
-          participant-oriented toggles because they have no effect — the field
-          is never rendered to the participant and the injected value is
-          always present. */}
       {inputMode === 'participant' ? (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#374151', cursor: 'pointer', whiteSpace: 'nowrap' }}>
@@ -2449,35 +2465,67 @@ function ContextDefinitionForm({
           </label>
         </div>
       ) : (
+        // Phase 3.3 UX pass: the "fixedValue" label exposed implementation
+        // detail and confused admins — replaced with a question-style prompt
+        // that names the thing in terms of meaning (what gets stored) rather
+        // than the backend field name. Per-type helper text nails it down.
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10, background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 8, padding: 12 }}>
-          <div style={{ fontSize: 12, color: '#78350f', lineHeight: 1.5 }}>
-            ערך זה מוזרק אוטומטית על ידי המערכת בכל דיווח. המשתתפת לא תראה ולא תמלא אותו.
-          </div>
           <div>
-            <label style={{ fontSize: 12, fontWeight: 600, color: '#78350f', display: 'block', marginBottom: 4 }}>
-              ערך קבוע
+            <label style={{ fontSize: 13, fontWeight: 700, color: '#78350f', display: 'block', marginBottom: 4 }}>
+              מה הערך שהמערכת תשמור?
             </label>
-            {type === 'select' && options.length > 0 ? (
-              <select
-                style={inputStyle}
-                value={fixedValue}
-                onChange={(e) => setFixedValue(e.target.value)}
-              >
-                <option value="">— בחרי —</option>
-                {options.map((o, oi) => (
-                  <option key={oi} value={o.value || slugifyLabel(o.label)}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
+            {type === 'select' ? (
+              <>
+                {options.length > 0 ? (
+                  <select
+                    style={inputStyle}
+                    value={fixedValue}
+                    onChange={(e) => setFixedValue(e.target.value)}
+                  >
+                    <option value="">— בחרי אפשרות —</option>
+                    {options.map((o, oi) => (
+                      <option key={oi} value={o.value || slugifyLabel(o.label)}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <div style={{ fontSize: 12, color: '#b45309', fontStyle: 'italic' }}>
+                    הוסיפי קודם אפשרויות בהמשך, ואז תוכלי לבחור אחת.
+                  </div>
+                )}
+                <div style={{ fontSize: 11, color: '#92400e', marginTop: 4, lineHeight: 1.4 }}>
+                  המערכת תשמור את האפשרות הזו אוטומטית בכל דיווח.
+                </div>
+              </>
+            ) : type === 'number' ? (
+              <>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  style={inputStyle}
+                  value={fixedValue}
+                  onChange={(e) => setFixedValue(e.target.value)}
+                  placeholder="ערך מספרי קבוע"
+                  dir="ltr"
+                />
+                <div style={{ fontSize: 11, color: '#92400e', marginTop: 4, lineHeight: 1.4 }}>
+                  המשתתפת לא תראה שדה זה. המערכת תשמור את הערך המספרי הזה בכל דיווח.
+                </div>
+              </>
             ) : (
-              <input
-                style={inputStyle}
-                value={fixedValue}
-                onChange={(e) => setFixedValue(e.target.value)}
-                placeholder={type === 'number' ? '42' : 'ערך'}
-                dir={type === 'number' ? 'ltr' : undefined}
-              />
+              <>
+                <input
+                  type="text"
+                  style={inputStyle}
+                  value={fixedValue}
+                  onChange={(e) => setFixedValue(e.target.value)}
+                  placeholder="הערך שיישמר אוטומטית (למשל: sleep)"
+                />
+                <div style={{ fontSize: 11, color: '#92400e', marginTop: 4, lineHeight: 1.4 }}>
+                  המשתתפת לא תראה שדה זה. המערכת תשמור ערך קבוע זה בכל דיווח.
+                </div>
+              </>
             )}
           </div>
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#374151', cursor: 'pointer', whiteSpace: 'nowrap' }}>
@@ -2516,6 +2564,18 @@ function ContextDefinitionForm({
         </div>
       )}
 
+      {/* Phase 3.3 UX pass: manage this context's action attachments from the
+          context editor. Keeps the admin in context while hooking it up. Per-
+          use overrides still live on the action-editor side. */}
+      {!isNew && definition && (
+        <AttachedActionsSection
+          programId={programId}
+          definitionId={definition.id}
+          actions={actions}
+          onActionsChanged={onActionsChanged}
+        />
+      )}
+
       {error && <div style={{ color: '#dc2626', fontSize: 12, background: '#fef2f2', padding: '6px 10px', borderRadius: 6 }}>{error}</div>}
 
       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
@@ -2526,6 +2586,132 @@ function ContextDefinitionForm({
           {saving ? 'שומר...' : 'שמירה'}
         </button>
       </div>
+    </div>
+  );
+}
+
+// ─── Phase 3.3 UX: attach/detach actions from the context side ──────────────
+// Lightweight mirror of the action-editor's attachment picker. Lives inside
+// ContextDefinitionForm (edit mode only). Only surfaces attach/detach — per-use
+// overrides (required/visible) remain exclusively in the action editor so
+// there's only one place where those are edited.
+
+function AttachedActionsSection({
+  programId,
+  definitionId,
+  actions,
+  onActionsChanged,
+}: {
+  programId: string;
+  definitionId: string;
+  actions: GameAction[];
+  onActionsChanged: () => void;
+}) {
+  // Derived from the cached `actions` (already fetched with contextUses
+  // included), so no extra fetch on mount.
+  const attached = actions.filter((a) =>
+    (a.contextUses ?? []).some((u) => u.definitionId === definitionId),
+  );
+  const attachedIds = new Set(attached.map((a) => a.id));
+  const available = actions.filter((a) => !attachedIds.has(a.id));
+
+  const [filter, setFilter] = useState('');
+  const [busy, setBusy] = useState(false);
+  const filteredAvailable = filter.trim()
+    ? available.filter((a) => a.name.toLowerCase().includes(filter.toLowerCase()))
+    : available;
+
+  async function attach(actionId: string) {
+    if (!actionId) return;
+    setBusy(true);
+    try {
+      await apiFetch(
+        `${BASE_URL}/game/programs/${programId}/context-definitions/${definitionId}/attach-action`,
+        { method: 'POST', cache: 'no-store', body: JSON.stringify({ actionId }) },
+      );
+      onActionsChanged();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function detach(actionId: string) {
+    setBusy(true);
+    try {
+      await apiFetch(
+        `${BASE_URL}/game/programs/${programId}/context-definitions/${definitionId}/attach-action/${actionId}`,
+        { method: 'DELETE', cache: 'no-store' },
+      );
+      onActionsChanged();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: 8, padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: '#0369a1', marginBottom: 2 }}>
+          מחובר לפעולות
+        </div>
+        <div style={{ fontSize: 11, color: '#0c4a6e', lineHeight: 1.4 }}>
+          הוסיפי או הסירי פעולות שמשתמשות בהקשר זה. התאמה לפעולה ספציפית (חובה/להציג) מתבצעת בעורך הפעולה.
+        </div>
+      </div>
+
+      {attached.length === 0 ? (
+        <div style={{ fontSize: 12, color: '#64748b', fontStyle: 'italic' }}>
+          עדיין לא מחובר לפעולה.
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {attached.map((a) => (
+            <div
+              key={a.id}
+              style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 6, padding: '8px 10px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}
+            >
+              <span style={{ fontSize: 13, color: '#0f172a', fontWeight: 600 }}>{a.name}</span>
+              <button
+                type="button"
+                onClick={() => detach(a.id)}
+                disabled={busy}
+                style={{ background: 'none', border: '1px solid #fecaca', color: '#dc2626', borderRadius: 6, padding: '4px 10px', fontSize: 12, cursor: busy ? 'not-allowed' : 'pointer', fontWeight: 500 }}
+              >
+                הסר
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {available.length > 0 ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {available.length > 8 && (
+            <input
+              type="text"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder="חיפוש פעולה..."
+              style={{ ...inputStyle, fontSize: 12, padding: '6px 10px' }}
+            />
+          )}
+          <select
+            value=""
+            disabled={busy}
+            onChange={(e) => { attach(e.target.value); }}
+            style={{ ...inputStyle, fontSize: 13 }}
+          >
+            <option value="">+ הוסיפי לפעולה</option>
+            {filteredAvailable.map((a) => (
+              <option key={a.id} value={a.id}>{a.name}</option>
+            ))}
+          </select>
+        </div>
+      ) : attached.length === 0 ? null : (
+        <div style={{ fontSize: 12, color: '#6b7280' }}>
+          כל הפעולות כבר מחוברות להקשר זה.
+        </div>
+      )}
     </div>
   );
 }
@@ -2663,7 +2849,17 @@ function GameEngineTab({ programId }: { programId: string }) {
       <ContextLibrarySection
         programId={programId}
         definitions={definitions}
+        actions={actions}
         onChanged={refreshDefinitions}
+        onActionsChanged={async () => {
+          // Re-fetch actions so attach/detach from the context side surfaces
+          // immediately in the action editor's "הקשרים משותפים" list.
+          const refreshed = await apiFetch(
+            `${BASE_URL}/game/programs/${programId}/actions`,
+            { cache: 'no-store' },
+          );
+          setActions((refreshed as GameAction[]).filter((x) => x.isActive));
+        }}
       />
 
       {/* ── Actions ── */}

@@ -206,6 +206,58 @@ export class ContextLibraryService {
     });
   }
 
+  // ─── Attach to / detach from an action (from the context side) ──────────
+  // Mirror of the action-editor's attachment flow. Useful when an admin is
+  // editing a context and wants to hook it up to multiple actions without
+  // bouncing between screens. Per-use overrides stay in the action editor.
+  // These endpoints never create or delete definitions — only the attachment
+  // row (GameActionContextUse).
+
+  async attachToAction(definitionId: string, actionId: string) {
+    const def = await this.get(definitionId);
+    const action = await this.prisma.gameAction.findUnique({
+      where: { id: actionId },
+      select: { id: true, programId: true },
+    });
+    if (!action) throw new NotFoundException(`Action ${actionId} not found`);
+    if (action.programId !== def.programId) {
+      throw new BadRequestException('Action belongs to a different program');
+    }
+    // Upsert keeps attach idempotent. Sort order appends the row at the end
+    // of whatever's already attached to that action.
+    const existing = await this.prisma.gameActionContextUse.findUnique({
+      where: { actionId_definitionId: { actionId, definitionId } },
+    });
+    if (existing) return existing;
+    const trailing = await this.prisma.gameActionContextUse.count({ where: { actionId } });
+    return this.prisma.gameActionContextUse.create({
+      data: {
+        actionId,
+        definitionId,
+        sortOrder: trailing,
+      },
+    });
+  }
+
+  async detachFromAction(definitionId: string, actionId: string) {
+    const result = await this.prisma.gameActionContextUse.deleteMany({
+      where: { actionId, definitionId },
+    });
+    return { detached: result.count };
+  }
+
+  async listAttachedActions(definitionId: string) {
+    await this.get(definitionId); // validate
+    const uses = await this.prisma.gameActionContextUse.findMany({
+      where: { definitionId },
+      include: { action: { select: { id: true, name: true, isActive: true } } },
+      orderBy: { createdAt: 'asc' },
+    });
+    return uses
+      .filter((u) => u.action.isActive)
+      .map((u) => ({ id: u.action.id, name: u.action.name }));
+  }
+
   // ─── Reorder ─────────────────────────────────────────────────────────────
   async reorder(programId: string, items: { id: string; sortOrder: number }[]) {
     await this.prisma.$transaction(
