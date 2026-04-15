@@ -95,13 +95,13 @@ export class ParticipantPortalController {
     return this.portalService.getAnalyticsDay(token, date);
   }
 
-  // GET /api/public/participant/:token/analytics/breakdown?period=7d|30d|all
+  // GET /api/public/participant/:token/analytics/breakdown?period=7d|14d|30d|all
   @Get(':token/analytics/breakdown')
   getAnalyticsBreakdown(
     @Param('token') token: string,
     @Query('period') period?: string,
   ): Promise<AnalyticsBreakdownEntry[]> {
-    const p = (period ?? '7d') as '7d' | '30d' | 'all';
+    const p = (period ?? '7d') as '7d' | '14d' | '30d' | 'all';
     return this.portalService.getAnalyticsBreakdown(token, p);
   }
 }

@@ -120,7 +120,7 @@ interface AnalyticsBreakdownEntry {
 }
 
 type TrendDays = 7 | 14 | 30;
-type BreakdownPeriod = '7d' | '30d' | 'all';
+type BreakdownPeriod = '7d' | '14d' | '30d' | 'all';
 
 interface PortalRules {
   programRulesContent: string | null;
@@ -294,11 +294,17 @@ function TrendChart({ data }: { data: { date: string; points: number }[] }) {
   );
 }
 
-// ─── Interactive trend chart (Phase 2A) ────────────────────────────────────
-// Same visual language as TrendChart but the bars are clickable. Clicking a bar
-// reports its date (YYYY-MM-DD) so the caller can open the day drill-down sheet.
-// SVG renders left-to-right regardless of RTL, which matches our data order
-// (index 0 = oldest, last = today).
+// ─── Interactive trend chart (Phase 2A polish) ─────────────────────────────
+// Layout anchoring:
+//   - viewBox uses fractional coordinates that ALWAYS span the full width so
+//     bars feel evenly distributed regardless of `n` (7 / 14 / 30 days).
+//   - A subtle baseline under the bars grounds the whole chart so empty days
+//     no longer read as dead space.
+//   - Zero-value days render as a faint baseline stub instead of disappearing.
+// Values:
+//   - Every bar with points > 0 shows its number above it in small subtle type.
+//   - Today's bar uses the accent blue; earlier bars use a muted gray so the
+//     eye can still pick out the current day.
 
 function InteractiveTrendChart({
   data,
@@ -307,66 +313,93 @@ function InteractiveTrendChart({
   data: { date: string; points: number; submissionCount: number }[];
   onBarClick: (date: string) => void;
 }) {
-  const WIDTH = 320;
-  const BAR_H = 80;
-  const LABEL_H = 28;
-  const SVG_H = BAR_H + LABEL_H;
-  const BAR_GAP = 2;
-  const n = data.length;
-  const barW = Math.max(4, Math.floor((WIDTH - BAR_GAP * (n - 1)) / n));
+  const VIEW_W = 320;
+  const BAR_H = 84;
+  const LABEL_H = 30;
+  const TOP_PAD = 14; // headroom for per-bar value labels
+  const SVG_H = TOP_PAD + BAR_H + LABEL_H;
+  const n = Math.max(data.length, 1);
+  // Column spans the full width evenly; bar fills a percentage of its column.
+  // BAR_FILL=0.72 leaves a tasteful gap without starving wider counts.
+  const colW = VIEW_W / n;
+  const BAR_FILL = 0.72;
+  const barW = Math.max(3, colW * BAR_FILL);
   const maxVal = Math.max(...data.map((d) => d.points), 1);
+  const baselineY = TOP_PAD + BAR_H;
 
   return (
     <svg
       width="100%"
-      viewBox={`0 0 ${WIDTH} ${SVG_H}`}
+      viewBox={`0 0 ${VIEW_W} ${SVG_H}`}
+      preserveAspectRatio="none"
       style={{ display: 'block', overflow: 'visible' }}
       aria-label="גרף נקודות לפי יום"
     >
+      {/* Baseline — anchors the chart visually so empty days read as "inactive"
+          rather than "missing". 1px high, faint gray. */}
+      <line
+        x1={0}
+        x2={VIEW_W}
+        y1={baselineY}
+        y2={baselineY}
+        stroke="#e5e7eb"
+        strokeWidth={1}
+      />
+
       {data.map((d, i) => {
-        const barH = Math.max(2, Math.round((d.points / maxVal) * (BAR_H - 14)));
-        const x = i * (barW + BAR_GAP);
-        const y = BAR_H - barH;
-        const cx = x + barW / 2;
+        const colX = i * colW;
+        const cx = colX + colW / 2;
+        const x = cx - barW / 2;
         const isToday = i === n - 1;
-        const hasActivity = d.points > 0 || d.submissionCount > 0;
+        const hasPoints = d.points > 0;
+        // Positive bars: scale to 95% of BAR_H to leave room for labels.
+        // Zero days: render a 3px stub on the baseline so the chart never goes
+        //            fully empty — eye picks out the column as "we were here".
+        const positiveH = Math.round((d.points / maxVal) * (BAR_H - 10));
+        const barH = hasPoints ? Math.max(4, positiveH) : 3;
+        const y = baselineY - barH;
         const label = shortBarDate(d.date);
+        const fill = isToday
+          ? '#1d4ed8'
+          : hasPoints
+          ? '#93c5fd'
+          : '#f3f4f6';
+
         return (
           <g
             key={d.date}
             onClick={() => onBarClick(d.date)}
             style={{ cursor: 'pointer' }}
           >
-            {/* Invisible hit-box covering the whole column — keeps tap targets
-                large on mobile even when the bar itself is short. */}
-            <rect
-              x={x}
-              y={0}
-              width={barW}
-              height={BAR_H}
-              fill="transparent"
-            />
-            <rect
-              x={x}
-              y={y}
-              width={barW}
-              height={barH}
-              rx={3}
-              fill={isToday ? '#1d4ed8' : hasActivity ? '#93c5fd' : '#e5e7eb'}
-            />
-            {isToday && d.points > 0 && (
-              <text x={cx} y={y - 4} textAnchor="middle" fontSize={9} fill="#1d4ed8" fontWeight={700}>
+            {/* Full-column hit-box — keeps taps reliable on short bars. */}
+            <rect x={colX} y={0} width={colW} height={BAR_H + TOP_PAD} fill="transparent" />
+            <rect x={x} y={y} width={barW} height={barH} rx={2} fill={fill} />
+
+            {/* Per-bar value label. Small and muted for past days; accented for
+                today. Skipped entirely on zero days to avoid clutter. */}
+            {hasPoints && (
+              <text
+                x={cx}
+                y={y - 3}
+                textAnchor="middle"
+                fontSize={9}
+                fill={isToday ? '#1d4ed8' : '#6b7280'}
+                fontWeight={isToday ? 700 : 600}
+              >
                 {d.points}
               </text>
             )}
+
+            {/* Date label below baseline, rotated so many days fit without
+                overlap. textAnchor="end" anchors at the baseline corner. */}
             <text
               x={cx}
-              y={BAR_H + 10}
+              y={baselineY + 10}
               textAnchor="end"
               fontSize={7}
               fill={isToday ? '#1d4ed8' : '#9ca3af'}
               fontWeight={isToday ? 700 : 400}
-              transform={`rotate(-40, ${cx}, ${BAR_H + 10})`}
+              transform={`rotate(-40, ${cx}, ${baselineY + 10})`}
             >
               {label}
             </text>
@@ -375,6 +408,154 @@ function InteractiveTrendChart({
       })}
     </svg>
   );
+}
+
+// ─── Breakdown pie (Phase 2A polish) ───────────────────────────────────────
+// Mobile-first donut chart. Mirrors the same data the BreakdownList shows so
+// the numbers always agree. Negative rows (participant corrected downward) are
+// excluded from slice math because pie slices can't represent negative area.
+// If the net is zero/empty, nothing renders — the parent handles empty state.
+
+const PIE_COLORS = [
+  '#1d4ed8', '#7c3aed', '#db2777', '#16a34a',
+  '#f59e0b', '#0891b2', '#65a30d', '#dc2626',
+  '#6366f1', '#ea580c',
+] as const;
+
+function BreakdownPie({
+  rows,
+}: {
+  rows: { actionId: string; actionName: string; totalPoints: number; count: number }[];
+}) {
+  // Positive-only for slice area; keep zero-rows out so they don't claim slices.
+  const positive = rows.filter((r) => r.totalPoints > 0);
+  const total = positive.reduce((s, r) => s + r.totalPoints, 0);
+  if (total === 0) return null;
+
+  const SIZE = 160;
+  const R_OUTER = 70;
+  const R_INNER = 42;
+  const CX = SIZE / 2;
+  const CY = SIZE / 2;
+
+  // Build slices. Sort for stable color order (largest first).
+  const ordered = [...positive].sort((a, b) => b.totalPoints - a.totalPoints);
+
+  let cursor = -Math.PI / 2; // start at 12 o'clock
+  const slices = ordered.map((row, idx) => {
+    const frac = row.totalPoints / total;
+    const startAngle = cursor;
+    const endAngle = cursor + frac * Math.PI * 2;
+    cursor = endAngle;
+    return {
+      row,
+      color: PIE_COLORS[idx % PIE_COLORS.length],
+      pct: Math.round(frac * 100),
+      path: donutPath(CX, CY, R_INNER, R_OUTER, startAngle, endAngle),
+    };
+  });
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+      <svg
+        width={SIZE}
+        height={SIZE}
+        viewBox={`0 0 ${SIZE} ${SIZE}`}
+        aria-label="התפלגות נקודות לפי פעולה"
+        style={{ flexShrink: 0 }}
+      >
+        {slices.map((sl) => (
+          <path key={sl.row.actionId} d={sl.path} fill={sl.color} />
+        ))}
+        <text
+          x={CX}
+          y={CY - 4}
+          textAnchor="middle"
+          fontSize={18}
+          fontWeight={800}
+          fill="#111827"
+        >
+          {total.toLocaleString('he-IL')}
+        </text>
+        <text
+          x={CX}
+          y={CY + 12}
+          textAnchor="middle"
+          fontSize={10}
+          fill="#6b7280"
+          fontWeight={600}
+        >
+          נק׳
+        </text>
+      </svg>
+
+      {/* Legend — one row per slice. Kept compact so it fits on narrow screens. */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flex: 1, minWidth: 0 }}>
+        {slices.map((sl) => (
+          <div
+            key={sl.row.actionId}
+            style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}
+          >
+            <span
+              style={{
+                width: 10,
+                height: 10,
+                borderRadius: 3,
+                background: sl.color,
+                flexShrink: 0,
+              }}
+            />
+            <span
+              style={{
+                color: '#111827',
+                fontWeight: 600,
+                whiteSpace: 'nowrap' as const,
+                overflow: 'hidden' as const,
+                textOverflow: 'ellipsis' as const,
+                flex: 1,
+              }}
+            >
+              {sl.row.actionName}
+            </span>
+            <span style={{ color: '#6b7280', fontWeight: 600 }}>{sl.pct}%</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Build an SVG path string for a donut slice between two angles.
+ * Handles the large-arc flag for slices > 180°.
+ */
+function donutPath(
+  cx: number,
+  cy: number,
+  rInner: number,
+  rOuter: number,
+  a0: number,
+  a1: number,
+): string {
+  const sweep = a1 - a0;
+  // If a single slice covers the full circle we must split into two halves,
+  // otherwise the Arc command degenerates. Rare but guard against it.
+  if (sweep >= Math.PI * 2 - 1e-6) {
+    const mid = a0 + Math.PI;
+    return [donutPath(cx, cy, rInner, rOuter, a0, mid), donutPath(cx, cy, rInner, rOuter, mid, a1)].join(' ');
+  }
+  const largeArc = sweep > Math.PI ? 1 : 0;
+  const xo0 = cx + rOuter * Math.cos(a0), yo0 = cy + rOuter * Math.sin(a0);
+  const xo1 = cx + rOuter * Math.cos(a1), yo1 = cy + rOuter * Math.sin(a1);
+  const xi1 = cx + rInner * Math.cos(a1), yi1 = cy + rInner * Math.sin(a1);
+  const xi0 = cx + rInner * Math.cos(a0), yi0 = cy + rInner * Math.sin(a0);
+  return [
+    `M ${xo0} ${yo0}`,
+    `A ${rOuter} ${rOuter} 0 ${largeArc} 1 ${xo1} ${yo1}`,
+    `L ${xi1} ${yi1}`,
+    `A ${rInner} ${rInner} 0 ${largeArc} 0 ${xi0} ${yi0}`,
+    'Z',
+  ].join(' ');
 }
 
 // ─── Breakdown list (Phase 2A) ─────────────────────────────────────────────
@@ -1011,7 +1192,7 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                 {/* ── Summary strip ───────────────────────────────────── */}
                 <div style={s.summaryStrip}>
                   <div style={s.summaryChipPrimary}>
-                    <span style={s.summaryChipValue}>{analyticsSummary.todayScore}</span>
+                    <span style={s.summaryChipValueAccent}>{analyticsSummary.todayScore}</span>
                     <span style={s.summaryChipLabel}>נקודות היום</span>
                   </div>
                   <div style={s.summaryChip}>
@@ -1075,18 +1256,35 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                   ) : (
                     <p style={s.emptyHint}>טרם נאסף מידע בטווח הזה.</p>
                   )}
-                  <p style={s.chartHint}>טיפ: הקישי על יום כדי לראות את הפעולות שלו</p>
+                  {/* Single-day picker — reuses drill-down sheet. Lets the
+                      participant look up any past date, including dates
+                      outside the current chart window. */}
+                  <div style={s.datePickerRow}>
+                    <span style={s.chartHint}>טיפ: הקישי על יום בגרף או בחרי תאריך</span>
+                    <label style={s.datePickerLabel}>
+                      <input
+                        type="date"
+                        max={new Date().toISOString().slice(0, 10)}
+                        onChange={(e) => {
+                          if (e.target.value) loadDayDrilldown(e.target.value);
+                        }}
+                        style={s.datePickerInput}
+                        aria-label="בחרי תאריך"
+                      />
+                    </label>
+                  </div>
                 </div>
 
-                {/* ── Breakdown by action ─────────────────────────────── */}
+                {/* ── Breakdown by action (list + pie) ─────────────── */}
                 <div style={s.breakdownCard}>
                   <div style={s.chartHeader}>
                     <p style={s.sectionTitle}>לפי פעולות</p>
                     <div style={s.periodToggle} role="tablist" aria-label="טווח פירוט">
                       {([
-                        { key: '7d' as const, label: '7 ימים' },
+                        { key: '7d'  as const, label: '7 ימים'  },
+                        { key: '14d' as const, label: '14 ימים' },
                         { key: '30d' as const, label: '30 ימים' },
-                        { key: 'all' as const, label: 'הכל' },
+                        { key: 'all' as const, label: 'הכל'     },
                       ]).map((opt) => (
                         <button
                           key={opt.key}
@@ -1110,7 +1308,11 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                   {analyticsBreakdown === null ? null : analyticsBreakdown.length === 0 ? (
                     <p style={s.emptyHint}>אין פעולות בטווח שבחרת.</p>
                   ) : (
-                    <BreakdownList rows={analyticsBreakdown} />
+                    <>
+                      <BreakdownPie rows={analyticsBreakdown} />
+                      <div style={{ height: 12 }} />
+                      <BreakdownList rows={analyticsBreakdown} />
+                    </>
                   )}
                 </div>
               </>
@@ -1277,7 +1479,10 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
           [
             { id: 'report', label: 'דיווח',       icon: '✏️' },
             { id: 'stats',  label: 'הנתונים שלי', icon: '📊' },
-            { id: 'feed',   label: 'הקבוצה',      icon: '📣' },
+            // Group tab icon: 👥 (two silhouettes) reads as "people/community" in
+            // a way the old megaphone (📣, "feed") did not, now that the tab
+            // combines leaderboard + feed.
+            { id: 'feed',   label: 'הקבוצה',      icon: '👥' },
             { id: 'rules',  label: 'חוקים',       icon: '📋' },
           ] as { id: TabId; label: string; icon: string }[]
         ).map((tab) => (
@@ -1359,9 +1564,28 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
         {daySheetDate && (
           <div style={s.sheetInner}>
             <div style={s.sheetHandle} />
-            <p style={s.sheetActionName}>
-              פירוט היום ({new Date(daySheetDate).toLocaleDateString('he-IL', { day: 'numeric', month: 'long' })})
-            </p>
+
+            {/* Header: full formatted date + total points for that day.
+                Total is derived from the entries array (ScoreEvent.points per
+                log) — same source of truth the server used to populate it. */}
+            <div style={s.daySheetHeader}>
+              <div style={s.daySheetHeaderLeft}>
+                <span style={s.daySheetHeaderDay}>
+                  {new Date(daySheetDate).toLocaleDateString('he-IL', {
+                    weekday: 'long',
+                    day: 'numeric',
+                    month: 'long',
+                  })}
+                </span>
+                <span style={s.daySheetHeaderSub}>פירוט הפעולות של היום הזה</span>
+              </div>
+              <div style={s.daySheetTotal}>
+                <span style={s.daySheetTotalValue}>
+                  {(daySheetEntries ?? []).reduce((sum, e) => sum + e.points, 0)}
+                </span>
+                <span style={s.daySheetTotalLabel}>סה״כ נק׳</span>
+              </div>
+            </div>
 
             {daySheetLoading && (
               <div style={{ padding: '24px 0', textAlign: 'center' }}>
@@ -1669,9 +1893,13 @@ const s = {
     marginBottom: 12,
   } satisfies React.CSSProperties,
 
+  // Info cards — all three look the same (white background with a subtle border).
+  // Previously the "today" card had a saturated blue fill which read as a selected
+  // tab; it is now a plain card with an accent blue number. The label color is
+  // consistent across all three chips to reinforce that none are interactive.
   summaryChipPrimary: {
-    background: '#1d4ed8',
-    color: '#ffffff',
+    background: '#ffffff',
+    border: '1px solid #e5e7eb',
     borderRadius: 14,
     padding: '12px 14px',
     display: 'flex',
@@ -1692,10 +1920,19 @@ const s = {
   } satisfies React.CSSProperties,
 
   summaryChipValue: {
-    fontSize: 22,
+    fontSize: 26,
     fontWeight: 800,
     lineHeight: 1,
-    color: 'inherit',
+    color: '#111827',
+    fontVariantNumeric: 'tabular-nums' as const,
+  } satisfies React.CSSProperties,
+
+  summaryChipValueAccent: {
+    fontSize: 26,
+    fontWeight: 800,
+    lineHeight: 1,
+    color: '#1d4ed8',
+    fontVariantNumeric: 'tabular-nums' as const,
   } satisfies React.CSSProperties,
 
   summaryChipLabel: {
@@ -1761,11 +1998,35 @@ const s = {
   } satisfies React.CSSProperties,
 
   chartHint: {
-    marginTop: 10,
+    marginTop: 0,
     marginBottom: 0,
     fontSize: 11,
     color: '#9ca3af',
-    textAlign: 'center' as const,
+    flex: 1,
+  } satisfies React.CSSProperties,
+
+  datePickerRow: {
+    marginTop: 12,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  } satisfies React.CSSProperties,
+
+  datePickerLabel: {
+    display: 'inline-flex',
+    alignItems: 'center',
+  } satisfies React.CSSProperties,
+
+  datePickerInput: {
+    border: '1px solid #d1d5db',
+    borderRadius: 8,
+    padding: '4px 8px',
+    fontSize: 12,
+    color: '#374151',
+    background: '#ffffff',
+    fontFamily: 'inherit',
+    cursor: 'pointer',
   } satisfies React.CSSProperties,
 
   emptyHint: {
@@ -1785,6 +2046,62 @@ const s = {
   } satisfies React.CSSProperties,
 
   // Day drill-down sheet
+  daySheetHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    padding: '6px 4px 10px',
+    borderBottom: '1px solid #f3f4f6',
+    marginBottom: 8,
+  } satisfies React.CSSProperties,
+
+  daySheetHeaderLeft: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 2,
+    flex: 1,
+    minWidth: 0,
+  } satisfies React.CSSProperties,
+
+  daySheetHeaderDay: {
+    fontSize: 16,
+    fontWeight: 800,
+    color: '#111827',
+    lineHeight: 1.2,
+  } satisfies React.CSSProperties,
+
+  daySheetHeaderSub: {
+    fontSize: 11,
+    color: '#9ca3af',
+    fontWeight: 500,
+  } satisfies React.CSSProperties,
+
+  daySheetTotal: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'flex-end',
+    background: '#eff6ff',
+    borderRadius: 10,
+    padding: '6px 12px',
+    flexShrink: 0,
+  } satisfies React.CSSProperties,
+
+  daySheetTotalValue: {
+    fontSize: 22,
+    fontWeight: 800,
+    color: '#1d4ed8',
+    lineHeight: 1,
+    fontVariantNumeric: 'tabular-nums' as const,
+  } satisfies React.CSSProperties,
+
+  daySheetTotalLabel: {
+    fontSize: 10,
+    color: '#1d4ed8',
+    fontWeight: 600,
+    marginTop: 2,
+  } satisfies React.CSSProperties,
+
   daySheetList: {
     display: 'flex',
     flexDirection: 'column' as const,

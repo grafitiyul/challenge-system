@@ -544,16 +544,16 @@ export class ParticipantPortalService {
 
   async getAnalyticsBreakdown(
     token: string,
-    period: '7d' | '30d' | 'all',
+    period: '7d' | '14d' | '30d' | 'all',
   ): Promise<AnalyticsBreakdownEntry[]> {
-    if (!['7d', '30d', 'all'].includes(period)) {
-      throw new BadRequestException('period must be 7d, 30d, or all');
+    if (!['7d', '14d', '30d', 'all'].includes(period)) {
+      throw new BadRequestException('period must be 7d, 14d, 30d, or all');
     }
     const { participantId, programId } = await this.resolveToken(token);
 
     let since: Date | null = null;
-    if (period === '7d' || period === '30d') {
-      const days = period === '7d' ? 7 : 30;
+    if (period !== 'all') {
+      const days = period === '7d' ? 7 : period === '14d' ? 14 : 30;
       since = startOfDayUTC(new Date());
       since.setUTCDate(since.getUTCDate() - (days - 1));
     }
