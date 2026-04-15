@@ -245,6 +245,21 @@ export interface AnalyticsBreakdownEntry {
   count: number;
 }
 
+/**
+ * Phase 4: shape returned by /analytics/context-dimensions. Presentation-only
+ * metadata (group key/label + custom display label) piggybacks on the existing
+ * endpoint so no extra network round-trip is needed.
+ *
+ * groupKey === null → standalone (no presentation group).
+ */
+export interface AnalyticsContextDimension {
+  key: string;
+  label: string;
+  displayLabel: string | null;
+  groupKey: string | null;
+  groupLabel: string | null;
+}
+
 @Injectable()
 export class ParticipantPortalService {
   constructor(
@@ -717,10 +732,24 @@ export class ParticipantPortalService {
     if (groupBy.startsWith('context:')) {
       const key = groupBy.slice('context:'.length);
       if (!key) throw new BadRequestException('groupBy=context: requires a key');
-      return this.breakdownByContext(participantId, programId, since, until, key);
+      return this.breakdownByContext(participantId, programId, since, until, [key]);
+    }
+    if (groupBy.startsWith('group:')) {
+      // Phase 4: analytics presentation group. Look up every context definition
+      // sharing this groupKey (within the program) and aggregate their data
+      // into one breakdown.
+      const groupKey = groupBy.slice('group:'.length);
+      if (!groupKey) throw new BadRequestException('groupBy=group: requires a key');
+      const members = await this.prisma.contextDefinition.findMany({
+        where: { programId, analyticsGroupKey: groupKey, isActive: true },
+        select: { key: true },
+      });
+      const memberKeys = members.map((m) => m.key);
+      if (memberKeys.length === 0) return [];
+      return this.breakdownByContext(participantId, programId, since, until, memberKeys);
     }
     if (groupBy !== 'action') {
-      throw new BadRequestException('groupBy must be "action" or "context:<key>"');
+      throw new BadRequestException('groupBy must be "action", "context:<key>", or "group:<key>"');
     }
 
     // ── Group by actionId ────────────────────────────────────────────────
@@ -801,8 +830,14 @@ export class ParticipantPortalService {
     programId: string,
     since: Date | null,
     until: Date,
-    dimensionKey: string,
+    // Phase 4: a single-element array is the original "group by one context"
+    // case; 2+ elements means "aggregate multiple contexts into one breakdown"
+    // for an analytics presentation group.
+    dimensionKeys: string[],
   ): Promise<AnalyticsBreakdownEntry[]> {
+    if (dimensionKeys.length === 0) return [];
+    const dimensionSet = new Set(dimensionKeys);
+
     const logs = await this.prisma.userActionLog.findMany({
       where: {
         participantId, programId,
@@ -813,7 +848,6 @@ export class ParticipantPortalService {
     });
     if (logs.length === 0) return [];
 
-    // Points per log — action-type ScoreEvents only (corrections excluded above).
     const logIds = logs.map((l) => l.id);
     const scoreEvents = await this.prisma.scoreEvent.findMany({
       where: { logId: { in: logIds }, sourceType: 'action' },
@@ -824,26 +858,26 @@ export class ParticipantPortalService {
       if (se.logId) pointsByLog[se.logId] = se.points;
     }
 
-    // Phase 3.2: label resolution first tries the program-wide reusable
-    // definition for this key (so the same dimension uses the same option
-    // labels across every action that uses it), then falls back to whichever
-    // action's local schema declares the key.
-    const [definitionForKey, actionIds] = await Promise.all([
-      this.prisma.contextDefinition.findFirst({
-        where: { programId, key: dimensionKey },
-        select: { optionsJson: true, type: true },
-      }),
-      Promise.resolve(Array.from(new Set(logs.map((l) => l.actionId)))),
-    ]);
+    // Phase 4: label resolution spans ALL dimension keys in the group. Reusable
+    // labels from each member definition merge into one big value→label map.
+    // If two members declare overlapping option values with different labels,
+    // first-declared wins (deterministic on query order).
+    const definitions = await this.prisma.contextDefinition.findMany({
+      where: { programId, key: { in: dimensionKeys } },
+      select: { key: true, optionsJson: true, type: true },
+    });
     const reusableLabels = new Map<string, string>();
-    if (definitionForKey?.type === 'select' && Array.isArray(definitionForKey.optionsJson)) {
-      for (const o of definitionForKey.optionsJson as Array<{ value?: string; label?: string }>) {
-        if (typeof o?.value === 'string' && typeof o?.label === 'string') {
-          reusableLabels.set(o.value, o.label);
+    for (const def of definitions) {
+      if (def.type === 'select' && Array.isArray(def.optionsJson)) {
+        for (const o of def.optionsJson as Array<{ value?: string; label?: string }>) {
+          if (typeof o?.value === 'string' && typeof o?.label === 'string') {
+            if (!reusableLabels.has(o.value)) reusableLabels.set(o.value, o.label);
+          }
         }
       }
     }
 
+    const actionIds = Array.from(new Set(logs.map((l) => l.actionId)));
     const actions = await this.prisma.gameAction.findMany({
       where: { id: { in: actionIds } },
       select: { id: true, contextSchemaJson: true },
@@ -855,9 +889,11 @@ export class ParticipantPortalService {
       } | null;
       const perKey = new Map<string, string>();
       for (const d of schema?.dimensions ?? []) {
-        if (d.key !== dimensionKey) continue;
+        if (!d.key || !dimensionSet.has(d.key)) continue;
         for (const o of d.options ?? []) {
-          if (typeof o.value === 'string' && typeof o.label === 'string') perKey.set(o.value, o.label);
+          if (typeof o.value === 'string' && typeof o.label === 'string') {
+            if (!perKey.has(o.value)) perKey.set(o.value, o.label);
+          }
         }
       }
       localLabelsByAction.set(a.id, perKey);
@@ -871,19 +907,28 @@ export class ParticipantPortalService {
       );
     }
 
+    // Phase 4 aggregation rule: for each log, emit one sample per member-key
+    // that is present in its contextJson. Logs with multiple members present
+    // contribute to each (e.g. log with meal_period=breakfast AND mood=happy
+    // feeds both buckets when both dimensions belong to the same group).
+    // Same value from different dimension keys merges under one bucket by
+    // shared value string.
     const totals: Record<string, { points: number; count: number; label: string }> = {};
     for (const l of logs) {
       const ctx = l.contextJson as Record<string, unknown> | null;
       if (!ctx) continue;
-      const raw = ctx[dimensionKey];
-      if (raw === undefined || raw === null || raw === '') continue;
-      const value = String(raw);
-      const label = resolveLabel(l.actionId, value);
-      const entry = totals[value] ?? { points: 0, count: 0, label };
-      entry.points += pointsByLog[l.id] ?? 0;
-      entry.count += 1;
-      if (entry.label === value && label !== value) entry.label = label;
-      totals[value] = entry;
+      const pts = pointsByLog[l.id] ?? 0;
+      for (const k of dimensionKeys) {
+        const raw = ctx[k];
+        if (raw === undefined || raw === null || raw === '') continue;
+        const value = String(raw);
+        const label = resolveLabel(l.actionId, value);
+        const entry = totals[value] ?? { points: 0, count: 0, label };
+        entry.points += pts;
+        entry.count += 1;
+        if (entry.label === value && label !== value) entry.label = label;
+        totals[value] = entry;
+      }
     }
 
     const rows: AnalyticsBreakdownEntry[] = Object.entries(totals).map(
@@ -908,54 +953,70 @@ export class ParticipantPortalService {
    */
   async getAnalyticsContextDimensions(
     token: string,
-  ): Promise<{ key: string; label: string }[]> {
+  ): Promise<AnalyticsContextDimension[]> {
     const { participantId, programId } = await this.resolveToken(token);
 
-    // Phase 3.2: unify declared dimensions from both layers.
+    // Phase 3.2+4: unify dimensions across layers AND surface their Phase 4
+    // presentation-layer metadata (analytics group + display label).
     //   Layer A — program-wide reusable definitions (ContextDefinition).
-    //             One dimension per unique key, even if attached to many actions.
     //   Layer B — legacy per-action local dimensions from contextSchemaJson.
     // Labels come from the reusable definition when available, so cross-action
-    // analytics stay consistent (fixing the "same dimension, different labels"
-    // problem that local-only schemas caused).
+    // analytics stay consistent. The presentation-layer fields come from
+    // ContextDefinition only (local-schema dims have no group semantics).
     const [actions, definitions] = await Promise.all([
       this.prisma.gameAction.findMany({
         where: { programId },
         select: { contextSchemaJson: true },
       }),
       this.prisma.contextDefinition.findMany({
-        // Phase 3.3/3.4: include EVERY analyticsVisible reusable dimension,
-        // even ones with no data yet — admins expect to see the toggle the
-        // moment they mark a context as analytics-visible. Text-type dims
-        // are excluded from grouping analytics per product decision (they
-        // aren't aggregable).
         where: {
           programId,
           analyticsVisible: true,
           isActive: true,
           NOT: { type: 'text' },
         },
-        select: { key: true, label: true },
+        select: {
+          key: true,
+          label: true,
+          analyticsGroupKey: true,
+          analyticsGroupLabel: true,
+          analyticsDisplayLabel: true,
+        },
       }),
     ]);
-    const declared = new Map<string, string>();
-    // Reusable definitions are always surfaced (even without data yet) — admins
-    // expect the toggle to appear as soon as they mark a context analytics-visible.
+    type DeclaredEntry = {
+      key: string;
+      label: string;
+      displayLabel: string | null;
+      groupKey: string | null;
+      groupLabel: string | null;
+    };
+    const declared = new Map<string, DeclaredEntry>();
     const reusableKeys = new Set<string>();
     for (const d of definitions) {
-      declared.set(d.key, d.label);
+      declared.set(d.key, {
+        key: d.key,
+        label: d.label,
+        displayLabel: d.analyticsDisplayLabel ?? null,
+        groupKey: d.analyticsGroupKey ?? null,
+        groupLabel: d.analyticsGroupLabel ?? null,
+      });
       reusableKeys.add(d.key);
     }
-    // Local-only dims are only surfaced when the participant actually has data
-    // under that key — can't tell legacy/abandoned ones from real otherwise.
     for (const a of actions) {
       const schema = a.contextSchemaJson as {
         dimensions?: { key?: string; label?: string; type?: string }[];
       } | null;
       for (const d of schema?.dimensions ?? []) {
-        if (d.type === 'text') continue; // text never used for grouping
+        if (d.type === 'text') continue;
         if (typeof d.key === 'string' && !declared.has(d.key)) {
-          declared.set(d.key, typeof d.label === 'string' ? d.label : d.key);
+          declared.set(d.key, {
+            key: d.key,
+            label: typeof d.label === 'string' ? d.label : d.key,
+            displayLabel: null,
+            groupKey: null,
+            groupLabel: null,
+          });
         }
       }
     }
@@ -974,9 +1035,15 @@ export class ParticipantPortalService {
       }
     }
 
-    return Array.from(declared.entries())
-      .filter(([k]) => reusableKeys.has(k) || present.has(k))
-      .map(([key, label]) => ({ key, label }));
+    return Array.from(declared.values())
+      .filter((d) => reusableKeys.has(d.key) || present.has(d.key))
+      .map((d) => ({
+        key: d.key,
+        label: d.label,
+        displayLabel: d.displayLabel,
+        groupKey: d.groupKey,
+        groupLabel: d.groupLabel,
+      }));
   }
 
   // ─── Private helpers ───────────────────────────────────────────────────────

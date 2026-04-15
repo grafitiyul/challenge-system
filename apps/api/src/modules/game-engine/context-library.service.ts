@@ -35,6 +35,40 @@ export interface StoredContextOption {
   label: string;
 }
 
+/**
+ * Phase 4: normalize the presentation-layer fields for a context definition.
+ * - Empty strings → null (admin cleared the value).
+ * - If the admin provided a group LABEL but no KEY, auto-slug the label into
+ *   a key so the admin never has to deal with internal identifiers.
+ * - If only a key is provided without a label, echo the key as the label for
+ *   the time being — cleaner than a blank label in the UI.
+ */
+function resolvePresentationFields(opts: {
+  rawGroupKey: string | null;
+  rawGroupLabel: string | null;
+  rawDisplayLabel: string | null;
+}): {
+  analyticsGroupKey: string | null;
+  analyticsGroupLabel: string | null;
+  analyticsDisplayLabel: string | null;
+} {
+  const groupLabel = opts.rawGroupLabel?.trim() || null;
+  const providedKey = opts.rawGroupKey?.trim() || null;
+  const displayLabel = opts.rawDisplayLabel?.trim() || null;
+
+  let groupKey: string | null = null;
+  let finalGroupLabel: string | null = null;
+  if (providedKey || groupLabel) {
+    finalGroupLabel = groupLabel ?? providedKey;
+    groupKey = providedKey ?? slugifyLabel(groupLabel!);
+  }
+  return {
+    analyticsGroupKey: groupKey,
+    analyticsGroupLabel: finalGroupLabel,
+    analyticsDisplayLabel: displayLabel,
+  };
+}
+
 @Injectable()
 export class ContextLibraryService {
   constructor(private readonly prisma: PrismaService) {}
@@ -97,6 +131,15 @@ export class ContextLibraryService {
     }
 
     const count = await this.prisma.contextDefinition.count({ where: { programId } });
+    // Phase 4 presentation: normalize the three optional presentation fields.
+    // The group key is auto-derived from the group label when the admin only
+    // provides a label, keeping UX simple (no internal-key input).
+    const { analyticsGroupKey, analyticsGroupLabel, analyticsDisplayLabel } =
+      resolvePresentationFields({
+        rawGroupKey: dto.analyticsGroupKey ?? null,
+        rawGroupLabel: dto.analyticsGroupLabel ?? null,
+        rawDisplayLabel: dto.analyticsDisplayLabel ?? null,
+      });
     return this.prisma.contextDefinition.create({
       data: {
         programId,
@@ -109,6 +152,9 @@ export class ContextLibraryService {
         inputMode,
         analyticsVisible: dto.analyticsVisible ?? true,
         fixedValue,
+        analyticsGroupKey,
+        analyticsGroupLabel,
+        analyticsDisplayLabel,
         sortOrder: count,
       },
     });
@@ -183,6 +229,42 @@ export class ContextLibraryService {
         patch.fixedValue = null;
       } else if (dto.fixedValue !== undefined) {
         patch.fixedValue = dto.fixedValue.trim() || null;
+      }
+    }
+
+    // Phase 4: presentation-layer patching. All three fields are independent;
+    // each responds to an explicit undefined/non-undefined signal. Blank-string
+    // inputs from the form translate to nulls (clear).
+    if (
+      dto.analyticsGroupKey !== undefined ||
+      dto.analyticsGroupLabel !== undefined ||
+      dto.analyticsDisplayLabel !== undefined
+    ) {
+      const resolved = resolvePresentationFields({
+        rawGroupKey:
+          dto.analyticsGroupKey !== undefined
+            ? dto.analyticsGroupKey
+            : row.analyticsGroupKey,
+        rawGroupLabel:
+          dto.analyticsGroupLabel !== undefined
+            ? dto.analyticsGroupLabel
+            : row.analyticsGroupLabel,
+        rawDisplayLabel:
+          dto.analyticsDisplayLabel !== undefined
+            ? dto.analyticsDisplayLabel
+            : row.analyticsDisplayLabel,
+      });
+      if (dto.analyticsGroupKey !== undefined) patch.analyticsGroupKey = resolved.analyticsGroupKey;
+      if (dto.analyticsGroupLabel !== undefined) patch.analyticsGroupLabel = resolved.analyticsGroupLabel;
+      if (dto.analyticsDisplayLabel !== undefined) patch.analyticsDisplayLabel = resolved.analyticsDisplayLabel;
+      // When one of group key/label shifted, re-derive the paired field too so
+      // they stay consistent (a label without a key would be unreachable).
+      if (
+        dto.analyticsGroupKey !== undefined ||
+        dto.analyticsGroupLabel !== undefined
+      ) {
+        patch.analyticsGroupKey = resolved.analyticsGroupKey;
+        patch.analyticsGroupLabel = resolved.analyticsGroupLabel;
       }
     }
 

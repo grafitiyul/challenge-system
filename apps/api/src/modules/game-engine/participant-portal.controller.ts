@@ -10,6 +10,7 @@ import {
   AnalyticsTrendPoint,
   AnalyticsDayEntry,
   AnalyticsBreakdownEntry,
+  AnalyticsContextDimension,
 } from './participant-portal.service';
 
 class LogActionPortalDto {
@@ -141,7 +142,7 @@ export class ParticipantPortalController {
   @Get(':token/analytics/context-dimensions')
   getAnalyticsContextDimensions(
     @Param('token') token: string,
-  ): Promise<{ key: string; label: string }[]> {
+  ): Promise<AnalyticsContextDimension[]> {
     return this.portalService.getAnalyticsContextDimensions(token);
   }
 }

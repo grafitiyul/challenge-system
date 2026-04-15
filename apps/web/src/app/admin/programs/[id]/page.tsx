@@ -447,11 +447,13 @@ interface ContextDefinition {
   optionsJson: ContextOption[] | null;   // select only
   isActive: boolean;
   sortOrder: number;
-  // Phase 3.3 context behavior model. Legacy definitions created before 3.3
-  // default to inputMode=participant / analyticsVisible=true / fixedValue=null.
   inputMode: 'participant' | 'system_fixed';
   analyticsVisible: boolean;
   fixedValue: string | null;
+  // Phase 4 analytics presentation layer. All null for legacy rows.
+  analyticsGroupKey: string | null;
+  analyticsGroupLabel: string | null;
+  analyticsDisplayLabel: string | null;
 }
 
 interface ActionContextUse {
@@ -2293,6 +2295,11 @@ function ContextLibrarySection({
                               לא באנליטיקות
                             </span>
                           )}
+                          {d.analyticsVisible && d.analyticsGroupLabel && (
+                            <span style={{ background: '#ede9fe', color: '#5b21b6', fontSize: 11, padding: '3px 9px', borderRadius: 20, fontWeight: 500 }}>
+                              קבוצה: {d.analyticsGroupLabel}
+                            </span>
+                          )}
                         </>
                       );
                     })()}
@@ -2377,6 +2384,11 @@ function ContextDefinitionForm({
     : 'system_fixed';
   const [analyticsVisible, setAnalyticsVisible] = useState(definition?.analyticsVisible ?? true);
   const [fixedValue, setFixedValue] = useState(definition?.fixedValue ?? '');
+  // Phase 4 analytics presentation layer. Admins see label-only inputs; the
+  // internal group key is derived from the group label on save. An empty
+  // group label means "no group" — the context shows up standalone.
+  const [analyticsGroupLabel, setAnalyticsGroupLabel] = useState(definition?.analyticsGroupLabel ?? '');
+  const [analyticsDisplayLabel, setAnalyticsDisplayLabel] = useState(definition?.analyticsDisplayLabel ?? '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   // Phase 3.4: pending action attachments for attach-during-creation flow.
@@ -2409,6 +2421,14 @@ function ContextDefinitionForm({
         inputMode: derivedInputMode,
         analyticsVisible,
         fixedValue: derivedInputMode === 'system_fixed' ? fixedValue.trim() : '',
+        // Phase 4: presentation layer. Empty strings clear the field on the
+        // server (DTO maps "" → null via the trim-guard in the library service).
+        analyticsGroupLabel: analyticsGroupLabel.trim(),
+        // analyticsGroupKey is deliberately NOT sent — server derives it from
+        // the label to keep admins out of key-management internals. When the
+        // group label is blank, the server clears the key too.
+        analyticsGroupKey: analyticsGroupLabel.trim() ? undefined : '',
+        analyticsDisplayLabel: analyticsDisplayLabel.trim(),
       };
       if (isNew) body.type = type;
       if (type === 'select') {
@@ -2602,6 +2622,53 @@ function ContextDefinitionForm({
           >
             + הוסיפי אפשרות
           </button>
+        </div>
+      )}
+
+      {/* Phase 4: analytics presentation layer. Shown only when the context
+          is analytics-visible, since these fields only affect the analytics UI.
+          Admins enter labels (no internal keys); server derives the group key
+          from the group label. Blank group label → context appears standalone. */}
+      {analyticsVisible && (
+        <div style={{ background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 8, padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ fontSize: 12, color: '#5b21b6', fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '0.05em' }}>
+            תצוגה באנליטיקות
+          </div>
+          <div style={{ fontSize: 12, color: '#5b21b6', lineHeight: 1.5 }}>
+            אופציונלי. אם כמה הקשרים שייכים לאותה קבוצה, הם יאוחדו לפריט אחד באנליטיקות.
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <div>
+              <label style={{ fontSize: 12, fontWeight: 600, color: '#4c1d95', display: 'block', marginBottom: 4 }}>
+                קבוצת תצוגה (אופציונלי)
+              </label>
+              <input
+                style={inputStyle}
+                value={analyticsGroupLabel}
+                onChange={(e) => setAnalyticsGroupLabel(e.target.value)}
+                placeholder="למשל: תזונה / פעילות"
+                maxLength={60}
+              />
+              <div style={{ fontSize: 11, color: '#6d28d9', marginTop: 4 }}>
+                הקשרים עם אותה קבוצה מאוחדים.
+              </div>
+            </div>
+            <div>
+              <label style={{ fontSize: 12, fontWeight: 600, color: '#4c1d95', display: 'block', marginBottom: 4 }}>
+                תווית קצרה באנליטיקות (אופציונלי)
+              </label>
+              <input
+                style={inputStyle}
+                value={analyticsDisplayLabel}
+                onChange={(e) => setAnalyticsDisplayLabel(e.target.value)}
+                placeholder={`ברירת מחדל: ${label || 'תווית ההקשר'}`}
+                maxLength={60}
+              />
+              <div style={{ fontSize: 11, color: '#6d28d9', marginTop: 4 }}>
+                כשריק — התווית הרגילה של ההקשר.
+              </div>
+            </div>
+          </div>
         </div>
       )}
 

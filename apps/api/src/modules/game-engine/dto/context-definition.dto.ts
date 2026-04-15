@@ -59,6 +59,22 @@ export class CreateContextDefinitionDto {
   @IsOptional()
   @IsString()
   fixedValue?: string;
+
+  // ── Phase 4 analytics presentation ───────────────────────────────────────
+  /** Shared key — multiple contexts with the same value aggregate together. */
+  @IsOptional()
+  @IsString()
+  analyticsGroupKey?: string | null;
+
+  /** Display label for the group in the participant analytics UI. */
+  @IsOptional()
+  @IsString()
+  analyticsGroupLabel?: string | null;
+
+  /** Optional per-context label for analytics UI; falls back to `label`. */
+  @IsOptional()
+  @IsString()
+  analyticsDisplayLabel?: string | null;
 }
 
 export class UpdateContextDefinitionDto {
@@ -87,6 +103,21 @@ export class UpdateContextDefinitionDto {
   @IsOptional()
   @IsString()
   fixedValue?: string;
+
+  /** See CreateContextDefinitionDto.analyticsGroupKey. Pass "" to clear. */
+  @IsOptional()
+  @IsString()
+  analyticsGroupKey?: string | null;
+
+  /** See CreateContextDefinitionDto.analyticsGroupLabel. Pass "" to clear. */
+  @IsOptional()
+  @IsString()
+  analyticsGroupLabel?: string | null;
+
+  /** See CreateContextDefinitionDto.analyticsDisplayLabel. Pass "" to clear. */
+  @IsOptional()
+  @IsString()
+  analyticsDisplayLabel?: string | null;
 
   /**
    * Replaces the full options list for a select definition. Each existing

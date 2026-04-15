@@ -810,6 +810,20 @@ model ContextDefinition {
   // Mandatory when inputMode='system_fixed'; ignored otherwise. The string
   // value is what the backend writes into UserActionLog.contextJson[key].
   fixedValue                      String?
+  // ── Phase 4 analytics presentation layer ─────────────────────────────────
+  // Optional grouping + display overrides that only affect how this context
+  // appears inside participant analytics. None of these influence submission,
+  // validation, or the ledger; they're pure presentation.
+  //
+  // analyticsGroupKey     — shared key linking contexts that should appear
+  //                         under one analytics entry. Multiple contexts may
+  //                         share it; the breakdown then aggregates them.
+  // analyticsGroupLabel   — display name for that group in the UI.
+  // analyticsDisplayLabel — optional shorter label for THIS context inside
+  //                         the analytics UI (falls back to `label`).
+  analyticsGroupKey               String?
+  analyticsGroupLabel             String?
+  analyticsDisplayLabel           String?
   // Archived contexts don't appear in attachment pickers. Existing uses keep
   // resolving so historical data stays interpretable.
   isActive                        Boolean  @default(true)

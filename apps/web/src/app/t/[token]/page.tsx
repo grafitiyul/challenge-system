@@ -156,10 +156,16 @@ interface AnalyticsRange {
 interface ContextDimension {
   key: string;
   label: string;
+  // Phase 4 analytics presentation layer — optional.
+  displayLabel?: string | null;
+  groupKey?: string | null;
+  groupLabel?: string | null;
 }
 
 /** Breakdown grouping mode. `action` = by actionId; `context:<key>` = by that dim. */
-type BreakdownGroupBy = 'action' | `context:${string}`;
+// Phase 4: breakdown can now also group by an analytics presentation group —
+// "group:<groupKey>" aggregates data from every context sharing that groupKey.
+type BreakdownGroupBy = 'action' | `context:${string}` | `group:${string}`;
 
 interface PortalRules {
   programRulesContent: string | null;
@@ -1781,89 +1787,155 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                     she's grouping by. With many contexts, the flat toggle
                     became a wall of buttons — this keeps the first level short. */}
                 <div style={s.breakdownCard}>
-                  <div style={s.chartHeader}>
-                    <p style={s.sectionTitle}>
-                      {groupBy === 'action'
-                        ? 'לפי פעולות'
-                        : (() => {
-                            const key = groupBy.slice('context:'.length);
-                            const dim = contextDimensions.find((d) => d.key === key);
-                            return dim ? `לפי ${dim.label}` : 'לפי הקשרים';
-                          })()}
-                    </p>
-                    {contextDimensions.length > 0 && (
-                      <div style={s.periodToggle} role="tablist" aria-label="קיבוץ לפי">
-                        <button
-                          role="tab"
-                          aria-selected={groupBy === 'action'}
-                          onClick={() => {
-                            if (groupBy === 'action') return;
-                            setGroupBy('action');
-                            setFocusedSliceKey(null);
-                            refreshBreakdownOnly(range, 'action');
-                          }}
-                          style={{
-                            ...s.periodBtn,
-                            ...(groupBy === 'action' ? s.periodBtnActive : {}),
-                          }}
-                        >
-                          פעולה
-                        </button>
-                        <button
-                          role="tab"
-                          aria-selected={groupBy !== 'action'}
-                          onClick={() => {
-                            if (groupBy !== 'action') return;
-                            // Switch to the first available dimension — the
-                            // sub-picker below lets the user change it.
-                            const first = contextDimensions[0];
-                            const next = `context:${first.key}` as BreakdownGroupBy;
-                            setGroupBy(next);
-                            setFocusedSliceKey(null);
-                            refreshBreakdownOnly(range, next);
-                          }}
-                          style={{
-                            ...s.periodBtn,
-                            ...(groupBy !== 'action' ? s.periodBtnActive : {}),
-                          }}
-                        >
-                          הקשרים
-                        </button>
-                      </div>
-                    )}
-                  </div>
+                  {/* Phase 4: presentation layer in the sub-picker.
+                        - Contexts sharing the same presentation `groupKey`
+                          collapse into ONE picker entry (value `group:<k>`).
+                        - Ungrouped contexts appear as individual entries
+                          (value `context:<k>`) below the groups.
+                        - Display labels prefer `displayLabel` (admin override)
+                          over the raw `label`. */}
+                  {(() => {
+                    type PickerEntry =
+                      | { kind: 'group'; key: string; label: string; members: ContextDimension[] }
+                      | { kind: 'context'; key: string; label: string };
+                    const groupMap = new Map<string, { label: string; members: ContextDimension[] }>();
+                    const standalone: ContextDimension[] = [];
+                    for (const d of contextDimensions) {
+                      if (d.groupKey && d.groupLabel) {
+                        const g = groupMap.get(d.groupKey);
+                        if (g) g.members.push(d);
+                        else groupMap.set(d.groupKey, { label: d.groupLabel, members: [d] });
+                      } else {
+                        standalone.push(d);
+                      }
+                    }
+                    const pickerEntries: PickerEntry[] = [
+                      ...Array.from(groupMap.entries()).map(([k, v]) => ({
+                        kind: 'group' as const,
+                        key: k,
+                        label: v.label,
+                        members: v.members,
+                      })),
+                      ...standalone.map((d) => ({
+                        kind: 'context' as const,
+                        key: d.key,
+                        label: d.displayLabel?.trim() || d.label,
+                      })),
+                    ];
+                    const hasContexts = pickerEntries.length > 0;
 
-                  {/* Sub-picker: only when "הקשרים" is active AND there are
-                      2+ dimensions to choose from. Single-dimension programs
-                      get a sub-picker-less view to avoid pointless UI. */}
-                  {groupBy !== 'action' && contextDimensions.length > 1 && (
-                    <div style={{ marginBottom: 10 }}>
-                      <select
-                        value={groupBy.slice('context:'.length)}
-                        onChange={(e) => {
-                          const next = `context:${e.target.value}` as BreakdownGroupBy;
-                          setGroupBy(next);
-                          setFocusedSliceKey(null);
-                          refreshBreakdownOnly(range, next);
-                        }}
-                        style={{
-                          fontSize: 13,
-                          padding: '8px 10px',
-                          border: '1px solid #e5e7eb',
-                          borderRadius: 8,
-                          background: '#ffffff',
-                          fontFamily: 'inherit',
-                          color: '#111827',
-                          width: '100%',
-                        }}
-                        aria-label="בחרי הקשר"
-                      >
-                        {contextDimensions.map((d) => (
-                          <option key={d.key} value={d.key}>{d.label}</option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
+                    // Resolve the currently-selected entry to compute the title.
+                    const selectedEntry = (() => {
+                      if (groupBy === 'action') return null;
+                      if (groupBy.startsWith('group:')) {
+                        return pickerEntries.find(
+                          (e) => e.kind === 'group' && e.key === groupBy.slice('group:'.length),
+                        );
+                      }
+                      if (groupBy.startsWith('context:')) {
+                        const k = groupBy.slice('context:'.length);
+                        return pickerEntries.find((e) => e.kind === 'context' && e.key === k);
+                      }
+                      return null;
+                    })();
+
+                    return (
+                      <>
+                        <div style={s.chartHeader}>
+                          <p style={s.sectionTitle}>
+                            {groupBy === 'action'
+                              ? 'לפי פעולות'
+                              : selectedEntry
+                              ? `לפי ${selectedEntry.label}`
+                              : 'לפי הקשרים'}
+                          </p>
+                          {hasContexts && (
+                            <div style={s.periodToggle} role="tablist" aria-label="קיבוץ לפי">
+                              <button
+                                role="tab"
+                                aria-selected={groupBy === 'action'}
+                                onClick={() => {
+                                  if (groupBy === 'action') return;
+                                  setGroupBy('action');
+                                  setFocusedSliceKey(null);
+                                  refreshBreakdownOnly(range, 'action');
+                                }}
+                                style={{
+                                  ...s.periodBtn,
+                                  ...(groupBy === 'action' ? s.periodBtnActive : {}),
+                                }}
+                              >
+                                פעולה
+                              </button>
+                              <button
+                                role="tab"
+                                aria-selected={groupBy !== 'action'}
+                                onClick={() => {
+                                  if (groupBy !== 'action') return;
+                                  // Default to the first picker entry — group
+                                  // (if any), otherwise the first standalone.
+                                  const first = pickerEntries[0];
+                                  const next = (first.kind === 'group'
+                                    ? `group:${first.key}`
+                                    : `context:${first.key}`) as BreakdownGroupBy;
+                                  setGroupBy(next);
+                                  setFocusedSliceKey(null);
+                                  refreshBreakdownOnly(range, next);
+                                }}
+                                style={{
+                                  ...s.periodBtn,
+                                  ...(groupBy !== 'action' ? s.periodBtnActive : {}),
+                                }}
+                              >
+                                הקשרים
+                              </button>
+                            </div>
+                          )}
+                        </div>
+
+                        {groupBy !== 'action' && pickerEntries.length > 1 && (
+                          <div style={{ marginBottom: 10 }}>
+                            <select
+                              value={
+                                groupBy.startsWith('group:')
+                                  ? `group:${groupBy.slice('group:'.length)}`
+                                  : `context:${groupBy.slice('context:'.length)}`
+                              }
+                              onChange={(e) => {
+                                const next = e.target.value as BreakdownGroupBy;
+                                setGroupBy(next);
+                                setFocusedSliceKey(null);
+                                refreshBreakdownOnly(range, next);
+                              }}
+                              style={{
+                                fontSize: 13,
+                                padding: '8px 10px',
+                                border: '1px solid #e5e7eb',
+                                borderRadius: 8,
+                                background: '#ffffff',
+                                fontFamily: 'inherit',
+                                color: '#111827',
+                                width: '100%',
+                              }}
+                              aria-label="בחרי הקשר"
+                            >
+                              {pickerEntries.map((e) =>
+                                e.kind === 'group' ? (
+                                  <option key={`g-${e.key}`} value={`group:${e.key}`}>
+                                    {e.label} ({e.members.length})
+                                  </option>
+                                ) : (
+                                  <option key={`c-${e.key}`} value={`context:${e.key}`}>
+                                    {e.label}
+                                  </option>
+                                ),
+                              )}
+                            </select>
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
                   {analyticsBreakdown === null ? null : analyticsBreakdown.length === 0 ? (
                     <p style={s.emptyHint}>אין נתונים בטווח שבחרת.</p>
                   ) : (
