@@ -11,7 +11,8 @@
     "db:migrate": "prisma migrate dev",
     "db:migrate:deploy": "prisma migrate deploy",
     "db:studio": "prisma studio",
-    "db:seed": "ts-node prisma/seed.ts"
+    "db:seed": "ts-node prisma/seed.ts",
+    "test:phase1": "ts-node --transpile-only test/phase1/duplicate-submission.ts && ts-node --transpile-only test/phase1/concurrent-edit.ts && ts-node --transpile-only test/phase1/partial-failure.ts && ts-node --transpile-only test/phase1/dependency-linking.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.15",

@@ -135,7 +135,12 @@ export class ParticipantPortalService {
         );
       } else {
         todayValues[action.id] = await this.prisma.userActionLog.count({
-          where: { participantId: pg.participantId, actionId: action.id, createdAt: { gte: todayStart } },
+          where: {
+            participantId: pg.participantId,
+            actionId: action.id,
+            status: 'active',
+            createdAt: { gte: todayStart },
+          },
         });
       }
     }
@@ -167,6 +172,7 @@ export class ParticipantPortalService {
   async logAction(
     token: string,
     dto: { actionId: string; value?: string },
+    idempotencyKey?: string,
   ): Promise<{ pointsEarned: number; todayScore: number; todayValue: number | null }> {
     const pg = await this.prisma.participantGroup.findUnique({
       where: { accessToken: token },
@@ -181,6 +187,7 @@ export class ParticipantPortalService {
       groupId: pg.groupId,
       actionId: dto.actionId,
       value: dto.value,
+      clientSubmissionId: idempotencyKey,
     });
 
     const todayStart = new Date();
@@ -200,14 +207,27 @@ export class ParticipantPortalService {
         );
       } else {
         todayValue = await this.prisma.userActionLog.count({
-          where: { participantId: pg.participantId, actionId: dto.actionId, createdAt: { gte: todayStart } },
+          where: {
+            participantId: pg.participantId,
+            actionId: dto.actionId,
+            status: 'active',
+            createdAt: { gte: todayStart },
+          },
         });
       }
     }
 
-    const pointsEarned =
-      result.scoreEvent.points +
-      result.ruleResults.reduce((sum: number, r: { fired: boolean; points?: number }) => sum + (r.fired ? (r.points ?? 0) : 0), 0);
+    // On an idempotent replay, result.scoreEvent may be null (the original rule
+    // firings also already happened and are part of the stored total). The sum of
+    // today's ScoreEvents is authoritative, so pointsEarned falls back to 0 for
+    // replays — the caller sees the same todayScore as the original submission.
+    const pointsEarned = result.scoreEvent
+      ? result.scoreEvent.points +
+        result.ruleResults.reduce(
+          (sum: number, r: { fired: boolean; points?: number }) => sum + (r.fired ? (r.points ?? 0) : 0),
+          0,
+        )
+      : 0;
 
     return {
       pointsEarned,
@@ -380,7 +400,13 @@ export class ParticipantPortalService {
     aggregationMode: string,
   ): Promise<number> {
     const logs = await this.prisma.userActionLog.findMany({
-      where: { participantId, programId, actionId, createdAt: { gte: todayStart } },
+      where: {
+        participantId,
+        programId,
+        actionId,
+        status: 'active',
+        createdAt: { gte: todayStart },
+      },
       select: { value: true },
     });
     if (logs.length === 0) return 0;

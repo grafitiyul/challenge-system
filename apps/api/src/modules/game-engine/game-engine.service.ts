@@ -1,5 +1,6 @@
 import { createHmac } from 'crypto';
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, GoneException, Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateActionDto, UpdateActionDto } from './dto/create-action.dto';
 import { CreateRuleDto, UpdateRuleDto } from './dto/create-rule.dto';
@@ -7,6 +8,33 @@ import { LogActionDto } from './dto/log-action.dto';
 import { EvaluateRulesDto } from './dto/evaluate-rules.dto';
 import { UnlockRuleDto } from './dto/unlock-rule.dto';
 import { InitGroupStateDto } from './dto/init-group-state.dto';
+import { CorrectLogDto, VoidLogDto } from './dto/correct-log.dto';
+import { validateContext } from './context-validation';
+
+/** Narrow check for Postgres unique-violation errors surfaced by Prisma. */
+function isUniqueViolation(e: unknown): boolean {
+  return e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002';
+}
+
+/**
+ * Surface type used everywhere DB access can happen either against the bare client
+ * or inside a `$transaction` callback. Prisma's `TransactionClient` is structurally
+ * compatible with `PrismaClient`, so passing `this.prisma` as a `DbClient` is safe.
+ */
+type DbClient = Prisma.TransactionClient | PrismaService;
+
+/** Deterministic per-day bucket key used for rule dedup (UTC). */
+function dayBucketKey(d: Date): string {
+  return d.toISOString().slice(0, 10); // "YYYY-MM-DD"
+}
+
+/** Rule-evaluation result row. Kept exported-as-type so callers can consume it safely. */
+export type RuleResult = {
+  ruleId: string;
+  fired: boolean;
+  reason?: string;
+  points?: number;
+};
 
 @Injectable()
 export class GameEngineService {
@@ -145,14 +173,51 @@ export class GameEngineService {
   }
 
   // ─── Log action (core write path) ──────────────────────────────────────────
-
+  //
+  // Contract (Phase 1 Foundation):
+  //   - Idempotency: duplicate submissions with the same clientSubmissionId collapse
+  //     to a single stored (log, scoreEvent) pair. Replayed calls return { replayed: true }.
+  //   - Atomicity: UAL + ScoreEvent + (optional) FeedEvent are written inside a single
+  //     SERIALIZABLE transaction. Partial failure leaves zero rows.
+  //   - Ledger invariant: every action ScoreEvent has logId set (enforced by DB CHECK).
+  //   - Chain: new logs set chainRootId = self.id (supersession inherits this root).
+  //   - Context: contextJson is validated against action.contextSchemaJson before write.
+  //   - Rules: the action's ScoreEvent id is passed to evaluateRules as triggeringEventId,
+  //     so emitted rule events can set parentEventId + ScoreEventDependency.
+  //
   async logAction(dto: LogActionDto) {
     const action = await this.prisma.gameAction.findUnique({ where: { id: dto.actionId } });
     if (!action) throw new NotFoundException(`Action ${dto.actionId} not found`);
     if (!action.isActive) throw new BadRequestException('Action is inactive');
     if (action.programId !== dto.programId) throw new BadRequestException('Action does not belong to this program');
 
-    // Enforce maxPerDay
+    // ── Idempotency replay short-circuit ─────────────────────────────────────
+    // If the same clientSubmissionId was already processed, return the prior result
+    // rather than inserting a duplicate. A key collision across different
+    // (participant, action) tuples is treated as client error.
+    if (dto.clientSubmissionId) {
+      const existing = await this.prisma.userActionLog.findUnique({
+        where: { clientSubmissionId: dto.clientSubmissionId },
+      });
+      if (existing) {
+        if (existing.participantId !== dto.participantId || existing.actionId !== dto.actionId) {
+          throw new ConflictException(
+            'Idempotency-Key already used for a different submission.',
+          );
+        }
+        const scoreEvent = await this.prisma.scoreEvent.findFirst({
+          where: { logId: existing.id, sourceType: 'action' },
+        });
+        return { log: existing, scoreEvent, ruleResults: [] as RuleResult[], replayed: true };
+      }
+    }
+
+    // ── Context validation ───────────────────────────────────────────────────
+    // Throws BadRequestException on invalid shape / required-field violations /
+    // unknown keys / out-of-range numeric / bad select values.
+    const validatedContext = validateContext(action.contextSchemaJson, dto.contextJson ?? null);
+
+    // ── maxPerDay — counts ACTIVE logs only ──────────────────────────────────
     if (action.maxPerDay !== null) {
       const todayStart = new Date();
       todayStart.setHours(0, 0, 0, 0);
@@ -160,6 +225,7 @@ export class GameEngineService {
         where: {
           participantId: dto.participantId,
           actionId: dto.actionId,
+          status: 'active',
           createdAt: { gte: todayStart },
         },
       });
@@ -172,31 +238,35 @@ export class GameEngineService {
       }
     }
 
-    // For latest_value numeric actions: enforce monotonic daily increase.
-    // Participant reports their CURRENT running total — it cannot go down within a day.
+    // ── latest_value monotonicity ────────────────────────────────────────────
+    // "Running total" actions cannot decrease intra-day. Uses effective daily value
+    // computed over active logs only (superseded ones do not anchor the floor).
+    let effectiveValue: Prisma.Decimal | null = null;
     if (action.inputType === 'number' && action.aggregationMode === 'latest_value') {
-      const numericValue = parseFloat(dto.value ?? '');
-      if (isNaN(numericValue) || numericValue < 0) {
+      const parsed = parseFloat(dto.value ?? '');
+      if (isNaN(parsed) || parsed < 0) {
         throw new BadRequestException('ערך מספרי חוקי נדרש עבור פעולה זו');
       }
+      effectiveValue = new Prisma.Decimal(parsed);
       const todayStart = new Date();
       todayStart.setHours(0, 0, 0, 0);
       const currentEffective = await this.getEffectiveDailyValue(
         dto.participantId, dto.programId, dto.actionId, todayStart,
       );
-      if (numericValue < currentEffective) {
+      if (parsed < currentEffective) {
         throw new BadRequestException(
-          `הערך ${numericValue} נמוך מהסה"כ היומי הנוכחי (${currentEffective}). ` +
+          `הערך ${parsed} נמוך מהסה"כ היומי הנוכחי (${currentEffective}). ` +
           `עבור פעולות "ערך שוטף", יש לדווח על הסה"כ הנוכחי — הערך לא יכול לרדת.`,
         );
       }
+    } else if (action.inputType === 'number') {
+      const parsed = parseFloat(dto.value ?? '');
+      if (!isNaN(parsed)) effectiveValue = new Prisma.Decimal(parsed);
     }
 
-    const now = new Date();
-
-    // For incremental_sum numeric actions, action.points is "per unit".
-    // Multiply by the quantity submitted to get total points for this entry.
-    // For all other action types (boolean, latest_value), use action.points as-is.
+    // ── Points derivation ────────────────────────────────────────────────────
+    // incremental_sum: action.points is per-unit; multiply by submitted quantity.
+    // Everything else: use action.points as a flat award.
     let pointsForThisLog = action.points;
     if (action.inputType === 'number' && action.aggregationMode === 'incremental_sum') {
       const qty = parseFloat(dto.value ?? '0');
@@ -205,77 +275,146 @@ export class GameEngineService {
       }
     }
 
-    // 1 + 2. Create UAL and ScoreEvent atomically so they are never orphaned.
-    // If either write fails, neither is committed — no stale daily value can accumulate.
-    const { log, scoreEvent } = await this.prisma.$transaction(async (tx) => {
-      const log = await tx.userActionLog.create({
-        data: {
-          participantId: dto.participantId,
-          programId: dto.programId,
-          actionId: dto.actionId,
-          value: dto.value ?? 'true',
-        },
-      });
-      const scoreEvent = await tx.scoreEvent.create({
-        data: {
-          participantId: dto.participantId,
-          programId: dto.programId,
-          groupId: dto.groupId ?? null,
-          sourceType: 'action',
-          sourceId: dto.actionId,
-          points: pointsForThisLog,
-          metadata: { logId: log.id, actionName: action.name, value: dto.value ?? 'true' },
-        },
-      });
-      return { log, scoreEvent };
-    });
+    // ── SERIALIZABLE transaction: UAL + ScoreEvent + FeedEvent + RULES ───────
+    // Everything the submission produces — the action write AND all derived rule
+    // events, dependencies, and feed rows — commits together or rolls back together.
+    // Per-rule SAVEPOINTs inside evaluateRulesInTx keep one unique-violating rule
+    // firing from aborting the whole submission; any other error bubbles up and
+    // the outer transaction rolls back cleanly.
+    try {
+      const { log, scoreEvent, ruleResults } = await this.prisma.$transaction(
+        async (tx) => {
+          // 1. UAL — placeholder chainRootId then self-rewrite (Prisma doesn't
+          //    expose the generated cuid ahead of insert).
+          const created = await tx.userActionLog.create({
+            data: {
+              participantId: dto.participantId,
+              programId: dto.programId,
+              actionId: dto.actionId,
+              value: dto.value ?? 'true',
+              effectiveValue: effectiveValue ?? undefined,
+              contextJson: (validatedContext ?? undefined) as Prisma.InputJsonValue | undefined,
+              status: 'active',
+              clientSubmissionId: dto.clientSubmissionId ?? null,
+              schemaVersion: action.contextSchemaVersion,
+              chainRootId: '__pending__',
+            },
+          });
+          const updatedLog = await tx.userActionLog.update({
+            where: { id: created.id },
+            data: { chainRootId: created.id },
+          });
 
-    // 3. Update participant game state (streak + lastActionDate)
-    await this.updateParticipantStreak(dto.participantId, dto.programId, now);
+          // 2. Action ScoreEvent.
+          const se = await tx.scoreEvent.create({
+            data: {
+              participantId: dto.participantId,
+              programId: dto.programId,
+              groupId: dto.groupId ?? null,
+              sourceType: 'action',
+              sourceId: dto.actionId,
+              points: pointsForThisLog,
+              logId: updatedLog.id,
+              metadata: { actionName: action.name, value: dto.value ?? 'true' },
+            },
+          });
 
-    // 4. Create feed event (if groupId provided).
-    // Store { logId, scoreEventId } in metadata so deleteFeedEvent can cascade
-    // directly without fragile time-window + points matching.
-    if (dto.groupId) {
-      const hasNumericValue = action.inputType === 'number' && dto.value && dto.value !== 'true';
-      const valueStr = hasNumericValue
-        ? `: ${dto.value}${action.unit ? ` ${action.unit}` : ''}`
-        : '';
-      await this.prisma.feedEvent.create({
-        data: {
-          participantId: dto.participantId,
-          groupId: dto.groupId,
-          programId: dto.programId,
-          type: 'action',
-          message: `דיווחה על ${action.name}${valueStr}`,
-          points: pointsForThisLog,
-          isPublic: true,
-          metadata: { logId: log.id, scoreEventId: scoreEvent.id },
+          // 3. Action FeedEvent.
+          if (dto.groupId) {
+            const hasNumericValue = action.inputType === 'number' && dto.value && dto.value !== 'true';
+            const valueStr = hasNumericValue
+              ? `: ${dto.value}${action.unit ? ` ${action.unit}` : ''}`
+              : '';
+            await tx.feedEvent.create({
+              data: {
+                participantId: dto.participantId,
+                groupId: dto.groupId,
+                programId: dto.programId,
+                type: 'action',
+                message: `דיווחה על ${action.name}${valueStr}`,
+                points: pointsForThisLog,
+                isPublic: true,
+                logId: updatedLog.id,
+                scoreEventId: se.id,
+                // Legacy JSON payload — consumed by disabled deleteFeedEvent path.
+                metadata: { logId: updatedLog.id, scoreEventId: se.id },
+              },
+            });
+          }
+
+          // 4. Rule evaluation — SAME transaction. Rule ScoreEvents, their
+          //    dependency links, and their FeedEvents are all bound to the same
+          //    atomic unit as the triggering action write. See evaluateRulesInTx.
+          const ruleResults = await this.evaluateRulesInTx(tx, {
+            participantId: dto.participantId,
+            programId: dto.programId,
+            groupId: dto.groupId,
+            triggeringEventId: se.id,
+          });
+
+          return { log: updatedLog, scoreEvent: se, ruleResults };
         },
-      });
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      );
+      return { log, scoreEvent, ruleResults };
+    } catch (e) {
+      // Idempotency race — two concurrent requests with the same clientSubmissionId.
+      // The second UAL insert collides on unique(clientSubmissionId) and the whole
+      // transaction rolls back. Recover by returning the winner's stored result.
+      if (isUniqueViolation(e) && dto.clientSubmissionId) {
+        const existing = await this.prisma.userActionLog.findUnique({
+          where: { clientSubmissionId: dto.clientSubmissionId },
+        });
+        if (existing) {
+          const se = await this.prisma.scoreEvent.findFirst({
+            where: { logId: existing.id, sourceType: 'action' },
+          });
+          return { log: existing, scoreEvent: se, ruleResults: [] as RuleResult[], replayed: true };
+        }
+      }
+      throw e;
     }
-
-    // 5. Trigger rule evaluation
-    const ruleResults = await this.evaluateRules({
-      participantId: dto.participantId,
-      programId: dto.programId,
-      groupId: dto.groupId,
-    });
-
-    return { log, scoreEvent, ruleResults };
   }
 
   // ─── Rule evaluation ───────────────────────────────────────────────────────
 
-  async evaluateRules(dto: EvaluateRulesDto) {
-    const allRules = await this.prisma.gameRule.findMany({
+  // Public entrypoint — used by the admin "evaluate rules" endpoint. Opens its
+  // own SERIALIZABLE transaction and delegates to evaluateRulesInTx.
+  // When called from logAction, evaluateRulesInTx is called directly with the
+  // outer transaction's client so the entire submission + rule evaluation is
+  // atomic (see logAction).
+  async evaluateRules(dto: EvaluateRulesDto): Promise<RuleResult[]> {
+    return this.prisma.$transaction(
+      async (tx) => this.evaluateRulesInTx(tx, dto),
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    );
+  }
+
+  /**
+   * Rule evaluation bound to a caller-provided transaction client.
+   *
+   * Atomicity model:
+   *   - All reads and writes run against `tx` — reads see the caller's uncommitted
+   *     changes (e.g. the just-inserted action ScoreEvent), writes commit/rollback
+   *     atomically with the caller.
+   *   - Each rule firing is wrapped in a Postgres SAVEPOINT. If the firing's INSERT
+   *     hits the partial unique index on (participantId, sourceId, bucketKey), we
+   *     ROLLBACK TO that savepoint (not the outer transaction) and record the rule
+   *     as `concurrent_firing_deduped`. Without a savepoint, a unique-violation
+   *     would abort the outer transaction, erasing the submission itself.
+   *   - Any non-unique error re-throws and poisons the outer transaction — that
+   *     is intentional: unexpected errors must not silently lose state.
+   */
+  private async evaluateRulesInTx(
+    tx: Prisma.TransactionClient,
+    dto: EvaluateRulesDto,
+  ): Promise<RuleResult[]> {
+    const allRules = await tx.gameRule.findMany({
       where: { programId: dto.programId, isActive: true },
     });
 
-    // Sort threshold-bearing conditional rules for the same action ascending by threshold.
-    // This guarantees that within a single evaluateRules call, lower thresholds are always
-    // committed to the DB before higher ones. The ladder-delta query then sees earlier
-    // firings correctly, regardless of how the admin defined the rules.
+    // Ladder stability: within one evaluation, fire lower thresholds before higher
+    // ones so the ladder-delta read sees earlier commits.
     const rules = [...allRules].sort((a, b) => {
       if (a.type !== 'conditional' || b.type !== 'conditional') return 0;
       const ca = a.conditionJson as Record<string, unknown>;
@@ -286,15 +425,17 @@ export class GameEngineService {
       return 0;
     });
 
-    // Single todayStart for the entire evaluation — consistent across all rule checks.
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
 
-    const groupDay = dto.groupId ? await this.getGroupDay(dto.groupId) : null;
-    const state = await this.getOrCreateParticipantState(dto.participantId, dto.programId);
-    const results: { ruleId: string; fired: boolean; reason?: string; points?: number }[] = [];
+    const groupDay = dto.groupId ? await this.getGroupDay(dto.groupId, tx) : null;
+    const liveStreak = await this.getStreakLive(dto.participantId, dto.programId, tx);
+    const bucketKey = dayBucketKey(new Date());
+    const results: RuleResult[] = [];
 
-    for (const rule of rules) {
+    for (let idx = 0; idx < rules.length; idx++) {
+      const rule = rules[idx];
+
       // ── Activation gate ──────────────────────────────────────────────────
       if (rule.activationType === 'after_days') {
         if (groupDay === null || groupDay < (rule.activationDays ?? 0)) {
@@ -308,7 +449,7 @@ export class GameEngineService {
           results.push({ ruleId: rule.id, fired: false, reason: 'no_group_for_unlock_check' });
           continue;
         }
-        const unlock = await this.prisma.groupRuleUnlock.findUnique({
+        const unlock = await tx.groupRuleUnlock.findUnique({
           where: { groupId_ruleId: { groupId: dto.groupId, ruleId: rule.id } },
         });
         if (!unlock) {
@@ -323,12 +464,10 @@ export class GameEngineService {
       const rewardPoints = typeof reward['points'] === 'number' ? reward['points'] : 0;
 
       let conditionMet = false;
-      // pointsToAward defaults to full rewardPoints; overridden for threshold-ladder rules
       let pointsToAward = rewardPoints;
 
       if (rule.type === 'daily_bonus') {
-        // Fires once per day for any participant who submitted an action
-        const alreadyGiven = await this.prisma.scoreEvent.count({
+        const alreadyGiven = await tx.scoreEvent.count({
           where: {
             participantId: dto.participantId,
             programId: dto.programId,
@@ -341,10 +480,9 @@ export class GameEngineService {
 
       } else if (rule.type === 'streak') {
         const minStreak = typeof condition['minStreak'] === 'number' ? condition['minStreak'] : 1;
-        conditionMet = state.currentStreak >= minStreak;
-        // Award at most once per day per streak milestone
+        conditionMet = liveStreak.currentStreak >= minStreak;
         if (conditionMet) {
-          const alreadyGiven = await this.prisma.scoreEvent.count({
+          const alreadyGiven = await tx.scoreEvent.count({
             where: {
               participantId: dto.participantId,
               programId: dto.programId,
@@ -363,33 +501,25 @@ export class GameEngineService {
             typeof condition['threshold'] === 'number' ? (condition['threshold'] as number) : null;
 
           if (threshold !== null) {
-            // ── Threshold mode ───────────────────────────────────────────
-            // Compare the participant's effective daily value against the threshold.
-            // "effective daily value" depends on the action's aggregationMode:
-            //   latest_value    → max of all submitted values today
-            //   incremental_sum → sum of all submitted values today
             const effectiveValue = await this.getEffectiveDailyValue(
-              dto.participantId, dto.programId, requiredActionId, todayStart,
+              dto.participantId, dto.programId, requiredActionId, todayStart, tx,
             );
             conditionMet = effectiveValue >= threshold;
           } else {
-            // ── Presence mode (original behavior) ───────────────────────
-            // Fires when the participant has logged the action at least once today.
-            const logged = await this.prisma.userActionLog.count({
+            const logged = await tx.userActionLog.count({
               where: {
                 participantId: dto.participantId,
                 programId: dto.programId,
                 actionId: requiredActionId,
+                status: 'active',
                 createdAt: { gte: todayStart },
               },
             });
             conditionMet = logged > 0;
           }
 
-          // Dedup: fire at most once per day per rule (applies to both threshold and presence).
-          // This was missing for conditional rules before — it is now enforced consistently.
           if (conditionMet) {
-            const alreadyFired = await this.prisma.scoreEvent.count({
+            const alreadyFired = await tx.scoreEvent.count({
               where: {
                 participantId: dto.participantId,
                 programId: dto.programId,
@@ -401,15 +531,6 @@ export class GameEngineService {
             if (alreadyFired > 0) conditionMet = false;
           }
 
-          // ── Ladder delta for threshold rules ─────────────────────────
-          // rewardJson.points is the CUMULATIVE total deserved at this threshold level.
-          // To prevent double-awarding across the ladder, award only the delta above
-          // what has already been earned from ALL threshold rules for the same action today.
-          //
-          // Example ladder: 3000→10pts, 5000→20pts, 10000→40pts
-          //   submit 3000: alreadyEarned=0, delta=10-0=10  ✓
-          //   submit 5000: alreadyEarned=10, delta=20-10=10 ✓
-          //   submit 10000: alreadyEarned=20, delta=40-20=20 ✓
           if (conditionMet && threshold !== null) {
             const ladderRuleIds = rules
               .filter(r => {
@@ -423,7 +544,7 @@ export class GameEngineService {
               })
               .map(r => r.id);
 
-            const earned = await this.prisma.scoreEvent.aggregate({
+            const earned = await tx.scoreEvent.aggregate({
               _sum: { points: true },
               where: {
                 participantId: dto.participantId,
@@ -437,11 +558,8 @@ export class GameEngineService {
             const alreadyEarned = earned._sum.points ?? 0;
             const delta = rewardPoints - alreadyEarned;
 
-            if (delta <= 0) {
-              conditionMet = false; // nothing new to award at this level
-            } else {
-              pointsToAward = delta; // award only the marginal difference
-            }
+            if (delta <= 0) conditionMet = false;
+            else             pointsToAward = delta;
           }
         }
       }
@@ -451,36 +569,70 @@ export class GameEngineService {
         continue;
       }
 
-      // ── Fire the rule: create ScoreEvent ─────────────────────────────────
-      await this.prisma.scoreEvent.create({
-        data: {
-          participantId: dto.participantId,
-          programId: dto.programId,
-          groupId: dto.groupId ?? null,
-          sourceType: 'rule',
-          sourceId: rule.id,
-          points: pointsToAward,
-          metadata: { ruleName: rule.name, ruleType: rule.type },
-        },
-      });
+      const dependencyEventIds = await this.collectRuleDependencies(
+        rule, dto.participantId, dto.programId, todayStart, tx,
+      );
 
-      if (dto.groupId && pointsToAward > 0) {
-        await this.prisma.feedEvent.create({
+      // ── Savepoint-wrapped rule firing ────────────────────────────────────
+      // Savepoint name: simple ASCII identifier. Using the loop index is sufficient
+      // and avoids any injection surface from rule ids (which are cuids anyway).
+      const spName = `sp_rule_${idx}`;
+      await tx.$executeRawUnsafe(`SAVEPOINT ${spName}`);
+      try {
+        const ruleEvent = await tx.scoreEvent.create({
           data: {
             participantId: dto.participantId,
-            groupId: dto.groupId,
             programId: dto.programId,
-            type: 'rare',
-            message: `קיבלה בונוס: ${rule.name}`,
+            groupId: dto.groupId ?? null,
+            sourceType: 'rule',
+            sourceId: rule.id,
             points: pointsToAward,
-            isPublic: true,
-            // Store ruleId so deleteFeedEvent can precisely revoke the ScoreEvent
-            metadata: { ruleId: rule.id },
+            parentEventId: dto.triggeringEventId ?? null,
+            bucketKey,
+            metadata: { ruleName: rule.name, ruleType: rule.type },
           },
         });
-      }
 
-      results.push({ ruleId: rule.id, fired: true, points: pointsToAward });
+        if (dependencyEventIds.length > 0) {
+          await tx.scoreEventDependency.createMany({
+            data: dependencyEventIds.map((did) => ({
+              eventId: ruleEvent.id,
+              dependsOnEventId: did,
+            })),
+            skipDuplicates: true,
+          });
+        }
+
+        if (dto.groupId && pointsToAward > 0) {
+          await tx.feedEvent.create({
+            data: {
+              participantId: dto.participantId,
+              groupId: dto.groupId,
+              programId: dto.programId,
+              type: 'rare',
+              message: `קיבלה בונוס: ${rule.name}`,
+              points: pointsToAward,
+              isPublic: true,
+              scoreEventId: ruleEvent.id,
+              // Legacy JSON payload — kept only for historical FeedEvent consumers.
+              metadata: { ruleId: rule.id },
+            },
+          });
+        }
+
+        await tx.$executeRawUnsafe(`RELEASE SAVEPOINT ${spName}`);
+        results.push({ ruleId: rule.id, fired: true, points: pointsToAward });
+      } catch (e) {
+        // Roll back only this rule's changes; outer transaction stays alive.
+        await tx.$executeRawUnsafe(`ROLLBACK TO SAVEPOINT ${spName}`);
+        if (isUniqueViolation(e)) {
+          results.push({ ruleId: rule.id, fired: false, reason: 'concurrent_firing_deduped' });
+          continue;
+        }
+        // Non-unique error: re-throw. Outer tx will rollback everything — correct,
+        // because an unknown DB error means we cannot trust any subsequent writes.
+        throw e;
+      }
     }
 
     return results;
@@ -519,15 +671,17 @@ export class GameEngineService {
       }),
     ]);
 
-    const state = await this.getOrCreateParticipantState(participantId, programId);
+    // Streak is computed live from the ScoreEvent ledger — never read from
+    // ParticipantGameState (which is write-deprecated as of Phase 1).
+    const streak = await this.getStreakLive(participantId, programId);
 
     return {
       todayScore: todayRows._sum.points ?? 0,
       weekScore: weekRows._sum.points ?? 0,
       monthScore: monthRows._sum.points ?? 0,
       totalScore: totalRows._sum.points ?? 0,
-      currentStreak: state.currentStreak,
-      bestStreak: state.bestStreak,
+      currentStreak: streak.currentStreak,
+      bestStreak: streak.bestStreak,
     };
   }
 
@@ -625,11 +779,14 @@ export class GameEngineService {
         where: { groupId, participantId: { in: participantIds }, createdAt: { gte: weekStart } },
         _sum: { points: true },
       }),
+      // Live per-participant streak — ParticipantGameState is no longer a read source.
       group.programId
-        ? this.prisma.participantGameState.findMany({
-            where: { programId: group.programId, participantId: { in: participantIds } },
-            select: { participantId: true, currentStreak: true },
-          })
+        ? Promise.all(
+            participantIds.map(async (pid) => {
+              const s = await this.getStreakLive(pid, group.programId!);
+              return { participantId: pid, currentStreak: s.currentStreak };
+            }),
+          )
         : Promise.resolve([]),
     ]);
 
@@ -845,297 +1002,52 @@ export class GameEngineService {
     });
   }
 
-  // ─── Admin: delete feed event + matching score events ────────────────────────
+  // ─── Admin: delete feed event — DISABLED ─────────────────────────────────────
+  //
+  // The old implementation physically deleted ScoreEvent and UserActionLog rows,
+  // which violates the Phase 1 immutable-ledger invariant. It is disabled here
+  // with a 410 Gone so it cannot run — in any environment. Admins must use the
+  // correction service (correctLog / voidLog) once the Phase 5 admin UI lands.
+  //
+  // Left un-removed (argument-accepting signature preserved) so Nest's existing
+  // DELETE /admin/feed/:id endpoint fails loudly rather than 404'ing silently.
 
-  async deleteFeedEvent(feedEventId: string) {
-    const event = await this.prisma.feedEvent.findUnique({ where: { id: feedEventId } });
-    if (!event) throw new NotFoundException(`Feed event ${feedEventId} not found`);
-
-    // For rule FeedEvents (type='rare'), revoke the ScoreEvent directly via metadata.ruleId
-    if (event.type === 'rare') {
-      const meta = event.metadata as Record<string, unknown> | null;
-      const ruleId = typeof meta?.['ruleId'] === 'string' ? meta['ruleId'] : null;
-      await this.prisma.$transaction([
-        this.prisma.feedEvent.delete({ where: { id: feedEventId } }),
-        ...(ruleId
-          ? [this.prisma.scoreEvent.deleteMany({
-              where: { participantId: event.participantId, groupId: event.groupId, sourceType: 'rule', sourceId: ruleId, createdAt: { gte: new Date(event.createdAt.getTime() - 10_000) } },
-            })]
-          : []),
-      ]);
-      if (event.programId) {
-        await this.recomputeParticipantStreak(event.participantId, event.programId);
-      }
-      return { deleted: true, scoreEventsRemoved: ruleId ? 1 : 0 };
-    }
-
-    // Prefer direct lookup from FeedEvent.metadata (set by logAction for all new action events).
-    // Fall back to time-window matching for legacy rows that predate this field.
-    const eventMeta = event.metadata as Record<string, unknown> | null;
-    const directScoreEventId = typeof eventMeta?.['scoreEventId'] === 'string' ? eventMeta['scoreEventId'] : null;
-    const directLogId = typeof eventMeta?.['logId'] === 'string' ? eventMeta['logId'] : null;
-
-    // Read the action ScoreEvent before deletion to get the actionId (sourceId),
-    // so we can revoke orphaned rule ScoreEvents after the UAL is removed.
-    let actionId: string | null = null;
-    if (directScoreEventId) {
-      const se = await this.prisma.scoreEvent.findUnique({
-        where: { id: directScoreEventId },
-        select: { sourceId: true, sourceType: true },
-      });
-      if (se?.sourceType === 'action') actionId = se.sourceId;
-    }
-
-    let scoreEventIds: string[];
-    let logIds: string[];
-
-    if (directScoreEventId) {
-      // Fast path: exact IDs stored in metadata — no ambiguity possible
-      scoreEventIds = [directScoreEventId];
-      logIds = directLogId ? [directLogId] : [];
-    } else {
-      // Legacy fallback: time-window + points match (fragile but backwards-compatible)
-      const windowMs = 10_000;
-      const windowStart = new Date(event.createdAt.getTime() - windowMs);
-      const windowEnd = new Date(event.createdAt.getTime() + windowMs);
-
-      const matchingScoreEvents = await this.prisma.scoreEvent.findMany({
-        where: {
-          participantId: event.participantId,
-          groupId: event.groupId,
-          points: event.points,
-          createdAt: { gte: windowStart, lte: windowEnd },
-        },
-        select: { id: true, metadata: true },
-      });
-
-      scoreEventIds = matchingScoreEvents.map((se) => se.id);
-      logIds = matchingScoreEvents
-        .map((se) => {
-          const meta = se.metadata as Record<string, unknown> | null;
-          return typeof meta?.['logId'] === 'string' ? meta['logId'] : null;
-        })
-        .filter((id): id is string => id !== null);
-    }
-
-    // Delete atomically: feed event + its ScoreEvent(s) + the linked UAL
-    await this.prisma.$transaction([
-      this.prisma.feedEvent.delete({ where: { id: feedEventId } }),
-      ...scoreEventIds.map((id) =>
-        this.prisma.scoreEvent.delete({ where: { id } }),
-      ),
-      ...(logIds.length > 0
-        ? [this.prisma.userActionLog.deleteMany({ where: { id: { in: logIds } } })]
-        : []),
-    ]);
-
-    // Recompute streak from scratch so deletion cascades to participant state
-    const programId = event.programId;
-    if (programId) {
-      await this.recomputeParticipantStreak(event.participantId, programId);
-    }
-
-    // After the UAL is gone, revoke any threshold rule ScoreEvents that are
-    // no longer justified by the participant's current daily value.
-    if (actionId && programId && event.groupId && logIds.length > 0) {
-      const todayStart = new Date();
-      todayStart.setHours(0, 0, 0, 0);
-      await this.revokeOrphanedRuleScoreEvents(
-        event.participantId, programId, event.groupId, actionId, todayStart,
-      );
-    }
-
-    return { deleted: true, scoreEventsRemoved: scoreEventIds.length };
+  async deleteFeedEvent(_feedEventId: string): Promise<never> {
+    throw new GoneException(
+      'Legacy hard-delete path disabled. Feed events can no longer be deleted; ' +
+      'use the correction service (voidLog) to reverse the underlying submission.',
+    );
   }
 
-  // ─── Admin: bulk delete feed events ──────────────────────────────────────────
+  // ─── Admin: bulk delete feed events — DISABLED ──────────────────────────────
+  //
+  // Same rationale as deleteFeedEvent: the old implementation physically deleted
+  // ledger rows. Disabled with a 410 so legacy admin tools fail loudly instead
+  // of silently corrupting totals.
 
-  async bulkDeleteFeedEvents(feedEventIds: string[]) {
-    // Collect all events first so we know which participants need recompute
-    const events = await this.prisma.feedEvent.findMany({
-      where: { id: { in: feedEventIds } },
-      select: { id: true, participantId: true, programId: true, groupId: true, points: true, createdAt: true, metadata: true, type: true },
-    });
-
-    let totalScoreEventsRemoved = 0;
-    const affectedPairs = new Map<string, { participantId: string; programId: string }>();
-    // Track (participantId, programId, groupId, actionId) pairs that need rule revocation
-    const ruleRevocations = new Map<string, { participantId: string; programId: string; groupId: string; actionId: string }>();
-
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-
-    for (const event of events) {
-      // Rule FeedEvents (type='rare'): revoke the ScoreEvent via metadata.ruleId directly
-      if (event.type === 'rare') {
-        const meta = event.metadata as Record<string, unknown> | null;
-        const ruleId = typeof meta?.['ruleId'] === 'string' ? meta['ruleId'] : null;
-        await this.prisma.$transaction([
-          this.prisma.feedEvent.delete({ where: { id: event.id } }),
-          ...(ruleId
-            ? [this.prisma.scoreEvent.deleteMany({
-                where: { participantId: event.participantId, groupId: event.groupId,
-                  sourceType: 'rule', sourceId: ruleId,
-                  createdAt: { gte: new Date(event.createdAt.getTime() - 10_000) } },
-              })]
-            : []),
-        ]);
-        if (event.programId) {
-          const key = `${event.participantId}:${event.programId}`;
-          affectedPairs.set(key, { participantId: event.participantId, programId: event.programId });
-        }
-        continue;
-      }
-
-      // Action FeedEvents: prefer direct metadata lookup; fall back to time-window for legacy rows
-      const eventMeta = event.metadata as Record<string, unknown> | null;
-      const directScoreEventId = typeof eventMeta?.['scoreEventId'] === 'string' ? eventMeta['scoreEventId'] : null;
-      const directLogId = typeof eventMeta?.['logId'] === 'string' ? eventMeta['logId'] : null;
-
-      let scoreEventIds: string[];
-      let logIds: string[];
-      let actionId: string | null = null;
-
-      if (directScoreEventId) {
-        scoreEventIds = [directScoreEventId];
-        logIds = directLogId ? [directLogId] : [];
-        // Read actionId before deletion
-        const se = await this.prisma.scoreEvent.findUnique({
-          where: { id: directScoreEventId },
-          select: { sourceId: true, sourceType: true },
-        });
-        if (se?.sourceType === 'action') actionId = se.sourceId;
-      } else {
-        const windowMs = 10_000;
-        const windowStart = new Date(event.createdAt.getTime() - windowMs);
-        const windowEnd = new Date(event.createdAt.getTime() + windowMs);
-
-        const matchingScoreEvents = await this.prisma.scoreEvent.findMany({
-          where: {
-            participantId: event.participantId,
-            groupId: event.groupId,
-            points: event.points,
-            createdAt: { gte: windowStart, lte: windowEnd },
-          },
-          select: { id: true, metadata: true, sourceId: true, sourceType: true },
-        });
-
-        scoreEventIds = matchingScoreEvents.map((se) => se.id);
-        logIds = matchingScoreEvents
-          .map((se) => {
-            const meta = se.metadata as Record<string, unknown> | null;
-            return typeof meta?.['logId'] === 'string' ? meta['logId'] : null;
-          })
-          .filter((id): id is string => id !== null);
-        const actionSE = matchingScoreEvents.find((se) => se.sourceType === 'action');
-        if (actionSE) actionId = actionSE.sourceId;
-      }
-
-      await this.prisma.$transaction([
-        this.prisma.feedEvent.delete({ where: { id: event.id } }),
-        ...scoreEventIds.map((id) =>
-          this.prisma.scoreEvent.delete({ where: { id } }),
-        ),
-        ...(logIds.length > 0
-          ? [this.prisma.userActionLog.deleteMany({ where: { id: { in: logIds } } })]
-          : []),
-      ]);
-
-      totalScoreEventsRemoved += scoreEventIds.length;
-
-      if (event.programId) {
-        const key = `${event.participantId}:${event.programId}`;
-        affectedPairs.set(key, { participantId: event.participantId, programId: event.programId });
-        // Queue rule revocation if this deletion removed a UAL
-        if (actionId && event.groupId && logIds.length > 0) {
-          const ruleKey = `${event.participantId}:${event.programId}:${event.groupId}:${actionId}`;
-          ruleRevocations.set(ruleKey, { participantId: event.participantId, programId: event.programId, groupId: event.groupId, actionId });
-        }
-      }
-    }
-
-    // Recompute streak once per affected participant
-    await Promise.all(
-      Array.from(affectedPairs.values()).map(({ participantId, programId }) =>
-        this.recomputeParticipantStreak(participantId, programId),
-      ),
+  async bulkDeleteFeedEvents(_feedEventIds: string[]): Promise<never> {
+    throw new GoneException(
+      'Legacy bulk hard-delete path disabled. Feed events can no longer be deleted; ' +
+      'use the correction service (voidLog, per submission) to reverse underlying entries.',
     );
-
-    // After all UALs are deleted, revoke orphaned rule ScoreEvents once per unique action
-    await Promise.all(
-      Array.from(ruleRevocations.values()).map(({ participantId, programId, groupId, actionId }) =>
-        this.revokeOrphanedRuleScoreEvents(participantId, programId, groupId, actionId, todayStart),
-      ),
-    );
-
-    return { deleted: feedEventIds.length, scoreEventsRemoved: totalScoreEventsRemoved };
   }
 
-  // ─── Admin: reset all progress for a participant in a group ──────────────────
+  // ─── Admin: reset participant progress — DISABLED ────────────────────────────
+  //
+  // The old implementation hard-deleted FeedEvents, ScoreEvents, and UserActionLogs
+  // in bulk, which is the most dangerous of the three legacy paths (wipes history
+  // wholesale). Disabled with 410. A future admin tool must compose voidLog calls
+  // over the active chain heads if "reset this participant" is ever reintroduced.
 
-  async resetParticipantProgress(participantId: string, groupId: string) {
-    const group = await this.prisma.group.findUnique({
-      where: { id: groupId },
-      select: { programId: true },
-    });
-    if (!group) throw new NotFoundException(`Group ${groupId} not found`);
-    if (!group.programId) throw new NotFoundException(`Group ${groupId} has no program`);
-    const programId = group.programId;
-
-    // ── Step 1: UALs linked to THIS group's ScoreEvents ─────────────────────
-    // Read logIds from ScoreEvent.metadata before deleting them.
-    const groupScoreEvents = await this.prisma.scoreEvent.findMany({
-      where: { participantId, groupId },
-      select: { metadata: true },
-    });
-    const linkedLogIds: string[] = groupScoreEvents
-      .map((se) => {
-        const meta = se.metadata as Record<string, unknown> | null;
-        return typeof meta?.['logId'] === 'string' ? meta['logId'] : null;
-      })
-      .filter((id): id is string => id !== null);
-
-    // ── Step 2: Orphaned UALs for this program ───────────────────────────────
-    // UALs have no groupId field — they can only be attributed to a group via
-    // the ScoreEvent.metadata.logId link. If that link is missing (ScoreEvent
-    // already deleted by a prior bulkDelete run, or creation failure), the UAL
-    // becomes an orphan that silently inflates getEffectiveDailyValue forever.
-    // Always sweep these out, regardless of which group triggered the reset.
-    const allProgramScoreEvents = await this.prisma.scoreEvent.findMany({
-      where: { participantId, programId, sourceType: 'action' },
-      select: { metadata: true },
-    });
-    const allLinkedLogIds = new Set<string>(
-      allProgramScoreEvents
-        .map((se) => {
-          const meta = se.metadata as Record<string, unknown> | null;
-          return typeof meta?.['logId'] === 'string' ? meta['logId'] : null;
-        })
-        .filter((id): id is string => id !== null),
+  async resetParticipantProgress(
+    _participantId: string,
+    _groupId: string,
+  ): Promise<never> {
+    throw new GoneException(
+      'Legacy participant-reset path disabled. This endpoint previously hard-deleted ' +
+      'all ledger rows for a participant; a future admin UI must use voidLog over the ' +
+      'participant\'s active submission chain heads to achieve the same effect safely.',
     );
-    const allUALs = await this.prisma.userActionLog.findMany({
-      where: { participantId, programId },
-      select: { id: true },
-    });
-    const orphanedLogIds = allUALs
-      .map((u) => u.id)
-      .filter((id) => !allLinkedLogIds.has(id));
-
-    const ualIdsToDelete = [...new Set([...linkedLogIds, ...orphanedLogIds])];
-
-    // ── Step 3: Atomic deletion ──────────────────────────────────────────────
-    await this.prisma.$transaction([
-      this.prisma.feedEvent.deleteMany({ where: { participantId, groupId } }),
-      this.prisma.scoreEvent.deleteMany({ where: { participantId, groupId } }),
-      ...(ualIdsToDelete.length > 0
-        ? [this.prisma.userActionLog.deleteMany({ where: { id: { in: ualIdsToDelete } } })]
-        : []),
-    ]);
-
-    // Recompute streak from remaining ScoreEvents across the program.
-    await this.recomputeParticipantStreak(participantId, programId);
-
-    return { reset: true, participantId, groupId, programId };
   }
 
   // ─── Private helpers ────────────────────────────────────────────────────────
@@ -1152,17 +1064,62 @@ export class GameEngineService {
    * This is the value that threshold rules evaluate against. It is also used by logAction
    * to enforce the monotonic-increase constraint for latest_value actions.
    */
+
+  /**
+   * Resolve the action ScoreEvents that a firing rule depends on. Rows returned here
+   * become ScoreEventDependency links; future voiding of any dependency triggers
+   * compensation of the rule event.
+   *
+   * Scope (Phase 1): today's action events for the relevant action(s).
+   *   - daily_bonus: any action event today
+   *   - conditional(actionId): action events today with that actionId
+   *   - streak: today's action events (narrow; full-streak-tail cascade is Phase 5)
+   */
+  private async collectRuleDependencies(
+    rule: { id: string; type: string; conditionJson: Prisma.JsonValue },
+    participantId: string,
+    programId: string,
+    todayStart: Date,
+    db: DbClient = this.prisma,
+  ): Promise<string[]> {
+    const condition = rule.conditionJson as Record<string, unknown>;
+    const where: Prisma.ScoreEventWhereInput = {
+      participantId,
+      programId,
+      sourceType: 'action',
+      createdAt: { gte: todayStart },
+    };
+    if (rule.type === 'conditional' && typeof condition['actionId'] === 'string') {
+      where.sourceId = condition['actionId'] as string;
+    }
+    const rows = await db.scoreEvent.findMany({
+      where,
+      select: { id: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    return rows.map((r) => r.id);
+  }
+
   private async getEffectiveDailyValue(
     participantId: string,
     programId: string,
     actionId: string,
     todayStart: Date,
+    db: DbClient = this.prisma,
   ): Promise<number> {
-    const action = await this.prisma.gameAction.findUnique({ where: { id: actionId } });
+    const action = await db.gameAction.findUnique({ where: { id: actionId } });
     if (!action || action.inputType !== 'number') return 0;
 
-    const logs = await this.prisma.userActionLog.findMany({
-      where: { participantId, programId, actionId, createdAt: { gte: todayStart } },
+    // Superseded/voided logs MUST be excluded — they no longer contribute to the
+    // participant's effective total. Only active logs anchor the daily value.
+    const logs = await db.userActionLog.findMany({
+      where: {
+        participantId,
+        programId,
+        actionId,
+        status: 'active',
+        createdAt: { gte: todayStart },
+      },
     });
 
     const values = logs
@@ -1180,87 +1137,44 @@ export class GameEngineService {
     return 0; // 'none' mode — no meaningful daily total
   }
 
-  /**
-   * After an action's UAL is deleted, threshold rules that referenced that action
-   * may no longer be justified. Delete ScoreEvents (and their FeedEvents) for any
-   * rule whose threshold the participant no longer meets today.
-   *
-   * Called by deleteFeedEvent and bulkDeleteFeedEvents after UAL deletion.
-   */
-  private async revokeOrphanedRuleScoreEvents(
-    participantId: string,
-    programId: string,
+  // revokeOrphanedRuleScoreEvents was removed with Phase 1 Task 2: it was the
+  // rule-side cleanup for the legacy hard-delete paths. Those paths are disabled
+  // (deleteFeedEvent / bulkDeleteFeedEvents / resetParticipantProgress now throw
+  // 410). The rule cascade on correction is a Phase 5 concern — ScoreEventDependency
+  // rows are written today and will be consumed by the future cascade.
+
+  private async getGroupDay(
     groupId: string,
-    actionId: string,
-    todayStart: Date,
-  ): Promise<void> {
-    const allRules = await this.prisma.gameRule.findMany({
-      where: { programId, type: 'conditional' },
-    });
-    // Only threshold rules that check this specific action
-    const thresholdRules = allRules.filter((r) => {
-      const c = r.conditionJson as Record<string, unknown> | null;
-      return (
-        typeof c?.['actionId'] === 'string' &&
-        c['actionId'] === actionId &&
-        typeof c?.['threshold'] === 'number'
-      );
-    });
-    if (thresholdRules.length === 0) return;
-
-    const currentValue = await this.getEffectiveDailyValue(
-      participantId, programId, actionId, todayStart,
-    );
-
-    for (const rule of thresholdRules) {
-      const threshold = (rule.conditionJson as Record<string, unknown>)['threshold'] as number;
-      if (currentValue >= threshold) continue; // rule still justified — leave it
-
-      // Delete the unjustified rule ScoreEvent for today in this group
-      await this.prisma.scoreEvent.deleteMany({
-        where: {
-          participantId, groupId, programId,
-          sourceType: 'rule', sourceId: rule.id,
-          createdAt: { gte: todayStart },
-        },
-      });
-
-      // Delete the corresponding rule FeedEvent (type='rare').
-      // New FeedEvents have metadata.ruleId for exact matching;
-      // legacy ones are matched by points value.
-      const rewardPts =
-        typeof (rule.rewardJson as Record<string, unknown> | null)?.['points'] === 'number'
-          ? ((rule.rewardJson as Record<string, unknown>)['points'] as number)
-          : null;
-
-      const candidates = await this.prisma.feedEvent.findMany({
-        where: { participantId, groupId, programId, type: 'rare', createdAt: { gte: todayStart } },
-        select: { id: true, metadata: true, points: true },
-      });
-      const toDelete = candidates
-        .filter((fe) => {
-          const meta = fe.metadata as Record<string, unknown> | null;
-          if (typeof meta?.['ruleId'] === 'string') return meta['ruleId'] === rule.id;
-          return rewardPts !== null && fe.points === rewardPts; // legacy fallback
-        })
-        .map((fe) => fe.id);
-      if (toDelete.length > 0) {
-        await this.prisma.feedEvent.deleteMany({ where: { id: { in: toDelete } } });
-      }
-    }
+    db: DbClient = this.prisma,
+  ): Promise<number | null> {
+    // Inside a transaction we compute currentDay from startDate without triggering
+    // getGroupState's side-effect update (that write does not belong inside the
+    // submission transaction and would muddy rollback semantics).
+    const state = await db.groupGameState.findUnique({ where: { groupId } });
+    if (!state) return null;
+    const diffMs = Date.now() - state.startDate.getTime();
+    return Math.max(1, Math.floor(diffMs / 86_400_000) + 1);
   }
 
-  private async getGroupDay(groupId: string): Promise<number | null> {
-    const state = await this.getGroupState(groupId);
-    return state ? state.currentDay : null;
-  }
-
-  private async getOrCreateParticipantState(participantId: string, programId: string) {
-    return this.prisma.participantGameState.upsert({
-      where: { participantId_programId: { participantId, programId } },
-      create: { participantId, programId },
-      update: {},
-    });
+  /**
+   * DEPRECATED — Phase 1 decision Q3: ParticipantGameState writes are stopped.
+   * The method is retained as a no-op returning inert defaults so legacy callers
+   * continue to compile. All streak reads route through getStreakLive() instead.
+   *
+   * Safe to delete once the ParticipantGameState table is dropped in a later phase.
+   */
+  private async getOrCreateParticipantState(_participantId: string, _programId: string) {
+    return {
+      id: '',
+      participantId: _participantId,
+      programId: _programId,
+      currentStreak: 0,
+      bestStreak: 0,
+      lastActionDate: null,
+      shieldsRemaining: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
   }
 
   // ─── Admin bypass link ────────────────────────────────────────────────────
@@ -1278,49 +1192,28 @@ export class GameEngineService {
     return { sig };
   }
 
-  private async updateParticipantStreak(participantId: string, programId: string, now: Date) {
-    const state = await this.getOrCreateParticipantState(participantId, programId);
-
-    const today = new Date(now);
-    today.setHours(0, 0, 0, 0);
-
-    const yesterday = new Date(today);
-    yesterday.setDate(today.getDate() - 1);
-
-    let newStreak = state.currentStreak;
-
-    if (!state.lastActionDate) {
-      newStreak = 1;
-    } else {
-      const last = new Date(state.lastActionDate);
-      last.setHours(0, 0, 0, 0);
-
-      if (last.getTime() === today.getTime()) {
-        // Already logged today — streak unchanged
-        return;
-      } else if (last.getTime() === yesterday.getTime()) {
-        // Consecutive day — extend streak
-        newStreak = state.currentStreak + 1;
-      } else {
-        // Gap — reset streak
-        newStreak = 1;
-      }
-    }
-
-    const newBest = Math.max(state.bestStreak, newStreak);
-
-    await this.prisma.participantGameState.update({
-      where: { participantId_programId: { participantId, programId } },
-      data: { currentStreak: newStreak, bestStreak: newBest, lastActionDate: now },
-    });
+  /**
+   * DEPRECATED — Phase 1 Q3: no-op. Streak is derived live from ScoreEvents.
+   * Retained so legacy deleteFeedEvent paths continue to compile without behavior change.
+   */
+  private async updateParticipantStreak(
+    _participantId: string,
+    _programId: string,
+    _now: Date,
+  ): Promise<void> {
+    return;
   }
 
   /**
    * Compute currentStreak and bestStreak directly from ScoreEvent history without touching the DB.
    * Used by stats endpoints so streak is always derived from live data, never stale stored state.
    */
-  async getStreakLive(participantId: string, programId: string): Promise<{ currentStreak: number; bestStreak: number }> {
-    const scoreEvents = await this.prisma.scoreEvent.findMany({
+  async getStreakLive(
+    participantId: string,
+    programId: string,
+    db: DbClient = this.prisma,
+  ): Promise<{ currentStreak: number; bestStreak: number }> {
+    const scoreEvents = await db.scoreEvent.findMany({
       where: { participantId, programId, sourceType: 'action' },
       select: { createdAt: true },
       orderBy: { createdAt: 'asc' },
@@ -1359,75 +1252,239 @@ export class GameEngineService {
   }
 
   /**
-   * Full recompute of currentStreak, bestStreak, lastActionDate from ScoreEvent history.
-   * Called after any deletion so stored values always reflect actual event data.
+   * DEPRECATED — Phase 1 Q3: no-op. Readers use getStreakLive() instead.
+   * Legacy deleteFeedEvent paths still call this; kept to preserve that behavior as a no-op.
    */
-  private async recomputeParticipantStreak(participantId: string, programId: string) {
-    // Fetch all action ScoreEvents for this participant in this program, oldest first
-    const scoreEvents = await this.prisma.scoreEvent.findMany({
-      where: { participantId, programId, sourceType: 'action' },
-      select: { createdAt: true },
-      orderBy: { createdAt: 'asc' },
+  private async recomputeParticipantStreak(
+    _participantId: string,
+    _programId: string,
+  ): Promise<void> {
+    return;
+  }
+
+  // ─── Corrections (Phase 1 Foundation) ───────────────────────────────────────
+  //
+  // Invariants:
+  //   - Only the ACTIVE head of a supersession chain may be corrected or voided.
+  //   - Every correction/voiding runs inside a single SERIALIZABLE transaction:
+  //       supersede-old, insert-new (correctLog only), compensate-old-event,
+  //       insert-new-event (correctLog only), hide-old-feed. Either all writes
+  //       commit or none do.
+  //   - supersedesId is UNIQUE → concurrent edits race; the loser gets 409.
+  //   - chainRootId is inherited from the root so the chain stays discoverable.
+  //   - The compensating ScoreEvent carries sourceType='correction' and
+  //     parentEventId pointing to the event it reverses. Points are the negation
+  //     of the original event's points. The correction event never has a logId.
+  //   - Rule events that depended on the voided action event are NOT auto-cascaded
+  //     in Phase 1 (full cascade is Phase 5). ScoreEventDependency rows are left
+  //     in place so the cascade can be added later without data loss.
+  //
+  // These methods are intentionally service-layer only — no controller endpoints
+  // are exposed in Phase 1 (decision Q8).
+
+  /**
+   * Apply a correction to an existing log. Produces a new active log that supersedes
+   * the old one, plus a compensating ScoreEvent that reverses the old points and a
+   * new ScoreEvent for the corrected points.
+   *
+   * Returns the NEW active log and the newly created action ScoreEvent.
+   */
+  async correctLog(dto: CorrectLogDto) {
+    const oldLog = await this.prisma.userActionLog.findUnique({
+      where: { id: dto.logId },
+      include: { action: true },
     });
-
-    if (scoreEvents.length === 0) {
-      await this.prisma.participantGameState.upsert({
-        where: { participantId_programId: { participantId, programId } },
-        create: { participantId, programId, currentStreak: 0, bestStreak: 0, lastActionDate: null },
-        update: { currentStreak: 0, bestStreak: 0, lastActionDate: null },
-      });
-      return;
+    if (!oldLog) throw new NotFoundException(`Log ${dto.logId} not found`);
+    if (oldLog.status !== 'active') {
+      throw new BadRequestException(
+        `Log ${dto.logId} is not active (status=${oldLog.status}). ` +
+        `Only the active head of a chain may be corrected.`,
+      );
     }
 
-    // Build a sorted set of unique calendar days (UTC midnight timestamps)
-    const daySet = new Set<number>();
-    for (const se of scoreEvents) {
-      const d = new Date(se.createdAt);
-      d.setHours(0, 0, 0, 0);
-      daySet.add(d.getTime());
-    }
-    const days = Array.from(daySet).sort((a, b) => a - b);
+    const newValue = dto.value ?? oldLog.value;
+    // If contextJson is explicitly undefined, keep old. If provided (even as {}), replace.
+    const nextContextRaw = dto.contextJson !== undefined ? dto.contextJson : oldLog.contextJson;
+    const validatedContext = validateContext(oldLog.action.contextSchemaJson, nextContextRaw);
 
-    // Compute bestStreak across all history
-    let best = 1;
-    let run = 1;
-    const DAY_MS = 86_400_000;
-    for (let i = 1; i < days.length; i++) {
-      if (days[i] - days[i - 1] === DAY_MS) {
-        run++;
-        if (run > best) best = run;
-      } else {
-        run = 1;
-      }
-    }
-
-    // Compute currentStreak — consecutive days ending today or yesterday
-    const now = new Date();
-    now.setHours(0, 0, 0, 0);
-    const yesterday = new Date(now.getTime() - DAY_MS);
-
-    const lastDay = days[days.length - 1];
-    let currentStreak = 0;
-
-    // Streak is live only if the last action was today or yesterday
-    if (lastDay === now.getTime() || lastDay === yesterday.getTime()) {
-      currentStreak = 1;
-      for (let i = days.length - 2; i >= 0; i--) {
-        if (days[i + 1] - days[i] === DAY_MS) {
-          currentStreak++;
-        } else {
-          break;
+    // Compute new effectiveValue + points the same way logAction does.
+    let effectiveValue: Prisma.Decimal | null = null;
+    let newPoints = oldLog.action.points;
+    if (oldLog.action.inputType === 'number') {
+      const parsed = parseFloat(newValue);
+      if (!isNaN(parsed)) {
+        effectiveValue = new Prisma.Decimal(parsed);
+        if (oldLog.action.aggregationMode === 'incremental_sum' && parsed > 0) {
+          newPoints = Math.round(oldLog.action.points * parsed);
         }
       }
     }
 
-    const lastActionDate = scoreEvents[scoreEvents.length - 1].createdAt;
-
-    await this.prisma.participantGameState.upsert({
-      where: { participantId_programId: { participantId, programId } },
-      create: { participantId, programId, currentStreak, bestStreak: best, lastActionDate },
-      update: { currentStreak, bestStreak: best, lastActionDate },
+    // Find the original action ScoreEvent for compensation.
+    const oldScoreEvent = await this.prisma.scoreEvent.findFirst({
+      where: { logId: oldLog.id, sourceType: 'action' },
     });
+    if (!oldScoreEvent) {
+      // Should be impossible given the CHECK constraint on action-type events.
+      throw new BadRequestException(
+        `Internal inconsistency: active log ${oldLog.id} has no action ScoreEvent.`,
+      );
+    }
+
+    try {
+      return await this.prisma.$transaction(
+        async (tx) => {
+          // 1. Mark old log superseded. supersedesId on the new log is the unique
+          //    chain-anchor; its uniqueness closes the forked-correction race.
+          await tx.userActionLog.update({
+            where: { id: oldLog.id },
+            data: { status: 'superseded', editedAt: new Date(), editedByRole: dto.actorRole },
+          });
+
+          // 2. Create the new active log, inheriting chainRootId.
+          const newLog = await tx.userActionLog.create({
+            data: {
+              participantId: oldLog.participantId,
+              programId: oldLog.programId,
+              actionId: oldLog.actionId,
+              value: newValue,
+              effectiveValue: effectiveValue ?? undefined,
+              contextJson: (validatedContext ?? undefined) as Prisma.InputJsonValue | undefined,
+              status: 'active',
+              supersedesId: oldLog.id,
+              schemaVersion: oldLog.action.contextSchemaVersion,
+              chainRootId: oldLog.chainRootId,
+              editedByRole: dto.actorRole,
+              editedAt: new Date(),
+            },
+          });
+
+          // 3. Compensating ScoreEvent — reverses the old points.
+          //    sourceType='correction', logId=NULL (CHECK only enforces non-null for 'action').
+          const compensation = await tx.scoreEvent.create({
+            data: {
+              participantId: oldLog.participantId,
+              programId: oldLog.programId,
+              groupId: oldScoreEvent.groupId,
+              sourceType: 'correction',
+              sourceId: oldLog.actionId,
+              points: -oldScoreEvent.points,
+              parentEventId: oldScoreEvent.id,
+              metadata: {
+                reason: 'correction',
+                supersededScoreEventId: oldScoreEvent.id,
+                supersededLogId: oldLog.id,
+                actorRole: dto.actorRole,
+              },
+            },
+          });
+
+          // 4. New ScoreEvent for the corrected value — linked to the new log,
+          //    same CHECK-enforced invariant as a fresh submission.
+          const newScoreEvent = await tx.scoreEvent.create({
+            data: {
+              participantId: oldLog.participantId,
+              programId: oldLog.programId,
+              groupId: oldScoreEvent.groupId,
+              sourceType: 'action',
+              sourceId: oldLog.actionId,
+              points: newPoints,
+              logId: newLog.id,
+              metadata: {
+                actionName: oldLog.action.name,
+                value: newValue,
+                correctedFromLogId: oldLog.id,
+              },
+            },
+          });
+
+          // 5. Hide the legacy FeedEvent for the old log (if any) by flipping isPublic.
+          //    We don't delete — keeping the row preserves audit trail and
+          //    backwards-compatibility with deleteFeedEvent (legacy path).
+          await tx.feedEvent.updateMany({
+            where: { logId: oldLog.id, type: 'action' },
+            data: { isPublic: false },
+          });
+
+          return {
+            oldLog,
+            newLog,
+            compensationScoreEvent: compensation,
+            newScoreEvent,
+          };
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      );
+    } catch (e) {
+      if (isUniqueViolation(e)) {
+        // Concurrent edit won — supersedesId collision.
+        throw new ConflictException(
+          `Log ${dto.logId} was corrected by another request. Reload and retry.`,
+        );
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * Void an active log (hard delete in UX terms, compensation in ledger terms).
+   * Produces a superseded-with-no-successor state: the log is marked 'voided',
+   * its points are compensated, and no new log is created.
+   */
+  async voidLog(dto: VoidLogDto) {
+    const oldLog = await this.prisma.userActionLog.findUnique({
+      where: { id: dto.logId },
+    });
+    if (!oldLog) throw new NotFoundException(`Log ${dto.logId} not found`);
+    if (oldLog.status !== 'active') {
+      throw new BadRequestException(
+        `Log ${dto.logId} is not active (status=${oldLog.status}).`,
+      );
+    }
+
+    const oldScoreEvent = await this.prisma.scoreEvent.findFirst({
+      where: { logId: oldLog.id, sourceType: 'action' },
+    });
+    if (!oldScoreEvent) {
+      throw new BadRequestException(
+        `Internal inconsistency: active log ${oldLog.id} has no action ScoreEvent.`,
+      );
+    }
+
+    return await this.prisma.$transaction(
+      async (tx) => {
+        await tx.userActionLog.update({
+          where: { id: oldLog.id },
+          data: { status: 'voided', editedAt: new Date(), editedByRole: dto.actorRole },
+        });
+
+        const compensation = await tx.scoreEvent.create({
+          data: {
+            participantId: oldLog.participantId,
+            programId: oldLog.programId,
+            groupId: oldScoreEvent.groupId,
+            sourceType: 'correction',
+            sourceId: oldLog.actionId,
+            points: -oldScoreEvent.points,
+            parentEventId: oldScoreEvent.id,
+            metadata: {
+              reason: 'void',
+              supersededScoreEventId: oldScoreEvent.id,
+              supersededLogId: oldLog.id,
+              actorRole: dto.actorRole,
+            },
+          },
+        });
+
+        await tx.feedEvent.updateMany({
+          where: { logId: oldLog.id, type: 'action' },
+          data: { isPublic: false },
+        });
+
+        return { voidedLog: oldLog, compensationScoreEvent: compensation };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    );
   }
 
 }

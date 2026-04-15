@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Post, Query } from '@nestjs/common';
 import { IsOptional, IsString } from 'class-validator';
 import {
   ParticipantPortalService,
@@ -32,12 +32,16 @@ export class ParticipantPortalController {
   }
 
   // POST /api/public/participant/:token/log
+  //
+  // Accepts the optional HTTP header `Idempotency-Key`. Retries that carry the
+  // same key collapse to one stored submission and return the original result.
   @Post(':token/log')
   logAction(
     @Param('token') token: string,
     @Body() dto: LogActionPortalDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
   ): Promise<{ pointsEarned: number; todayScore: number; todayValue: number | null }> {
-    return this.portalService.logAction(token, dto);
+    return this.portalService.logAction(token, dto, idempotencyKey);
   }
 
   // GET /api/public/participant/:token/stats

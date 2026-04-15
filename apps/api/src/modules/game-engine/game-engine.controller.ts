@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  Headers,
   Param,
   Patch,
   Post,
@@ -92,8 +93,17 @@ export class GameEngineController {
   constructor(private readonly svc: GameEngineService) {}
 
   // POST /api/game/actions/log
+  //
+  // Accepts the optional HTTP header `Idempotency-Key`. If the same key is
+  // resent for an already-processed submission, the original result is returned
+  // and no duplicate ScoreEvent is created. Header takes precedence over any
+  // clientSubmissionId already on the DTO body.
   @Post('actions/log')
-  logAction(@Body() dto: LogActionDto) {
+  logAction(
+    @Body() dto: LogActionDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    if (idempotencyKey) dto.clientSubmissionId = idempotencyKey;
     return this.svc.logAction(dto);
   }
 
@@ -176,13 +186,15 @@ export class GameEngineController {
     return this.svc.getAdminFeed(groupId, participantId, limit ? parseInt(limit) : 50);
   }
 
-  // DELETE /api/game/admin/feed/:feedEventId
+  // DELETE /api/game/admin/feed/:feedEventId — DISABLED (returns 410)
+  // The underlying service throws GoneException. Admin UIs that still wire this
+  // endpoint will surface a hard failure, which is the intended behavior.
   @Delete('admin/feed/:feedEventId')
   deleteFeedEvent(@Param('feedEventId') feedEventId: string) {
     return this.svc.deleteFeedEvent(feedEventId);
   }
 
-  // POST /api/game/admin/feed/bulk-delete
+  // POST /api/game/admin/feed/bulk-delete — DISABLED (returns 410)
   @Post('admin/feed/bulk-delete')
   bulkDeleteFeedEvents(@Body() body: { ids: string[] }) {
     return this.svc.bulkDeleteFeedEvents(body.ids);
@@ -196,9 +208,10 @@ export class GameEngineController {
     return this.svc.getBypassLink(accessToken);
   }
 
-  // POST /api/game/admin/reset-participant?participantId=&groupId=
-  // Atomically deletes all FeedEvents, ScoreEvents, and UserActionLogs for this
-  // participant in the given group, then zeroes out their game state.
+  // POST /api/game/admin/reset-participant — DISABLED (returns 410)
+  // Previously hard-deleted all FeedEvents, ScoreEvents, and UserActionLogs for a
+  // participant. Violates the Phase 1 immutable-ledger invariant. Now throws 410;
+  // a future admin tool must compose voidLog over active chain heads instead.
   @Post('admin/reset-participant')
   resetParticipantProgress(
     @Query('participantId') participantId: string,
