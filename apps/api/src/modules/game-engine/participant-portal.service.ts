@@ -13,6 +13,35 @@ function startOfDayUTC(d: Date): Date {
 }
 
 /**
+ * Phase 3.1: remove hidden context dimensions before sending the action schema
+ * to the participant. Hidden = `visibleToParticipant === false`.
+ * Also strips the `visibleToParticipant` flag itself from the output so the
+ * participant never receives internal metadata.
+ * Returns `null` if the resulting dimensions array is empty (participant UI
+ * treats `null` as "no context prompt at all").
+ */
+function stripHiddenDimensions(
+  raw: unknown,
+): Record<string, unknown> | null {
+  if (raw === null || raw === undefined || typeof raw !== 'object') return null;
+  const dims = (raw as { dimensions?: unknown }).dimensions;
+  if (!Array.isArray(dims)) return null;
+  const visible = dims
+    .filter((d): d is Record<string, unknown> => {
+      if (!d || typeof d !== 'object') return false;
+      return (d as { visibleToParticipant?: boolean }).visibleToParticipant !== false;
+    })
+    .map((d) => {
+      const { visibleToParticipant: _drop, ...rest } = d as Record<string, unknown> & {
+        visibleToParticipant?: boolean;
+      };
+      return rest;
+    });
+  if (visible.length === 0) return null;
+  return { dimensions: visible };
+}
+
+/**
  * Resolve an inclusive UTC [sinceMidnight, untilEndOfDay] window from caller options.
  *
  * Precedence:
@@ -296,7 +325,10 @@ export class ParticipantPortalService {
         points: a.points,
         maxPerDay: a.maxPerDay,
         // Phase 3: surface the schema so the participant UI can render fields.
-        contextSchemaJson: a.contextSchemaJson as Record<string, unknown> | null,
+        // Phase 3.1: hidden dimensions (visibleToParticipant === false) are
+        // stripped here — the participant never learns they exist. The
+        // visibility flag itself is also stripped from the output.
+        contextSchemaJson: stripHiddenDimensions(a.contextSchemaJson),
         contextSchemaVersion: a.contextSchemaVersion,
       })),
       todayScore: scoreAgg._sum.points ?? 0,

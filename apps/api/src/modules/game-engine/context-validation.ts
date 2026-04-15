@@ -22,6 +22,13 @@ export interface ContextDimension {
   label: string;
   type: ContextDimensionType;
   required?: boolean;
+  /**
+   * Phase 3.1: participant-facing visibility.
+   *   true  (default)  — rendered in the submission sheet, participant fills it.
+   *   false            — hidden. Participant never sees it; backend may later
+   *                      attach a computed/default value. Not required on submit.
+   */
+  visibleToParticipant?: boolean;
   /** For type='select' only. */
   options?: ContextDimensionOption[];
   /** For type='number' only. Inclusive bounds. */
@@ -77,8 +84,14 @@ export function validateContext(
     const raw = ctx ? ctx[dim.key] : undefined;
     const provided = raw !== undefined && raw !== null && raw !== '';
 
+    // Phase 3.1: hidden dimensions never come from the participant. They are
+    // not required from her perspective. If somehow populated (e.g. an admin
+    // tool or a future backend computation), they still validate against the
+    // schema via the same rules below.
+    const isHidden = dim.visibleToParticipant === false;
+
     if (!provided) {
-      if (dim.required) {
+      if (dim.required && !isHidden) {
         throw new BadRequestException(`Missing required context field: "${dim.key}".`);
       }
       continue;
@@ -174,6 +187,9 @@ function parseSchema(raw: unknown): ContextSchema | null {
     }
     if (!['select', 'text', 'number', 'time'].includes(dd.type)) {
       throw new BadRequestException(`Dimension "${dd.key}" has invalid type "${dd.type}".`);
+    }
+    if (dd.visibleToParticipant !== undefined && typeof dd.visibleToParticipant !== 'boolean') {
+      throw new BadRequestException(`Dimension "${dd.key}" has invalid visibleToParticipant.`);
     }
     if (dd.type === 'select') {
       const opts = dd.options;

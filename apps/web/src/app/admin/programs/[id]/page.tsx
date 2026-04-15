@@ -379,11 +379,51 @@ interface ContextOption {
 }
 
 interface ContextField {
+  /**
+   * Internal slug. Auto-generated from `label` on save for new fields.
+   * NEVER surfaced in the admin UI — kept in form state only so existing
+   * fields preserve their key across edits (so UserActionLog.contextJson
+   * keeps resolving to the same dimension after label tweaks).
+   */
   key: string;
   label: string;
   type: ContextFieldType;
   required?: boolean;
+  /** Phase 3.1: if false, field is hidden from the participant UI. */
+  visibleToParticipant?: boolean;
   options?: ContextOption[]; // select only
+}
+
+// Hebrew → ASCII transliteration map for key generation. Not a perfect
+// transcription — just enough to produce a deterministic, unique, DB-safe
+// slug from a Hebrew label. Keys are internal identifiers, never displayed.
+const HEB_TRANSLIT: Record<string, string> = {
+  'א': 'a', 'ב': 'b', 'ג': 'g', 'ד': 'd', 'ה': 'h',
+  'ו': 'v', 'ז': 'z', 'ח': 'ch', 'ט': 't', 'י': 'y',
+  'כ': 'k', 'ך': 'k', 'ל': 'l', 'מ': 'm', 'ם': 'm',
+  'נ': 'n', 'ן': 'n', 'ס': 's', 'ע': 'a', 'פ': 'p',
+  'ף': 'p', 'צ': 'tz', 'ץ': 'tz', 'ק': 'k', 'ר': 'r',
+  'ש': 'sh', 'ת': 't',
+};
+
+function slugifyLabel(label: string): string {
+  const lowered = label.trim().toLowerCase();
+  let out = '';
+  for (const ch of lowered) {
+    if (HEB_TRANSLIT[ch]) out += HEB_TRANSLIT[ch];
+    else if (/[a-z0-9]/.test(ch)) out += ch;
+    else out += '_';
+  }
+  out = out.replace(/_+/g, '_').replace(/^_|_$/g, '');
+  if (!out || /^[0-9]/.test(out)) out = out ? `field_${out}` : 'field';
+  return out;
+}
+
+function uniqueKey(base: string, taken: Set<string>): string {
+  if (!taken.has(base)) return base;
+  let n = 2;
+  while (taken.has(`${base}_${n}`)) n += 1;
+  return `${base}_${n}`;
 }
 
 interface ContextSchemaJson {
@@ -587,10 +627,11 @@ function ContextFieldsBuilder({
     onChange([
       ...fields,
       {
-        key: '',
+        key: '', // auto-generated on save
         label: '',
         type: 'select',
         required: true,
+        visibleToParticipant: true,
         options: [{ value: '', label: '' }],
       },
     ]);
@@ -647,29 +688,17 @@ function ContextFieldsBuilder({
             </div>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-            <div>
-              <label style={miniLabelStyle}>תווית (מה המשתתפת רואה)</label>
-              <input
-                style={inputStyle}
-                value={f.label}
-                onChange={(e) => patch(i, { label: e.target.value })}
-                placeholder="למשל: ארוחה"
-              />
-            </div>
-            <div>
-              <label style={miniLabelStyle}>מפתח (פנימי, באנגלית)</label>
-              <input
-                style={inputStyle}
-                value={f.key}
-                onChange={(e) => patch(i, { key: e.target.value })}
-                placeholder="meal_period"
-                dir="ltr"
-              />
-            </div>
+          <div>
+            <label style={miniLabelStyle}>תווית (מה המשתתפת רואה)</label>
+            <input
+              style={inputStyle}
+              value={f.label}
+              onChange={(e) => patch(i, { label: e.target.value })}
+              placeholder="למשל: ארוחה"
+            />
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 8, alignItems: 'end' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 10, alignItems: 'end' }}>
             <div>
               <label style={miniLabelStyle}>סוג</label>
               <select
@@ -688,7 +717,7 @@ function ContextFieldsBuilder({
                 ))}
               </select>
             </div>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#374151', cursor: 'pointer' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#374151', cursor: 'pointer', whiteSpace: 'nowrap' }}>
               <input
                 type="checkbox"
                 checked={!!f.required}
@@ -696,25 +725,31 @@ function ContextFieldsBuilder({
               />
               חובה
             </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#374151', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+              <input
+                type="checkbox"
+                checked={f.visibleToParticipant !== false}
+                onChange={(e) => patch(i, { visibleToParticipant: e.target.checked })}
+              />
+              להציג למשתתפת
+            </label>
           </div>
 
           {f.type === 'select' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6, borderTop: '1px solid #f1f5f9', paddingTop: 10 }}>
               <div style={miniLabelStyle}>אפשרויות</div>
               {(f.options ?? []).map((o, oi) => (
-                <div key={oi} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 28px', gap: 6 }}>
+                // Phase 3.1: admins enter only the visible label per option.
+                // Internal `value` is auto-derived from label on save (same
+                // slugify pipeline as the field key). Existing option values
+                // are preserved across edits so historical context data stays
+                // attributable to the same option.
+                <div key={oi} style={{ display: 'grid', gridTemplateColumns: '1fr 28px', gap: 6 }}>
                   <input
                     style={inputStyle}
                     value={o.label}
                     onChange={(e) => setOption(i, oi, { label: e.target.value })}
                     placeholder="תווית (בוקר)"
-                  />
-                  <input
-                    style={inputStyle}
-                    value={o.value}
-                    onChange={(e) => setOption(i, oi, { value: e.target.value })}
-                    placeholder="ערך (breakfast)"
-                    dir="ltr"
                   />
                   <button type="button" onClick={() => removeOption(i, oi)}
                     style={{ ...fieldBtnStyle(false), color: '#dc2626' }} aria-label="מחק אפשרות">×</button>
@@ -782,6 +817,8 @@ function ActionModal({
       label: d.label,
       type: d.type,
       required: d.required ?? false,
+      // Backfill: undefined on legacy rows is treated as visible (old behavior).
+      visibleToParticipant: d.visibleToParticipant !== false,
       options: d.options ? d.options.map((o) => ({ value: o.value, label: o.label })) : undefined,
     })) ?? [];
 
@@ -833,58 +870,82 @@ function ActionModal({
     const pts = parseInt(form.points);
     if (isNaN(pts) || pts < 0) { setError('נקודות חייבות להיות מספר חיובי'); return false; }
 
-    // Phase 3: client-side context-schema validation (mirrors backend rules).
-    const seenKeys = new Set<string>();
+    // Phase 3.1: client-side validation. Keys are no longer admin-editable;
+    // labels are the only required input. Keys get auto-generated below.
     for (const f of form.contextFields) {
-      if (!f.key.trim()) { setError('כל שדה הקשר חייב מפתח'); return false; }
-      if (!/^[a-z0-9_]+$/.test(f.key)) {
-        setError(`מפתח "${f.key}" לא חוקי — אותיות אנגליות קטנות, ספרות וקו תחתון בלבד`);
-        return false;
-      }
-      if (seenKeys.has(f.key)) { setError(`מפתח כפול: "${f.key}"`); return false; }
-      seenKeys.add(f.key);
-      if (!f.label.trim()) { setError(`שדה "${f.key}" צריך תווית`); return false; }
+      if (!f.label.trim()) { setError('כל שדה הקשר חייב תווית'); return false; }
       if (f.type === 'select') {
         if (!f.options || f.options.length === 0) {
           setError(`שדה בחירה "${f.label}" חייב לפחות אפשרות אחת`);
           return false;
         }
-        const seenVals = new Set<string>();
+        const seenLabels = new Set<string>();
         for (const o of f.options) {
-          if (!o.value.trim() || !o.label.trim()) {
-            setError(`כל אפשרות ב-"${f.label}" חייבת ערך ותווית`);
+          if (!o.label.trim()) {
+            setError(`כל אפשרות ב-"${f.label}" חייבת תווית`);
             return false;
           }
-          if (seenVals.has(o.value)) {
-            setError(`ערך כפול ב-"${f.label}": "${o.value}"`);
+          if (seenLabels.has(o.label.trim())) {
+            setError(`תווית כפולה ב-"${f.label}": "${o.label}"`);
             return false;
           }
-          seenVals.add(o.value);
+          seenLabels.add(o.label.trim());
         }
       }
     }
 
+    // Auto-generate keys:
+    //   - existing fields keep their stored key so historical UserActionLog
+    //     contextJson rows keep resolving to the same dimension.
+    //   - new fields (empty key) derive a key from the label and collide-dodge
+    //     against all other keys in the form.
+    const keySet = new Set<string>();
+    for (const f of form.contextFields) if (f.key) keySet.add(f.key);
+    const fieldsWithKeys: ContextField[] = form.contextFields.map((f) => {
+      if (f.key) return f;
+      const base = slugifyLabel(f.label);
+      const k = uniqueKey(base, keySet);
+      keySet.add(k);
+      return { ...f, key: k };
+    });
+
+    // Option values: auto-generate from option label when missing, keep if already set.
+    const finalFields: ContextField[] = fieldsWithKeys.map((f) => {
+      if (f.type !== 'select') return f;
+      const opts = (f.options ?? []).map((o) => ({
+        label: o.label.trim(),
+        value: o.value?.trim() || slugifyLabel(o.label),
+      }));
+      // Dedup option values — append _2 on clashes.
+      const seen = new Set<string>();
+      const finalOpts = opts.map((o) => {
+        const v = uniqueKey(o.value, seen);
+        seen.add(v);
+        return { label: o.label, value: v };
+      });
+      return { ...f, options: finalOpts };
+    });
+
     setSaving(true); setError('');
     try {
       const contextSchemaJson: ContextSchemaJson | null =
-        form.contextFields.length === 0
+        finalFields.length === 0
           ? null
           : {
-              dimensions: form.contextFields.map((f) => ({
-                key: f.key.trim(),
+              dimensions: finalFields.map((f) => ({
+                key: f.key,
                 label: f.label.trim(),
                 type: f.type,
                 required: !!f.required,
-                ...(f.type === 'select'
-                  ? {
-                      options: (f.options ?? []).map((o) => ({
-                        value: o.value.trim(),
-                        label: o.label.trim(),
-                      })),
-                    }
+                // Phase 3.1: visibility. Default true when undefined.
+                visibleToParticipant: f.visibleToParticipant !== false,
+                ...(f.type === 'select' && f.options
+                  ? { options: f.options }
                   : {}),
               })),
             };
+      // Push generated keys back into local state so subsequent edits preserve them.
+      setForm((p) => ({ ...p, contextFields: finalFields }));
 
       const body: Record<string, unknown> = {
         name: form.name.trim(),
