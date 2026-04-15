@@ -156,6 +156,7 @@ function parseSchema(raw: unknown): ContextSchema | null {
   if (!Array.isArray(dims)) {
     throw new BadRequestException('contextSchemaJson.dimensions must be an array.');
   }
+  const seen = new Set<string>();
   for (const d of dims) {
     if (!d || typeof d !== 'object') {
       throw new BadRequestException('contextSchemaJson.dimensions[] entries must be objects.');
@@ -164,14 +165,50 @@ function parseSchema(raw: unknown): ContextSchema | null {
     if (typeof dd.key !== 'string' || !dd.key) {
       throw new BadRequestException('Dimension.key is required.');
     }
+    if (seen.has(dd.key)) {
+      throw new BadRequestException(`Duplicate dimension key: "${dd.key}".`);
+    }
+    seen.add(dd.key);
     if (typeof dd.type !== 'string') {
       throw new BadRequestException(`Dimension "${dd.key}" missing type.`);
     }
     if (!['select', 'text', 'number', 'time'].includes(dd.type)) {
       throw new BadRequestException(`Dimension "${dd.key}" has invalid type "${dd.type}".`);
     }
+    if (dd.type === 'select') {
+      const opts = dd.options;
+      if (!Array.isArray(opts) || opts.length === 0) {
+        throw new BadRequestException(`Dimension "${dd.key}" of type select must declare at least one option.`);
+      }
+      const seenValues = new Set<string>();
+      for (const o of opts) {
+        if (!o || typeof o !== 'object') {
+          throw new BadRequestException(`Dimension "${dd.key}" has malformed option.`);
+        }
+        const oo = o as Record<string, unknown>;
+        if (typeof oo.value !== 'string' || !oo.value) {
+          throw new BadRequestException(`Dimension "${dd.key}" option missing value.`);
+        }
+        if (typeof oo.label !== 'string' || !oo.label) {
+          throw new BadRequestException(`Dimension "${dd.key}" option "${oo.value}" missing label.`);
+        }
+        if (seenValues.has(oo.value)) {
+          throw new BadRequestException(`Dimension "${dd.key}" has duplicate option value "${oo.value}".`);
+        }
+        seenValues.add(oo.value);
+      }
+    }
   }
   return { dimensions: dims as ContextDimension[] };
+}
+
+/**
+ * Standalone schema-shape validator for admin save paths. Throws the same
+ * BadRequestException shape parseSchema does. Exported so the action editor's
+ * create/update can reject malformed schemas before any DB write.
+ */
+export function validateContextSchemaShape(raw: unknown): void {
+  parseSchema(raw);
 }
 
 function parseContext(raw: unknown): Record<string, unknown> | null {

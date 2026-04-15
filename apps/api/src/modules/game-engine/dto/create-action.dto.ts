@@ -1,4 +1,4 @@
-import { IsBoolean, IsInt, IsOptional, IsString, Min, ValidateIf, ValidateNested, IsArray } from 'class-validator';
+import { IsBoolean, IsInt, IsObject, IsOptional, IsString, Min, ValidateIf, ValidateNested, IsArray } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class ReorderItemDto {
@@ -62,6 +62,18 @@ export class CreateActionDto {
   @IsOptional()
   @IsString()
   soundKey?: string; // "none" | "ding" | "celebration" | "applause"
+
+  /**
+   * Phase 3: context dimensions schema. Free-form JSON validated by the service
+   * via context-validation parseSchema(). Shape:
+   *   { dimensions: [{ key, label, type, required?, options?, min?, max? }] }
+   * Pass `null` to clear an existing schema. Server bumps contextSchemaVersion
+   * on every change so historical UserActionLogs remain attributable to the
+   * schema that was in force at write time.
+   */
+  @IsOptional()
+  @IsObject()
+  contextSchemaJson?: Record<string, unknown> | null;
 }
 
 export class UpdateActionDto {
@@ -115,4 +127,9 @@ export class UpdateActionDto {
   @IsOptional()
   @IsString()
   soundKey?: string;
+
+  /** See CreateActionDto.contextSchemaJson. Pass null to clear. */
+  @IsOptional()
+  @IsObject()
+  contextSchemaJson?: Record<string, unknown> | null;
 }

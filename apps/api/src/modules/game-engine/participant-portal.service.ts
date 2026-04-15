@@ -101,6 +101,13 @@ export interface PortalContext {
     unit: string | null;
     points: number;
     maxPerDay: number | null;
+    /**
+     * Phase 3: dimensions the participant must fill alongside this submission.
+     * `null` (or missing `dimensions`) → action has no extra context. Backend
+     * validates the captured values against this schema on submit.
+     */
+    contextSchemaJson: Record<string, unknown> | null;
+    contextSchemaVersion: number;
   }[];
   todayScore: number;
   todayValues: Record<string, number>; // actionId → current daily value
@@ -279,7 +286,19 @@ export class ParticipantPortalService {
       // bypass=true: return null times so the frontend skips the opening gate (admin preview only)
       portalCallTime: bypass ? null : (pg.group.portalCallTime ? pg.group.portalCallTime.toISOString() : null),
       portalOpenTime: bypass ? null : (pg.group.portalOpenTime ? pg.group.portalOpenTime.toISOString() : null),
-      actions,
+      actions: actions.map((a) => ({
+        id: a.id,
+        name: a.name,
+        description: a.description,
+        inputType: a.inputType,
+        aggregationMode: a.aggregationMode,
+        unit: a.unit,
+        points: a.points,
+        maxPerDay: a.maxPerDay,
+        // Phase 3: surface the schema so the participant UI can render fields.
+        contextSchemaJson: a.contextSchemaJson as Record<string, unknown> | null,
+        contextSchemaVersion: a.contextSchemaVersion,
+      })),
       todayScore: scoreAgg._sum.points ?? 0,
       todayValues,
     };
@@ -289,7 +308,7 @@ export class ParticipantPortalService {
 
   async logAction(
     token: string,
-    dto: { actionId: string; value?: string },
+    dto: { actionId: string; value?: string; contextJson?: Record<string, unknown> },
     idempotencyKey?: string,
   ): Promise<{ pointsEarned: number; todayScore: number; todayValue: number | null }> {
     const pg = await this.prisma.participantGroup.findUnique({
@@ -305,6 +324,7 @@ export class ParticipantPortalService {
       groupId: pg.groupId,
       actionId: dto.actionId,
       value: dto.value,
+      contextJson: dto.contextJson,
       clientSubmissionId: idempotencyKey,
     });
 

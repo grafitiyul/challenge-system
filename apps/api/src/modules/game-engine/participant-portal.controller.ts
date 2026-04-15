@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Headers, Param, Post, Query } from '@nestjs/common';
-import { IsOptional, IsString } from 'class-validator';
+import { IsObject, IsOptional, IsString } from 'class-validator';
 import {
   ParticipantPortalService,
   PortalContext,
@@ -19,6 +19,15 @@ class LogActionPortalDto {
   @IsOptional()
   @IsString()
   value?: string;
+
+  /**
+   * Phase 3: extra dimension values captured by the participant. Validated
+   * server-side by validateContext() against the action's contextSchemaJson.
+   * Required-field violations / unknown keys / bad option values → 400/422.
+   */
+  @IsOptional()
+  @IsObject()
+  contextJson?: Record<string, unknown>;
 }
 
 @Controller('public/participant')
@@ -45,7 +54,11 @@ export class ParticipantPortalController {
     @Body() dto: LogActionPortalDto,
     @Headers('idempotency-key') idempotencyKey?: string,
   ): Promise<{ pointsEarned: number; todayScore: number; todayValue: number | null }> {
-    return this.portalService.logAction(token, dto, idempotencyKey);
+    return this.portalService.logAction(
+      token,
+      { actionId: dto.actionId, value: dto.value, contextJson: dto.contextJson },
+      idempotencyKey,
+    );
   }
 
   // GET /api/public/participant/:token/stats

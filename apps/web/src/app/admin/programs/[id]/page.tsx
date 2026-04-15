@@ -363,6 +363,31 @@ interface GameAction {
   soundKey: string;
   isActive: boolean;
   sortOrder: number;
+  // Phase 3: optional context schema. shape:
+  //   { dimensions: [{ key, label, type, required?, options?: [{value,label}] }] }
+  contextSchemaJson: ContextSchemaJson | null;
+  contextSchemaVersion: number;
+}
+
+// ─── Context schema shapes (Phase 3) ─────────────────────────────────────────
+
+type ContextFieldType = 'select' | 'text' | 'number';
+
+interface ContextOption {
+  value: string;
+  label: string;
+}
+
+interface ContextField {
+  key: string;
+  label: string;
+  type: ContextFieldType;
+  required?: boolean;
+  options?: ContextOption[]; // select only
+}
+
+interface ContextSchemaJson {
+  dimensions: ContextField[];
 }
 
 interface GameRule {
@@ -522,6 +547,225 @@ function playSoundPreview(soundKey: string): void {
 
 // ─── Action Modal ─────────────────────────────────────────────────────────────
 
+// ─── Context builder (Phase 3) ───────────────────────────────────────────────
+// Visual editor for an action's contextSchemaJson.dimensions list.
+// - No JSON editing surface — only structured controls.
+// - Add / edit / remove / reorder fields.
+// - For type=select, manage options (value+label) inline.
+// - The parent state owns `fields`; this component only mutates via onChange.
+
+const CONTEXT_FIELD_TYPES: { value: ContextFieldType; label: string }[] = [
+  { value: 'select', label: 'בחירה' },
+  { value: 'text',   label: 'טקסט' },
+  { value: 'number', label: 'מספר' },
+];
+
+function ContextFieldsBuilder({
+  fields,
+  onChange,
+  sectionHead,
+}: {
+  fields: ContextField[];
+  onChange: (next: ContextField[]) => void;
+  sectionHead: React.CSSProperties;
+}) {
+  function patch(i: number, p: Partial<ContextField>) {
+    const next = fields.map((f, idx) => (idx === i ? { ...f, ...p } : f));
+    onChange(next);
+  }
+  function remove(i: number) {
+    onChange(fields.filter((_, idx) => idx !== i));
+  }
+  function move(i: number, dir: -1 | 1) {
+    const j = i + dir;
+    if (j < 0 || j >= fields.length) return;
+    const next = [...fields];
+    [next[i], next[j]] = [next[j], next[i]];
+    onChange(next);
+  }
+  function add() {
+    onChange([
+      ...fields,
+      {
+        key: '',
+        label: '',
+        type: 'select',
+        required: true,
+        options: [{ value: '', label: '' }],
+      },
+    ]);
+  }
+  function setOption(i: number, oi: number, p: Partial<ContextOption>) {
+    const f = fields[i];
+    const nextOpts = (f.options ?? []).map((o, idx) => (idx === oi ? { ...o, ...p } : o));
+    patch(i, { options: nextOpts });
+  }
+  function addOption(i: number) {
+    const f = fields[i];
+    patch(i, { options: [...(f.options ?? []), { value: '', label: '' }] });
+  }
+  function removeOption(i: number, oi: number) {
+    const f = fields[i];
+    patch(i, { options: (f.options ?? []).filter((_, idx) => idx !== oi) });
+  }
+
+  return (
+    <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 10, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={sectionHead}>שדות הקשר (אופציונלי)</div>
+      <div style={{ fontSize: 12, color: '#1e40af', lineHeight: 1.5 }}>
+        שדות נוספים שהמשתתפת תמלא בעת הדיווח. לדוגמה: ארוחה (בוקר/צהריים/ערב), מיקום, מצב רוח. השאירי ריק כדי להמשיך ללא הקשר.
+      </div>
+
+      {fields.length === 0 && (
+        <div style={{ fontSize: 12, color: '#64748b', fontStyle: 'italic' }}>
+          אין שדות הקשר מוגדרים.
+        </div>
+      )}
+
+      {fields.map((f, i) => (
+        <div
+          key={i}
+          style={{
+            background: '#ffffff',
+            border: '1px solid #e2e8f0',
+            borderRadius: 8,
+            padding: 12,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 10,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: '#475569' }}>שדה {i + 1}</span>
+            <div style={{ display: 'flex', gap: 4 }}>
+              <button type="button" onClick={() => move(i, -1)} disabled={i === 0}
+                style={fieldBtnStyle(i === 0)} aria-label="הזז למעלה">↑</button>
+              <button type="button" onClick={() => move(i, 1)} disabled={i === fields.length - 1}
+                style={fieldBtnStyle(i === fields.length - 1)} aria-label="הזז למטה">↓</button>
+              <button type="button" onClick={() => remove(i)}
+                style={{ ...fieldBtnStyle(false), color: '#dc2626' }} aria-label="מחק שדה">×</button>
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+            <div>
+              <label style={miniLabelStyle}>תווית (מה המשתתפת רואה)</label>
+              <input
+                style={inputStyle}
+                value={f.label}
+                onChange={(e) => patch(i, { label: e.target.value })}
+                placeholder="למשל: ארוחה"
+              />
+            </div>
+            <div>
+              <label style={miniLabelStyle}>מפתח (פנימי, באנגלית)</label>
+              <input
+                style={inputStyle}
+                value={f.key}
+                onChange={(e) => patch(i, { key: e.target.value })}
+                placeholder="meal_period"
+                dir="ltr"
+              />
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 8, alignItems: 'end' }}>
+            <div>
+              <label style={miniLabelStyle}>סוג</label>
+              <select
+                style={inputStyle}
+                value={f.type}
+                onChange={(e) => {
+                  const next = e.target.value as ContextFieldType;
+                  patch(i, {
+                    type: next,
+                    options: next === 'select' ? (f.options ?? [{ value: '', label: '' }]) : undefined,
+                  });
+                }}
+              >
+                {CONTEXT_FIELD_TYPES.map((t) => (
+                  <option key={t.value} value={t.value}>{t.label}</option>
+                ))}
+              </select>
+            </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#374151', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={!!f.required}
+                onChange={(e) => patch(i, { required: e.target.checked })}
+              />
+              חובה
+            </label>
+          </div>
+
+          {f.type === 'select' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, borderTop: '1px solid #f1f5f9', paddingTop: 10 }}>
+              <div style={miniLabelStyle}>אפשרויות</div>
+              {(f.options ?? []).map((o, oi) => (
+                <div key={oi} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 28px', gap: 6 }}>
+                  <input
+                    style={inputStyle}
+                    value={o.label}
+                    onChange={(e) => setOption(i, oi, { label: e.target.value })}
+                    placeholder="תווית (בוקר)"
+                  />
+                  <input
+                    style={inputStyle}
+                    value={o.value}
+                    onChange={(e) => setOption(i, oi, { value: e.target.value })}
+                    placeholder="ערך (breakfast)"
+                    dir="ltr"
+                  />
+                  <button type="button" onClick={() => removeOption(i, oi)}
+                    style={{ ...fieldBtnStyle(false), color: '#dc2626' }} aria-label="מחק אפשרות">×</button>
+                </div>
+              ))}
+              <button
+                type="button"
+                onClick={() => addOption(i)}
+                style={{ background: '#f1f5f9', color: '#475569', border: '1px solid #e2e8f0', borderRadius: 6, padding: '6px 10px', fontSize: 12, fontWeight: 600, cursor: 'pointer', alignSelf: 'flex-start' }}
+              >
+                + הוסיפי אפשרות
+              </button>
+            </div>
+          )}
+        </div>
+      ))}
+
+      <button
+        type="button"
+        onClick={add}
+        style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '8px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer', alignSelf: 'flex-start' }}
+      >
+        + הוסיפי שדה הקשר
+      </button>
+    </div>
+  );
+}
+
+const miniLabelStyle: React.CSSProperties = {
+  display: 'block',
+  fontSize: 11,
+  color: '#475569',
+  fontWeight: 600,
+  marginBottom: 4,
+};
+
+function fieldBtnStyle(disabled: boolean): React.CSSProperties {
+  return {
+    width: 28,
+    height: 28,
+    border: '1px solid #e2e8f0',
+    background: disabled ? '#f8fafc' : '#ffffff',
+    color: disabled ? '#cbd5e1' : '#475569',
+    borderRadius: 6,
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    fontSize: 14,
+    fontWeight: 700,
+    lineHeight: 1,
+  };
+}
+
 function ActionModal({
   programId, action, onSaved, onClose,
 }: {
@@ -530,6 +774,17 @@ function ActionModal({
   onSaved: (a: GameAction) => void;
   onClose: () => void;
 }) {
+  // contextFields is part of the dirty-tracked form so that adding/removing
+  // a dimension or editing an option triggers the unsaved-changes guard.
+  const initialContextFields: ContextField[] =
+    action?.contextSchemaJson?.dimensions?.map((d) => ({
+      key: d.key,
+      label: d.label,
+      type: d.type,
+      required: d.required ?? false,
+      options: d.options ? d.options.map((o) => ({ value: o.value, label: o.label })) : undefined,
+    })) ?? [];
+
   const initialForm = useRef({
     name: action?.name ?? '',
     description: action?.description ?? '',
@@ -542,6 +797,7 @@ function ActionModal({
     blockedMessage: action?.blockedMessage ?? '',
     explanationContent: action?.explanationContent ?? '',
     soundKey: action?.soundKey ?? 'none',
+    contextFields: initialContextFields,
   });
   const [form, setForm] = useState(initialForm.current);
   const [saving, setSaving] = useState(false);
@@ -576,8 +832,60 @@ function ActionModal({
     if (!form.name.trim()) { setError('שם הוא שדה חובה'); return false; }
     const pts = parseInt(form.points);
     if (isNaN(pts) || pts < 0) { setError('נקודות חייבות להיות מספר חיובי'); return false; }
+
+    // Phase 3: client-side context-schema validation (mirrors backend rules).
+    const seenKeys = new Set<string>();
+    for (const f of form.contextFields) {
+      if (!f.key.trim()) { setError('כל שדה הקשר חייב מפתח'); return false; }
+      if (!/^[a-z0-9_]+$/.test(f.key)) {
+        setError(`מפתח "${f.key}" לא חוקי — אותיות אנגליות קטנות, ספרות וקו תחתון בלבד`);
+        return false;
+      }
+      if (seenKeys.has(f.key)) { setError(`מפתח כפול: "${f.key}"`); return false; }
+      seenKeys.add(f.key);
+      if (!f.label.trim()) { setError(`שדה "${f.key}" צריך תווית`); return false; }
+      if (f.type === 'select') {
+        if (!f.options || f.options.length === 0) {
+          setError(`שדה בחירה "${f.label}" חייב לפחות אפשרות אחת`);
+          return false;
+        }
+        const seenVals = new Set<string>();
+        for (const o of f.options) {
+          if (!o.value.trim() || !o.label.trim()) {
+            setError(`כל אפשרות ב-"${f.label}" חייבת ערך ותווית`);
+            return false;
+          }
+          if (seenVals.has(o.value)) {
+            setError(`ערך כפול ב-"${f.label}": "${o.value}"`);
+            return false;
+          }
+          seenVals.add(o.value);
+        }
+      }
+    }
+
     setSaving(true); setError('');
     try {
+      const contextSchemaJson: ContextSchemaJson | null =
+        form.contextFields.length === 0
+          ? null
+          : {
+              dimensions: form.contextFields.map((f) => ({
+                key: f.key.trim(),
+                label: f.label.trim(),
+                type: f.type,
+                required: !!f.required,
+                ...(f.type === 'select'
+                  ? {
+                      options: (f.options ?? []).map((o) => ({
+                        value: o.value.trim(),
+                        label: o.label.trim(),
+                      })),
+                    }
+                  : {}),
+              })),
+            };
+
       const body: Record<string, unknown> = {
         name: form.name.trim(),
         description: form.description.trim() || null,
@@ -591,6 +899,8 @@ function ActionModal({
         blockedMessage: form.blockedMessage.trim() || null,
         explanationContent: form.explanationContent.trim() || null,
         soundKey: form.soundKey,
+        // Phase 3: send null to clear, otherwise the schema object.
+        contextSchemaJson,
       };
       const url = action
         ? `${BASE_URL}/game/programs/${programId}/actions/${action.id}`
@@ -601,7 +911,9 @@ function ActionModal({
         body: JSON.stringify(body),
       }) as GameAction);
       return true;
-    } catch {
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : '';
+      if (msg) setError(msg);
       return false;
     } finally { setSaving(false); }
   }
@@ -793,6 +1105,17 @@ function ActionModal({
               minHeight={120}
             />
           </div>
+
+          {/* ── Context fields (Phase 3) ── */}
+          {/* Optional. When the participant submits this action she will be
+              prompted to fill these dimensions. Validation runs both client-
+              and server-side; required fields block submission. Leave empty
+              to keep the action context-free (existing behavior). */}
+          <ContextFieldsBuilder
+            fields={form.contextFields}
+            onChange={(next) => setForm((p) => ({ ...p, contextFields: next }))}
+            sectionHead={sectionHead}
+          />
 
           {/* ── Participant-facing preview ── */}
           <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 10, padding: 14 }}>

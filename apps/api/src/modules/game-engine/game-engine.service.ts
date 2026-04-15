@@ -9,7 +9,7 @@ import { EvaluateRulesDto } from './dto/evaluate-rules.dto';
 import { UnlockRuleDto } from './dto/unlock-rule.dto';
 import { InitGroupStateDto } from './dto/init-group-state.dto';
 import { CorrectLogDto, VoidLogDto } from './dto/correct-log.dto';
-import { validateContext } from './context-validation';
+import { validateContext, validateContextSchemaShape } from './context-validation';
 
 /** Narrow check for Postgres unique-violation errors surfaced by Prisma. */
 function isUniqueViolation(e: unknown): boolean {
@@ -50,6 +50,11 @@ export class GameEngineService {
   }
 
   async createAction(programId: string, dto: CreateActionDto) {
+    // Phase 3: validate the schema shape up-front so admins can't save garbage.
+    // Throws BadRequestException on malformed dimensions.
+    if (dto.contextSchemaJson !== undefined && dto.contextSchemaJson !== null) {
+      validateContextSchemaShape(dto.contextSchemaJson);
+    }
     const count = await this.prisma.gameAction.count({ where: { programId } });
     return this.prisma.gameAction.create({
       data: {
@@ -65,6 +70,9 @@ export class GameEngineService {
         blockedMessage: dto.blockedMessage ?? null,
         explanationContent: dto.explanationContent ?? null,
         soundKey: dto.soundKey ?? 'none',
+        contextSchemaJson:
+          (dto.contextSchemaJson ?? undefined) as Prisma.InputJsonValue | undefined,
+        // contextSchemaVersion defaults to 1 in the schema.
         sortOrder: count,
       },
     });
@@ -91,6 +99,33 @@ export class GameEngineService {
   async updateAction(actionId: string, dto: UpdateActionDto) {
     const action = await this.prisma.gameAction.findUnique({ where: { id: actionId } });
     if (!action) throw new NotFoundException(`Action ${actionId} not found`);
+
+    // Phase 3: detect a context-schema change, validate the new shape, and
+    // bump contextSchemaVersion so historical UserActionLog rows stay attributable
+    // to the version that was in force at write time.
+    let schemaPatch: {
+      contextSchemaJson?: Prisma.InputJsonValue | typeof Prisma.JsonNull;
+      contextSchemaVersion?: number;
+    } = {};
+    if (dto.contextSchemaJson !== undefined) {
+      if (dto.contextSchemaJson === null) {
+        // Explicit clear.
+        const wasNonEmpty = action.contextSchemaJson !== null;
+        schemaPatch = {
+          contextSchemaJson: Prisma.JsonNull,
+          ...(wasNonEmpty ? { contextSchemaVersion: action.contextSchemaVersion + 1 } : {}),
+        };
+      } else {
+        validateContextSchemaShape(dto.contextSchemaJson);
+        const before = JSON.stringify(action.contextSchemaJson ?? null);
+        const after = JSON.stringify(dto.contextSchemaJson);
+        schemaPatch = {
+          contextSchemaJson: dto.contextSchemaJson as Prisma.InputJsonValue,
+          ...(before !== after ? { contextSchemaVersion: action.contextSchemaVersion + 1 } : {}),
+        };
+      }
+    }
+
     return this.prisma.gameAction.update({
       where: { id: actionId },
       data: {
@@ -106,6 +141,7 @@ export class GameEngineService {
         ...(dto.explanationContent !== undefined ? { explanationContent: dto.explanationContent } : {}),
         ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
         ...(dto.soundKey !== undefined ? { soundKey: dto.soundKey } : {}),
+        ...schemaPatch,
       },
     });
   }

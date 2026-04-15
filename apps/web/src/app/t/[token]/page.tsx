@@ -29,6 +29,18 @@ function playActionSound(soundKey: string): void {
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
+// Phase 3: shared context-schema shapes — must match backend.
+type ContextFieldType = 'select' | 'text' | 'number';
+interface ContextOption { value: string; label: string }
+interface ContextField {
+  key: string;
+  label: string;
+  type: ContextFieldType;
+  required?: boolean;
+  options?: ContextOption[];
+}
+interface ContextSchemaJson { dimensions: ContextField[] }
+
 interface Action {
   id: string;
   name: string;
@@ -39,6 +51,9 @@ interface Action {
   points: number;
   maxPerDay: number | null;
   soundKey: string;
+  // Phase 3: optional schema. null/undefined → no extra fields prompt.
+  contextSchemaJson?: ContextSchemaJson | null;
+  contextSchemaVersion?: number;
 }
 
 interface PortalContext {
@@ -840,6 +855,10 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
   const [activeAction, setActiveAction] = useState<Action | null>(null);
   const [inputValue, setInputValue] = useState('');
   const [inputError, setInputError] = useState('');
+  // Phase 3: in-flight values for the action's context dimensions. Reset per
+  // open. Keys correspond to ContextField.key. Always strings in state — we
+  // coerce to numbers/etc on submit per dimension type.
+  const [contextDraft, setContextDraft] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const [feedback, setFeedback] = useState<Record<string, { points: number; visible: boolean }>>({});
   const [glowActionId, setGlowActionId] = useState<string | null>(null);
@@ -1179,6 +1198,9 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
     setActiveAction(action);
     setInputValue('');
     setInputError('');
+    // Reset context draft to empty per-dimension. For select dimensions we
+    // intentionally start blank so the participant must make an explicit choice.
+    setContextDraft({});
     if (action.inputType === 'number' && action.aggregationMode === 'latest_value' && ctx) {
       const current = ctx.todayValues[action.id];
       if (current && current > 0) setInputValue(String(current));
@@ -1203,6 +1225,7 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
     setActiveAction(null);
     setInputValue('');
     setInputError('');
+    setContextDraft({});
   }
 
   async function handleSubmit() {
@@ -1220,11 +1243,45 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
       }
     }
 
+    // Phase 3: validate + build the context payload for this action.
+    // Mirrors the backend rules so the participant gets immediate feedback
+    // before the network round-trip. Backend revalidates as the source of truth.
+    const dims = activeAction.contextSchemaJson?.dimensions ?? [];
+    const contextJson: Record<string, unknown> = {};
+    for (const d of dims) {
+      const raw = (contextDraft[d.key] ?? '').trim();
+      if (!raw) {
+        if (d.required) {
+          setInputError(`חובה למלא: ${d.label}`);
+          return;
+        }
+        continue;
+      }
+      if (d.type === 'select') {
+        const opt = (d.options ?? []).find((o) => o.value === raw);
+        if (!opt) { setInputError(`בחירה לא חוקית עבור: ${d.label}`); return; }
+        contextJson[d.key] = raw;
+      } else if (d.type === 'number') {
+        const n = parseFloat(raw);
+        if (!Number.isFinite(n)) { setInputError(`${d.label} חייב להיות מספר`); return; }
+        contextJson[d.key] = n;
+      } else {
+        // text
+        contextJson[d.key] = raw;
+      }
+    }
+
     setSubmitting(true);
     try {
       const result = await apiFetch<LogResult>(`${BASE_URL}/public/participant/${token}/log`, {
         method: 'POST',
-        body: JSON.stringify({ actionId: activeAction.id, value: isNumeric ? value : undefined }),
+        body: JSON.stringify({
+          actionId: activeAction.id,
+          value: isNumeric ? value : undefined,
+          // Omit contextJson entirely when the action has no schema, keeping the
+          // payload minimal for the common (no-context) path.
+          ...(dims.length > 0 ? { contextJson } : {}),
+        }),
       });
 
       setCtx((prev) => {
@@ -1968,6 +2025,52 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
             ) : (
               <p style={s.confirmText}>לחצי "שלח" לאישור הפעולה</p>
             )}
+
+            {/* Phase 3: dynamically rendered context fields. Only appears when
+                the action declares a contextSchemaJson with at least one field. */}
+            {activeAction.contextSchemaJson?.dimensions?.map((d) => (
+              <div key={d.key} style={s.contextField}>
+                <label style={s.contextLabel}>
+                  {d.label}
+                  {d.required && <span style={s.contextRequired}> *</span>}
+                </label>
+                {d.type === 'select' ? (
+                  <select
+                    style={s.contextInput}
+                    value={contextDraft[d.key] ?? ''}
+                    onChange={(e) =>
+                      setContextDraft((prev) => ({ ...prev, [d.key]: e.target.value }))
+                    }
+                  >
+                    <option value="">— בחרי —</option>
+                    {(d.options ?? []).map((o) => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                  </select>
+                ) : d.type === 'number' ? (
+                  <input
+                    type="number"
+                    inputMode="numeric"
+                    style={s.contextInput}
+                    value={contextDraft[d.key] ?? ''}
+                    onChange={(e) =>
+                      setContextDraft((prev) => ({ ...prev, [d.key]: e.target.value }))
+                    }
+                    dir="ltr"
+                  />
+                ) : (
+                  <input
+                    type="text"
+                    style={s.contextInput}
+                    value={contextDraft[d.key] ?? ''}
+                    onChange={(e) =>
+                      setContextDraft((prev) => ({ ...prev, [d.key]: e.target.value }))
+                    }
+                    maxLength={500}
+                  />
+                )}
+              </div>
+            ))}
 
             {inputError && <p style={s.inputError}>{inputError}</p>}
 
@@ -3203,6 +3306,39 @@ const s = {
     color: '#374151',
     marginBottom: 16,
     textAlign: 'right' as const,
+  } satisfies React.CSSProperties,
+
+  // Phase 3: dynamic context fields rendered inside the submission sheet.
+  contextField: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 6,
+    marginTop: 12,
+  } satisfies React.CSSProperties,
+
+  contextLabel: {
+    fontSize: 13,
+    color: '#374151',
+    fontWeight: 600,
+  } satisfies React.CSSProperties,
+
+  contextRequired: {
+    color: '#dc2626',
+    fontWeight: 700,
+  } satisfies React.CSSProperties,
+
+  contextInput: {
+    fontSize: 15,
+    fontWeight: 500,
+    color: '#111827',
+    border: '1.5px solid #e5e7eb',
+    borderRadius: 10,
+    padding: '10px 12px',
+    outline: 'none',
+    background: '#ffffff',
+    width: '100%',
+    boxSizing: 'border-box' as const,
+    fontFamily: 'inherit',
   } satisfies React.CSSProperties,
 
   inputError: {
