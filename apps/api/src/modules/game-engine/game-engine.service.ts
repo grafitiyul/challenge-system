@@ -158,6 +158,7 @@ export class GameEngineService {
           blockedMessage: dto.blockedMessage ?? null,
           explanationContent: dto.explanationContent ?? null,
           soundKey: dto.soundKey ?? 'none',
+          participantPrompt: dto.participantPrompt ?? null,
           contextSchemaJson:
             (dto.contextSchemaJson ?? undefined) as Prisma.InputJsonValue | undefined,
           sortOrder: count,
@@ -246,6 +247,7 @@ export class GameEngineService {
           ...(dto.explanationContent !== undefined ? { explanationContent: dto.explanationContent } : {}),
           ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
           ...(dto.soundKey !== undefined ? { soundKey: dto.soundKey } : {}),
+          ...(dto.participantPrompt !== undefined ? { participantPrompt: dto.participantPrompt } : {}),
           ...schemaPatch,
         },
       });
@@ -604,13 +606,31 @@ export class GameEngineService {
             const valueStr = hasNumericValue
               ? `: ${dto.value}${action.unit ? ` ${action.unit}` : ''}`
               : '';
+            // Phase 3.4: append the values of any text-type context dimensions
+            // to the feed message so free-text participant notes surface in
+            // מבזק without a UI change. Select / number dimensions already
+            // show up in analytics; text is the one that otherwise vanishes.
+            const textSnippets: string[] = [];
+            if (validatedContext) {
+              const dims = (effectiveSchema?.dimensions as Array<Record<string, unknown>> | undefined) ?? [];
+              for (const d of dims) {
+                if (d.type !== 'text') continue;
+                if (d.visibleToParticipant === false) continue;
+                const k = d.key as string;
+                const v = validatedContext[k];
+                if (typeof v === 'string' && v.trim()) {
+                  textSnippets.push(`"${v.trim()}"`);
+                }
+              }
+            }
+            const feedSuffix = textSnippets.length ? ` ${textSnippets.join(' ')}` : '';
             await tx.feedEvent.create({
               data: {
                 participantId: dto.participantId,
                 groupId: dto.groupId,
                 programId: dto.programId,
                 type: 'action',
-                message: `דיווחה על ${action.name}${valueStr}`,
+                message: `דיווחה על ${action.name}${valueStr}${feedSuffix}`,
                 points: pointsForThisLog,
                 isPublic: true,
                 logId: updatedLog.id,

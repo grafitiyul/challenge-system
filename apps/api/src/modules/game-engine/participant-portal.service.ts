@@ -144,6 +144,8 @@ export interface PortalContext {
     unit: string | null;
     points: number;
     maxPerDay: number | null;
+    /** Phase 3.4: admin-editable prompt; null = use derived default. */
+    participantPrompt: string | null;
     /**
      * Phase 3: dimensions the participant must fill alongside this submission.
      * `null` (or missing `dimensions`) → action has no extra context. Backend
@@ -345,6 +347,7 @@ export class ParticipantPortalService {
         unit: a.unit,
         points: a.points,
         maxPerDay: a.maxPerDay,
+        participantPrompt: a.participantPrompt ?? null,
         // Phase 3.2: effective schema = reusable attachments + local dimensions.
         // Phase 3.1 hidden-strip applied on top.
         contextSchemaJson: stripHiddenDimensions(effectiveSchemas[idx]),
@@ -921,20 +924,36 @@ export class ParticipantPortalService {
         select: { contextSchemaJson: true },
       }),
       this.prisma.contextDefinition.findMany({
-        // Phase 3.3: analyticsVisible gates whether a reusable dimension ever
-        // appears in the participant analytics toggle. Archived definitions
-        // are also excluded to avoid ghost dimensions from deprecated setups.
-        where: { programId, analyticsVisible: true, isActive: true },
+        // Phase 3.3/3.4: include EVERY analyticsVisible reusable dimension,
+        // even ones with no data yet — admins expect to see the toggle the
+        // moment they mark a context as analytics-visible. Text-type dims
+        // are excluded from grouping analytics per product decision (they
+        // aren't aggregable).
+        where: {
+          programId,
+          analyticsVisible: true,
+          isActive: true,
+          NOT: { type: 'text' },
+        },
         select: { key: true, label: true },
       }),
     ]);
     const declared = new Map<string, string>();
-    for (const d of definitions) declared.set(d.key, d.label);
+    // Reusable definitions are always surfaced (even without data yet) — admins
+    // expect the toggle to appear as soon as they mark a context analytics-visible.
+    const reusableKeys = new Set<string>();
+    for (const d of definitions) {
+      declared.set(d.key, d.label);
+      reusableKeys.add(d.key);
+    }
+    // Local-only dims are only surfaced when the participant actually has data
+    // under that key — can't tell legacy/abandoned ones from real otherwise.
     for (const a of actions) {
       const schema = a.contextSchemaJson as {
-        dimensions?: { key?: string; label?: string }[];
+        dimensions?: { key?: string; label?: string; type?: string }[];
       } | null;
       for (const d of schema?.dimensions ?? []) {
+        if (d.type === 'text') continue; // text never used for grouping
         if (typeof d.key === 'string' && !declared.has(d.key)) {
           declared.set(d.key, typeof d.label === 'string' ? d.label : d.key);
         }
@@ -956,7 +975,7 @@ export class ParticipantPortalService {
     }
 
     return Array.from(declared.entries())
-      .filter(([k]) => present.has(k))
+      .filter(([k]) => reusableKeys.has(k) || present.has(k))
       .map(([key, label]) => ({ key, label }));
   }
 

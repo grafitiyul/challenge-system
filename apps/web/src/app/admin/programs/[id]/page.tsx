@@ -361,6 +361,8 @@ interface GameAction {
   blockedMessage: string | null;
   explanationContent: string | null;
   soundKey: string;
+  // Phase 3.4: admin-editable prompt; null = derive default from aggregation mode.
+  participantPrompt: string | null;
   isActive: boolean;
   sortOrder: number;
   // Phase 3: optional context schema. shape:
@@ -1065,6 +1067,7 @@ function ActionModal({
     blockedMessage: action?.blockedMessage ?? '',
     explanationContent: action?.explanationContent ?? '',
     soundKey: action?.soundKey ?? 'none',
+    participantPrompt: action?.participantPrompt ?? '',
     contextFields: initialContextFields,
     attachedContexts: initialAttached,
   });
@@ -1082,11 +1085,13 @@ function ActionModal({
     else onClose();
   }
 
-  // Derived: participant-facing preview values
-  const previewInputPrompt =
+  // Derived default prompt — used as placeholder in the admin form and as
+  // fallback in the portal when the admin leaves the override blank.
+  const derivedPrompt =
     form.inputType === 'number' && form.aggregationMode === 'latest_value' ? 'כמה הגעת עד עכשיו?' :
     form.inputType === 'number' && form.aggregationMode === 'incremental_sum' ? 'כמה להוסיף עכשיו?' :
     'האם ביצעת פעולה זו?';
+  const previewInputPrompt = form.participantPrompt.trim() || derivedPrompt;
   const previewLimit = form.maxPerDay
     ? (parseInt(form.maxPerDay) === 1 ? 'ניתן לדווח פעם אחת ביום' : `ניתן לדווח עד ${form.maxPerDay} פעמים ביום`)
     : 'ללא הגבלת דיווחים יומית';
@@ -1192,6 +1197,9 @@ function ActionModal({
         blockedMessage: form.blockedMessage.trim() || null,
         explanationContent: form.explanationContent.trim() || null,
         soundKey: form.soundKey,
+        // Phase 3.4: empty string clears the override so the portal falls back
+        // to the default derived prompt.
+        participantPrompt: form.participantPrompt.trim() || null,
         // Phase 3: send null to clear, otherwise the schema object.
         contextSchemaJson,
         // Phase 3.2: replace-all reconciliation of attached reusable contexts.
@@ -1337,6 +1345,23 @@ function ActionModal({
                 </div>
               </div>
             )}
+
+            {/* Phase 3.4: per-action participant prompt override. Placeholder
+                shows the auto-derived default so admins know what they're
+                replacing if left blank. */}
+            <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: 14 }}>
+              <label style={labelStyle}>השאלה למשתתפת</label>
+              <input
+                style={inputStyle}
+                value={form.participantPrompt}
+                onChange={(e) => setForm((p) => ({ ...p, participantPrompt: e.target.value }))}
+                placeholder={derivedPrompt}
+                maxLength={120}
+              />
+              <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>
+                השאלה שתופיע למשתתפת בעת הדיווח. ריק = ייעשה שימוש בברירת המחדל.
+              </div>
+            </div>
           </div>
 
           {/* ── Visibility ── */}
@@ -2331,20 +2356,31 @@ function ContextDefinitionForm({
 }) {
   const isNew = definition === null;
   const [label, setLabel] = useState(definition?.label ?? '');
+  // Phase 3.4 UX pass: "type" is hidden entirely when system-managed. For
+  // participant mode we only expose `select` and `text` — `number` is dropped
+  // from the UI but preserved on existing definitions that already used it.
   const [type, setType] = useState<ContextFieldType>(definition?.type ?? 'select');
   const [requiredByDefault, setRequiredByDefault] = useState(definition?.requiredByDefault ?? true);
   const [visibleByDefault, setVisibleByDefault] = useState(definition?.visibleToParticipantByDefault ?? true);
   const [options, setOptions] = useState<ContextOption[]>(
     definition?.optionsJson ?? (definition?.type === 'select' ? [] : [{ value: '', label: '' }]),
   );
-  // Phase 3.3 behavior model.
-  const [inputMode, setInputMode] = useState<'participant' | 'system_fixed'>(
-    definition?.inputMode ?? 'participant',
-  );
+  // Phase 3.4: inputMode is no longer admin-configurable. It's DERIVED from
+  // `visibleByDefault`:
+  //   visibleByDefault=true  → participant fills (inputMode='participant')
+  //   visibleByDefault=false → system handles (inputMode='system_fixed')
+  // A hidden system context still holds its `fixedValue` so analytics can
+  // group on it; a hidden participant input is not a meaningful product
+  // state, so we collapse the distinction.
+  const derivedInputMode: 'participant' | 'system_fixed' = visibleByDefault
+    ? 'participant'
+    : 'system_fixed';
   const [analyticsVisible, setAnalyticsVisible] = useState(definition?.analyticsVisible ?? true);
   const [fixedValue, setFixedValue] = useState(definition?.fixedValue ?? '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  // Phase 3.4: pending action attachments for attach-during-creation flow.
+  const [pendingAttachActionIds, setPendingAttachActionIds] = useState<string[]>([]);
 
   async function save() {
     if (!label.trim()) { setError('תווית היא שדה חובה'); return; }
@@ -2358,9 +2394,9 @@ function ContextDefinitionForm({
       }
       if (options.length === 0) { setError('שדה בחירה חייב לפחות אפשרות אחת'); return; }
     }
-    // Phase 3.3: system_fixed requires a fixed value.
-    if (inputMode === 'system_fixed' && !fixedValue.trim()) {
-      setError('הקשר שממולא על ידי המערכת חייב ערך קבוע');
+    // Phase 3.4: system-managed (visibleByDefault=false) requires a fixed value.
+    if (derivedInputMode === 'system_fixed' && !fixedValue.trim()) {
+      setError('הקשר המטופל על ידי המערכת חייב ערך קבוע');
       return;
     }
     setSaving(true); setError('');
@@ -2369,10 +2405,10 @@ function ContextDefinitionForm({
         label: label.trim(),
         requiredByDefault,
         visibleToParticipantByDefault: visibleByDefault,
-        // Phase 3.3 behavior model.
-        inputMode,
+        // Phase 3.4: inputMode derives from participantVisible.
+        inputMode: derivedInputMode,
         analyticsVisible,
-        fixedValue: inputMode === 'system_fixed' ? fixedValue.trim() : '',
+        fixedValue: derivedInputMode === 'system_fixed' ? fixedValue.trim() : '',
       };
       if (isNew) body.type = type;
       if (type === 'select') {
@@ -2386,11 +2422,27 @@ function ContextDefinitionForm({
       const url = isNew
         ? `${BASE_URL}/game/programs/${programId}/context-definitions`
         : `${BASE_URL}/game/programs/${programId}/context-definitions/${definition!.id}`;
-      await apiFetch(url, {
+      const saved = (await apiFetch(url, {
         method: isNew ? 'POST' : 'PATCH',
         cache: 'no-store',
         body: JSON.stringify(body),
-      });
+      })) as ContextDefinition;
+      // Phase 3.4: attach-during-creation. Flush the pending attachment list
+      // immediately after the definition exists. Silent-best-effort — if one
+      // attachment fails, the definition still saved; admin can retry from
+      // the edit form's attachment section.
+      if (isNew && pendingAttachActionIds.length > 0) {
+        const defId = saved.id;
+        for (const actionId of pendingAttachActionIds) {
+          try {
+            await apiFetch(
+              `${BASE_URL}/game/programs/${programId}/context-definitions/${defId}/attach-action`,
+              { method: 'POST', cache: 'no-store', body: JSON.stringify({ actionId }) },
+            );
+          } catch { /* best-effort; admin can re-attach from edit form */ }
+        }
+        onActionsChanged();
+      }
       onSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'שגיאה בשמירה');
@@ -2412,7 +2464,32 @@ function ContextDefinitionForm({
         />
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+      {/* Phase 3.4 UX: the two core toggles — participant visibility and
+          analytics visibility — drive every other control. "מי ממלא?" is
+          gone; if visibleByDefault=true → participant fills, otherwise the
+          system handles (via fixedValue). */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#374151', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+          <input type="checkbox" checked={visibleByDefault} onChange={(e) => setVisibleByDefault(e.target.checked)} />
+          להציג למשתתפת
+        </label>
+        {visibleByDefault && (
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#374151', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+            <input type="checkbox" checked={requiredByDefault} onChange={(e) => setRequiredByDefault(e.target.checked)} />
+            חובה כברירת מחדל
+          </label>
+        )}
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#374151', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+          <input type="checkbox" checked={analyticsVisible} onChange={(e) => setAnalyticsVisible(e.target.checked)} />
+          להציג באנליטיקות
+        </label>
+      </div>
+
+      {/* Type is only relevant when the participant is the filler. For
+          participant mode, only 'בחירה' and 'שדה פתוח' are exposed; the
+          hidden 'number' option survives for legacy definitions that already
+          use it but isn't offered on creation. */}
+      {visibleByDefault && (
         <div>
           <label style={{ fontSize: 12, fontWeight: 600, color: '#475569', display: 'block', marginBottom: 4 }}>
             סוג
@@ -2420,51 +2497,19 @@ function ContextDefinitionForm({
           {isNew ? (
             <select style={inputStyle} value={type} onChange={(e) => setType(e.target.value as ContextFieldType)}>
               <option value="select">בחירה</option>
-              <option value="text">טקסט</option>
-              <option value="number">מספר</option>
+              <option value="text">שדה פתוח</option>
             </select>
           ) : (
-            <input style={{ ...inputStyle, background: '#f1f5f9', cursor: 'not-allowed' }} disabled value={type === 'select' ? 'בחירה' : type === 'number' ? 'מספר' : 'טקסט'} />
+            <input
+              style={{ ...inputStyle, background: '#f1f5f9', cursor: 'not-allowed' }}
+              disabled
+              value={type === 'select' ? 'בחירה' : type === 'number' ? 'מספר' : 'שדה פתוח'}
+            />
           )}
         </div>
-        {/* Phase 3.3 UX pass — rename options + helper text so admins understand
-            the two modes at a glance without needing to decode "inputMode". */}
-        <div>
-          <label style={{ fontSize: 12, fontWeight: 600, color: '#475569', display: 'block', marginBottom: 4 }}>
-            מי ממלא?
-          </label>
-          <select
-            style={inputStyle}
-            value={inputMode}
-            onChange={(e) => setInputMode(e.target.value as 'participant' | 'system_fixed')}
-          >
-            <option value="participant">המשתתפת ממלאת</option>
-            <option value="system_fixed">המערכת קובעת אוטומטית</option>
-          </select>
-          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4, lineHeight: 1.4 }}>
-            {inputMode === 'participant'
-              ? 'המשתתפת תבחר או תזין ערך בעת דיווח.'
-              : 'הערך ייקבע אוטומטית ולא יוצג למשתתפת.'}
-          </div>
-        </div>
-      </div>
+      )}
 
-      {inputMode === 'participant' ? (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#374151', cursor: 'pointer', whiteSpace: 'nowrap' }}>
-            <input type="checkbox" checked={requiredByDefault} onChange={(e) => setRequiredByDefault(e.target.checked)} />
-            חובה כברירת מחדל
-          </label>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#374151', cursor: 'pointer', whiteSpace: 'nowrap' }}>
-            <input type="checkbox" checked={visibleByDefault} onChange={(e) => setVisibleByDefault(e.target.checked)} />
-            להציג למשתתפת
-          </label>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#374151', cursor: 'pointer', whiteSpace: 'nowrap' }}>
-            <input type="checkbox" checked={analyticsVisible} onChange={(e) => setAnalyticsVisible(e.target.checked)} />
-            להציג באנליטיקות
-          </label>
-        </div>
-      ) : (
+      {!visibleByDefault && (
         // Phase 3.3 UX pass: the "fixedValue" label exposed implementation
         // detail and confused admins — replaced with a question-style prompt
         // that names the thing in terms of meaning (what gets stored) rather
@@ -2528,10 +2573,6 @@ function ContextDefinitionForm({
               </>
             )}
           </div>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#374151', cursor: 'pointer', whiteSpace: 'nowrap' }}>
-            <input type="checkbox" checked={analyticsVisible} onChange={(e) => setAnalyticsVisible(e.target.checked)} />
-            להציג באנליטיקות
-          </label>
         </div>
       )}
 
@@ -2564,15 +2605,24 @@ function ContextDefinitionForm({
         </div>
       )}
 
-      {/* Phase 3.3 UX pass: manage this context's action attachments from the
-          context editor. Keeps the admin in context while hooking it up. Per-
-          use overrides still live on the action-editor side. */}
-      {!isNew && definition && (
+      {/* Phase 3.3 UX: manage this context's action attachments from the
+          context editor. Phase 3.4: also works DURING creation — selections
+          are kept in a pending list and attached after the definition is
+          saved. Per-use overrides still live on the action-editor side. */}
+      {!isNew && definition ? (
         <AttachedActionsSection
+          mode="persistent"
           programId={programId}
           definitionId={definition.id}
           actions={actions}
           onActionsChanged={onActionsChanged}
+        />
+      ) : (
+        <AttachedActionsSection
+          mode="pending"
+          actions={actions}
+          pending={pendingAttachActionIds}
+          onPendingChange={setPendingAttachActionIds}
         />
       )}
 
@@ -2596,24 +2646,34 @@ function ContextDefinitionForm({
 // overrides (required/visible) remain exclusively in the action editor so
 // there's only one place where those are edited.
 
-function AttachedActionsSection({
-  programId,
-  definitionId,
-  actions,
-  onActionsChanged,
-}: {
+type AttachedActionsPersistProps = {
+  mode: 'persistent';
   programId: string;
   definitionId: string;
   actions: GameAction[];
   onActionsChanged: () => void;
-}) {
-  // Derived from the cached `actions` (already fetched with contextUses
-  // included), so no extra fetch on mount.
-  const attached = actions.filter((a) =>
-    (a.contextUses ?? []).some((u) => u.definitionId === definitionId),
-  );
+};
+type AttachedActionsPendingProps = {
+  mode: 'pending';
+  actions: GameAction[];
+  pending: string[];
+  onPendingChange: (next: string[]) => void;
+};
+
+function AttachedActionsSection(props: AttachedActionsPersistProps | AttachedActionsPendingProps) {
+  // Resolve the "currently attached" set from either live data (persistent
+  // mode, edit flow) or the in-memory pending list (creation flow).
+  let attached: GameAction[];
+  if (props.mode === 'persistent') {
+    attached = props.actions.filter((a) =>
+      (a.contextUses ?? []).some((u) => u.definitionId === props.definitionId),
+    );
+  } else {
+    const set = new Set(props.pending);
+    attached = props.actions.filter((a) => set.has(a.id));
+  }
   const attachedIds = new Set(attached.map((a) => a.id));
-  const available = actions.filter((a) => !attachedIds.has(a.id));
+  const available = props.actions.filter((a) => !attachedIds.has(a.id));
 
   const [filter, setFilter] = useState('');
   const [busy, setBusy] = useState(false);
@@ -2623,26 +2683,35 @@ function AttachedActionsSection({
 
   async function attach(actionId: string) {
     if (!actionId) return;
+    if (props.mode === 'pending') {
+      if (props.pending.includes(actionId)) return;
+      props.onPendingChange([...props.pending, actionId]);
+      return;
+    }
     setBusy(true);
     try {
       await apiFetch(
-        `${BASE_URL}/game/programs/${programId}/context-definitions/${definitionId}/attach-action`,
+        `${BASE_URL}/game/programs/${props.programId}/context-definitions/${props.definitionId}/attach-action`,
         { method: 'POST', cache: 'no-store', body: JSON.stringify({ actionId }) },
       );
-      onActionsChanged();
+      props.onActionsChanged();
     } finally {
       setBusy(false);
     }
   }
 
   async function detach(actionId: string) {
+    if (props.mode === 'pending') {
+      props.onPendingChange(props.pending.filter((id) => id !== actionId));
+      return;
+    }
     setBusy(true);
     try {
       await apiFetch(
-        `${BASE_URL}/game/programs/${programId}/context-definitions/${definitionId}/attach-action/${actionId}`,
+        `${BASE_URL}/game/programs/${props.programId}/context-definitions/${props.definitionId}/attach-action/${actionId}`,
         { method: 'DELETE', cache: 'no-store' },
       );
-      onActionsChanged();
+      props.onActionsChanged();
     } finally {
       setBusy(false);
     }
@@ -2656,6 +2725,12 @@ function AttachedActionsSection({
         </div>
         <div style={{ fontSize: 11, color: '#0c4a6e', lineHeight: 1.4 }}>
           הוסיפי או הסירי פעולות שמשתמשות בהקשר זה. התאמה לפעולה ספציפית (חובה/להציג) מתבצעת בעורך הפעולה.
+          {props.mode === 'pending' && (
+            <>
+              {' '}
+              <span style={{ color: '#92400e', fontWeight: 600 }}>החיבור ייווצר אחרי שמירת ההגדרה.</span>
+            </>
+          )}
         </div>
       </div>
 

@@ -51,6 +51,9 @@ interface Action {
   points: number;
   maxPerDay: number | null;
   soundKey: string;
+  // Phase 3.4: admin-editable submission prompt. When null, getInputLabel()
+  // falls back to the aggregation-mode default.
+  participantPrompt?: string | null;
   // Phase 3: optional schema. null/undefined → no extra fields prompt.
   contextSchemaJson?: ContextSchemaJson | null;
   contextSchemaVersion?: number;
@@ -208,6 +211,10 @@ function formatDateRange(start: string | null, end: string | null): string {
 }
 
 function getInputLabel(action: Action): string {
+  // Phase 3.4: admin-editable override wins when set.
+  if (action.participantPrompt && action.participantPrompt.trim()) {
+    return action.participantPrompt.trim();
+  }
   if (action.aggregationMode === 'latest_value') return 'כמה הגעת עד עכשיו?';
   if (action.aggregationMode === 'incremental_sum') return 'כמה להוסיף עכשיו?';
   return 'האם ביצעת פעולה זו?';
@@ -709,30 +716,62 @@ function DaySheetGroupedList({ entries }: { entries: AnalyticsDayEntry[] }) {
                 </span>
               </span>
             </div>
-            {group.map((entry) => (
-              <div key={entry.logId} style={s.daySheetGroupRow}>
-                <span style={s.daySheetTime}>{entry.time}</span>
-                <div style={s.daySheetBody}>
-                  {entry.effectiveValue !== null ? (
-                    <span style={s.daySheetValue}>
-                      {entry.effectiveValue.toLocaleString('he-IL')}
-                      {entry.rawValue && entry.rawValue !== 'true' && entry.rawValue !== String(entry.effectiveValue)
-                        ? ` (${entry.rawValue})`
-                        : ''}
-                    </span>
-                  ) : (
-                    <span style={s.daySheetValueMuted}>בוצע</span>
-                  )}
+            {group.map((entry) => {
+              // Phase 3.4: surface context values in the drill-down. Rendered
+              // as chips under the row so small-select and text dimensions both
+              // show up. Internal keys are hidden — only values are rendered.
+              const contextChips: string[] = [];
+              if (entry.contextJson && typeof entry.contextJson === 'object') {
+                for (const v of Object.values(entry.contextJson)) {
+                  if (v === null || v === undefined || v === '') continue;
+                  const s = typeof v === 'string' ? v : String(v);
+                  if (s.trim()) contextChips.push(s);
+                }
+              }
+              return (
+                <div key={entry.logId} style={s.daySheetGroupRow}>
+                  <span style={s.daySheetTime}>{entry.time}</span>
+                  <div style={s.daySheetBody}>
+                    {entry.effectiveValue !== null ? (
+                      <span style={s.daySheetValue}>
+                        {entry.effectiveValue.toLocaleString('he-IL')}
+                        {entry.rawValue && entry.rawValue !== 'true' && entry.rawValue !== String(entry.effectiveValue)
+                          ? ` (${entry.rawValue})`
+                          : ''}
+                      </span>
+                    ) : (
+                      <span style={s.daySheetValueMuted}>בוצע</span>
+                    )}
+                    {contextChips.length > 0 && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 2 }}>
+                        {contextChips.map((c, i) => (
+                          <span
+                            key={i}
+                            style={{
+                              fontSize: 10,
+                              color: '#4b5563',
+                              background: '#f3f4f6',
+                              padding: '1px 7px',
+                              borderRadius: 999,
+                              whiteSpace: 'nowrap' as const,
+                              maxWidth: 160,
+                              overflow: 'hidden' as const,
+                              textOverflow: 'ellipsis' as const,
+                            }}
+                          >
+                            {c}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <span style={s.daySheetPointsSmall}>
+                    {entry.points > 0 ? `+${entry.points}` : entry.points}
+                  </span>
+                  <span style={s.daySheetEditPlaceholder} aria-hidden="true">⋯</span>
                 </div>
-                <span style={s.daySheetPointsSmall}>
-                  {entry.points > 0 ? `+${entry.points}` : entry.points}
-                </span>
-                {/* Placeholder for future edit affordance (Phase 5). Reserves
-                    width + keeps tap targets predictable. aria-hidden because
-                    it's not yet interactive. */}
-                <span style={s.daySheetEditPlaceholder} aria-hidden="true">⋯</span>
-              </div>
-            ))}
+              );
+            })}
           </div>
         );
       })}
@@ -1736,10 +1775,21 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                 </div>
 
                 {/* ── Breakdown (list + pie, optional group-by context) ─── */}
+                {/* Phase 3.4: hierarchical toggle. First level is פעולה / הקשרים.
+                    When "הקשרים" is selected and multiple dimensions exist, a
+                    compact dropdown lets the participant pick which context
+                    she's grouping by. With many contexts, the flat toggle
+                    became a wall of buttons — this keeps the first level short. */}
                 <div style={s.breakdownCard}>
                   <div style={s.chartHeader}>
                     <p style={s.sectionTitle}>
-                      {groupBy === 'action' ? 'לפי פעולות' : 'לפי קטגוריה'}
+                      {groupBy === 'action'
+                        ? 'לפי פעולות'
+                        : (() => {
+                            const key = groupBy.slice('context:'.length);
+                            const dim = contextDimensions.find((d) => d.key === key);
+                            return dim ? `לפי ${dim.label}` : 'לפי הקשרים';
+                          })()}
                     </p>
                     {contextDimensions.length > 0 && (
                       <div style={s.periodToggle} role="tablist" aria-label="קיבוץ לפי">
@@ -1759,31 +1809,61 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                         >
                           פעולה
                         </button>
-                        {contextDimensions.map((dim) => {
-                          const key = `context:${dim.key}` as BreakdownGroupBy;
-                          return (
-                            <button
-                              key={dim.key}
-                              role="tab"
-                              aria-selected={groupBy === key}
-                              onClick={() => {
-                                if (groupBy === key) return;
-                                setGroupBy(key);
-                                setFocusedSliceKey(null);
-                                refreshBreakdownOnly(range, key);
-                              }}
-                              style={{
-                                ...s.periodBtn,
-                                ...(groupBy === key ? s.periodBtnActive : {}),
-                              }}
-                            >
-                              {dim.label}
-                            </button>
-                          );
-                        })}
+                        <button
+                          role="tab"
+                          aria-selected={groupBy !== 'action'}
+                          onClick={() => {
+                            if (groupBy !== 'action') return;
+                            // Switch to the first available dimension — the
+                            // sub-picker below lets the user change it.
+                            const first = contextDimensions[0];
+                            const next = `context:${first.key}` as BreakdownGroupBy;
+                            setGroupBy(next);
+                            setFocusedSliceKey(null);
+                            refreshBreakdownOnly(range, next);
+                          }}
+                          style={{
+                            ...s.periodBtn,
+                            ...(groupBy !== 'action' ? s.periodBtnActive : {}),
+                          }}
+                        >
+                          הקשרים
+                        </button>
                       </div>
                     )}
                   </div>
+
+                  {/* Sub-picker: only when "הקשרים" is active AND there are
+                      2+ dimensions to choose from. Single-dimension programs
+                      get a sub-picker-less view to avoid pointless UI. */}
+                  {groupBy !== 'action' && contextDimensions.length > 1 && (
+                    <div style={{ marginBottom: 10 }}>
+                      <select
+                        value={groupBy.slice('context:'.length)}
+                        onChange={(e) => {
+                          const next = `context:${e.target.value}` as BreakdownGroupBy;
+                          setGroupBy(next);
+                          setFocusedSliceKey(null);
+                          refreshBreakdownOnly(range, next);
+                        }}
+                        style={{
+                          fontSize: 13,
+                          padding: '8px 10px',
+                          border: '1px solid #e5e7eb',
+                          borderRadius: 8,
+                          background: '#ffffff',
+                          fontFamily: 'inherit',
+                          color: '#111827',
+                          width: '100%',
+                        }}
+                        aria-label="בחרי הקשר"
+                      >
+                        {contextDimensions.map((d) => (
+                          <option key={d.key} value={d.key}>{d.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                   {analyticsBreakdown === null ? null : analyticsBreakdown.length === 0 ? (
                     <p style={s.emptyHint}>אין נתונים בטווח שבחרת.</p>
                   ) : (
@@ -2027,50 +2107,82 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
             )}
 
             {/* Phase 3: dynamically rendered context fields. Only appears when
-                the action declares a contextSchemaJson with at least one field. */}
-            {activeAction.contextSchemaJson?.dimensions?.map((d) => (
-              <div key={d.key} style={s.contextField}>
-                <label style={s.contextLabel}>
-                  {d.label}
-                  {d.required && <span style={s.contextRequired}> *</span>}
-                </label>
-                {d.type === 'select' ? (
-                  <select
-                    style={s.contextInput}
-                    value={contextDraft[d.key] ?? ''}
-                    onChange={(e) =>
-                      setContextDraft((prev) => ({ ...prev, [d.key]: e.target.value }))
-                    }
-                  >
-                    <option value="">— בחרי —</option>
-                    {(d.options ?? []).map((o) => (
-                      <option key={o.value} value={o.value}>{o.label}</option>
-                    ))}
-                  </select>
-                ) : d.type === 'number' ? (
-                  <input
-                    type="number"
-                    inputMode="numeric"
-                    style={s.contextInput}
-                    value={contextDraft[d.key] ?? ''}
-                    onChange={(e) =>
-                      setContextDraft((prev) => ({ ...prev, [d.key]: e.target.value }))
-                    }
-                    dir="ltr"
-                  />
-                ) : (
-                  <input
-                    type="text"
-                    style={s.contextInput}
-                    value={contextDraft[d.key] ?? ''}
-                    onChange={(e) =>
-                      setContextDraft((prev) => ({ ...prev, [d.key]: e.target.value }))
-                    }
-                    maxLength={500}
-                  />
-                )}
-              </div>
-            ))}
+                the action declares a contextSchemaJson with at least one field.
+                Phase 3.4: small select (≤6 options) renders as large chip
+                buttons for one-tap selection; text inputs capped at 120 chars. */}
+            {activeAction.contextSchemaJson?.dimensions?.map((d) => {
+              const current = contextDraft[d.key] ?? '';
+              const smallSelect =
+                d.type === 'select' && (d.options?.length ?? 0) > 0 && (d.options?.length ?? 0) <= 6;
+              return (
+                <div key={d.key} style={s.contextField}>
+                  <label style={s.contextLabel}>
+                    {d.label}
+                    {d.required && <span style={s.contextRequired}> *</span>}
+                  </label>
+                  {d.type === 'select' && smallSelect ? (
+                    <div style={s.chipsRow}>
+                      {(d.options ?? []).map((o) => {
+                        const selected = current === o.value;
+                        return (
+                          <button
+                            type="button"
+                            key={o.value}
+                            onClick={() =>
+                              setContextDraft((prev) => ({
+                                ...prev,
+                                [d.key]: selected ? '' : o.value,
+                              }))
+                            }
+                            style={{
+                              ...s.chip,
+                              ...(selected ? s.chipSelected : {}),
+                            }}
+                          >
+                            {o.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : d.type === 'select' ? (
+                    <select
+                      style={s.contextInput}
+                      value={current}
+                      onChange={(e) =>
+                        setContextDraft((prev) => ({ ...prev, [d.key]: e.target.value }))
+                      }
+                    >
+                      <option value="">— בחרי —</option>
+                      {(d.options ?? []).map((o) => (
+                        <option key={o.value} value={o.value}>{o.label}</option>
+                      ))}
+                    </select>
+                  ) : d.type === 'number' ? (
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      style={s.contextInput}
+                      value={current}
+                      onChange={(e) =>
+                        setContextDraft((prev) => ({ ...prev, [d.key]: e.target.value }))
+                      }
+                      dir="ltr"
+                    />
+                  ) : (
+                    <input
+                      type="text"
+                      style={s.contextInput}
+                      value={current}
+                      onChange={(e) =>
+                        setContextDraft((prev) => ({ ...prev, [d.key]: e.target.value }))
+                      }
+                      maxLength={120}
+                      placeholder="הקלידי טקסט קצר..."
+                    />
+                  )}
+                </div>
+              );
+            })}
 
             {inputError && <p style={s.inputError}>{inputError}</p>}
 
@@ -3339,6 +3451,32 @@ const s = {
     width: '100%',
     boxSizing: 'border-box' as const,
     fontFamily: 'inherit',
+  } satisfies React.CSSProperties,
+
+  // Phase 3.4: chip-style option buttons for small select dimensions.
+  chipsRow: {
+    display: 'flex',
+    flexWrap: 'wrap' as const,
+    gap: 8,
+  } satisfies React.CSSProperties,
+
+  chip: {
+    fontSize: 14,
+    fontWeight: 600,
+    color: '#374151',
+    background: '#ffffff',
+    border: '1.5px solid #e5e7eb',
+    borderRadius: 999,
+    padding: '8px 14px',
+    cursor: 'pointer',
+    fontFamily: 'inherit',
+    transition: 'background 0.12s, border-color 0.12s, color 0.12s',
+  } satisfies React.CSSProperties,
+
+  chipSelected: {
+    background: '#1d4ed8',
+    borderColor: '#1d4ed8',
+    color: '#ffffff',
   } satisfies React.CSSProperties,
 
   inputError: {

@@ -65,6 +65,15 @@ export class CreateActionDto {
   soundKey?: string; // "none" | "ding" | "celebration" | "applause"
 
   /**
+   * Phase 3.4: override the auto-derived participant-facing question
+   * ("האם ביצעת פעולה זו?" / "כמה הגעת עד עכשיו?" / etc). Pass null to revert
+   * to the auto default.
+   */
+  @IsOptional()
+  @IsString()
+  participantPrompt?: string | null;
+
+  /**
    * Phase 3: local (action-only) context dimensions schema. Kept for backward
    * compat. Phase 3.2 prefers reusable definitions via `contextUses` below.
    */
@@ -136,6 +145,11 @@ export class UpdateActionDto {
   @IsOptional()
   @IsString()
   soundKey?: string;
+
+  /** See CreateActionDto.participantPrompt. Pass null to revert to the default. */
+  @IsOptional()
+  @IsString()
+  participantPrompt?: string | null;
 
   /** See CreateActionDto.contextSchemaJson. Pass null to clear. */
   @IsOptional()

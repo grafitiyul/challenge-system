@@ -738,6 +738,11 @@ model GameAction {
   blockedMessage      String?
   // Rich HTML explanation shown in participant portal rules tab
   explanationContent  String?
+  // Phase 3.4: admin-editable participant-facing question. When null the portal
+  // derives a default label from the action's aggregation mode (existing
+  // behavior). Lets admins replace the default prompt with something specific
+  // to this action (e.g. "כמה כוסות מים שתית?").
+  participantPrompt   String?
   // Built-in sound played on the participant portal after a successful action
   // "none" | "ding" | "celebration" | "applause"
   soundKey            String   @default("none")
