@@ -124,7 +124,9 @@ type BreakdownPeriod = '7d' | '14d' | '30d' | 'all';
 
 // Phase 2B — unified analytics range. Either one of the "quick" keys OR an
 // explicit custom range. `custom` implies `from`+`to` are set.
-type AnalyticsRangeKey = '7d' | '14d' | '30d' | 'all' | 'custom';
+// `today` is a convenience key that routes through from=today&to=today on the
+// wire so it works with existing backend validation (no backend change needed).
+type AnalyticsRangeKey = 'today' | '7d' | '14d' | '30d' | 'all' | 'custom';
 
 interface AnalyticsRange {
   key: AnalyticsRangeKey;
@@ -313,6 +315,38 @@ function TrendChart({ data }: { data: { date: string; points: number }[] }) {
   );
 }
 
+// ─── Bottom-nav group icon (Phase 2A polish pass 2) ────────────────────────
+// A dedicated inline SVG so the "הקבוצה" tab's glyph can track the same
+// active/inactive blue-gray palette as the other tabs, instead of being a flat
+// unicode emoji whose color we can't control.
+
+function GroupNavIcon({ active }: { active: boolean }) {
+  // Two overlapping silhouettes = community/group. Stroke-based so the icon
+  // stays crisp at the 24px tab size on retina screens.
+  const color = active ? '#1d4ed8' : '#6b7280';
+  return (
+    <svg
+      width={24}
+      height={24}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke={color}
+      strokeWidth={1.9}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      style={{ display: 'block' }}
+    >
+      {/* Front person (head + shoulders) */}
+      <circle cx="9" cy="8" r="3.2" />
+      <path d="M3 19c0-3.1 2.7-5.5 6-5.5s6 2.4 6 5.5" />
+      {/* Back person (partially visible head + shoulder arc) */}
+      <circle cx="16.5" cy="7.5" r="2.6" />
+      <path d="M15.5 13.6c.7-.2 1.4-.3 2-.3 2.7 0 4.5 1.9 4.5 4.4" />
+    </svg>
+  );
+}
+
 // ─── Interactive trend chart (Phase 2A polish) ─────────────────────────────
 // Layout anchoring:
 //   - viewBox uses fractional coordinates that ALWAYS span the full width so
@@ -447,138 +481,142 @@ const PIE_COLORS = [
   '#6366f1', '#ea580c',
 ] as const;
 
-function BreakdownPie({
+// ─── Unified breakdown section (Phase 2A polish pass 2) ───────────────────
+// Centered donut + single list below. The donut color for each slice is shared
+// with the list so the color indicator column tells you which pie slice each
+// row represents. Tapping a slice OR a row toggles focus — the counterpart
+// dims so the relationship is visually obvious.
+
+interface BreakdownSlice {
+  row: { actionId: string; actionName: string; totalPoints: number; count: number };
+  color: string;
+  pct: number;
+  path: string;
+}
+
+function BreakdownSection({
   rows,
   focusedKey,
-  onSliceClick,
+  onSelect,
 }: {
   rows: { actionId: string; actionName: string; totalPoints: number; count: number }[];
   focusedKey?: string | null;
-  onSliceClick?: (key: string) => void;
+  onSelect?: (key: string) => void;
 }) {
-  // Positive-only for slice area; keep zero-rows out so they don't claim slices.
+  // Positive-only for pie area; zero/negative rows still show in the table
+  // below but get no slice and no color dot (neutral gray indicator instead).
   const positive = rows.filter((r) => r.totalPoints > 0);
   const total = positive.reduce((s, r) => s + r.totalPoints, 0);
-  if (total === 0) return null;
-
-  const SIZE = 160;
-  const R_OUTER = 70;
-  const R_INNER = 42;
-  const CX = SIZE / 2;
-  const CY = SIZE / 2;
-
   const ordered = [...positive].sort((a, b) => b.totalPoints - a.totalPoints);
 
-  let cursor = -Math.PI / 2;
-  const slices = ordered.map((row, idx) => {
-    const frac = row.totalPoints / total;
-    const startAngle = cursor;
-    const endAngle = cursor + frac * Math.PI * 2;
-    cursor = endAngle;
-    return {
-      row,
-      color: PIE_COLORS[idx % PIE_COLORS.length],
-      pct: Math.round(frac * 100),
-      path: donutPath(CX, CY, R_INNER, R_OUTER, startAngle, endAngle),
-    };
-  });
+  // Slice colors are assigned in descending-order index so the biggest slice
+  // always gets PIE_COLORS[0]. The table uses the same map.
+  const sliceByAction = new Map<string, BreakdownSlice>();
+  if (total > 0) {
+    const SIZE = 160;
+    const R_OUTER = 70;
+    const R_INNER = 42;
+    const CX = SIZE / 2;
+    const CY = SIZE / 2;
+    let cursor = -Math.PI / 2;
+    ordered.forEach((row, idx) => {
+      const frac = row.totalPoints / total;
+      const start = cursor;
+      const end = cursor + frac * Math.PI * 2;
+      cursor = end;
+      sliceByAction.set(row.actionId, {
+        row,
+        color: PIE_COLORS[idx % PIE_COLORS.length],
+        pct: Math.round(frac * 100),
+        path: donutPath(CX, CY, R_INNER, R_OUTER, start, end),
+      });
+    });
+  }
+
+  const focusedSlice = focusedKey ? sliceByAction.get(focusedKey) ?? null : null;
+  const centerValue = focusedSlice ? focusedSlice.row.totalPoints : total;
+  const centerLabel = focusedSlice ? 'נק׳ בקטגוריה' : 'סה״כ נק׳';
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-      <svg
-        width={SIZE}
-        height={SIZE}
-        viewBox={`0 0 ${SIZE} ${SIZE}`}
-        aria-label="התפלגות נקודות"
-        style={{ flexShrink: 0 }}
-      >
-        {slices.map((sl) => {
-          const isFocused = focusedKey === sl.row.actionId;
-          const isDimmed = focusedKey !== null && focusedKey !== undefined && !isFocused;
-          return (
-            <path
-              key={sl.row.actionId}
-              d={sl.path}
-              fill={sl.color}
-              opacity={isDimmed ? 0.35 : 1}
-              style={{ cursor: onSliceClick ? 'pointer' : 'default', transition: 'opacity 0.15s' }}
-              onClick={() => onSliceClick?.(sl.row.actionId)}
-            />
-          );
-        })}
-        <text
-          x={CX}
-          y={CY - 4}
-          textAnchor="middle"
-          fontSize={18}
-          fontWeight={800}
-          fill="#111827"
-        >
-          {(focusedKey
-            ? (slices.find((sl) => sl.row.actionId === focusedKey)?.row.totalPoints ?? total)
-            : total
-          ).toLocaleString('he-IL')}
-        </text>
-        <text
-          x={CX}
-          y={CY + 12}
-          textAnchor="middle"
-          fontSize={10}
-          fill="#6b7280"
-          fontWeight={600}
-        >
-          {focusedKey ? 'נק׳ בקטגוריה' : 'סה״כ נק׳'}
-        </text>
-      </svg>
+    <div>
+      {/* Centered donut — wrapper is flex-center so the pie always sits in the
+          middle of the card regardless of row lengths below. */}
+      {total > 0 && (
+        <div style={s.pieCenterWrap}>
+          <svg
+            width={160}
+            height={160}
+            viewBox="0 0 160 160"
+            aria-label="התפלגות נקודות"
+            style={{ display: 'block' }}
+          >
+            {ordered.map((row) => {
+              const sl = sliceByAction.get(row.actionId)!;
+              const isFocused = focusedKey === row.actionId;
+              const isDimmed = focusedKey != null && !isFocused;
+              return (
+                <path
+                  key={row.actionId}
+                  d={sl.path}
+                  fill={sl.color}
+                  opacity={isDimmed ? 0.35 : 1}
+                  style={{
+                    cursor: onSelect ? 'pointer' : 'default',
+                    transition: 'opacity 0.15s',
+                  }}
+                  onClick={() => onSelect?.(row.actionId)}
+                />
+              );
+            })}
+            <text
+              x={80}
+              y={76}
+              textAnchor="middle"
+              fontSize={18}
+              fontWeight={800}
+              fill="#111827"
+            >
+              {centerValue.toLocaleString('he-IL')}
+            </text>
+            <text
+              x={80}
+              y={92}
+              textAnchor="middle"
+              fontSize={10}
+              fill="#6b7280"
+              fontWeight={600}
+            >
+              {centerLabel}
+            </text>
+          </svg>
+        </div>
+      )}
 
-      {/* Legend — click a row to focus/unfocus (parallel to slice-click). */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flex: 1, minWidth: 0 }}>
-        {slices.map((sl) => {
-          const isFocused = focusedKey === sl.row.actionId;
-          const isDimmed = focusedKey !== null && focusedKey !== undefined && !isFocused;
+      {/* Unified table — one row per action with color + name + % + points + count. */}
+      <div style={s.breakdownTable}>
+        {rows.map((r) => {
+          const sl = sliceByAction.get(r.actionId);
+          const isFocused = focusedKey === r.actionId;
+          const isDimmed = focusedKey != null && !isFocused;
+          const pct = sl?.pct ?? 0;
+          const color = sl?.color ?? '#d1d5db';
           return (
             <button
-              key={sl.row.actionId}
-              onClick={() => onSliceClick?.(sl.row.actionId)}
+              key={r.actionId}
+              onClick={() => onSelect?.(r.actionId)}
               style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                fontSize: 12,
-                background: 'transparent',
-                border: 'none',
-                padding: 0,
-                cursor: onSliceClick ? 'pointer' : 'default',
-                opacity: isDimmed ? 0.45 : 1,
-                textAlign: 'right' as const,
-                width: '100%',
+                ...s.breakdownRow,
+                ...(isFocused ? s.breakdownRowFocused : {}),
+                opacity: isDimmed ? 0.55 : 1,
               }}
             >
-              <span
-                style={{
-                  width: 10,
-                  height: 10,
-                  borderRadius: 3,
-                  background: sl.color,
-                  flexShrink: 0,
-                }}
-              />
-              <span
-                style={{
-                  color: '#111827',
-                  fontWeight: isFocused ? 800 : 600,
-                  whiteSpace: 'nowrap' as const,
-                  overflow: 'hidden' as const,
-                  textOverflow: 'ellipsis' as const,
-                  flex: 1,
-                }}
-              >
-                {sl.row.actionName}
+              <span style={{ ...s.breakdownRowDot, background: color }} />
+              <span style={s.breakdownRowName}>{r.actionName}</span>
+              <span style={s.breakdownRowPct}>{pct}%</span>
+              <span style={s.breakdownRowPoints}>
+                {r.totalPoints.toLocaleString('he-IL')}
               </span>
-              {/* Both percentage AND absolute points, per Phase 2B. */}
-              <span style={{ color: '#6b7280', fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>
-                {sl.pct}% · {sl.row.totalPoints.toLocaleString('he-IL')}
-              </span>
+              <span style={s.breakdownRowCount}>{r.count}x</span>
             </button>
           );
         })}
@@ -746,60 +784,9 @@ function donutPath(
   ].join(' ');
 }
 
-// ─── Breakdown list (Phase 2A) ─────────────────────────────────────────────
-// Horizontal bars scaled to the max row's totalPoints. Read-only; no interaction.
-
-function BreakdownList({
-  rows,
-  focusedKey,
-}: {
-  rows: { actionId: string; actionName: string; totalPoints: number; count: number }[];
-  focusedKey?: string | null;
-}) {
-  const max = Math.max(...rows.map((r) => r.totalPoints), 1);
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      {rows.map((r) => {
-        const pct = Math.max(4, Math.round((Math.max(r.totalPoints, 0) / max) * 100));
-        const isFocused = focusedKey === r.actionId;
-        const isDimmed = focusedKey !== null && focusedKey !== undefined && !isFocused;
-        return (
-          <div
-            key={r.actionId}
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 4,
-              opacity: isDimmed ? 0.45 : 1,
-              transition: 'opacity 0.15s',
-            }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
-              <span style={{ color: '#111827', fontWeight: isFocused ? 800 : 600 }}>
-                {r.actionName}
-              </span>
-              <span style={{ color: '#6b7280' }}>
-                {r.totalPoints.toLocaleString('he-IL')} נק׳
-                <span style={{ color: '#9ca3af', marginInlineStart: 6 }}>·</span>
-                <span style={{ color: '#6b7280', marginInlineStart: 6 }}>{r.count}x</span>
-              </span>
-            </div>
-            <div style={{ height: 6, background: '#eef2f7', borderRadius: 999, overflow: 'hidden' }}>
-              <div
-                style={{
-                  width: `${pct}%`,
-                  height: '100%',
-                  background: r.totalPoints >= 0 ? '#1d4ed8' : '#dc2626',
-                  borderRadius: 999,
-                }}
-              />
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
+// BreakdownList (Phase 2A) removed in polish pass 2 — its content is now part
+// of BreakdownSection's unified table. The pie and the table share a single
+// slice-color map, eliminating the duplicated "legend-next-to-pie" list.
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
@@ -925,14 +912,24 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
   // 'custom' passes explicit `from`/`to` to both endpoints.
   // Idempotent URL builders — no side effects — keep refetch logic predictable.
   function buildTrendQuery(r: AnalyticsRange): string {
+    if (r.key === 'today') {
+      const today = new Date().toISOString().slice(0, 10);
+      return `from=${today}&to=${today}`;
+    }
     if (r.key === 'custom' && r.from && r.to) return `from=${r.from}&to=${r.to}`;
     const days = r.key === '7d' ? 7 : r.key === '30d' ? 30 : r.key === 'all' ? 30 : 14;
     return `days=${days}`;
   }
   function buildBreakdownQuery(r: AnalyticsRange, g: BreakdownGroupBy): string {
-    const base = r.key === 'custom' && r.from && r.to
-      ? `from=${r.from}&to=${r.to}`
-      : `period=${r.key === 'custom' ? '14d' : r.key}`;
+    let base: string;
+    if (r.key === 'today') {
+      const today = new Date().toISOString().slice(0, 10);
+      base = `from=${today}&to=${today}`;
+    } else if (r.key === 'custom' && r.from && r.to) {
+      base = `from=${r.from}&to=${r.to}`;
+    } else {
+      base = `period=${r.key === 'custom' ? '14d' : r.key}`;
+    }
     return `${base}&groupBy=${encodeURIComponent(g)}`;
   }
 
@@ -1506,23 +1503,17 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                 <div style={s.rangeCard}>
                   <div style={s.periodToggle} role="tablist" aria-label="טווח תאריכים">
                     {([
-                      { key: '7d'    as const, label: '7 ימים'  },
-                      { key: '14d'   as const, label: '14 ימים' },
-                      { key: '30d'   as const, label: '30 ימים' },
-                      { key: 'all'   as const, label: 'הכל'     },
-                      { key: 'custom' as const, label: 'מותאם'   },
+                      { key: 'today' as const, label: 'היום' },
+                      { key: '7d'    as const, label: '7'    },
+                      { key: '14d'   as const, label: '14'   },
+                      { key: '30d'   as const, label: '30'   },
+                      { key: 'all'   as const, label: 'הכל'  },
                     ]).map((opt) => (
                       <button
                         key={opt.key}
                         role="tab"
                         aria-selected={range.key === opt.key}
                         onClick={() => {
-                          if (opt.key === 'custom') {
-                            // Open the custom inputs; don't fetch yet — wait for user confirm.
-                            setRange((r) => ({ ...r, key: 'custom' }));
-                            setRangeError('');
-                            return;
-                          }
                           if (range.key === opt.key) return;
                           applyRange({ key: opt.key });
                         }}
@@ -1535,6 +1526,22 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                       </button>
                     ))}
                   </div>
+                  {/* Custom range kept accessible as a secondary affordance so
+                      Phase 2B's capability isn't lost. The primary toggle row
+                      remains the spec-required 5 quick options. */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRange((r) => ({ ...r, key: 'custom' }));
+                      setRangeError('');
+                    }}
+                    style={{
+                      ...s.customRangeLink,
+                      ...(range.key === 'custom' ? s.customRangeLinkActive : {}),
+                    }}
+                  >
+                    {range.key === 'custom' ? 'טווח מותאם ▾' : 'טווח מותאם'}
+                  </button>
                   {range.key === 'custom' && (
                     <div style={s.customRangeRow}>
                       <label style={s.customRangeLabel}>
@@ -1654,20 +1661,13 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                   {analyticsBreakdown === null ? null : analyticsBreakdown.length === 0 ? (
                     <p style={s.emptyHint}>אין נתונים בטווח שבחרת.</p>
                   ) : (
-                    <>
-                      <BreakdownPie
-                        rows={analyticsBreakdown}
-                        focusedKey={focusedSliceKey}
-                        onSliceClick={(k) =>
-                          setFocusedSliceKey((cur) => (cur === k ? null : k))
-                        }
-                      />
-                      <div style={{ height: 12 }} />
-                      <BreakdownList
-                        rows={analyticsBreakdown}
-                        focusedKey={focusedSliceKey}
-                      />
-                    </>
+                    <BreakdownSection
+                      rows={analyticsBreakdown}
+                      focusedKey={focusedSliceKey}
+                      onSelect={(k) =>
+                        setFocusedSliceKey((cur) => (cur === k ? null : k))
+                      }
+                    />
                   )}
                 </div>
               </>
@@ -1834,25 +1834,32 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
           [
             { id: 'report', label: 'דיווח',       icon: '✏️' },
             { id: 'stats',  label: 'הנתונים שלי', icon: '📊' },
-            // Group tab icon: 👥 (two silhouettes) reads as "people/community" in
-            // a way the old megaphone (📣, "feed") did not, now that the tab
-            // combines leaderboard + feed.
-            { id: 'feed',   label: 'הקבוצה',      icon: '👥' },
+            // Group tab uses a real inline SVG (not an emoji) so its color can
+            // track the active-state palette the same way the other tabs do.
+            // Rendered via `iconNode` below; `icon` is kept as a fallback string.
+            { id: 'feed',   label: 'הקבוצה',      icon: '',   iconNode: true as const },
             { id: 'rules',  label: 'חוקים',       icon: '📋' },
-          ] as { id: TabId; label: string; icon: string }[]
-        ).map((tab) => (
-          <button
-            key={tab.id}
-            onClick={() => switchTab(tab.id)}
-            style={{
-              ...s.navBtn,
-              ...(activeTab === tab.id ? s.navBtnActive : {}),
-            }}
-          >
-            <span style={s.navIcon}>{tab.icon}</span>
-            <span style={s.navLabel(activeTab === tab.id)}>{tab.label}</span>
-          </button>
-        ))}
+          ] as { id: TabId; label: string; icon: string; iconNode?: true }[]
+        ).map((tab) => {
+          const isActive = activeTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              onClick={() => switchTab(tab.id)}
+              style={{
+                ...s.navBtn,
+                ...(isActive ? s.navBtnActive : {}),
+              }}
+            >
+              {tab.iconNode ? (
+                <GroupNavIcon active={isActive} />
+              ) : (
+                <span style={s.navIcon}>{tab.icon}</span>
+              )}
+              <span style={s.navLabel(isActive)}>{tab.label}</span>
+            </button>
+          );
+        })}
       </nav>
 
       {/* ── Bottom sheet backdrop ── */}
@@ -2380,6 +2387,25 @@ const s = {
     fontFamily: 'inherit',
   } satisfies React.CSSProperties,
 
+  customRangeLink: {
+    background: 'transparent',
+    border: 'none',
+    color: '#6b7280',
+    fontSize: 12,
+    fontWeight: 600,
+    padding: '2px 4px',
+    cursor: 'pointer',
+    alignSelf: 'flex-start' as const,
+    fontFamily: 'inherit',
+    textDecoration: 'underline' as const,
+    textUnderlineOffset: 2,
+  } satisfies React.CSSProperties,
+
+  customRangeLinkActive: {
+    color: '#1d4ed8',
+    textDecoration: 'none' as const,
+  } satisfies React.CSSProperties,
+
   rangeErrorText: {
     fontSize: 12,
     color: '#dc2626',
@@ -2463,6 +2489,84 @@ const s = {
     borderRadius: 14,
     padding: '16px',
     marginBottom: 16,
+  } satisfies React.CSSProperties,
+
+  // Phase 2A pass 2: unified breakdown
+  pieCenterWrap: {
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 14,
+  } satisfies React.CSSProperties,
+
+  breakdownTable: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 2,
+    borderTop: '1px solid #f3f4f6',
+  } satisfies React.CSSProperties,
+
+  breakdownRow: {
+    display: 'grid',
+    gridTemplateColumns: '14px 1fr auto auto auto',
+    alignItems: 'center',
+    columnGap: 10,
+    padding: '10px 4px',
+    border: 'none',
+    background: 'transparent',
+    borderBottom: '1px solid #f3f4f6',
+    cursor: 'pointer',
+    fontFamily: 'inherit',
+    textAlign: 'right' as const,
+    transition: 'opacity 0.15s, background 0.15s',
+  } satisfies React.CSSProperties,
+
+  breakdownRowFocused: {
+    background: '#eff6ff',
+  } satisfies React.CSSProperties,
+
+  breakdownRowDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 3,
+    flexShrink: 0,
+  } satisfies React.CSSProperties,
+
+  breakdownRowName: {
+    fontSize: 13,
+    fontWeight: 600,
+    color: '#111827',
+    whiteSpace: 'nowrap' as const,
+    overflow: 'hidden' as const,
+    textOverflow: 'ellipsis' as const,
+    minWidth: 0,
+  } satisfies React.CSSProperties,
+
+  breakdownRowPct: {
+    fontSize: 12,
+    fontWeight: 700,
+    color: '#1d4ed8',
+    fontVariantNumeric: 'tabular-nums' as const,
+    minWidth: 38,
+    textAlign: 'end' as const,
+  } satisfies React.CSSProperties,
+
+  breakdownRowPoints: {
+    fontSize: 13,
+    fontWeight: 800,
+    color: '#111827',
+    fontVariantNumeric: 'tabular-nums' as const,
+    minWidth: 46,
+    textAlign: 'end' as const,
+  } satisfies React.CSSProperties,
+
+  breakdownRowCount: {
+    fontSize: 11,
+    fontWeight: 600,
+    color: '#9ca3af',
+    fontVariantNumeric: 'tabular-nums' as const,
+    minWidth: 28,
+    textAlign: 'end' as const,
   } satisfies React.CSSProperties,
 
   // Day drill-down sheet
