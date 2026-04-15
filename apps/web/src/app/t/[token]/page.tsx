@@ -122,6 +122,25 @@ interface AnalyticsBreakdownEntry {
 type TrendDays = 7 | 14 | 30;
 type BreakdownPeriod = '7d' | '14d' | '30d' | 'all';
 
+// Phase 2B — unified analytics range. Either one of the "quick" keys OR an
+// explicit custom range. `custom` implies `from`+`to` are set.
+type AnalyticsRangeKey = '7d' | '14d' | '30d' | 'all' | 'custom';
+
+interface AnalyticsRange {
+  key: AnalyticsRangeKey;
+  /** YYYY-MM-DD when key === 'custom'; undefined otherwise. */
+  from?: string;
+  to?: string;
+}
+
+interface ContextDimension {
+  key: string;
+  label: string;
+}
+
+/** Breakdown grouping mode. `action` = by actionId; `context:<key>` = by that dim. */
+type BreakdownGroupBy = 'action' | `context:${string}`;
+
 interface PortalRules {
   programRulesContent: string | null;
   rulesPublished: boolean;
@@ -319,11 +338,17 @@ function InteractiveTrendChart({
   const TOP_PAD = 14; // headroom for per-bar value labels
   const SVG_H = TOP_PAD + BAR_H + LABEL_H;
   const n = Math.max(data.length, 1);
-  // Column spans the full width evenly; bar fills a percentage of its column.
-  // BAR_FILL=0.72 leaves a tasteful gap without starving wider counts.
-  const colW = VIEW_W / n;
+  // Left-anchored layout (Phase 2A pass 2):
+  //   The FIRST bar's left edge sits at x=0 and the LAST bar's right edge sits
+  //   at x=VIEW_W. Earlier versions half-centered each bar inside a column
+  //   which left ~0.14*colW of dead space on each side — visually the bars
+  //   read as "clustered toward the right" inside the RTL container.
+  //   With even stride, the chart now fills the full width with no dead space
+  //   before the first bar or after the last.
   const BAR_FILL = 0.72;
+  const colW = VIEW_W / n; // used only to derive barW
   const barW = Math.max(3, colW * BAR_FILL);
+  const stride = n > 1 ? (VIEW_W - barW) / (n - 1) : 0; // distance between bar LEFT edges
   const maxVal = Math.max(...data.map((d) => d.points), 1);
   const baselineY = TOP_PAD + BAR_H;
 
@@ -347,14 +372,15 @@ function InteractiveTrendChart({
       />
 
       {data.map((d, i) => {
-        const colX = i * colW;
-        const cx = colX + colW / 2;
-        const x = cx - barW / 2;
+        // Left-anchored: first bar at x=0, last bar's right edge at VIEW_W.
+        const x = n === 1 ? (VIEW_W - barW) / 2 : i * stride;
+        const cx = x + barW / 2;
+        // Hit-box spans from halfway-to-previous to halfway-to-next bar so
+        // taps are reliable even when bars are short or zero-valued.
+        const hitX = n === 1 ? 0 : Math.max(0, x - (stride - barW) / 2);
+        const hitW = n === 1 ? VIEW_W : stride;
         const isToday = i === n - 1;
         const hasPoints = d.points > 0;
-        // Positive bars: scale to 95% of BAR_H to leave room for labels.
-        // Zero days: render a 3px stub on the baseline so the chart never goes
-        //            fully empty — eye picks out the column as "we were here".
         const positiveH = Math.round((d.points / maxVal) * (BAR_H - 10));
         const barH = hasPoints ? Math.max(4, positiveH) : 3;
         const y = baselineY - barH;
@@ -371,8 +397,7 @@ function InteractiveTrendChart({
             onClick={() => onBarClick(d.date)}
             style={{ cursor: 'pointer' }}
           >
-            {/* Full-column hit-box — keeps taps reliable on short bars. */}
-            <rect x={colX} y={0} width={colW} height={BAR_H + TOP_PAD} fill="transparent" />
+            <rect x={hitX} y={0} width={hitW} height={BAR_H + TOP_PAD} fill="transparent" />
             <rect x={x} y={y} width={barW} height={barH} rx={2} fill={fill} />
 
             {/* Per-bar value label. Small and muted for past days; accented for
@@ -424,8 +449,12 @@ const PIE_COLORS = [
 
 function BreakdownPie({
   rows,
+  focusedKey,
+  onSliceClick,
 }: {
   rows: { actionId: string; actionName: string; totalPoints: number; count: number }[];
+  focusedKey?: string | null;
+  onSliceClick?: (key: string) => void;
 }) {
   // Positive-only for slice area; keep zero-rows out so they don't claim slices.
   const positive = rows.filter((r) => r.totalPoints > 0);
@@ -438,10 +467,9 @@ function BreakdownPie({
   const CX = SIZE / 2;
   const CY = SIZE / 2;
 
-  // Build slices. Sort for stable color order (largest first).
   const ordered = [...positive].sort((a, b) => b.totalPoints - a.totalPoints);
 
-  let cursor = -Math.PI / 2; // start at 12 o'clock
+  let cursor = -Math.PI / 2;
   const slices = ordered.map((row, idx) => {
     const frac = row.totalPoints / total;
     const startAngle = cursor;
@@ -461,12 +489,23 @@ function BreakdownPie({
         width={SIZE}
         height={SIZE}
         viewBox={`0 0 ${SIZE} ${SIZE}`}
-        aria-label="התפלגות נקודות לפי פעולה"
+        aria-label="התפלגות נקודות"
         style={{ flexShrink: 0 }}
       >
-        {slices.map((sl) => (
-          <path key={sl.row.actionId} d={sl.path} fill={sl.color} />
-        ))}
+        {slices.map((sl) => {
+          const isFocused = focusedKey === sl.row.actionId;
+          const isDimmed = focusedKey !== null && focusedKey !== undefined && !isFocused;
+          return (
+            <path
+              key={sl.row.actionId}
+              d={sl.path}
+              fill={sl.color}
+              opacity={isDimmed ? 0.35 : 1}
+              style={{ cursor: onSliceClick ? 'pointer' : 'default', transition: 'opacity 0.15s' }}
+              onClick={() => onSliceClick?.(sl.row.actionId)}
+            />
+          );
+        })}
         <text
           x={CX}
           y={CY - 4}
@@ -475,7 +514,10 @@ function BreakdownPie({
           fontWeight={800}
           fill="#111827"
         >
-          {total.toLocaleString('he-IL')}
+          {(focusedKey
+            ? (slices.find((sl) => sl.row.actionId === focusedKey)?.row.totalPoints ?? total)
+            : total
+          ).toLocaleString('he-IL')}
         </text>
         <text
           x={CX}
@@ -485,42 +527,188 @@ function BreakdownPie({
           fill="#6b7280"
           fontWeight={600}
         >
-          נק׳
+          {focusedKey ? 'נק׳ בקטגוריה' : 'סה״כ נק׳'}
         </text>
       </svg>
 
-      {/* Legend — one row per slice. Kept compact so it fits on narrow screens. */}
+      {/* Legend — click a row to focus/unfocus (parallel to slice-click). */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flex: 1, minWidth: 0 }}>
-        {slices.map((sl) => (
-          <div
-            key={sl.row.actionId}
-            style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}
-          >
-            <span
+        {slices.map((sl) => {
+          const isFocused = focusedKey === sl.row.actionId;
+          const isDimmed = focusedKey !== null && focusedKey !== undefined && !isFocused;
+          return (
+            <button
+              key={sl.row.actionId}
+              onClick={() => onSliceClick?.(sl.row.actionId)}
               style={{
-                width: 10,
-                height: 10,
-                borderRadius: 3,
-                background: sl.color,
-                flexShrink: 0,
-              }}
-            />
-            <span
-              style={{
-                color: '#111827',
-                fontWeight: 600,
-                whiteSpace: 'nowrap' as const,
-                overflow: 'hidden' as const,
-                textOverflow: 'ellipsis' as const,
-                flex: 1,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                fontSize: 12,
+                background: 'transparent',
+                border: 'none',
+                padding: 0,
+                cursor: onSliceClick ? 'pointer' : 'default',
+                opacity: isDimmed ? 0.45 : 1,
+                textAlign: 'right' as const,
+                width: '100%',
               }}
             >
-              {sl.row.actionName}
-            </span>
-            <span style={{ color: '#6b7280', fontWeight: 600 }}>{sl.pct}%</span>
-          </div>
-        ))}
+              <span
+                style={{
+                  width: 10,
+                  height: 10,
+                  borderRadius: 3,
+                  background: sl.color,
+                  flexShrink: 0,
+                }}
+              />
+              <span
+                style={{
+                  color: '#111827',
+                  fontWeight: isFocused ? 800 : 600,
+                  whiteSpace: 'nowrap' as const,
+                  overflow: 'hidden' as const,
+                  textOverflow: 'ellipsis' as const,
+                  flex: 1,
+                }}
+              >
+                {sl.row.actionName}
+              </span>
+              {/* Both percentage AND absolute points, per Phase 2B. */}
+              <span style={{ color: '#6b7280', fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>
+                {sl.pct}% · {sl.row.totalPoints.toLocaleString('he-IL')}
+              </span>
+            </button>
+          );
+        })}
       </div>
+    </div>
+  );
+}
+
+// ─── Day drill-down: grouped list (Phase 2B) ──────────────────────────────
+// Entries come from the server in chronological order. We group them by
+// actionId on the client, preserving chronology inside each group, and show a
+// per-action header with subtotal + count. A disabled "edit" affordance is
+// rendered as a placeholder column so that when Phase 5 introduces corrections
+// the layout doesn't shift.
+
+function DaySheetGroupedList({ entries }: { entries: AnalyticsDayEntry[] }) {
+  // Stable group order: first appearance in the chronological list.
+  const order: string[] = [];
+  const groups: Record<string, AnalyticsDayEntry[]> = {};
+  for (const e of entries) {
+    if (!groups[e.actionId]) {
+      groups[e.actionId] = [];
+      order.push(e.actionId);
+    }
+    groups[e.actionId].push(e);
+  }
+
+  return (
+    <div style={s.daySheetList}>
+      {order.map((actionId) => {
+        const group = groups[actionId];
+        const subtotal = group.reduce((sum, e) => sum + e.points, 0);
+        const actionName = group[0].actionName;
+        return (
+          <div key={actionId} style={s.daySheetGroup}>
+            <div style={s.daySheetGroupHeader}>
+              <span style={s.daySheetGroupName}>{actionName}</span>
+              <span style={s.daySheetGroupMeta}>
+                <span style={s.daySheetGroupCount}>{group.length}x</span>
+                <span style={s.daySheetGroupTotal}>
+                  {subtotal > 0 ? `+${subtotal}` : subtotal} נק׳
+                </span>
+              </span>
+            </div>
+            {group.map((entry) => (
+              <div key={entry.logId} style={s.daySheetGroupRow}>
+                <span style={s.daySheetTime}>{entry.time}</span>
+                <div style={s.daySheetBody}>
+                  {entry.effectiveValue !== null ? (
+                    <span style={s.daySheetValue}>
+                      {entry.effectiveValue.toLocaleString('he-IL')}
+                      {entry.rawValue && entry.rawValue !== 'true' && entry.rawValue !== String(entry.effectiveValue)
+                        ? ` (${entry.rawValue})`
+                        : ''}
+                    </span>
+                  ) : (
+                    <span style={s.daySheetValueMuted}>בוצע</span>
+                  )}
+                </div>
+                <span style={s.daySheetPointsSmall}>
+                  {entry.points > 0 ? `+${entry.points}` : entry.points}
+                </span>
+                {/* Placeholder for future edit affordance (Phase 5). Reserves
+                    width + keeps tap targets predictable. aria-hidden because
+                    it's not yet interactive. */}
+                <span style={s.daySheetEditPlaceholder} aria-hidden="true">⋯</span>
+              </div>
+            ))}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── Insights (Phase 2B) ────────────────────────────────────────────────────
+// Lightweight client-side derivation from already-loaded trend + breakdown data.
+// No new fetches. Two short Hebrew sentences — only rendered when the data
+// actually supports them (skips the line otherwise instead of saying nothing).
+
+function InsightsCard({
+  trend,
+  breakdown,
+}: {
+  trend: { date: string; points: number; submissionCount: number }[];
+  breakdown: { actionId: string; actionName: string; totalPoints: number; count: number }[];
+}) {
+  // Best day in the range. Only considers days with points > 0.
+  const bestDay = trend.reduce<null | { date: string; points: number }>((best, d) => {
+    if (d.points <= 0) return best;
+    if (!best || d.points > best.points) return { date: d.date, points: d.points };
+    return best;
+  }, null);
+
+  // Best action in the range — positive-only so negative net rows don't "win".
+  const bestAction = breakdown
+    .filter((r) => r.totalPoints > 0)
+    .reduce<null | { name: string; points: number }>((best, r) => {
+      if (!best || r.totalPoints > best.points) return { name: r.actionName, points: r.totalPoints };
+      return best;
+    }, null);
+
+  if (!bestDay && !bestAction) return null;
+
+  return (
+    <div style={s.insightsCard}>
+      {bestDay && (
+        <div style={s.insightRow}>
+          <span style={s.insightIcon}>📈</span>
+          <span style={s.insightText}>
+            היום הכי חזק שלך בטווח:{' '}
+            <b>
+              {new Date(bestDay.date).toLocaleDateString('he-IL', {
+                weekday: 'long',
+                day: 'numeric',
+                month: 'short',
+              })}
+            </b>{' '}
+            ({bestDay.points} נק׳)
+          </span>
+        </div>
+      )}
+      {bestAction && (
+        <div style={s.insightRow}>
+          <span style={s.insightIcon}>⭐</span>
+          <span style={s.insightText}>
+            הפעולה המשתלמת שלך: <b>{bestAction.name}</b> ({bestAction.points} נק׳)
+          </span>
+        </div>
+      )}
     </div>
   );
 }
@@ -561,16 +749,35 @@ function donutPath(
 // ─── Breakdown list (Phase 2A) ─────────────────────────────────────────────
 // Horizontal bars scaled to the max row's totalPoints. Read-only; no interaction.
 
-function BreakdownList({ rows }: { rows: { actionId: string; actionName: string; totalPoints: number; count: number }[] }) {
+function BreakdownList({
+  rows,
+  focusedKey,
+}: {
+  rows: { actionId: string; actionName: string; totalPoints: number; count: number }[];
+  focusedKey?: string | null;
+}) {
   const max = Math.max(...rows.map((r) => r.totalPoints), 1);
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       {rows.map((r) => {
         const pct = Math.max(4, Math.round((Math.max(r.totalPoints, 0) / max) * 100));
+        const isFocused = focusedKey === r.actionId;
+        const isDimmed = focusedKey !== null && focusedKey !== undefined && !isFocused;
         return (
-          <div key={r.actionId} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div
+            key={r.actionId}
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 4,
+              opacity: isDimmed ? 0.45 : 1,
+              transition: 'opacity 0.15s',
+            }}
+          >
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
-              <span style={{ color: '#111827', fontWeight: 600 }}>{r.actionName}</span>
+              <span style={{ color: '#111827', fontWeight: isFocused ? 800 : 600 }}>
+                {r.actionName}
+              </span>
               <span style={{ color: '#6b7280' }}>
                 {r.totalPoints.toLocaleString('he-IL')} נק׳
                 <span style={{ color: '#9ca3af', marginInlineStart: 6 }}>·</span>
@@ -623,16 +830,29 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
   const [statsLoading, setStatsLoading] = useState(false);
   const [statsError, setStatsError] = useState('');
 
-  // ── Phase 2A analytics state ────────────────────────────────────────────
-  // All analytics re-fetch on tab entry and on filter changes. No cache beyond
-  // the last loaded response held in state (avoids flicker between refetches).
+  // ── Phase 2A+2B analytics state ─────────────────────────────────────────
+  // All analytics re-fetch on tab entry and on range/groupBy changes. No cache
+  // beyond the last loaded response held in state (avoids flicker).
   const [analyticsSummary, setAnalyticsSummary] = useState<AnalyticsSummary | null>(null);
   const [analyticsTrend, setAnalyticsTrend] = useState<AnalyticsTrendPoint[] | null>(null);
   const [analyticsBreakdown, setAnalyticsBreakdown] = useState<AnalyticsBreakdownEntry[] | null>(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
   const [analyticsError, setAnalyticsError] = useState('');
-  const [trendDays, setTrendDays] = useState<TrendDays>(14);
-  const [breakdownPeriod, setBreakdownPeriod] = useState<BreakdownPeriod>('7d');
+
+  // Phase 2B: one shared range drives chart + breakdown + pie. The trend chart
+  // needs a bounded range, so when key='all' we internally fetch the trend with
+  // the last 30 days while breakdown/pie use the true unbounded range.
+  const [range, setRange] = useState<AnalyticsRange>({ key: '14d' });
+  const [customFrom, setCustomFrom] = useState<string>('');
+  const [customTo, setCustomTo] = useState<string>('');
+  const [rangeError, setRangeError] = useState<string>('');
+
+  // Phase 2B: breakdown grouping mode + available context dimensions.
+  const [groupBy, setGroupBy] = useState<BreakdownGroupBy>('action');
+  const [contextDimensions, setContextDimensions] = useState<ContextDimension[]>([]);
+
+  // Pie interaction: focused actionId highlights the matching row + dims others.
+  const [focusedSliceKey, setFocusedSliceKey] = useState<string | null>(null);
 
   // ── Day drill-down sheet ────────────────────────────────────────────────
   const [daySheetDate, setDaySheetDate] = useState<string | null>(null);
@@ -697,11 +917,27 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
       .finally(() => setStatsLoading(false));
   }, [token]);
 
-  // ── Analytics loaders ──────────────────────────────────────────────────
-  // Summary + trend + breakdown always fetched together on tab entry. Changing
-  // trendDays or breakdownPeriod refetches just that slice.
+  // ── Analytics loaders (Phase 2B: range + groupBy aware) ────────────────
+  //
+  // Quick keys 7d/14d/30d map to the trend's `days=` param.
+  // 'all' uses `?days=30` for the trend (needs a bounded window) and `?period=all`
+  //   for breakdown.
+  // 'custom' passes explicit `from`/`to` to both endpoints.
+  // Idempotent URL builders — no side effects — keep refetch logic predictable.
+  function buildTrendQuery(r: AnalyticsRange): string {
+    if (r.key === 'custom' && r.from && r.to) return `from=${r.from}&to=${r.to}`;
+    const days = r.key === '7d' ? 7 : r.key === '30d' ? 30 : r.key === 'all' ? 30 : 14;
+    return `days=${days}`;
+  }
+  function buildBreakdownQuery(r: AnalyticsRange, g: BreakdownGroupBy): string {
+    const base = r.key === 'custom' && r.from && r.to
+      ? `from=${r.from}&to=${r.to}`
+      : `period=${r.key === 'custom' ? '14d' : r.key}`;
+    return `${base}&groupBy=${encodeURIComponent(g)}`;
+  }
+
   const refreshAnalytics = useCallback(
-    (silent = false, days: TrendDays = trendDays, period: BreakdownPeriod = breakdownPeriod) => {
+    (silent = false, r: AnalyticsRange = range, g: BreakdownGroupBy = groupBy) => {
       if (!silent) setAnalyticsLoading(true);
       Promise.all([
         apiFetch<AnalyticsSummary>(
@@ -709,11 +945,11 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
           { cache: 'no-store' },
         ),
         apiFetch<AnalyticsTrendPoint[]>(
-          `${BASE_URL}/public/participant/${token}/analytics/trend?days=${days}`,
+          `${BASE_URL}/public/participant/${token}/analytics/trend?${buildTrendQuery(r)}`,
           { cache: 'no-store' },
         ),
         apiFetch<AnalyticsBreakdownEntry[]>(
-          `${BASE_URL}/public/participant/${token}/analytics/breakdown?period=${period}`,
+          `${BASE_URL}/public/participant/${token}/analytics/breakdown?${buildBreakdownQuery(r, g)}`,
           { cache: 'no-store' },
         ),
       ])
@@ -726,31 +962,69 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
         .catch(() => setAnalyticsError('שגיאה בטעינת הנתונים'))
         .finally(() => setAnalyticsLoading(false));
     },
-    [token, trendDays, breakdownPeriod],
+    [token, range, groupBy],
   );
 
   const refreshTrendOnly = useCallback(
-    (days: TrendDays) => {
+    (r: AnalyticsRange) => {
       apiFetch<AnalyticsTrendPoint[]>(
-        `${BASE_URL}/public/participant/${token}/analytics/trend?days=${days}`,
+        `${BASE_URL}/public/participant/${token}/analytics/trend?${buildTrendQuery(r)}`,
         { cache: 'no-store' },
       )
-        .then((data) => setAnalyticsTrend(data))
+        .then(setAnalyticsTrend)
         .catch(() => setAnalyticsError('שגיאה בטעינת הנתונים'));
     },
     [token],
   );
 
   const refreshBreakdownOnly = useCallback(
-    (period: BreakdownPeriod) => {
+    (r: AnalyticsRange, g: BreakdownGroupBy) => {
       apiFetch<AnalyticsBreakdownEntry[]>(
-        `${BASE_URL}/public/participant/${token}/analytics/breakdown?period=${period}`,
+        `${BASE_URL}/public/participant/${token}/analytics/breakdown?${buildBreakdownQuery(r, g)}`,
         { cache: 'no-store' },
       )
-        .then((data) => setAnalyticsBreakdown(data))
+        .then(setAnalyticsBreakdown)
         .catch(() => setAnalyticsError('שגיאה בטעינת הנתונים'));
     },
     [token],
+  );
+
+  const loadContextDimensions = useCallback(() => {
+    apiFetch<ContextDimension[]>(
+      `${BASE_URL}/public/participant/${token}/analytics/context-dimensions`,
+      { cache: 'no-store' },
+    )
+      .then(setContextDimensions)
+      .catch(() => { /* non-critical — toggle just stays hidden */ });
+  }, [token]);
+
+  /**
+   * Apply a new range. For quick keys fetch immediately. For a custom range
+   * validate before fetching so bad input never touches the network.
+   */
+  const applyRange = useCallback(
+    (next: AnalyticsRange) => {
+      setRangeError('');
+      if (next.key === 'custom') {
+        if (!next.from || !next.to) {
+          setRangeError('יש לבחור תאריך התחלה וסיום');
+          return;
+        }
+        if (next.from > next.to) {
+          setRangeError('תאריך ההתחלה חייב להיות לפני תאריך הסיום');
+          return;
+        }
+        const today = new Date().toISOString().slice(0, 10);
+        if (next.to > today) {
+          setRangeError('לא ניתן לבחור תאריך עתידי');
+          return;
+        }
+      }
+      setRange(next);
+      setFocusedSliceKey(null); // reset pie highlight when scope changes
+      refreshAnalytics(true, next, groupBy);
+    },
+    [refreshAnalytics, groupBy],
   );
 
   const loadDayDrilldown = useCallback(
@@ -854,8 +1128,13 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
   function switchTab(tab: TabId) {
     setActiveTab(tab);
     // Analytics tab ("הנתונים שלי"): always fetch fresh so numbers are never stale.
-    // If we already have data, skip the spinner to avoid flicker.
-    if (tab === 'stats') refreshAnalytics(analyticsSummary !== null);
+    // Skip the spinner on re-entry to avoid a flicker.
+    if (tab === 'stats') {
+      refreshAnalytics(analyticsSummary !== null);
+      // Context dimensions are loaded lazily the first time the tab is opened.
+      // The list only depends on program config + history and rarely changes.
+      if (contextDimensions.length === 0) loadContextDimensions();
+    }
     // Feed tab renders both the group feed and the group leaderboard (from legacy stats).
     if (tab === 'feed') {
       refreshFeed(feed.length > 0);
@@ -1223,31 +1502,82 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                   </span>
                 </div>
 
+                {/* ── Shared range picker (drives chart + breakdown + pie) */}
+                <div style={s.rangeCard}>
+                  <div style={s.periodToggle} role="tablist" aria-label="טווח תאריכים">
+                    {([
+                      { key: '7d'    as const, label: '7 ימים'  },
+                      { key: '14d'   as const, label: '14 ימים' },
+                      { key: '30d'   as const, label: '30 ימים' },
+                      { key: 'all'   as const, label: 'הכל'     },
+                      { key: 'custom' as const, label: 'מותאם'   },
+                    ]).map((opt) => (
+                      <button
+                        key={opt.key}
+                        role="tab"
+                        aria-selected={range.key === opt.key}
+                        onClick={() => {
+                          if (opt.key === 'custom') {
+                            // Open the custom inputs; don't fetch yet — wait for user confirm.
+                            setRange((r) => ({ ...r, key: 'custom' }));
+                            setRangeError('');
+                            return;
+                          }
+                          if (range.key === opt.key) return;
+                          applyRange({ key: opt.key });
+                        }}
+                        style={{
+                          ...s.periodBtn,
+                          ...(range.key === opt.key ? s.periodBtnActive : {}),
+                        }}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                  {range.key === 'custom' && (
+                    <div style={s.customRangeRow}>
+                      <label style={s.customRangeLabel}>
+                        <span style={s.customRangeLabelText}>מתאריך</span>
+                        <input
+                          type="date"
+                          value={customFrom}
+                          max={new Date().toISOString().slice(0, 10)}
+                          onChange={(e) => setCustomFrom(e.target.value)}
+                          style={s.datePickerInput}
+                        />
+                      </label>
+                      <label style={s.customRangeLabel}>
+                        <span style={s.customRangeLabelText}>עד תאריך</span>
+                        <input
+                          type="date"
+                          value={customTo}
+                          max={new Date().toISOString().slice(0, 10)}
+                          onChange={(e) => setCustomTo(e.target.value)}
+                          style={s.datePickerInput}
+                        />
+                      </label>
+                      <button
+                        style={s.customRangeApply}
+                        onClick={() =>
+                          applyRange({ key: 'custom', from: customFrom, to: customTo })
+                        }
+                      >
+                        הצגי
+                      </button>
+                    </div>
+                  )}
+                  {rangeError && <p style={s.rangeErrorText}>{rangeError}</p>}
+                </div>
+
+                {/* ── Insights (derived client-side from already-loaded data) */}
+                {analyticsTrend && analyticsBreakdown && (
+                  <InsightsCard trend={analyticsTrend} breakdown={analyticsBreakdown} />
+                )}
+
                 {/* ── Trend chart ─────────────────────────────────────── */}
                 <div style={s.chartCard}>
-                  <div style={s.chartHeader}>
-                    <p style={s.sectionTitle}>ההתקדמות שלי</p>
-                    <div style={s.periodToggle} role="tablist" aria-label="טווח ימים">
-                      {([7, 14, 30] as TrendDays[]).map((d) => (
-                        <button
-                          key={d}
-                          role="tab"
-                          aria-selected={trendDays === d}
-                          onClick={() => {
-                            if (trendDays === d) return;
-                            setTrendDays(d);
-                            refreshTrendOnly(d);
-                          }}
-                          style={{
-                            ...s.periodBtn,
-                            ...(trendDays === d ? s.periodBtnActive : {}),
-                          }}
-                        >
-                          {d}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+                  <p style={s.sectionTitle}>ההתקדמות שלי</p>
                   {analyticsTrend && analyticsTrend.length > 0 ? (
                     <InteractiveTrendChart
                       data={analyticsTrend}
@@ -1256,9 +1586,6 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                   ) : (
                     <p style={s.emptyHint}>טרם נאסף מידע בטווח הזה.</p>
                   )}
-                  {/* Single-day picker — reuses drill-down sheet. Lets the
-                      participant look up any past date, including dates
-                      outside the current chart window. */}
                   <div style={s.datePickerRow}>
                     <span style={s.chartHint}>טיפ: הקישי על יום בגרף או בחרי תאריך</span>
                     <label style={s.datePickerLabel}>
@@ -1275,43 +1602,71 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                   </div>
                 </div>
 
-                {/* ── Breakdown by action (list + pie) ─────────────── */}
+                {/* ── Breakdown (list + pie, optional group-by context) ─── */}
                 <div style={s.breakdownCard}>
                   <div style={s.chartHeader}>
-                    <p style={s.sectionTitle}>לפי פעולות</p>
-                    <div style={s.periodToggle} role="tablist" aria-label="טווח פירוט">
-                      {([
-                        { key: '7d'  as const, label: '7 ימים'  },
-                        { key: '14d' as const, label: '14 ימים' },
-                        { key: '30d' as const, label: '30 ימים' },
-                        { key: 'all' as const, label: 'הכל'     },
-                      ]).map((opt) => (
+                    <p style={s.sectionTitle}>
+                      {groupBy === 'action' ? 'לפי פעולות' : 'לפי קטגוריה'}
+                    </p>
+                    {contextDimensions.length > 0 && (
+                      <div style={s.periodToggle} role="tablist" aria-label="קיבוץ לפי">
                         <button
-                          key={opt.key}
                           role="tab"
-                          aria-selected={breakdownPeriod === opt.key}
+                          aria-selected={groupBy === 'action'}
                           onClick={() => {
-                            if (breakdownPeriod === opt.key) return;
-                            setBreakdownPeriod(opt.key);
-                            refreshBreakdownOnly(opt.key);
+                            if (groupBy === 'action') return;
+                            setGroupBy('action');
+                            setFocusedSliceKey(null);
+                            refreshBreakdownOnly(range, 'action');
                           }}
                           style={{
                             ...s.periodBtn,
-                            ...(breakdownPeriod === opt.key ? s.periodBtnActive : {}),
+                            ...(groupBy === 'action' ? s.periodBtnActive : {}),
                           }}
                         >
-                          {opt.label}
+                          פעולה
                         </button>
-                      ))}
-                    </div>
+                        {contextDimensions.map((dim) => {
+                          const key = `context:${dim.key}` as BreakdownGroupBy;
+                          return (
+                            <button
+                              key={dim.key}
+                              role="tab"
+                              aria-selected={groupBy === key}
+                              onClick={() => {
+                                if (groupBy === key) return;
+                                setGroupBy(key);
+                                setFocusedSliceKey(null);
+                                refreshBreakdownOnly(range, key);
+                              }}
+                              style={{
+                                ...s.periodBtn,
+                                ...(groupBy === key ? s.periodBtnActive : {}),
+                              }}
+                            >
+                              {dim.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                   {analyticsBreakdown === null ? null : analyticsBreakdown.length === 0 ? (
-                    <p style={s.emptyHint}>אין פעולות בטווח שבחרת.</p>
+                    <p style={s.emptyHint}>אין נתונים בטווח שבחרת.</p>
                   ) : (
                     <>
-                      <BreakdownPie rows={analyticsBreakdown} />
+                      <BreakdownPie
+                        rows={analyticsBreakdown}
+                        focusedKey={focusedSliceKey}
+                        onSliceClick={(k) =>
+                          setFocusedSliceKey((cur) => (cur === k ? null : k))
+                        }
+                      />
                       <div style={{ height: 12 }} />
-                      <BreakdownList rows={analyticsBreakdown} />
+                      <BreakdownList
+                        rows={analyticsBreakdown}
+                        focusedKey={focusedSliceKey}
+                      />
                     </>
                   )}
                 </div>
@@ -1597,24 +1952,7 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
               daySheetEntries.length === 0 ? (
                 <p style={s.emptyHint}>לא נרשמה פעילות ביום זה.</p>
               ) : (
-                <div style={s.daySheetList}>
-                  {daySheetEntries.map((entry) => (
-                    <div key={entry.logId} style={s.daySheetRow}>
-                      <span style={s.daySheetTime}>{entry.time}</span>
-                      <div style={s.daySheetBody}>
-                        <span style={s.daySheetAction}>{entry.actionName}</span>
-                        {entry.effectiveValue !== null && (
-                          <span style={s.daySheetValue}>
-                            {entry.effectiveValue.toLocaleString('he-IL')}
-                          </span>
-                        )}
-                      </div>
-                      <span style={s.daySheetPoints}>
-                        {entry.points > 0 ? `+${entry.points}` : entry.points}
-                      </span>
-                    </div>
-                  ))}
-                </div>
+                <DaySheetGroupedList entries={daySheetEntries} />
               )
             )}
 
@@ -1997,6 +2335,88 @@ const s = {
     boxShadow: '0 1px 2px rgba(0,0,0,0.08)',
   } satisfies React.CSSProperties,
 
+  // Shared range card — holds the period toggle and the custom-range inputs.
+  rangeCard: {
+    background: '#ffffff',
+    border: '1px solid #e5e7eb',
+    borderRadius: 14,
+    padding: '10px 12px',
+    marginBottom: 12,
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 10,
+  } satisfies React.CSSProperties,
+
+  customRangeRow: {
+    display: 'flex',
+    flexWrap: 'wrap' as const,
+    alignItems: 'flex-end',
+    gap: 8,
+  } satisfies React.CSSProperties,
+
+  customRangeLabel: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 3,
+    flex: 1,
+    minWidth: 110,
+  } satisfies React.CSSProperties,
+
+  customRangeLabelText: {
+    fontSize: 11,
+    color: '#6b7280',
+    fontWeight: 600,
+  } satisfies React.CSSProperties,
+
+  customRangeApply: {
+    background: '#1d4ed8',
+    color: '#ffffff',
+    border: 'none',
+    borderRadius: 8,
+    padding: '6px 14px',
+    fontSize: 13,
+    fontWeight: 700,
+    cursor: 'pointer',
+    fontFamily: 'inherit',
+  } satisfies React.CSSProperties,
+
+  rangeErrorText: {
+    fontSize: 12,
+    color: '#dc2626',
+    margin: 0,
+    fontWeight: 600,
+  } satisfies React.CSSProperties,
+
+  // Insights
+  insightsCard: {
+    background: '#f8fafc',
+    border: '1px solid #e5e7eb',
+    borderRadius: 14,
+    padding: '12px 14px',
+    marginBottom: 12,
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 6,
+  } satisfies React.CSSProperties,
+
+  insightRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+  } satisfies React.CSSProperties,
+
+  insightIcon: {
+    fontSize: 16,
+    lineHeight: 1,
+  } satisfies React.CSSProperties,
+
+  insightText: {
+    fontSize: 13,
+    color: '#374151',
+    lineHeight: 1.35,
+    flex: 1,
+  } satisfies React.CSSProperties,
+
   chartHint: {
     marginTop: 0,
     marginBottom: 0,
@@ -2150,6 +2570,82 @@ const s = {
     fontWeight: 800,
     color: '#1d4ed8',
     fontVariantNumeric: 'tabular-nums' as const,
+  } satisfies React.CSSProperties,
+
+  // Phase 2B: grouped drill-down styles
+  daySheetGroup: {
+    background: '#ffffff',
+    border: '1px solid #f3f4f6',
+    borderRadius: 10,
+    padding: '8px 10px',
+    marginBottom: 6,
+  } satisfies React.CSSProperties,
+
+  daySheetGroupHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    borderBottom: '1px solid #f3f4f6',
+    paddingBottom: 6,
+    marginBottom: 4,
+  } satisfies React.CSSProperties,
+
+  daySheetGroupName: {
+    fontSize: 14,
+    fontWeight: 700,
+    color: '#111827',
+  } satisfies React.CSSProperties,
+
+  daySheetGroupMeta: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+  } satisfies React.CSSProperties,
+
+  daySheetGroupCount: {
+    fontSize: 11,
+    color: '#9ca3af',
+    fontWeight: 600,
+  } satisfies React.CSSProperties,
+
+  daySheetGroupTotal: {
+    fontSize: 13,
+    color: '#1d4ed8',
+    fontWeight: 800,
+    fontVariantNumeric: 'tabular-nums' as const,
+  } satisfies React.CSSProperties,
+
+  daySheetGroupRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+    padding: '6px 2px',
+  } satisfies React.CSSProperties,
+
+  daySheetPointsSmall: {
+    fontSize: 12,
+    fontWeight: 700,
+    color: '#6b7280',
+    fontVariantNumeric: 'tabular-nums' as const,
+    minWidth: 34,
+    textAlign: 'end' as const,
+  } satisfies React.CSSProperties,
+
+  daySheetValueMuted: {
+    fontSize: 12,
+    color: '#9ca3af',
+  } satisfies React.CSSProperties,
+
+  // Placeholder column for the future edit button. Rendered but disabled so
+  // the layout already accounts for it in Phase 2B — zero layout shift when
+  // Phase 5 wires it up.
+  daySheetEditPlaceholder: {
+    width: 18,
+    textAlign: 'center' as const,
+    color: '#e5e7eb',
+    fontSize: 14,
+    fontWeight: 700,
+    cursor: 'not-allowed' as const,
   } satisfies React.CSSProperties,
 
   chartCard: {

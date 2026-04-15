@@ -77,13 +77,20 @@ export class ParticipantPortalController {
   }
 
   // GET /api/public/participant/:token/analytics/trend?days=7|14|30
+  // Or                                          ?from=YYYY-MM-DD&to=YYYY-MM-DD
   @Get(':token/analytics/trend')
   getAnalyticsTrend(
     @Param('token') token: string,
     @Query('days') days?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ): Promise<AnalyticsTrendPoint[]> {
-    const n = days ? parseInt(days, 10) : 14;
-    return this.portalService.getAnalyticsTrend(token, n);
+    const parsedDays = days ? parseInt(days, 10) : undefined;
+    return this.portalService.getAnalyticsTrend(token, {
+      days: parsedDays,
+      from,
+      to,
+    });
   }
 
   // GET /api/public/participant/:token/analytics/day?date=YYYY-MM-DD
@@ -95,13 +102,33 @@ export class ParticipantPortalController {
     return this.portalService.getAnalyticsDay(token, date);
   }
 
-  // GET /api/public/participant/:token/analytics/breakdown?period=7d|14d|30d|all
+  // GET /api/public/participant/:token/analytics/breakdown
+  //   ?period=7d|14d|30d|all
+  //   or ?from=YYYY-MM-DD&to=YYYY-MM-DD
+  //   &groupBy=action (default) | context:<dimensionKey>
   @Get(':token/analytics/breakdown')
   getAnalyticsBreakdown(
     @Param('token') token: string,
     @Query('period') period?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('groupBy') groupBy?: string,
   ): Promise<AnalyticsBreakdownEntry[]> {
-    const p = (period ?? '7d') as '7d' | '14d' | '30d' | 'all';
-    return this.portalService.getAnalyticsBreakdown(token, p);
+    return this.portalService.getAnalyticsBreakdown(token, {
+      period: period as '7d' | '14d' | '30d' | 'all' | undefined,
+      from,
+      to,
+      groupBy,
+    });
+  }
+
+  // GET /api/public/participant/:token/analytics/context-dimensions
+  // Returns [{ key, label }] for dimensions that appear in the participant's
+  // active log history. Empty array → frontend hides the context toggle.
+  @Get(':token/analytics/context-dimensions')
+  getAnalyticsContextDimensions(
+    @Param('token') token: string,
+  ): Promise<{ key: string; label: string }[]> {
+    return this.portalService.getAnalyticsContextDimensions(token);
   }
 }

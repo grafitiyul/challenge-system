@@ -12,6 +12,78 @@ function startOfDayUTC(d: Date): Date {
   return utc;
 }
 
+/**
+ * Resolve an inclusive UTC [sinceMidnight, untilEndOfDay] window from caller options.
+ *
+ * Precedence:
+ *   1. If from + to provided → use them after validation.
+ *   2. If days provided → last N days inclusive of today.
+ *   3. If period provided → 7d/14d/30d windows or open-ended "all".
+ *   4. Fallback → last 14 days.
+ *
+ * Throws BadRequestException on:
+ *   - malformed dates
+ *   - from > to
+ *   - to in the future
+ */
+function resolveRange(opts: {
+  days?: number;
+  period?: '7d' | '14d' | '30d' | 'all';
+  from?: string;
+  to?: string;
+}): { since: Date | null; until: Date } {
+  const now = new Date();
+  const todayEnd = startOfDayUTC(now);
+  todayEnd.setUTCHours(23, 59, 59, 999);
+
+  if (opts.from !== undefined || opts.to !== undefined) {
+    if (!opts.from || !opts.to) {
+      throw new BadRequestException('from and to must both be provided together');
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(opts.from) || !/^\d{4}-\d{2}-\d{2}$/.test(opts.to)) {
+      throw new BadRequestException('from/to must be YYYY-MM-DD');
+    }
+    const since = new Date(`${opts.from}T00:00:00.000Z`);
+    const until = new Date(`${opts.to}T00:00:00.000Z`);
+    if (isNaN(since.getTime()) || isNaN(until.getTime())) {
+      throw new BadRequestException('from/to are invalid dates');
+    }
+    until.setUTCHours(23, 59, 59, 999);
+    if (since.getTime() > until.getTime()) {
+      throw new BadRequestException('from must be <= to');
+    }
+    if (until.getTime() > todayEnd.getTime()) {
+      throw new BadRequestException('to cannot be in the future');
+    }
+    return { since, until };
+  }
+
+  if (opts.days !== undefined) {
+    if (![7, 14, 30].includes(opts.days)) {
+      throw new BadRequestException('days must be 7, 14, or 30');
+    }
+    const since = startOfDayUTC(now);
+    since.setUTCDate(since.getUTCDate() - (opts.days - 1));
+    return { since, until: todayEnd };
+  }
+
+  if (opts.period !== undefined) {
+    if (!['7d', '14d', '30d', 'all'].includes(opts.period)) {
+      throw new BadRequestException('period must be 7d, 14d, 30d, or all');
+    }
+    if (opts.period === 'all') return { since: null, until: todayEnd };
+    const days = opts.period === '7d' ? 7 : opts.period === '14d' ? 14 : 30;
+    const since = startOfDayUTC(now);
+    since.setUTCDate(since.getUTCDate() - (days - 1));
+    return { since, until: todayEnd };
+  }
+
+  // Default: last 14 days.
+  const since = startOfDayUTC(now);
+  since.setUTCDate(since.getUTCDate() - 13);
+  return { since, until: todayEnd };
+}
+
 export interface PortalContext {
   participant: { id: string; firstName: string; lastName: string | null };
   group: { id: string; name: string; startDate: Date | null; endDate: Date | null };
@@ -441,19 +513,23 @@ export class ParticipantPortalService {
     };
   }
 
-  async getAnalyticsTrend(token: string, days: number): Promise<AnalyticsTrendPoint[]> {
-    if (![7, 14, 30].includes(days)) {
-      throw new BadRequestException('days must be 7, 14, or 30');
-    }
+  async getAnalyticsTrend(
+    token: string,
+    opts: { days?: number; from?: string; to?: string },
+  ): Promise<AnalyticsTrendPoint[]> {
     const { participantId, programId } = await this.resolveToken(token);
-
-    const now = new Date();
-    const since = startOfDayUTC(now);
-    since.setUTCDate(since.getUTCDate() - (days - 1));
+    const { since, until } = resolveRange({ days: opts.days, from: opts.from, to: opts.to });
+    // Trend requires a concrete start — a bounded window makes no sense for "all".
+    if (since === null) {
+      throw new BadRequestException('trend requires days or from/to; "all" is not supported');
+    }
 
     // Sum ALL ScoreEvent rows per day (action, rule, correction net out naturally).
     const events = await this.prisma.scoreEvent.findMany({
-      where: { participantId, programId, createdAt: { gte: since } },
+      where: {
+        participantId, programId,
+        createdAt: { gte: since, lte: until },
+      },
       select: { points: true, createdAt: true },
     });
     const pointsByDay: Record<string, number> = {};
@@ -467,7 +543,7 @@ export class ParticipantPortalService {
       where: {
         participantId, programId,
         status: 'active',
-        createdAt: { gte: since },
+        createdAt: { gte: since, lte: until },
       },
       select: { createdAt: true },
     });
@@ -477,9 +553,10 @@ export class ParticipantPortalService {
       countByDay[key] = (countByDay[key] ?? 0) + 1;
     }
 
-    // Dense fill oldest→newest.
+    // Dense fill oldest→newest (inclusive on both ends).
+    const dayCount = Math.floor((startOfDayUTC(until).getTime() - since.getTime()) / DAY_MS) + 1;
     const out: AnalyticsTrendPoint[] = [];
-    for (let i = 0; i < days; i++) {
+    for (let i = 0; i < dayCount; i++) {
       const d = new Date(since.getTime() + i * DAY_MS);
       const key = d.toISOString().slice(0, 10);
       out.push({
@@ -544,27 +621,41 @@ export class ParticipantPortalService {
 
   async getAnalyticsBreakdown(
     token: string,
-    period: '7d' | '14d' | '30d' | 'all',
+    opts: {
+      period?: '7d' | '14d' | '30d' | 'all';
+      from?: string;
+      to?: string;
+      /**
+       * `action` (default) groups by actionId.
+       * `context:<key>` groups by the given dimension value (label from contextSchema).
+       */
+      groupBy?: string;
+    },
   ): Promise<AnalyticsBreakdownEntry[]> {
-    if (!['7d', '14d', '30d', 'all'].includes(period)) {
-      throw new BadRequestException('period must be 7d, 14d, 30d, or all');
-    }
     const { participantId, programId } = await this.resolveToken(token);
+    const { since, until } = resolveRange({
+      period: opts.period,
+      from: opts.from,
+      to: opts.to,
+    });
 
-    let since: Date | null = null;
-    if (period !== 'all') {
-      const days = period === '7d' ? 7 : period === '14d' ? 14 : 30;
-      since = startOfDayUTC(new Date());
-      since.setUTCDate(since.getUTCDate() - (days - 1));
+    const groupBy = opts.groupBy ?? 'action';
+    if (groupBy.startsWith('context:')) {
+      const key = groupBy.slice('context:'.length);
+      if (!key) throw new BadRequestException('groupBy=context: requires a key');
+      return this.breakdownByContext(participantId, programId, since, until, key);
+    }
+    if (groupBy !== 'action') {
+      throw new BadRequestException('groupBy must be "action" or "context:<key>"');
     }
 
-    // Sum by actionId over sourceType IN ('action','correction') — corrections carry
-    // sourceId = actionId and negative points, so net math is automatic.
+    // ── Group by actionId ────────────────────────────────────────────────
+    // Sum ScoreEvents (action + correction net). Count active UserActionLogs.
     const whereScoreEvents: Prisma.ScoreEventWhereInput = {
       participantId, programId,
       sourceType: { in: ['action', 'correction'] },
       sourceId: { not: null },
-      ...(since ? { createdAt: { gte: since } } : {}),
+      ...(since ? { createdAt: { gte: since, lte: until } } : { createdAt: { lte: until } }),
     };
     const grouped = await this.prisma.scoreEvent.groupBy({
       by: ['sourceId'],
@@ -572,11 +663,10 @@ export class ParticipantPortalService {
       _sum: { points: true },
     });
 
-    // Count of active submissions per action over the same window.
     const whereLogs: Prisma.UserActionLogWhereInput = {
       participantId, programId,
       status: 'active',
-      ...(since ? { createdAt: { gte: since } } : {}),
+      ...(since ? { createdAt: { gte: since, lte: until } } : { createdAt: { lte: until } }),
     };
     const logsGrouped = await this.prisma.userActionLog.groupBy({
       by: ['actionId'],
@@ -602,8 +692,6 @@ export class ParticipantPortalService {
       actions.map((a) => [a.id, a.name]),
     );
 
-    // Merge into final rows. Keep rows with zero points only if there is still
-    // at least one active submission (avoids surfacing fully-voided actions).
     const rows: AnalyticsBreakdownEntry[] = [];
     for (const actionId of actionIds) {
       const totalPoints =
@@ -617,9 +705,151 @@ export class ParticipantPortalService {
         count,
       });
     }
-    // Highest contribution first; ties broken by count.
     rows.sort((a, b) => b.totalPoints - a.totalPoints || b.count - a.count);
     return rows;
+  }
+
+  /**
+   * Group points + counts by a single context dimension value.
+   *
+   * Only active UserActionLogs contribute. Corrections are intentionally NOT
+   * merged in here because compensating ScoreEvents don't have a logId and
+   * therefore cannot be attributed to a context value. Since the old log is
+   * already marked superseded (excluded from the active filter), the net math
+   * still works: old context's points are gone, new context's points appear.
+   *
+   * The `actionId` field on the response carries the raw dimension value, and
+   * `actionName` carries the option label resolved from the action's
+   * contextSchemaJson (or the raw value if no label is declared).
+   */
+  private async breakdownByContext(
+    participantId: string,
+    programId: string,
+    since: Date | null,
+    until: Date,
+    dimensionKey: string,
+  ): Promise<AnalyticsBreakdownEntry[]> {
+    const logs = await this.prisma.userActionLog.findMany({
+      where: {
+        participantId, programId,
+        status: 'active',
+        ...(since ? { createdAt: { gte: since, lte: until } } : { createdAt: { lte: until } }),
+      },
+      select: { id: true, actionId: true, contextJson: true },
+    });
+    if (logs.length === 0) return [];
+
+    // Points per log — action-type ScoreEvents only (corrections excluded above).
+    const logIds = logs.map((l) => l.id);
+    const scoreEvents = await this.prisma.scoreEvent.findMany({
+      where: { logId: { in: logIds }, sourceType: 'action' },
+      select: { logId: true, points: true },
+    });
+    const pointsByLog: Record<string, number> = {};
+    for (const se of scoreEvents) {
+      if (se.logId) pointsByLog[se.logId] = se.points;
+    }
+
+    // Resolve labels from contextSchemaJson per action, indexed by value.
+    const actionIds = Array.from(new Set(logs.map((l) => l.actionId)));
+    const actions = await this.prisma.gameAction.findMany({
+      where: { id: { in: actionIds } },
+      select: { id: true, contextSchemaJson: true },
+    });
+    // valueLabels[actionId][key][value] → label
+    const valueLabels = new Map<string, Map<string, Map<string, string>>>();
+    for (const a of actions) {
+      const schema = a.contextSchemaJson as {
+        dimensions?: { key?: string; type?: string; options?: { value?: string; label?: string }[] }[];
+      } | null;
+      const perAction = new Map<string, Map<string, string>>();
+      for (const d of schema?.dimensions ?? []) {
+        if (typeof d.key !== 'string') continue;
+        const perKey = new Map<string, string>();
+        for (const o of d.options ?? []) {
+          if (typeof o.value === 'string' && typeof o.label === 'string') perKey.set(o.value, o.label);
+        }
+        perAction.set(d.key, perKey);
+      }
+      valueLabels.set(a.id, perAction);
+    }
+
+    // Aggregate by raw value.
+    const totals: Record<string, { points: number; count: number; label: string }> = {};
+    for (const l of logs) {
+      const ctx = l.contextJson as Record<string, unknown> | null;
+      if (!ctx) continue;
+      const raw = ctx[dimensionKey];
+      if (raw === undefined || raw === null || raw === '') continue;
+      const value = String(raw);
+      const label = valueLabels.get(l.actionId)?.get(dimensionKey)?.get(value) ?? value;
+      const entry = totals[value] ?? { points: 0, count: 0, label };
+      entry.points += pointsByLog[l.id] ?? 0;
+      entry.count += 1;
+      // Prefer the first non-raw label we encounter (all actions declaring the
+      // same dimension should agree; if not, we pick one deterministically).
+      if (entry.label === value && label !== value) entry.label = label;
+      totals[value] = entry;
+    }
+
+    const rows: AnalyticsBreakdownEntry[] = Object.entries(totals).map(
+      ([value, v]) => ({
+        actionId: value,       // reused as "group key"
+        actionName: v.label,   // reused as "group label"
+        totalPoints: v.points,
+        count: v.count,
+      }),
+    );
+    rows.sort((a, b) => b.totalPoints - a.totalPoints || b.count - a.count);
+    return rows;
+  }
+
+  /**
+   * List context dimensions that appear in the participant's active log history.
+   * Used by the frontend to decide whether the "group by context" toggle should
+   * be shown at all, and what options to present.
+   *
+   * Only declared dimensions (from each action's contextSchemaJson) AND having
+   * at least one active log with a non-empty value for that key are returned.
+   */
+  async getAnalyticsContextDimensions(
+    token: string,
+  ): Promise<{ key: string; label: string }[]> {
+    const { participantId, programId } = await this.resolveToken(token);
+
+    const actions = await this.prisma.gameAction.findMany({
+      where: { programId },
+      select: { contextSchemaJson: true },
+    });
+    const declared = new Map<string, string>(); // key → label
+    for (const a of actions) {
+      const schema = a.contextSchemaJson as {
+        dimensions?: { key?: string; label?: string }[];
+      } | null;
+      for (const d of schema?.dimensions ?? []) {
+        if (typeof d.key === 'string' && !declared.has(d.key)) {
+          declared.set(d.key, typeof d.label === 'string' ? d.label : d.key);
+        }
+      }
+    }
+    if (declared.size === 0) return [];
+
+    const logs = await this.prisma.userActionLog.findMany({
+      where: { participantId, programId, status: 'active' },
+      select: { contextJson: true },
+    });
+    const present = new Set<string>();
+    for (const l of logs) {
+      const ctx = l.contextJson as Record<string, unknown> | null;
+      if (!ctx) continue;
+      for (const [k, v] of Object.entries(ctx)) {
+        if (v !== null && v !== undefined && v !== '') present.add(k);
+      }
+    }
+
+    return Array.from(declared.entries())
+      .filter(([k]) => present.has(k))
+      .map(([key, label]) => ({ key, label }));
   }
 
   // ─── Private helpers ───────────────────────────────────────────────────────
