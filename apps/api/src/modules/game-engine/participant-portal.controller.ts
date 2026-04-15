@@ -6,6 +6,10 @@ import {
   PortalStats,
   PortalFeedItem,
   PortalRules,
+  AnalyticsSummary,
+  AnalyticsTrendPoint,
+  AnalyticsDayEntry,
+  AnalyticsBreakdownEntry,
 } from './participant-portal.service';
 
 class LogActionPortalDto {
@@ -60,5 +64,44 @@ export class ParticipantPortalController {
   @Get(':token/rules')
   getRules(@Param('token') token: string): Promise<PortalRules> {
     return this.portalService.getPortalRules(token);
+  }
+
+  // ─── Phase 2A: participant analytics ─────────────────────────────────────
+  // All four endpoints are scoped to the participant behind :token and read
+  // strictly from the ScoreEvent ledger + active UserActionLogs.
+
+  // GET /api/public/participant/:token/analytics/summary
+  @Get(':token/analytics/summary')
+  getAnalyticsSummary(@Param('token') token: string): Promise<AnalyticsSummary> {
+    return this.portalService.getAnalyticsSummary(token);
+  }
+
+  // GET /api/public/participant/:token/analytics/trend?days=7|14|30
+  @Get(':token/analytics/trend')
+  getAnalyticsTrend(
+    @Param('token') token: string,
+    @Query('days') days?: string,
+  ): Promise<AnalyticsTrendPoint[]> {
+    const n = days ? parseInt(days, 10) : 14;
+    return this.portalService.getAnalyticsTrend(token, n);
+  }
+
+  // GET /api/public/participant/:token/analytics/day?date=YYYY-MM-DD
+  @Get(':token/analytics/day')
+  getAnalyticsDay(
+    @Param('token') token: string,
+    @Query('date') date: string,
+  ): Promise<AnalyticsDayEntry[]> {
+    return this.portalService.getAnalyticsDay(token, date);
+  }
+
+  // GET /api/public/participant/:token/analytics/breakdown?period=7d|30d|all
+  @Get(':token/analytics/breakdown')
+  getAnalyticsBreakdown(
+    @Param('token') token: string,
+    @Query('period') period?: string,
+  ): Promise<AnalyticsBreakdownEntry[]> {
+    const p = (period ?? '7d') as '7d' | '30d' | 'all';
+    return this.portalService.getAnalyticsBreakdown(token, p);
   }
 }

@@ -85,6 +85,43 @@ interface FeedItem {
   participant: { id: string; firstName: string; lastName: string | null };
 }
 
+// ─── Phase 2A analytics shapes (match backend responses exactly) ──────────────
+
+interface AnalyticsSummary {
+  totalScore: number;
+  todayScore: number;
+  yesterdayScore: number;
+  trendVsYesterday: number;
+  currentStreak: number;
+}
+
+interface AnalyticsTrendPoint {
+  date: string;            // YYYY-MM-DD
+  points: number;
+  submissionCount: number;
+}
+
+interface AnalyticsDayEntry {
+  logId: string;
+  time: string;            // HH:MM
+  actionId: string;
+  actionName: string;
+  rawValue: string;
+  effectiveValue: number | null;
+  contextJson: Record<string, unknown> | null;
+  points: number;
+}
+
+interface AnalyticsBreakdownEntry {
+  actionId: string;
+  actionName: string;
+  totalPoints: number;
+  count: number;
+}
+
+type TrendDays = 7 | 14 | 30;
+type BreakdownPeriod = '7d' | '30d' | 'all';
+
 interface PortalRules {
   programRulesContent: string | null;
   rulesPublished: boolean;
@@ -257,6 +294,125 @@ function TrendChart({ data }: { data: { date: string; points: number }[] }) {
   );
 }
 
+// ─── Interactive trend chart (Phase 2A) ────────────────────────────────────
+// Same visual language as TrendChart but the bars are clickable. Clicking a bar
+// reports its date (YYYY-MM-DD) so the caller can open the day drill-down sheet.
+// SVG renders left-to-right regardless of RTL, which matches our data order
+// (index 0 = oldest, last = today).
+
+function InteractiveTrendChart({
+  data,
+  onBarClick,
+}: {
+  data: { date: string; points: number; submissionCount: number }[];
+  onBarClick: (date: string) => void;
+}) {
+  const WIDTH = 320;
+  const BAR_H = 80;
+  const LABEL_H = 28;
+  const SVG_H = BAR_H + LABEL_H;
+  const BAR_GAP = 2;
+  const n = data.length;
+  const barW = Math.max(4, Math.floor((WIDTH - BAR_GAP * (n - 1)) / n));
+  const maxVal = Math.max(...data.map((d) => d.points), 1);
+
+  return (
+    <svg
+      width="100%"
+      viewBox={`0 0 ${WIDTH} ${SVG_H}`}
+      style={{ display: 'block', overflow: 'visible' }}
+      aria-label="גרף נקודות לפי יום"
+    >
+      {data.map((d, i) => {
+        const barH = Math.max(2, Math.round((d.points / maxVal) * (BAR_H - 14)));
+        const x = i * (barW + BAR_GAP);
+        const y = BAR_H - barH;
+        const cx = x + barW / 2;
+        const isToday = i === n - 1;
+        const hasActivity = d.points > 0 || d.submissionCount > 0;
+        const label = shortBarDate(d.date);
+        return (
+          <g
+            key={d.date}
+            onClick={() => onBarClick(d.date)}
+            style={{ cursor: 'pointer' }}
+          >
+            {/* Invisible hit-box covering the whole column — keeps tap targets
+                large on mobile even when the bar itself is short. */}
+            <rect
+              x={x}
+              y={0}
+              width={barW}
+              height={BAR_H}
+              fill="transparent"
+            />
+            <rect
+              x={x}
+              y={y}
+              width={barW}
+              height={barH}
+              rx={3}
+              fill={isToday ? '#1d4ed8' : hasActivity ? '#93c5fd' : '#e5e7eb'}
+            />
+            {isToday && d.points > 0 && (
+              <text x={cx} y={y - 4} textAnchor="middle" fontSize={9} fill="#1d4ed8" fontWeight={700}>
+                {d.points}
+              </text>
+            )}
+            <text
+              x={cx}
+              y={BAR_H + 10}
+              textAnchor="end"
+              fontSize={7}
+              fill={isToday ? '#1d4ed8' : '#9ca3af'}
+              fontWeight={isToday ? 700 : 400}
+              transform={`rotate(-40, ${cx}, ${BAR_H + 10})`}
+            >
+              {label}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+// ─── Breakdown list (Phase 2A) ─────────────────────────────────────────────
+// Horizontal bars scaled to the max row's totalPoints. Read-only; no interaction.
+
+function BreakdownList({ rows }: { rows: { actionId: string; actionName: string; totalPoints: number; count: number }[] }) {
+  const max = Math.max(...rows.map((r) => r.totalPoints), 1);
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {rows.map((r) => {
+        const pct = Math.max(4, Math.round((Math.max(r.totalPoints, 0) / max) * 100));
+        return (
+          <div key={r.actionId} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
+              <span style={{ color: '#111827', fontWeight: 600 }}>{r.actionName}</span>
+              <span style={{ color: '#6b7280' }}>
+                {r.totalPoints.toLocaleString('he-IL')} נק׳
+                <span style={{ color: '#9ca3af', marginInlineStart: 6 }}>·</span>
+                <span style={{ color: '#6b7280', marginInlineStart: 6 }}>{r.count}x</span>
+              </span>
+            </div>
+            <div style={{ height: 6, background: '#eef2f7', borderRadius: 999, overflow: 'hidden' }}>
+              <div
+                style={{
+                  width: `${pct}%`,
+                  height: '100%',
+                  background: r.totalPoints >= 0 ? '#1d4ed8' : '#dc2626',
+                  borderRadius: 999,
+                }}
+              />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function ParticipantPortal({ params }: { params: Promise<{ token: string }> }) {
@@ -281,10 +437,27 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
   const [glowActionId, setGlowActionId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Stats tab
+  // Stats tab — legacy shape, still used by the feed tab's leaderboard card.
   const [stats, setStats] = useState<PortalStats | null>(null);
   const [statsLoading, setStatsLoading] = useState(false);
   const [statsError, setStatsError] = useState('');
+
+  // ── Phase 2A analytics state ────────────────────────────────────────────
+  // All analytics re-fetch on tab entry and on filter changes. No cache beyond
+  // the last loaded response held in state (avoids flicker between refetches).
+  const [analyticsSummary, setAnalyticsSummary] = useState<AnalyticsSummary | null>(null);
+  const [analyticsTrend, setAnalyticsTrend] = useState<AnalyticsTrendPoint[] | null>(null);
+  const [analyticsBreakdown, setAnalyticsBreakdown] = useState<AnalyticsBreakdownEntry[] | null>(null);
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const [analyticsError, setAnalyticsError] = useState('');
+  const [trendDays, setTrendDays] = useState<TrendDays>(14);
+  const [breakdownPeriod, setBreakdownPeriod] = useState<BreakdownPeriod>('7d');
+
+  // ── Day drill-down sheet ────────────────────────────────────────────────
+  const [daySheetDate, setDaySheetDate] = useState<string | null>(null);
+  const [daySheetEntries, setDaySheetEntries] = useState<AnalyticsDayEntry[] | null>(null);
+  const [daySheetLoading, setDaySheetLoading] = useState(false);
+  const [daySheetError, setDaySheetError] = useState('');
 
   // Feed tab
   const [feed, setFeed] = useState<FeedItem[]>([]);
@@ -343,6 +516,85 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
       .finally(() => setStatsLoading(false));
   }, [token]);
 
+  // ── Analytics loaders ──────────────────────────────────────────────────
+  // Summary + trend + breakdown always fetched together on tab entry. Changing
+  // trendDays or breakdownPeriod refetches just that slice.
+  const refreshAnalytics = useCallback(
+    (silent = false, days: TrendDays = trendDays, period: BreakdownPeriod = breakdownPeriod) => {
+      if (!silent) setAnalyticsLoading(true);
+      Promise.all([
+        apiFetch<AnalyticsSummary>(
+          `${BASE_URL}/public/participant/${token}/analytics/summary`,
+          { cache: 'no-store' },
+        ),
+        apiFetch<AnalyticsTrendPoint[]>(
+          `${BASE_URL}/public/participant/${token}/analytics/trend?days=${days}`,
+          { cache: 'no-store' },
+        ),
+        apiFetch<AnalyticsBreakdownEntry[]>(
+          `${BASE_URL}/public/participant/${token}/analytics/breakdown?period=${period}`,
+          { cache: 'no-store' },
+        ),
+      ])
+        .then(([summary, trend, breakdown]) => {
+          setAnalyticsSummary(summary);
+          setAnalyticsTrend(trend);
+          setAnalyticsBreakdown(breakdown);
+          setAnalyticsError('');
+        })
+        .catch(() => setAnalyticsError('שגיאה בטעינת הנתונים'))
+        .finally(() => setAnalyticsLoading(false));
+    },
+    [token, trendDays, breakdownPeriod],
+  );
+
+  const refreshTrendOnly = useCallback(
+    (days: TrendDays) => {
+      apiFetch<AnalyticsTrendPoint[]>(
+        `${BASE_URL}/public/participant/${token}/analytics/trend?days=${days}`,
+        { cache: 'no-store' },
+      )
+        .then((data) => setAnalyticsTrend(data))
+        .catch(() => setAnalyticsError('שגיאה בטעינת הנתונים'));
+    },
+    [token],
+  );
+
+  const refreshBreakdownOnly = useCallback(
+    (period: BreakdownPeriod) => {
+      apiFetch<AnalyticsBreakdownEntry[]>(
+        `${BASE_URL}/public/participant/${token}/analytics/breakdown?period=${period}`,
+        { cache: 'no-store' },
+      )
+        .then((data) => setAnalyticsBreakdown(data))
+        .catch(() => setAnalyticsError('שגיאה בטעינת הנתונים'));
+    },
+    [token],
+  );
+
+  const loadDayDrilldown = useCallback(
+    (date: string) => {
+      setDaySheetDate(date);
+      setDaySheetEntries(null);
+      setDaySheetLoading(true);
+      setDaySheetError('');
+      apiFetch<AnalyticsDayEntry[]>(
+        `${BASE_URL}/public/participant/${token}/analytics/day?date=${date}`,
+        { cache: 'no-store' },
+      )
+        .then(setDaySheetEntries)
+        .catch(() => setDaySheetError('שגיאה בטעינת פירוט היום'))
+        .finally(() => setDaySheetLoading(false));
+    },
+    [token],
+  );
+
+  const closeDaySheet = useCallback(() => {
+    setDaySheetDate(null);
+    setDaySheetEntries(null);
+    setDaySheetError('');
+  }, []);
+
   const refreshFeed = useCallback((silent = false) => {
     if (!silent) setFeedLoading(true);
     apiFetch<FeedItem[]>(`${BASE_URL}/public/participant/${token}/feed`, { cache: 'no-store' })
@@ -366,11 +618,12 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
   useEffect(() => {
     if (state !== 'ready') return;
     const id = setInterval(() => {
-      refreshStats(true); // silent — no spinner
-      refreshFeed(true);  // silent — no spinner
+      refreshAnalytics(true); // silent — no spinner
+      refreshStats(true);     // still needed for leaderboard under feed tab
+      refreshFeed(true);
     }, REFRESH_INTERVAL_MS);
     return () => clearInterval(id);
-  }, [state, refreshStats, refreshFeed]);
+  }, [state, refreshAnalytics, refreshStats, refreshFeed]);
 
   // ─── Waiting state: countdown + auto-advance ──────────────────────────────
   // Runs only in waiting_a and waiting_b states.
@@ -419,9 +672,14 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
 
   function switchTab(tab: TabId) {
     setActiveTab(tab);
-    // stats and feed: always fetch fresh (no spinner if data already present)
-    if (tab === 'stats') refreshStats(stats !== null);
-    if (tab === 'feed') refreshFeed(feed.length > 0);
+    // Analytics tab ("הנתונים שלי"): always fetch fresh so numbers are never stale.
+    // If we already have data, skip the spinner to avoid flicker.
+    if (tab === 'stats') refreshAnalytics(analyticsSummary !== null);
+    // Feed tab renders both the group feed and the group leaderboard (from legacy stats).
+    if (tab === 'feed') {
+      refreshFeed(feed.length > 0);
+      refreshStats(stats !== null);
+    }
     if (tab === 'rules') loadRules(); // once-only — rules are static mid-session
   }
 
@@ -739,90 +997,151 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
           </div>
         )}
 
-        {/* ── Tab 2: נתונים ── */}
+        {/* ── Tab 2: הנתונים שלי (Phase 2A) ── */}
         {activeTab === 'stats' && (
           <div style={s.tabPane}>
-            {statsLoading && <div style={s.tabCenter}><div style={s.spinner} /></div>}
-            {statsError && <p style={s.tabError}>{statsError}</p>}
-            {stats && !statsLoading && (
+            {/* Spinner only when we have NO data yet — otherwise re-fetches are silent
+                so the user never sees a full-tab flash during background refresh. */}
+            {analyticsLoading && analyticsSummary === null && (
+              <div style={s.tabCenter}><div style={s.spinner} /></div>
+            )}
+            {analyticsError && <p style={s.tabError}>{analyticsError}</p>}
+            {analyticsSummary && (
               <>
-                {/* Score cards */}
-                <div style={s.statsGrid}>
-                  <div style={s.statCard}>
-                    <span style={s.statValue}>{stats.todayScore}</span>
-                    <span style={s.statLabel}>היום</span>
+                {/* ── Summary strip ───────────────────────────────────── */}
+                <div style={s.summaryStrip}>
+                  <div style={s.summaryChipPrimary}>
+                    <span style={s.summaryChipValue}>{analyticsSummary.todayScore}</span>
+                    <span style={s.summaryChipLabel}>נקודות היום</span>
                   </div>
-                  <div style={s.statCard}>
-                    <span style={s.statValue}>{stats.weekScore}</span>
-                    <span style={s.statLabel}>השבוע</span>
+                  <div style={s.summaryChip}>
+                    <span style={s.summaryChipValue}>{analyticsSummary.currentStreak}</span>
+                    <span style={s.summaryChipLabel}>רצף ימים</span>
                   </div>
-                  <div style={s.statCard}>
-                    <span style={s.statValue}>{stats.totalScore}</span>
-                    <span style={s.statLabel}>סה"כ</span>
-                  </div>
-                  <div style={s.statCard}>
-                    <span style={s.statValue}>{stats.currentStreak}</span>
-                    <span style={s.statLabel}>רצף ימים</span>
+                  <div style={s.summaryChip}>
+                    {(() => {
+                      const d = analyticsSummary.trendVsYesterday;
+                      const arrow = d > 0 ? '↑' : d < 0 ? '↓' : '—';
+                      const color = d > 0 ? '#16a34a' : d < 0 ? '#dc2626' : '#9ca3af';
+                      const text = d === 0 ? 'זהה לאתמול' : `${d > 0 ? '+' : ''}${d} מאתמול`;
+                      return (
+                        <>
+                          <span style={{ ...s.summaryChipValue, color }}>{arrow}</span>
+                          <span style={{ ...s.summaryChipLabel, color }}>{text}</span>
+                        </>
+                      );
+                    })()}
                   </div>
                 </div>
 
-                {/* Trend vs yesterday — full-width card */}
-                {(() => {
-                  const n = stats.dailyTrend.length;
-                  const todayPts = stats.dailyTrend[n - 1]?.points ?? 0;
-                  const yesterdayPts = stats.dailyTrend[n - 2]?.points ?? 0;
-                  const diff = todayPts - yesterdayPts;
-                  const arrow = diff > 0 ? '↑' : diff < 0 ? '↓' : '—';
-                  const arrowColor = diff > 0 ? '#16a34a' : diff < 0 ? '#dc2626' : '#9ca3af';
-                  const label = diff > 0
-                    ? `+${diff} נקודות מאתמול`
-                    : diff < 0
-                    ? `${diff} נקודות מאתמול`
-                    : 'זהה לאתמול';
-                  return (
-                    <div style={s.trendCard}>
-                      <span style={{ ...s.trendArrow, color: arrowColor }}>{arrow}</span>
-                      <div style={s.trendTextGroup}>
-                        <span style={s.trendCardLabel}>מגמה ביחס לאתמול</span>
-                        <span style={{ ...s.trendDiff, color: arrowColor }}>{label}</span>
-                      </div>
-                    </div>
-                  );
-                })()}
+                {/* ── Total ───────────────────────────────────────────── */}
+                <div style={s.totalStripe}>
+                  <span style={s.totalStripeLabel}>סה"כ</span>
+                  <span style={s.totalStripeValue}>
+                    {analyticsSummary.totalScore.toLocaleString('he-IL')} נקודות
+                  </span>
+                </div>
 
-                {/* Trend chart */}
+                {/* ── Trend chart ─────────────────────────────────────── */}
                 <div style={s.chartCard}>
-                  <p style={s.sectionTitle}>14 ימים אחרונים (פרטי)</p>
-                  <TrendChart data={stats.dailyTrend} />
+                  <div style={s.chartHeader}>
+                    <p style={s.sectionTitle}>ההתקדמות שלי</p>
+                    <div style={s.periodToggle} role="tablist" aria-label="טווח ימים">
+                      {([7, 14, 30] as TrendDays[]).map((d) => (
+                        <button
+                          key={d}
+                          role="tab"
+                          aria-selected={trendDays === d}
+                          onClick={() => {
+                            if (trendDays === d) return;
+                            setTrendDays(d);
+                            refreshTrendOnly(d);
+                          }}
+                          style={{
+                            ...s.periodBtn,
+                            ...(trendDays === d ? s.periodBtnActive : {}),
+                          }}
+                        >
+                          {d}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  {analyticsTrend && analyticsTrend.length > 0 ? (
+                    <InteractiveTrendChart
+                      data={analyticsTrend}
+                      onBarClick={(date) => loadDayDrilldown(date)}
+                    />
+                  ) : (
+                    <p style={s.emptyHint}>טרם נאסף מידע בטווח הזה.</p>
+                  )}
+                  <p style={s.chartHint}>טיפ: הקישי על יום כדי לראות את הפעולות שלו</p>
                 </div>
 
-                {/* Leaderboard */}
-                {stats.groupLeaderboard.length > 1 && (
-                  <div style={s.leaderboardCard}>
-                    <p style={s.sectionTitle}>דירוג הקבוצה</p>
-                    {stats.groupLeaderboard.map((row) => (
-                      <div
-                        key={row.participantId}
-                        style={{ ...s.leaderRow, ...(row.isMe ? s.leaderRowMe : {}) }}
-                      >
-                        <span style={s.leaderRank}>#{row.rank}</span>
-                        <span style={s.leaderName}>
-                          {row.firstName}{row.lastName ? ` ${row.lastName}` : ''}
-                          {row.isMe && <span style={s.meBadge}> (את)</span>}
-                        </span>
-                        <span style={s.leaderScore}>{row.totalScore}</span>
-                      </div>
-                    ))}
+                {/* ── Breakdown by action ─────────────────────────────── */}
+                <div style={s.breakdownCard}>
+                  <div style={s.chartHeader}>
+                    <p style={s.sectionTitle}>לפי פעולות</p>
+                    <div style={s.periodToggle} role="tablist" aria-label="טווח פירוט">
+                      {([
+                        { key: '7d' as const, label: '7 ימים' },
+                        { key: '30d' as const, label: '30 ימים' },
+                        { key: 'all' as const, label: 'הכל' },
+                      ]).map((opt) => (
+                        <button
+                          key={opt.key}
+                          role="tab"
+                          aria-selected={breakdownPeriod === opt.key}
+                          onClick={() => {
+                            if (breakdownPeriod === opt.key) return;
+                            setBreakdownPeriod(opt.key);
+                            refreshBreakdownOnly(opt.key);
+                          }}
+                          style={{
+                            ...s.periodBtn,
+                            ...(breakdownPeriod === opt.key ? s.periodBtnActive : {}),
+                          }}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                )}
+                  {analyticsBreakdown === null ? null : analyticsBreakdown.length === 0 ? (
+                    <p style={s.emptyHint}>אין פעולות בטווח שבחרת.</p>
+                  ) : (
+                    <BreakdownList rows={analyticsBreakdown} />
+                  )}
+                </div>
               </>
             )}
           </div>
         )}
 
-        {/* ── Tab 3: מבזק ── */}
+        {/* ── Tab 3: הקבוצה (leaderboard + feed) ── */}
         {activeTab === 'feed' && (
           <div style={s.tabPane}>
+            {/* Leaderboard — relocated from the legacy נתונים tab as part of the
+                Phase 2A analytics/group separation. Sourced from PortalStats. */}
+            {stats && stats.groupLeaderboard.length > 1 && (
+              <div style={s.leaderboardCard}>
+                <p style={s.sectionTitle}>דירוג הקבוצה</p>
+                {stats.groupLeaderboard.map((row) => (
+                  <div
+                    key={row.participantId}
+                    style={{ ...s.leaderRow, ...(row.isMe ? s.leaderRowMe : {}) }}
+                  >
+                    <span style={s.leaderRank}>#{row.rank}</span>
+                    <span style={s.leaderName}>
+                      {row.firstName}{row.lastName ? ` ${row.lastName}` : ''}
+                      {row.isMe && <span style={s.meBadge}> (את)</span>}
+                    </span>
+                    <span style={s.leaderScore}>{row.totalScore}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
             {feedLoading && <div style={s.tabCenter}><div style={s.spinner} /></div>}
             {feedError && <p style={s.tabError}>{feedError}</p>}
             {!feedLoading && !feedError && feed.length === 0 && (
@@ -956,10 +1275,10 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
       <nav style={s.bottomNav}>
         {(
           [
-            { id: 'report', label: 'דיווח', icon: '✏️' },
-            { id: 'stats',  label: 'נתונים', icon: '📊' },
-            { id: 'feed',   label: 'מבזק',   icon: '📣' },
-            { id: 'rules',  label: 'חוקים',  icon: '📋' },
+            { id: 'report', label: 'דיווח',       icon: '✏️' },
+            { id: 'stats',  label: 'הנתונים שלי', icon: '📊' },
+            { id: 'feed',   label: 'הקבוצה',      icon: '📣' },
+            { id: 'rules',  label: 'חוקים',       icon: '📋' },
           ] as { id: TabId; label: string; icon: string }[]
         ).map((tab) => (
           <button
@@ -1025,6 +1344,57 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
             </button>
 
             <button onClick={closeSheet} style={s.cancelBtn}>ביטול</button>
+          </div>
+        )}
+      </div>
+
+      {/* ── Day drill-down sheet (Phase 2A) ──────────────────────────────── */}
+      {daySheetDate && (
+        <div style={s.backdrop} onClick={closeDaySheet} />
+      )}
+      <div style={{
+        ...s.sheet,
+        transform: daySheetDate ? 'translateX(-50%) translateY(0)' : 'translateX(-50%) translateY(100%)',
+      }}>
+        {daySheetDate && (
+          <div style={s.sheetInner}>
+            <div style={s.sheetHandle} />
+            <p style={s.sheetActionName}>
+              פירוט היום ({new Date(daySheetDate).toLocaleDateString('he-IL', { day: 'numeric', month: 'long' })})
+            </p>
+
+            {daySheetLoading && (
+              <div style={{ padding: '24px 0', textAlign: 'center' }}>
+                <div style={s.spinner} />
+              </div>
+            )}
+            {daySheetError && <p style={s.tabError}>{daySheetError}</p>}
+            {!daySheetLoading && !daySheetError && daySheetEntries !== null && (
+              daySheetEntries.length === 0 ? (
+                <p style={s.emptyHint}>לא נרשמה פעילות ביום זה.</p>
+              ) : (
+                <div style={s.daySheetList}>
+                  {daySheetEntries.map((entry) => (
+                    <div key={entry.logId} style={s.daySheetRow}>
+                      <span style={s.daySheetTime}>{entry.time}</span>
+                      <div style={s.daySheetBody}>
+                        <span style={s.daySheetAction}>{entry.actionName}</span>
+                        {entry.effectiveValue !== null && (
+                          <span style={s.daySheetValue}>
+                            {entry.effectiveValue.toLocaleString('he-IL')}
+                          </span>
+                        )}
+                      </div>
+                      <span style={s.daySheetPoints}>
+                        {entry.points > 0 ? `+${entry.points}` : entry.points}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )
+            )}
+
+            <button onClick={closeDaySheet} style={s.cancelBtn}>סגור</button>
           </div>
         )}
       </div>
@@ -1289,6 +1659,180 @@ const s = {
   statLabel: {
     fontSize: 13,
     color: '#6b7280',
+  } satisfies React.CSSProperties,
+
+  // ── Phase 2A: summary strip, period toggle, chart header, drill-down sheet
+  summaryStrip: {
+    display: 'grid',
+    gridTemplateColumns: '1.3fr 1fr 1fr',
+    gap: 8,
+    marginBottom: 12,
+  } satisfies React.CSSProperties,
+
+  summaryChipPrimary: {
+    background: '#1d4ed8',
+    color: '#ffffff',
+    borderRadius: 14,
+    padding: '12px 14px',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 2,
+    alignItems: 'flex-start',
+  } satisfies React.CSSProperties,
+
+  summaryChip: {
+    background: '#ffffff',
+    border: '1px solid #e5e7eb',
+    borderRadius: 14,
+    padding: '12px 10px',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 2,
+    alignItems: 'flex-start',
+  } satisfies React.CSSProperties,
+
+  summaryChipValue: {
+    fontSize: 22,
+    fontWeight: 800,
+    lineHeight: 1,
+    color: 'inherit',
+  } satisfies React.CSSProperties,
+
+  summaryChipLabel: {
+    fontSize: 11,
+    color: '#6b7280',
+    fontWeight: 500,
+    lineHeight: 1.2,
+  } satisfies React.CSSProperties,
+
+  totalStripe: {
+    background: '#ffffff',
+    border: '1px solid #e5e7eb',
+    borderRadius: 14,
+    padding: '10px 14px',
+    marginBottom: 16,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  } satisfies React.CSSProperties,
+
+  totalStripeLabel: {
+    fontSize: 12,
+    color: '#6b7280',
+    fontWeight: 600,
+  } satisfies React.CSSProperties,
+
+  totalStripeValue: {
+    fontSize: 15,
+    color: '#111827',
+    fontWeight: 800,
+  } satisfies React.CSSProperties,
+
+  chartHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  } satisfies React.CSSProperties,
+
+  periodToggle: {
+    display: 'inline-flex',
+    background: '#f3f4f6',
+    borderRadius: 999,
+    padding: 2,
+    gap: 2,
+  } satisfies React.CSSProperties,
+
+  periodBtn: {
+    border: 'none',
+    background: 'transparent',
+    padding: '4px 10px',
+    fontSize: 12,
+    fontWeight: 600,
+    color: '#6b7280',
+    borderRadius: 999,
+    cursor: 'pointer',
+  } satisfies React.CSSProperties,
+
+  periodBtnActive: {
+    background: '#ffffff',
+    color: '#1d4ed8',
+    boxShadow: '0 1px 2px rgba(0,0,0,0.08)',
+  } satisfies React.CSSProperties,
+
+  chartHint: {
+    marginTop: 10,
+    marginBottom: 0,
+    fontSize: 11,
+    color: '#9ca3af',
+    textAlign: 'center' as const,
+  } satisfies React.CSSProperties,
+
+  emptyHint: {
+    fontSize: 13,
+    color: '#9ca3af',
+    textAlign: 'center' as const,
+    padding: '16px 0',
+    margin: 0,
+  } satisfies React.CSSProperties,
+
+  breakdownCard: {
+    background: '#ffffff',
+    border: '1px solid #e5e7eb',
+    borderRadius: 14,
+    padding: '16px',
+    marginBottom: 16,
+  } satisfies React.CSSProperties,
+
+  // Day drill-down sheet
+  daySheetList: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 4,
+    margin: '12px 0',
+    maxHeight: '50vh',
+    overflowY: 'auto' as const,
+  } satisfies React.CSSProperties,
+
+  daySheetRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+    padding: '10px 4px',
+    borderBottom: '1px solid #f3f4f6',
+  } satisfies React.CSSProperties,
+
+  daySheetTime: {
+    fontSize: 12,
+    color: '#9ca3af',
+    fontWeight: 600,
+    fontVariantNumeric: 'tabular-nums' as const,
+    minWidth: 42,
+  } satisfies React.CSSProperties,
+
+  daySheetBody: {
+    flex: 1,
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 2,
+  } satisfies React.CSSProperties,
+
+  daySheetAction: {
+    fontSize: 14,
+    color: '#111827',
+    fontWeight: 600,
+  } satisfies React.CSSProperties,
+
+  daySheetValue: {
+    fontSize: 12,
+    color: '#6b7280',
+  } satisfies React.CSSProperties,
+
+  daySheetPoints: {
+    fontSize: 14,
+    fontWeight: 800,
+    color: '#1d4ed8',
+    fontVariantNumeric: 'tabular-nums' as const,
   } satisfies React.CSSProperties,
 
   chartCard: {
