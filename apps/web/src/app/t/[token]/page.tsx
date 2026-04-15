@@ -372,17 +372,38 @@ function InteractiveTrendChart({
   const TOP_PAD = 14; // headroom for per-bar value labels
   const SVG_H = TOP_PAD + BAR_H + LABEL_H;
   const n = Math.max(data.length, 1);
-  // Left-anchored layout (Phase 2A pass 2):
-  //   The FIRST bar's left edge sits at x=0 and the LAST bar's right edge sits
-  //   at x=VIEW_W. Earlier versions half-centered each bar inside a column
-  //   which left ~0.14*colW of dead space on each side — visually the bars
-  //   read as "clustered toward the right" inside the RTL container.
-  //   With even stride, the chart now fills the full width with no dead space
-  //   before the first bar or after the last.
+  // Adaptive layout (progress-style chart):
+  //   The caller filters `data` to only days WITH activity. We pick a layout
+  //   that reads naturally for the resulting count:
+  //     - Few bars (sparse): fixed natural width + stride, cluster CENTERED
+  //       in the chart. A single bar sits in the middle; two bars sit as a
+  //       tight pair in the middle; three bars spread but still centered.
+  //     - Many bars (populated): fill the full width left-anchored so no
+  //       visual dead space remains on either edge.
+  //   The switch happens automatically when the full-width bar width would
+  //   exceed MAX_BAR_W — that's when bars stop "feeling like a chart" and
+  //   start looking like slabs.
   const BAR_FILL = 0.72;
-  const colW = VIEW_W / n; // used only to derive barW
-  const barW = Math.max(3, colW * BAR_FILL);
-  const stride = n > 1 ? (VIEW_W - barW) / (n - 1) : 0; // distance between bar LEFT edges
+  const MAX_BAR_W = 28;
+  const uncappedBarW = (VIEW_W / n) * BAR_FILL;
+
+  let barW: number;
+  let stride: number;   // distance between adjacent bar LEFT edges
+  let firstBarX: number; // x of the first bar's LEFT edge
+
+  if (uncappedBarW > MAX_BAR_W) {
+    // Sparse: cap bar width + use a natural density stride and CENTER the cluster.
+    barW = MAX_BAR_W;
+    stride = MAX_BAR_W / BAR_FILL;                     // ≈ 38.9
+    const clusterW = (n - 1) * stride + barW;
+    firstBarX = Math.max(0, (VIEW_W - clusterW) / 2);
+  } else {
+    // Populated: fill full width left-anchored.
+    barW = Math.max(3, uncappedBarW);
+    stride = n > 1 ? (VIEW_W - barW) / (n - 1) : 0;
+    firstBarX = 0;
+  }
+
   const maxVal = Math.max(...data.map((d) => d.points), 1);
   const baselineY = TOP_PAD + BAR_H;
 
@@ -406,11 +427,10 @@ function InteractiveTrendChart({
       />
 
       {data.map((d, i) => {
-        // Left-anchored: first bar at x=0, last bar's right edge at VIEW_W.
-        const x = n === 1 ? (VIEW_W - barW) / 2 : i * stride;
+        const x = firstBarX + i * stride;
         const cx = x + barW / 2;
-        // Hit-box spans from halfway-to-previous to halfway-to-next bar so
-        // taps are reliable even when bars are short or zero-valued.
+        // Hit-box spans from halfway-to-previous to halfway-to-next so taps
+        // stay reliable on short/sparse bars. Clamped inside the viewbox.
         const hitX = n === 1 ? 0 : Math.max(0, x - (stride - barW) / 2);
         const hitW = n === 1 ? VIEW_W : stride;
         const isToday = i === n - 1;
@@ -1583,16 +1603,29 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                 )}
 
                 {/* ── Trend chart ─────────────────────────────────────── */}
+                {/* Product rule (Phase 2A final): the chart is a progress-style
+                    view, not a calendar. We render ONLY days that actually have
+                    activity — points > 0 OR at least one active submission —
+                    up to the range's limit. Missing days are not reserved as
+                    empty slots. This is why we filter here instead of passing
+                    the full dense array the backend returns. */}
                 <div style={s.chartCard}>
                   <p style={s.sectionTitle}>ההתקדמות שלי</p>
-                  {analyticsTrend && analyticsTrend.length > 0 ? (
-                    <InteractiveTrendChart
-                      data={analyticsTrend}
-                      onBarClick={(date) => loadDayDrilldown(date)}
-                    />
-                  ) : (
-                    <p style={s.emptyHint}>טרם נאסף מידע בטווח הזה.</p>
-                  )}
+                  {(() => {
+                    const populated = (analyticsTrend ?? []).filter(
+                      (d) => d.points > 0 || d.submissionCount > 0,
+                    );
+                    if (analyticsTrend === null) return null;
+                    if (populated.length === 0) {
+                      return <p style={s.emptyHint}>טרם נאסף מידע בטווח הזה.</p>;
+                    }
+                    return (
+                      <InteractiveTrendChart
+                        data={populated}
+                        onBarClick={(date) => loadDayDrilldown(date)}
+                      />
+                    );
+                  })()}
                   <div style={s.datePickerRow}>
                     <span style={s.chartHint}>טיפ: הקישי על יום בגרף או בחרי תאריך</span>
                     <label style={s.datePickerLabel}>
