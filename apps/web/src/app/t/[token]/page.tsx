@@ -1932,24 +1932,33 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
 
                     // Build groups map + standalone list in declaration order.
                     //
-                    // Phase 4.7 rules:
-                    //   - Grouped contexts ALWAYS populate their parent group
-                    //     (including hidden/system contexts — the group aggregation
-                    //     still counts them, but they don't appear as their own tab).
-                    //   - A context becomes a STANDALONE pill only when it has no
-                    //     group AND is both analytics-visible and was participant-
-                    //     visible during reporting AND has selectable options.
-                    //     This prevents hidden/system contexts from cluttering the
-                    //     top-level selector.
+                    // Phase 6.4 rules (independent dimensions):
+                    //   - GROUP MEMBERSHIP and STANDALONE PILL are independent
+                    //     concerns. A context can be both a group member
+                    //     (feeding the group's context-level pie) AND a
+                    //     standalone pill (showing its own value-level pie).
+                    //   - A context becomes a STANDALONE pill when it is
+                    //     analytics-visible, was participant-visible during
+                    //     reporting, AND has selectable options — regardless
+                    //     of whether it also belongs to a group. Grouping is
+                    //     an extra presentation layer, not a replacement for
+                    //     the context's own selectable view.
+                    //   - Hidden / system contexts (analyticsVisible=false or
+                    //     participantVisible=false or hasOptions=false) still
+                    //     don't appear as standalone — they only participate
+                    //     inside a group's aggregation.
                     const groupMap = new Map<string, { label: string; members: ContextDimension[] }>();
                     const standalone: ContextDimension[] = [];
                     for (const d of contextDimensions) {
+                      // Group membership — always additive, never exclusive.
                       if (d.groupKey && d.groupLabel) {
                         const g = groupMap.get(d.groupKey);
                         if (g) g.members.push(d);
                         else groupMap.set(d.groupKey, { label: d.groupLabel, members: [d] });
-                        continue;
                       }
+                      // Standalone eligibility — evaluated independently of
+                      // group membership. A participant-visible context with
+                      // options gets its own pill even when grouped.
                       const analyticsVisible = d.analyticsVisible !== false;
                       const participantVisible = d.participantVisible !== false;
                       const hasOptions = d.hasOptions !== false;
