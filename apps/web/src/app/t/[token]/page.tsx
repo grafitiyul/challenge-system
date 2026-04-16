@@ -1156,6 +1156,19 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
   const refreshAnalytics = useCallback(
     (silent = false, r: AnalyticsRange = range, g: BreakdownGroupBy = groupBy) => {
       if (!silent) setAnalyticsLoading(true);
+      // Phase 6.14: insights is fetched INDEPENDENTLY of the core analytics
+      // bundle. A failure in insights must not tear down the whole screen —
+      // a truthful empty section is better than a blank page.
+      apiFetch<AnalyticsInsight[]>(
+        `${BASE_URL}/public/participant/${token}/analytics/insights?${buildInsightsQuery(r)}`,
+        { cache: 'no-store' },
+      )
+        .then(setAnalyticsInsights)
+        .catch(() => {
+          // Soft fail: hide the section this render, don't cascade the error
+          // into the rest of the analytics screen.
+          setAnalyticsInsights([]);
+        });
       Promise.all([
         apiFetch<AnalyticsSummary>(
           `${BASE_URL}/public/participant/${token}/analytics/summary`,
@@ -1169,16 +1182,11 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
           `${BASE_URL}/public/participant/${token}/analytics/breakdown?${buildBreakdownQuery(r, g)}`,
           { cache: 'no-store' },
         ),
-        apiFetch<AnalyticsInsight[]>(
-          `${BASE_URL}/public/participant/${token}/analytics/insights?${buildInsightsQuery(r)}`,
-          { cache: 'no-store' },
-        ),
       ])
-        .then(([summary, trend, breakdown, insights]) => {
+        .then(([summary, trend, breakdown]) => {
           setAnalyticsSummary(summary);
           setAnalyticsTrend(trend);
           setAnalyticsBreakdown(breakdown);
-          setAnalyticsInsights(insights);
           setAnalyticsError('');
         })
         .catch(() => setAnalyticsError('שגיאה בטעינת הנתונים'))

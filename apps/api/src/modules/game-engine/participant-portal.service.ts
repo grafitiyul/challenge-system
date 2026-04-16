@@ -2164,30 +2164,41 @@ export class ParticipantPortalService {
       missing_category: 1.05,
       low_engagement: 1.0,
     };
+    // ── Phase 6.14: apply base weight + MIN_SCORE as the TRUTH GATE ─────
+    //
+    // Previously, the MIN_SCORE floor was applied AFTER diversity weighting.
+    // That was wrong: with accumulated ProgramInsightTypeUsage counts, the
+    // diversity multiplier (1 / (1 + usage * 0.3)) shrinks rapidly — usage
+    // of ~10 drops every insight's effective score by 4×. For programs that
+    // have been exercised repeatedly, this was silently eliminating ALL
+    // candidates from the final output, making the section disappear.
+    //
+    // Diversity is supposed to RE-RANK, not SUPPRESS. The fix: the floor
+    // is a property of the candidate's truth value (raw × per-type weight),
+    // independent of usage history. Diversity only reorders survivors.
     for (const c of candidates) {
       const baseWeight = TYPE_BASE_WEIGHT[c.type] ?? 1.0;
-      // Phase 6.8 selection strategy dispatch:
-      //   'pure_score'           → diversity weight = 1 (no-op). Ranking
-      //                             is driven purely by raw score × base weight.
-      //   'score_with_diversity' → apply the per-program diversity formula:
-      //                             weight(usage) = 1 / (1 + usage * strength)
-      //
-      // usage comes from ProgramInsightTypeUsage (scoped to THIS program).
-      // strength is configurable on the program — 0.0 disables, higher
-      // values penalize repetition more aggressively.
-      let diversityWeight = 1;
-      if (selectionStrategy === 'score_with_diversity' && diversityStrength > 0) {
-        const usage = typeUsageByProgram[c.type] ?? 0;
-        diversityWeight = 1 / (1 + usage * diversityStrength);
-      }
-      c.score = c.score * baseWeight * diversityWeight;
+      c.score = c.score * baseWeight;
     }
-
-    // ── Score floor ─────────────────────────────────────────────────────
-    // Drop anything below MIN_SCORE. Spec: never pad with weak/generic
-    // insights; showing fewer is always preferable. Applied AFTER weighting
-    // so a suppressed type that slips under the floor is dropped entirely.
     const strongCandidates = candidates.filter((c) => c.score >= MIN_SCORE);
+
+    // ── Phase 6.8 selection strategy dispatch (re-ranking only) ─────────
+    //   'pure_score'           → diversity weight = 1 (no-op).
+    //   'score_with_diversity' → apply the per-program diversity formula:
+    //                             weight(usage) = 1 / (1 + usage * strength)
+    //
+    // usage comes from ProgramInsightTypeUsage (scoped to THIS program).
+    // strength is configurable on the program — 0.0 disables, higher
+    // values penalize repetition more aggressively. Applied AFTER the
+    // MIN_SCORE gate so a heavily-used type can still surface when the
+    // truth signal is strong enough.
+    if (selectionStrategy === 'score_with_diversity' && diversityStrength > 0) {
+      for (const c of strongCandidates) {
+        const usage = typeUsageByProgram[c.type] ?? 0;
+        const diversityWeight = 1 / (1 + usage * diversityStrength);
+        c.score = c.score * diversityWeight;
+      }
+    }
 
     // ── Phase 6.3 concept-level dedup (MANDATORY) ───────────────────────
     // Group candidates by concept, keep only the highest-scoring one per
