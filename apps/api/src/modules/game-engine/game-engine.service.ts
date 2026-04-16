@@ -104,14 +104,11 @@ export function validateScoringConfig(dto: {
     if (basePointsPerUnit === null || basePointsPerUnit === undefined || basePointsPerUnit < 0) {
       throw new BadRequestException('יש להגדיר נקודות ליחידה');
     }
-    if (maxPerDay !== 1) {
-      // Hard enforcement: this strategy's correction math is only exact when
-      // there's a single active log per day. We'd rather block a confusing
-      // configuration than silently produce drift-prone ledgers.
-      throw new BadRequestException(
-        'חישוב לפי יחידות התקדמות דורש מגבלה יומית של דיווח אחד',
-      );
-    }
+    // Phase 6.9: multiple same-day submissions are now supported.
+    // Chain recompute in correctLog/voidLog keeps the ledger exact across
+    // intra-day corrections regardless of log count. No maxPerDay constraint.
+    // Parameter `maxPerDay` is intentionally unused below.
+    void maxPerDay;
   }
 }
 
@@ -180,16 +177,20 @@ export function computeBasePointsForSubmission(
 
 /**
  * Compute base points for a CORRECTION via the action's declared strategy.
- *   otherActiveMaxValue — max raw value of OTHER active logs today (the log
- *                         being corrected is excluded). For latest_value_units_delta
- *                         with maxPerDay=1 (enforced) this is always 0.
- *                         Kept as a parameter for completeness and future
- *                         relaxation.
+ *
+ * Phase 6.9 for `latest_value_units_delta`: this function now returns the
+ * "pro-forma full" amount — `floor(value/unitSize) * pointsPerUnit` — as
+ * if the corrected log were the first log of the day. The actual per-log
+ * attribution is resolved immediately afterwards by `recomputeUnitsDeltaChain`
+ * which walks the day's active logs chronologically and writes cascade
+ * correction events that adjust every log's net points to match truth.
+ *
+ * Keeping this function pure (no chain lookup) makes the correction path
+ * deterministic and the subsequent cascade step idempotent.
  */
 export function computeBasePointsForCorrection(
   action: ActionScoringShape,
   newRawValue: string,
-  otherActiveMaxValue: number,
 ): number {
   const parsed = parseFloat(newRawValue);
   switch (action.baseScoringType as BaseScoringType) {
@@ -206,10 +207,9 @@ export function computeBasePointsForCorrection(
         return 0;
       }
       const newUnits = isNaN(parsed) ? 0 : Math.floor(parsed / unitSize);
-      const otherUnits = Math.floor(otherActiveMaxValue / unitSize);
-      // Can be negative (downward correction below another active log).
-      // With maxPerDay=1 that path can't be reached; kept for symmetry.
-      return (newUnits - otherUnits) * pointsPerUnit;
+      // Pro-forma full amount; chain recompute will adjust this to the
+      // correct marginal contribution based on the real chronological order.
+      return Math.max(0, newUnits * pointsPerUnit);
     }
     default:
       return 0;
@@ -1747,6 +1747,147 @@ export class GameEngineService {
     return 0; // 'none' mode — no meaningful daily total
   }
 
+  // ─── Phase 6.9: units-delta chain recompute ───────────────────────────────
+  //
+  // After any correction or void of a `latest_value_units_delta` log, walk
+  // the day's active logs in chronological order and make each log's NET
+  // points (action event + all correction adjustments) equal the value that
+  // the current chain implies. Delta gets written as a single correction
+  // scoreEvent per log-that-needs-adjustment. Idempotent: a second run with
+  // no underlying change produces no writes.
+  //
+  // This is the ONLY place that tracks units-delta drift across intra-day
+  // chains. The logAction and correctLog paths produce a reasonable initial
+  // state; this function guarantees eventual correctness.
+  //
+  // Must be called INSIDE the same transaction as the originating change
+  // so either both commit or both roll back.
+  private async recomputeUnitsDeltaChain(
+    tx: Prisma.TransactionClient,
+    params: {
+      participantId: string;
+      programId: string;
+      actionId: string;
+      unitSize: number;
+      pointsPerUnit: number;
+      anchorDate: Date; // any time during the day whose chain to recompute
+      reason: string;
+      triggeredByLogId: string;
+      actorRole?: string;
+    },
+  ): Promise<void> {
+    const {
+      participantId,
+      programId,
+      actionId,
+      unitSize,
+      pointsPerUnit,
+      anchorDate,
+      reason,
+      triggeredByLogId,
+      actorRole,
+    } = params;
+    if (unitSize <= 0) return;
+
+    const dayStart = new Date(anchorDate);
+    dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(dayStart);
+    dayEnd.setDate(dayEnd.getDate() + 1);
+
+    // 1. Active logs for (participant, action) on that day, ordered by createdAt.
+    const activeLogs = await tx.userActionLog.findMany({
+      where: {
+        participantId,
+        programId,
+        actionId,
+        status: 'active',
+        createdAt: { gte: dayStart, lt: dayEnd },
+      },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      select: { id: true, value: true },
+    });
+    if (activeLogs.length === 0) return;
+
+    const logIds = activeLogs.map((l) => l.id);
+
+    // 2. Each log's action scoreEvent (1:1 by CHECK invariant).
+    const actionEvents = await tx.scoreEvent.findMany({
+      where: { logId: { in: logIds }, sourceType: 'action' },
+      select: { id: true, logId: true, points: true, groupId: true },
+    });
+    const actionEventByLogId = new Map<
+      string,
+      { id: string; points: number; groupId: string | null }
+    >();
+    for (const e of actionEvents) {
+      if (e.logId) actionEventByLogId.set(e.logId, e);
+    }
+
+    // 3. Every correction-type adjustment pointing at those action events.
+    //    Summed per parent so we know each log's CURRENT net points.
+    const actionEventIds = actionEvents.map((e) => e.id);
+    const adjustments =
+      actionEventIds.length > 0
+        ? await tx.scoreEvent.findMany({
+            where: {
+              parentEventId: { in: actionEventIds },
+              sourceType: 'correction',
+            },
+            select: { parentEventId: true, points: true },
+          })
+        : [];
+    const adjustmentsByParent = new Map<string, number>();
+    for (const a of adjustments) {
+      if (!a.parentEventId) continue;
+      adjustmentsByParent.set(
+        a.parentEventId,
+        (adjustmentsByParent.get(a.parentEventId) ?? 0) + a.points,
+      );
+    }
+
+    // 4. Walk chronologically. priorMax tracks the largest value seen so far
+    //    among logs preceding this one. Each log's expected points = the
+    //    marginal units earned vs priorMax, multiplied by pointsPerUnit.
+    let priorMax = 0;
+    for (const log of activeLogs) {
+      const raw = parseFloat(log.value);
+      const valueSafe = isNaN(raw) || raw < 0 ? 0 : raw;
+      const newUnits = Math.floor(valueSafe / unitSize);
+      const priorUnits = Math.floor(priorMax / unitSize);
+      const expected = Math.max(0, (newUnits - priorUnits) * pointsPerUnit);
+
+      const actionEvent = actionEventByLogId.get(log.id);
+      if (actionEvent) {
+        const currentNet =
+          actionEvent.points +
+          (adjustmentsByParent.get(actionEvent.id) ?? 0);
+        const delta = expected - currentNet;
+        if (delta !== 0) {
+          await tx.scoreEvent.create({
+            data: {
+              participantId,
+              programId,
+              groupId: actionEvent.groupId,
+              sourceType: 'correction',
+              sourceId: actionId,
+              points: delta,
+              parentEventId: actionEvent.id,
+              metadata: {
+                reason,
+                cascadeForLogId: log.id,
+                triggeredByLogId,
+                previousEffectivePoints: currentNet,
+                newEffectivePoints: expected,
+                ...(actorRole ? { actorRole } : {}),
+              },
+            },
+          });
+        }
+      }
+      if (valueSafe > priorMax) priorMax = valueSafe;
+    }
+  }
+
   // revokeOrphanedRuleScoreEvents was removed with Phase 1 Task 2: it was the
   // rule-side cleanup for the legacy hard-delete paths. Those paths are disabled
   // (deleteFeedEvent / bulkDeleteFeedEvents / resetParticipantProgress now throw
@@ -1917,46 +2058,21 @@ export class GameEngineService {
     const nextContextRaw = dto.contextJson !== undefined ? dto.contextJson : oldLog.contextJson;
     const validatedContext = validateContext(oldLog.action.contextSchemaJson, nextContextRaw);
 
-    // ── Phase 6.7 correction points via explicit strategy ──────────────────
-    // Correction math dispatches on action.baseScoringType exactly like
-    // submission math does. The compensation event (-oldPoints) is
-    // unchanged; we only recompute the NEW log's points here.
-    //
-    // For latest_value_units_delta we need the max value of OTHER active
-    // logs today — with maxPerDay=1 enforced at save time that's always 0,
-    // but the lookup is kept for correctness if an admin relaxes maxPerDay
-    // in a future non-strict variant.
+    // ── Phase 6.9 correction points ────────────────────────────────────────
+    // For units_delta: compute pro-forma full points; the cascade step
+    // inside the transaction below adjusts per-log attribution to reflect
+    // the real chronological chain (including logs downstream of the one
+    // being corrected).
+    // For every other strategy: unchanged — strategy helper returns the
+    // stable per-log amount.
     let effectiveValue: Prisma.Decimal | null = null;
     const parsedForEffective = parseFloat(newValue);
     if (oldLog.action.inputType === 'number' && !isNaN(parsedForEffective)) {
       effectiveValue = new Prisma.Decimal(parsedForEffective);
     }
-
-    let otherActiveMaxValue = 0;
-    if (oldLog.action.baseScoringType === 'latest_value_units_delta') {
-      const todayStart = new Date();
-      todayStart.setHours(0, 0, 0, 0);
-      const otherActiveLogs = await this.prisma.userActionLog.findMany({
-        where: {
-          participantId: oldLog.participantId,
-          programId: oldLog.programId,
-          actionId: oldLog.actionId,
-          status: 'active',
-          createdAt: { gte: todayStart },
-          id: { not: oldLog.id },
-        },
-        select: { value: true },
-      });
-      otherActiveMaxValue = otherActiveLogs
-        .map((l) => parseFloat(l.value))
-        .filter((v) => !isNaN(v) && v >= 0)
-        .reduce((m, v) => Math.max(m, v), 0);
-    }
-    const newPoints = computeBasePointsForCorrection(
-      oldLog.action,
-      newValue,
-      otherActiveMaxValue,
-    );
+    const newPoints = computeBasePointsForCorrection(oldLog.action, newValue);
+    const isUnitsDelta =
+      oldLog.action.baseScoringType === 'latest_value_units_delta';
 
     // Find the original action ScoreEvent for compensation.
     const oldScoreEvent = await this.prisma.scoreEvent.findFirst({
@@ -1980,6 +2096,13 @@ export class GameEngineService {
           });
 
           // 2. Create the new active log, inheriting chainRootId.
+          //
+          // Phase 6.9: for units_delta actions ALSO inherit the old log's
+          // createdAt. Same-day chain-recompute is keyed by createdAt, so
+          // a correction must occupy the exact timeline slot of the log
+          // it replaced — otherwise downstream logs would see the wrong
+          // priorMax. editedAt captures the actual correction time for
+          // audit; createdAt captures the "submission time".
           const newLog = await tx.userActionLog.create({
             data: {
               participantId: oldLog.participantId,
@@ -1994,6 +2117,7 @@ export class GameEngineService {
               chainRootId: oldLog.chainRootId,
               editedByRole: dto.actorRole,
               editedAt: new Date(),
+              ...(isUnitsDelta ? { createdAt: oldLog.createdAt } : {}),
             },
           });
 
@@ -2044,6 +2168,29 @@ export class GameEngineService {
             data: { isPublic: false },
           });
 
+          // 6. Phase 6.9: for units_delta, recompute the whole day's chain
+          //    so every log (including downstream siblings) ends up with the
+          //    correct net attribution. Writes cascade correction events
+          //    only where the net currently differs from expected.
+          if (
+            isUnitsDelta &&
+            oldLog.action.unitSize &&
+            oldLog.action.unitSize > 0 &&
+            oldLog.action.basePointsPerUnit !== null
+          ) {
+            await this.recomputeUnitsDeltaChain(tx, {
+              participantId: oldLog.participantId,
+              programId: oldLog.programId,
+              actionId: oldLog.actionId,
+              unitSize: oldLog.action.unitSize,
+              pointsPerUnit: oldLog.action.basePointsPerUnit,
+              anchorDate: oldLog.createdAt,
+              reason: 'cascade_after_correction',
+              triggeredByLogId: oldLog.id,
+              actorRole: dto.actorRole,
+            });
+          }
+
           return {
             oldLog,
             newLog,
@@ -2072,6 +2219,7 @@ export class GameEngineService {
   async voidLog(dto: VoidLogDto) {
     const oldLog = await this.prisma.userActionLog.findUnique({
       where: { id: dto.logId },
+      include: { action: true },
     });
     if (!oldLog) throw new NotFoundException(`Log ${dto.logId} not found`);
     if (oldLog.status !== 'active') {
@@ -2118,6 +2266,28 @@ export class GameEngineService {
           where: { logId: oldLog.id, type: 'action' },
           data: { isPublic: false },
         });
+
+        // Phase 6.9: recompute the day's chain when voiding a units_delta
+        // log. Downstream logs' priorMax shifts once this log is no longer
+        // active; cascade writes correction events to correct their net.
+        if (
+          oldLog.action.baseScoringType === 'latest_value_units_delta' &&
+          oldLog.action.unitSize &&
+          oldLog.action.unitSize > 0 &&
+          oldLog.action.basePointsPerUnit !== null
+        ) {
+          await this.recomputeUnitsDeltaChain(tx, {
+            participantId: oldLog.participantId,
+            programId: oldLog.programId,
+            actionId: oldLog.actionId,
+            unitSize: oldLog.action.unitSize,
+            pointsPerUnit: oldLog.action.basePointsPerUnit,
+            anchorDate: oldLog.createdAt,
+            reason: 'cascade_after_void',
+            triggeredByLogId: oldLog.id,
+            actorRole: dto.actorRole,
+          });
+        }
 
         return { voidedLog: oldLog, compensationScoreEvent: compensation };
       },

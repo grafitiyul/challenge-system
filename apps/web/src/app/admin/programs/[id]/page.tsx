@@ -1247,15 +1247,9 @@ function ActionModal({
             ? parseInt(form.basePointsPerUnit)
             : null,
         // CRITICAL FIX: send null (not undefined) to properly clear maxPerDay in DB
-        // Phase 6.7: units-delta strategy requires maxPerDay=1 (enforced
-        // server-side too). Forced here so admin isn't asked twice.
-        maxPerDay:
-          form.inputType === 'number' &&
-          form.baseScoringType === 'latest_value_units_delta'
-            ? 1
-            : form.maxPerDay.trim()
-              ? parseInt(form.maxPerDay)
-              : null,
+        // Phase 6.9: units-delta supports multiple same-day submissions.
+        // No forced maxPerDay. Whatever the admin sets flows through.
+        maxPerDay: form.maxPerDay.trim() ? parseInt(form.maxPerDay) : null,
         showInPortal: form.showInPortal,
         blockedMessage: form.blockedMessage.trim() || null,
         explanationContent: form.explanationContent.trim() || null,
@@ -1450,8 +1444,8 @@ function ActionModal({
                         דוגמה: דיווח {(parseInt(form.unitSize) * 15 + 304).toLocaleString('he-IL')} → {Math.floor((parseInt(form.unitSize) * 15 + 304) / parseInt(form.unitSize))} יחידות × {form.basePointsPerUnit} = {Math.floor((parseInt(form.unitSize) * 15 + 304) / parseInt(form.unitSize)) * parseInt(form.basePointsPerUnit)} נק׳
                       </div>
                     )}
-                    <div style={{ fontSize: 11, color: '#92400e', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, padding: '6px 10px' }}>
-                      ⚠ שיטה זו דורשת מגבלה יומית של דיווח אחד. המערכת תגדיר זאת אוטומטית.
+                    <div style={{ fontSize: 11, color: '#1e40af', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 6, padding: '6px 10px', lineHeight: 1.5 }}>
+                      נקודות מוענקות רק על יחידות מלאות חדשות מעבר לסה״כ הקודם באותו יום. ניתן לדווח כמה פעמים ביום — כל דיווח יוסיף רק את ההפרש. תיקונים ומחיקות מחשבים מחדש את כל השרשרת היומית כדי שהתוצאה תישאר מדויקת.
                     </div>
                   </div>
                 )}
@@ -1470,28 +1464,10 @@ function ActionModal({
               </div>
               <div>
                 <label style={labelStyle}>מגבלה יומית</label>
-                {form.inputType === 'number' && form.baseScoringType === 'latest_value_units_delta' ? (
-                  // Units-delta strategy forces maxPerDay=1. Show a read-only
-                  // field with a short explanation; server also enforces this.
-                  <>
-                    <input
-                      type="number"
-                      value={1}
-                      readOnly
-                      style={{ ...inputStyle, direction: 'ltr', background: '#f1f5f9' }}
-                    />
-                    <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>
-                      מגבלה של דיווח אחד נדרשת עבור חישוב לפי יחידות התקדמות
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <input type="number" min={1} style={{ ...inputStyle, direction: 'ltr' }} value={form.maxPerDay} onChange={(e) => setForm((p) => ({ ...p, maxPerDay: e.target.value }))} placeholder="ללא הגבלה" />
-                    <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>
-                      {form.maxPerDay ? `המשתתפת תיחסם לאחר ${form.maxPerDay} דיווחים ביום` : 'ריק = ניתן לדווח ללא הגבלה'}
-                    </div>
-                  </>
-                )}
+                <input type="number" min={1} style={{ ...inputStyle, direction: 'ltr' }} value={form.maxPerDay} onChange={(e) => setForm((p) => ({ ...p, maxPerDay: e.target.value }))} placeholder="ללא הגבלה" />
+                <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>
+                  {form.maxPerDay ? `המשתתפת תיחסם לאחר ${form.maxPerDay} דיווחים ביום` : 'ריק = ניתן לדווח ללא הגבלה'}
+                </div>
               </div>
             </div>
 
