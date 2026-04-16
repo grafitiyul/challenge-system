@@ -962,6 +962,22 @@ export class GameEngineService {
             triggeringEventId: se.id,
           });
 
+          // 5. Phase 6.10: reconcile threshold rules for THIS action on
+          //    today. Forward-firing above already fires tiers crossed by
+          //    this submission; recompute is a safety net that catches
+          //    cases where forward firing is blocked (e.g. by alreadyFired
+          //    guards after a prior correction). Idempotent: no writes
+          //    when the ledger already matches the current effective value.
+          await this.recomputeThresholdRulesForDay(tx, {
+            participantId: dto.participantId,
+            programId: dto.programId,
+            actionId: dto.actionId,
+            anchorDate: updatedLog.createdAt,
+            reason: 'reconcile_after_submission',
+            triggeredByLogId: updatedLog.id,
+            groupIdHint: dto.groupId ?? null,
+          });
+
           return { log: updatedLog, scoreEvent: se, ruleResults };
         },
         { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
@@ -1888,6 +1904,152 @@ export class GameEngineService {
     }
   }
 
+  // ─── Phase 6.10: threshold-rule recompute ─────────────────────────────────
+  //
+  // After any change to same-day logs (new submission, correction, or void),
+  // reconcile the per-rule net attribution with what the CURRENT effective
+  // daily value implies. Uses the same ledger-preserving pattern as the
+  // units-delta cascade: writes a single correction scoreEvent per rule
+  // whose current net differs from expected.
+  //
+  // Ladder semantics (unchanged):
+  //   Walk rules for this action sorted by threshold ASC. For each rule
+  //   whose threshold <= effectiveValue, its expected per-rule contribution
+  //   is `rule.rewardPoints - previousTierReward`. Rules that don't qualify
+  //   get 0. Sum across rules = max qualifying rewardPoints (the admin's
+  //   "tier" value). This matches the forward ladder-delta in evaluateRulesInTx.
+  //
+  // Idempotent: if the ledger is already consistent, no rows are written.
+  // Must run INSIDE the caller's transaction.
+  //
+  // `groupIdHint` is used only when a brand-new correction needs to be
+  // written for a rule that has no prior event today (e.g. upward correction
+  // past a new threshold). Existing rule events carry their own groupId and
+  // new cascade corrections inherit that.
+  private async recomputeThresholdRulesForDay(
+    tx: Prisma.TransactionClient,
+    params: {
+      participantId: string;
+      programId: string;
+      actionId: string;
+      anchorDate: Date;
+      reason: string;
+      triggeredByLogId?: string;
+      actorRole?: string;
+      groupIdHint?: string | null;
+    },
+  ): Promise<void> {
+    const { participantId, programId, actionId, anchorDate } = params;
+
+    // 1. Load conditional + threshold rules for THIS action, ordered by tier.
+    //    rewardPoints lives inside rewardJson.points — same shape the forward
+    //    firing path reads in evaluateRulesInTx.
+    const rulesRaw = await tx.gameRule.findMany({
+      where: { programId, type: 'conditional', isActive: true },
+      select: { id: true, conditionJson: true, rewardJson: true },
+    });
+    const rules = rulesRaw
+      .map((r) => {
+        const cond = r.conditionJson as Record<string, unknown>;
+        if (typeof cond['actionId'] !== 'string' || cond['actionId'] !== actionId) return null;
+        if (typeof cond['threshold'] !== 'number') return null;
+        const reward = r.rewardJson as Record<string, unknown>;
+        const rewardPoints =
+          typeof reward?.['points'] === 'number' ? (reward['points'] as number) : 0;
+        return {
+          id: r.id,
+          threshold: cond['threshold'] as number,
+          rewardPoints,
+        };
+      })
+      .filter((r): r is { id: string; threshold: number; rewardPoints: number } => r !== null)
+      .sort((a, b) => a.threshold - b.threshold);
+    if (rules.length === 0) return;
+
+    // 2. Effective value for the day (uses existing helper, honors
+    //    aggregationMode, reads only active logs).
+    const dayStart = new Date(anchorDate);
+    dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(dayStart);
+    dayEnd.setDate(dayEnd.getDate() + 1);
+    const effectiveValue = await this.getEffectiveDailyValue(
+      participantId,
+      programId,
+      actionId,
+      dayStart,
+      tx,
+    );
+
+    // 3. Expected per-rule using ladder semantics.
+    const expectedByRule = new Map<string, number>();
+    let prevReward = 0;
+    for (const r of rules) {
+      if (r.threshold <= effectiveValue) {
+        expectedByRule.set(r.id, r.rewardPoints - prevReward);
+        prevReward = r.rewardPoints;
+      } else {
+        expectedByRule.set(r.id, 0);
+      }
+    }
+
+    // 4. Current net per rule = sum of EVERY event today tagged with that
+    //    rule.id, across sourceType='rule' (forward firings) and 'correction'
+    //    (prior recompute adjustments + manual compensations).
+    const ruleIds = rules.map((r) => r.id);
+    const events = await tx.scoreEvent.findMany({
+      where: {
+        participantId,
+        programId,
+        sourceId: { in: ruleIds },
+        createdAt: { gte: dayStart, lt: dayEnd },
+        OR: [
+          { sourceType: 'rule' },
+          { sourceType: 'correction' },
+        ],
+      },
+      select: { sourceId: true, points: true, groupId: true },
+    });
+    const currentByRule = new Map<string, number>();
+    const groupIdByRule = new Map<string, string | null>();
+    for (const e of events) {
+      if (!e.sourceId) continue;
+      currentByRule.set(e.sourceId, (currentByRule.get(e.sourceId) ?? 0) + e.points);
+      if (!groupIdByRule.has(e.sourceId)) groupIdByRule.set(e.sourceId, e.groupId);
+    }
+
+    // 5. Write one correction per mismatched rule.
+    for (const r of rules) {
+      const expected = expectedByRule.get(r.id) ?? 0;
+      const current = currentByRule.get(r.id) ?? 0;
+      const delta = expected - current;
+      if (delta === 0) continue;
+      const groupId =
+        groupIdByRule.has(r.id)
+          ? groupIdByRule.get(r.id) ?? null
+          : params.groupIdHint ?? null;
+      await tx.scoreEvent.create({
+        data: {
+          participantId,
+          programId,
+          groupId,
+          sourceType: 'correction',
+          sourceId: r.id,
+          points: delta,
+          metadata: {
+            reason: params.reason,
+            ruleRecomputeForRuleId: r.id,
+            thresholdAtTime: r.threshold,
+            effectiveValueAtTime: effectiveValue,
+            previousEffectivePoints: current,
+            newEffectivePoints: expected,
+            ...(params.triggeredByLogId ? { triggeredByLogId: params.triggeredByLogId } : {}),
+            ...(params.actorRole ? { actorRole: params.actorRole } : {}),
+          },
+        },
+      });
+    }
+  }
+
   // revokeOrphanedRuleScoreEvents was removed with Phase 1 Task 2: it was the
   // rule-side cleanup for the legacy hard-delete paths. Those paths are disabled
   // (deleteFeedEvent / bulkDeleteFeedEvents / resetParticipantProgress now throw
@@ -2121,8 +2283,26 @@ export class GameEngineService {
             },
           });
 
-          // 3. Compensating ScoreEvent — reverses the old points.
-          //    sourceType='correction', logId=NULL (CHECK only enforces non-null for 'action').
+          // 3. Compensating ScoreEvent — reverses the OLD LOG's full net
+          //    contribution. Phase 6.10: we sum action points + any prior
+          //    cascade correction events attached to this action event,
+          //    so that the supersede cleanly zeroes out the log's entire
+          //    footprint. Filtering by sourceType='correction' intentionally
+          //    EXCLUDES rule events (which also carry parentEventId=action.id);
+          //    rule attribution is handled separately by the threshold-rule
+          //    recompute below.
+          const priorAdjustments = await tx.scoreEvent.findMany({
+            where: {
+              parentEventId: oldScoreEvent.id,
+              sourceType: 'correction',
+            },
+            select: { points: true },
+          });
+          const priorAdjustmentsSum = priorAdjustments.reduce(
+            (s, a) => s + a.points,
+            0,
+          );
+          const oldLogNetPoints = oldScoreEvent.points + priorAdjustmentsSum;
           const compensation = await tx.scoreEvent.create({
             data: {
               participantId: oldLog.participantId,
@@ -2130,12 +2310,13 @@ export class GameEngineService {
               groupId: oldScoreEvent.groupId,
               sourceType: 'correction',
               sourceId: oldLog.actionId,
-              points: -oldScoreEvent.points,
+              points: -oldLogNetPoints,
               parentEventId: oldScoreEvent.id,
               metadata: {
                 reason: 'correction',
                 supersededScoreEventId: oldScoreEvent.id,
                 supersededLogId: oldLog.id,
+                supersededLogNetPoints: oldLogNetPoints,
                 actorRole: dto.actorRole,
               },
             },
@@ -2191,6 +2372,23 @@ export class GameEngineService {
             });
           }
 
+          // 7. Phase 6.10: reconcile threshold-rule bonuses for this action
+          //    on this day. Runs for EVERY scoring type — threshold rules
+          //    only fire for actions with such rules attached, and the
+          //    function short-circuits when none exist. After this call the
+          //    ledger's per-rule net matches the current effective daily
+          //    value exactly.
+          await this.recomputeThresholdRulesForDay(tx, {
+            participantId: oldLog.participantId,
+            programId: oldLog.programId,
+            actionId: oldLog.actionId,
+            anchorDate: oldLog.createdAt,
+            reason: 'cascade_after_correction',
+            triggeredByLogId: oldLog.id,
+            actorRole: dto.actorRole,
+            groupIdHint: oldScoreEvent.groupId,
+          });
+
           return {
             oldLog,
             newLog,
@@ -2244,6 +2442,20 @@ export class GameEngineService {
           data: { status: 'voided', editedAt: new Date(), editedByRole: dto.actorRole },
         });
 
+        // Phase 6.10: compensate the full net, not just the action event —
+        // see correctLog for the same pattern.
+        const priorAdjustments = await tx.scoreEvent.findMany({
+          where: {
+            parentEventId: oldScoreEvent.id,
+            sourceType: 'correction',
+          },
+          select: { points: true },
+        });
+        const priorAdjustmentsSum = priorAdjustments.reduce(
+          (s, a) => s + a.points,
+          0,
+        );
+        const oldLogNetPoints = oldScoreEvent.points + priorAdjustmentsSum;
         const compensation = await tx.scoreEvent.create({
           data: {
             participantId: oldLog.participantId,
@@ -2251,12 +2463,13 @@ export class GameEngineService {
             groupId: oldScoreEvent.groupId,
             sourceType: 'correction',
             sourceId: oldLog.actionId,
-            points: -oldScoreEvent.points,
+            points: -oldLogNetPoints,
             parentEventId: oldScoreEvent.id,
             metadata: {
               reason: 'void',
               supersededScoreEventId: oldScoreEvent.id,
               supersededLogId: oldLog.id,
+              supersededLogNetPoints: oldLogNetPoints,
               actorRole: dto.actorRole,
             },
           },
@@ -2288,6 +2501,20 @@ export class GameEngineService {
             actorRole: dto.actorRole,
           });
         }
+
+        // Phase 6.10: reconcile threshold rules. Voiding a log can drop the
+        // effective daily value below a previously-satisfied tier; recompute
+        // writes negative corrections to remove bonuses that no longer apply.
+        await this.recomputeThresholdRulesForDay(tx, {
+          participantId: oldLog.participantId,
+          programId: oldLog.programId,
+          actionId: oldLog.actionId,
+          anchorDate: oldLog.createdAt,
+          reason: 'cascade_after_void',
+          triggeredByLogId: oldLog.id,
+          actorRole: dto.actorRole,
+          groupIdHint: oldScoreEvent.groupId,
+        });
 
         return { voidedLog: oldLog, compensationScoreEvent: compensation };
       },
