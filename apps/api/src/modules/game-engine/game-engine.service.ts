@@ -16,6 +16,206 @@ function isUniqueViolation(e: unknown): boolean {
   return e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002';
 }
 
+// ─── Phase 6.7: base scoring strategy layer ───────────────────────────────────
+//
+// Explicit discriminator: every action declares its scoring strategy. The
+// engine dispatches on `baseScoringType` — there is no implicit activation
+// by optional-field presence. Four strategies are supported:
+//
+//   flat                       — action.points per submission (flat).
+//   quantity_multiplier        — action.points * submitted quantity.
+//   latest_value_flat          — action.points per submission; monotonic.
+//   latest_value_units_delta   — generic unit-progress scoring:
+//                                deltaUnits * basePointsPerUnit
+//
+// The helpers below are the ONLY places base-point math lives. logAction and
+// correctLog call them; nothing else should know the per-strategy formulas.
+
+export type BaseScoringType =
+  | 'flat'
+  | 'quantity_multiplier'
+  | 'latest_value_flat'
+  | 'latest_value_units_delta';
+
+const VALID_BASE_SCORING_TYPES: BaseScoringType[] = [
+  'flat',
+  'quantity_multiplier',
+  'latest_value_flat',
+  'latest_value_units_delta',
+];
+
+/**
+ * Derive the effective aggregationMode from the declared scoring strategy.
+ *   latest_value_flat / latest_value_units_delta → 'latest_value'
+ *   quantity_multiplier                          → 'incremental_sum'
+ *   flat                                         → 'none'
+ * aggregationMode is kept as a separate persisted column (used by
+ * getEffectiveDailyValue and the monotonic check) but admins no longer set
+ * it directly — picking the strategy implies it.
+ */
+export function aggregationModeFor(
+  scoringType: BaseScoringType,
+): 'none' | 'latest_value' | 'incremental_sum' {
+  switch (scoringType) {
+    case 'latest_value_flat':
+    case 'latest_value_units_delta':
+      return 'latest_value';
+    case 'quantity_multiplier':
+      return 'incremental_sum';
+    case 'flat':
+    default:
+      return 'none';
+  }
+}
+
+/**
+ * Reject invalid action configurations before they hit the DB. Each strategy
+ * has a fixed set of required fields; mismatches throw BadRequestException so
+ * the admin UI surfaces them.
+ */
+export function validateScoringConfig(dto: {
+  baseScoringType: BaseScoringType;
+  inputType: string;
+  unitSize: number | null | undefined;
+  basePointsPerUnit: number | null | undefined;
+  maxPerDay: number | null | undefined;
+}): void {
+  const { baseScoringType: s, inputType, unitSize, basePointsPerUnit, maxPerDay } = dto;
+  if (!VALID_BASE_SCORING_TYPES.includes(s)) {
+    throw new BadRequestException(`שיטת ניקוד לא תקינה: ${s}`);
+  }
+  if (s === 'quantity_multiplier') {
+    if (inputType !== 'number') {
+      throw new BadRequestException('"נקודות לפי כמות" דורש קלט מספרי');
+    }
+  }
+  if (s === 'latest_value_flat') {
+    if (inputType !== 'number') {
+      throw new BadRequestException('"נקודות קבועות לפי סה״כ שוטף" דורש קלט מספרי');
+    }
+  }
+  if (s === 'latest_value_units_delta') {
+    if (inputType !== 'number') {
+      throw new BadRequestException('"נקודות לפי יחידות התקדמות" דורש קלט מספרי');
+    }
+    if (!unitSize || unitSize <= 0) {
+      throw new BadRequestException('יש להגדיר גודל יחידה חיובי');
+    }
+    if (basePointsPerUnit === null || basePointsPerUnit === undefined || basePointsPerUnit < 0) {
+      throw new BadRequestException('יש להגדיר נקודות ליחידה');
+    }
+    if (maxPerDay !== 1) {
+      // Hard enforcement: this strategy's correction math is only exact when
+      // there's a single active log per day. We'd rather block a confusing
+      // configuration than silently produce drift-prone ledgers.
+      throw new BadRequestException(
+        'חישוב לפי יחידות התקדמות דורש מגבלה יומית של דיווח אחד',
+      );
+    }
+  }
+}
+
+/**
+ * Normalize scoring-related fields before persisting. Ensures that parameters
+ * irrelevant to the selected strategy are cleared — e.g. a `flat` action will
+ * never carry stray unitSize leftovers from an earlier edit.
+ */
+export function normalizeScoringFields(
+  scoringType: BaseScoringType,
+  unitSize: number | null | undefined,
+  basePointsPerUnit: number | null | undefined,
+): { unitSize: number | null; basePointsPerUnit: number | null } {
+  if (scoringType === 'latest_value_units_delta') {
+    return {
+      unitSize: unitSize ?? null,
+      basePointsPerUnit: basePointsPerUnit ?? null,
+    };
+  }
+  return { unitSize: null, basePointsPerUnit: null };
+}
+
+type ActionScoringShape = {
+  points: number;
+  baseScoringType: string;
+  unitSize: number | null;
+  basePointsPerUnit: number | null;
+};
+
+/**
+ * Compute base points for a NEW submission via the action's declared strategy.
+ *   priorDailyMax — the participant's current `getEffectiveDailyValue` for
+ *                   this action BEFORE this submission is applied. Used only
+ *                   by latest_value_units_delta; safely passed as 0 for other
+ *                   strategies.
+ */
+export function computeBasePointsForSubmission(
+  action: ActionScoringShape,
+  rawValue: string | null | undefined,
+  priorDailyMax: number,
+): number {
+  const parsed = rawValue !== undefined && rawValue !== null ? parseFloat(rawValue) : NaN;
+  switch (action.baseScoringType as BaseScoringType) {
+    case 'flat':
+    case 'latest_value_flat':
+      return action.points;
+    case 'quantity_multiplier':
+      if (isNaN(parsed) || parsed <= 0) return 0;
+      return Math.round(action.points * parsed);
+    case 'latest_value_units_delta': {
+      const unitSize = action.unitSize;
+      const pointsPerUnit = action.basePointsPerUnit;
+      if (!unitSize || unitSize <= 0 || pointsPerUnit === null || pointsPerUnit === undefined) {
+        // Invariant broken (validation should have caught this at save time).
+        // Zero is the safe answer — the ledger stays internally consistent.
+        return 0;
+      }
+      const newUnits = isNaN(parsed) ? 0 : Math.floor(parsed / unitSize);
+      const priorUnits = Math.floor(priorDailyMax / unitSize);
+      return Math.max(0, (newUnits - priorUnits) * pointsPerUnit);
+    }
+    default:
+      return 0;
+  }
+}
+
+/**
+ * Compute base points for a CORRECTION via the action's declared strategy.
+ *   otherActiveMaxValue — max raw value of OTHER active logs today (the log
+ *                         being corrected is excluded). For latest_value_units_delta
+ *                         with maxPerDay=1 (enforced) this is always 0.
+ *                         Kept as a parameter for completeness and future
+ *                         relaxation.
+ */
+export function computeBasePointsForCorrection(
+  action: ActionScoringShape,
+  newRawValue: string,
+  otherActiveMaxValue: number,
+): number {
+  const parsed = parseFloat(newRawValue);
+  switch (action.baseScoringType as BaseScoringType) {
+    case 'flat':
+    case 'latest_value_flat':
+      return action.points;
+    case 'quantity_multiplier':
+      if (isNaN(parsed) || parsed <= 0) return 0;
+      return Math.round(action.points * parsed);
+    case 'latest_value_units_delta': {
+      const unitSize = action.unitSize;
+      const pointsPerUnit = action.basePointsPerUnit;
+      if (!unitSize || unitSize <= 0 || pointsPerUnit === null || pointsPerUnit === undefined) {
+        return 0;
+      }
+      const newUnits = isNaN(parsed) ? 0 : Math.floor(parsed / unitSize);
+      const otherUnits = Math.floor(otherActiveMaxValue / unitSize);
+      // Can be negative (downward correction below another active log).
+      // With maxPerDay=1 that path can't be reached; kept for symmetry.
+      return (newUnits - otherUnits) * pointsPerUnit;
+    }
+    default:
+      return 0;
+  }
+}
+
 /**
  * Surface type used everywhere DB access can happen either against the bare client
  * or inside a `$transaction` callback. Prisma's `TransactionClient` is structurally
@@ -141,6 +341,24 @@ export class GameEngineService {
     }
     const count = await this.prisma.gameAction.count({ where: { programId } });
 
+    // Phase 6.7 scoring-strategy resolution. Admins pick `baseScoringType`;
+    // aggregationMode is DERIVED (not admin-set), and unit parameters are
+    // normalized so only the relevant strategy carries them.
+    const inputType = dto.inputType ?? 'boolean';
+    const baseScoringType = (dto.baseScoringType ?? 'flat') as BaseScoringType;
+    validateScoringConfig({
+      baseScoringType,
+      inputType,
+      unitSize: dto.unitSize ?? null,
+      basePointsPerUnit: dto.basePointsPerUnit ?? null,
+      maxPerDay: dto.maxPerDay ?? null,
+    });
+    const normalized = normalizeScoringFields(
+      baseScoringType,
+      dto.unitSize,
+      dto.basePointsPerUnit,
+    );
+
     // Phase 3.2: create the action + attach contextUses atomically so the
     // admin save is all-or-nothing even when the attachment list is non-empty.
     const action = await this.prisma.$transaction(async (tx) => {
@@ -149,13 +367,13 @@ export class GameEngineService {
           programId,
           name: dto.name,
           description: dto.description ?? null,
-          inputType: dto.inputType ?? 'boolean',
-          aggregationMode: dto.aggregationMode ?? 'none',
+          inputType,
+          aggregationMode: aggregationModeFor(baseScoringType),
           unit: dto.unit ?? null,
           points: dto.points,
-          // Phase 6.6: bundled-unit base scoring (optional).
-          unitSize: dto.unitSize ?? null,
-          basePointsPerUnit: dto.basePointsPerUnit ?? null,
+          baseScoringType,
+          unitSize: normalized.unitSize,
+          basePointsPerUnit: normalized.basePointsPerUnit,
           maxPerDay: dto.maxPerDay ?? null,
           showInPortal: dto.showInPortal ?? true,
           blockedMessage: dto.blockedMessage ?? null,
@@ -234,6 +452,33 @@ export class GameEngineService {
       }
     }
 
+    // Phase 6.7: resolve the effective scoring config from the merge of
+    // stored + incoming. Any change to baseScoringType, unitSize,
+    // basePointsPerUnit, inputType, or maxPerDay re-validates the whole
+    // set — we never let a partial edit produce a nonsensical combination.
+    const nextInputType = dto.inputType ?? action.inputType;
+    const nextBaseScoringType =
+      (dto.baseScoringType ?? (action.baseScoringType as BaseScoringType)) as BaseScoringType;
+    const nextUnitSize =
+      dto.unitSize !== undefined ? dto.unitSize : action.unitSize;
+    const nextBasePointsPerUnit =
+      dto.basePointsPerUnit !== undefined ? dto.basePointsPerUnit : action.basePointsPerUnit;
+    const nextMaxPerDay =
+      dto.maxPerDay !== undefined ? dto.maxPerDay : action.maxPerDay;
+    validateScoringConfig({
+      baseScoringType: nextBaseScoringType,
+      inputType: nextInputType,
+      unitSize: nextUnitSize,
+      basePointsPerUnit: nextBasePointsPerUnit,
+      maxPerDay: nextMaxPerDay,
+    });
+    const normalized = normalizeScoringFields(
+      nextBaseScoringType,
+      nextUnitSize,
+      nextBasePointsPerUnit,
+    );
+    const derivedAggregationMode = aggregationModeFor(nextBaseScoringType);
+
     // Phase 3.2: single transaction — action update + context-use reconciliation.
     // Omitting contextUses leaves attachments untouched; passing [] detaches all.
     return this.prisma.$transaction(async (tx) => {
@@ -242,12 +487,16 @@ export class GameEngineService {
         data: {
           ...(dto.name !== undefined ? { name: dto.name } : {}),
           ...(dto.description !== undefined ? { description: dto.description } : {}),
-          ...(dto.inputType !== undefined ? { inputType: dto.inputType } : {}),
-          ...(dto.aggregationMode !== undefined ? { aggregationMode: dto.aggregationMode } : {}),
+          inputType: nextInputType,
+          // aggregationMode is ALWAYS derived from the scoring strategy —
+          // admins no longer set it directly. Writing every time keeps it
+          // in sync when the strategy changes.
+          aggregationMode: derivedAggregationMode,
+          baseScoringType: nextBaseScoringType,
+          unitSize: normalized.unitSize,
+          basePointsPerUnit: normalized.basePointsPerUnit,
           ...(dto.unit !== undefined ? { unit: dto.unit } : {}),
           ...(dto.points !== undefined ? { points: dto.points } : {}),
-          ...(dto.unitSize !== undefined ? { unitSize: dto.unitSize } : {}),
-          ...(dto.basePointsPerUnit !== undefined ? { basePointsPerUnit: dto.basePointsPerUnit } : {}),
           ...(dto.maxPerDay !== undefined ? { maxPerDay: dto.maxPerDay } : {}),
           ...(dto.showInPortal !== undefined ? { showInPortal: dto.showInPortal } : {}),
           ...(dto.blockedMessage !== undefined ? { blockedMessage: dto.blockedMessage } : {}),
@@ -568,65 +817,33 @@ export class GameEngineService {
       if (!isNaN(parsed)) effectiveValue = new Prisma.Decimal(parsed);
     }
 
-    // ── Points derivation ────────────────────────────────────────────────────
-    // Three modes, in priority order:
+    // ── Phase 6.7 base points via explicit strategy ──────────────────────────
+    // Single dispatch: computeBasePointsForSubmission reads
+    // action.baseScoringType and applies the matching formula. No hidden
+    // activation, no fallbacks based on optional field presence. Threshold
+    // rules (conditional type with ladder-delta anti-double-pay) continue
+    // to read the raw effective daily value via getEffectiveDailyValue
+    // below — unaffected by the scoring strategy.
     //
-    //   1. Phase 6.6 BUNDLED-UNIT DELTA (latest_value + unitSize +
-    //      basePointsPerUnit all set): award only the marginal units earned
-    //      by this submission vs. today's prior daily max. Preserves the
-    //      existing monotonic-update flow — the monotonic check above already
-    //      guarantees newValue ≥ priorMax, so delta ≥ 0 by construction.
-    //
-    //      pointsForThisLog = (floor(newValue / unitSize) -
-    //                          floor(priorDailyMax / unitSize))
-    //                         * basePointsPerUnit
-    //
-    //   2. incremental_sum: action.points is per-unit; multiply by submitted
-    //      quantity. Unchanged.
-    //
-    //   3. Everything else: flat action.points. Unchanged.
-    //
-    // All three feed the SAME ScoreEvent creation path below. Threshold rules
-    // (conditional type with ladder-delta anti-double-pay) continue to read
-    // the raw effective daily value via getEffectiveDailyValue — unaffected.
-    let pointsForThisLog = action.points;
-    const unitSize = action.unitSize;
-    const basePointsPerUnit = action.basePointsPerUnit;
-    const bundledUnitMode =
-      action.inputType === 'number' &&
-      action.aggregationMode === 'latest_value' &&
-      unitSize !== null &&
-      unitSize !== undefined &&
-      unitSize > 0 &&
-      basePointsPerUnit !== null &&
-      basePointsPerUnit !== undefined;
-    if (bundledUnitMode) {
-      const newValueNum = parseFloat(dto.value ?? '0');
-      const priorMaxNum = await this.getEffectiveDailyValue(
+    // priorDailyMax is only consumed by the latest_value_units_delta
+    // strategy; other strategies ignore it. Fetching it is skipped for
+    // non-numeric actions (they can't need it).
+    let priorDailyMax = 0;
+    if (action.inputType === 'number') {
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      priorDailyMax = await this.getEffectiveDailyValue(
         dto.participantId,
         dto.programId,
         dto.actionId,
-        (() => {
-          const d = new Date();
-          d.setHours(0, 0, 0, 0);
-          return d;
-        })(),
+        todayStart,
       );
-      const newUnits = isNaN(newValueNum)
-        ? 0
-        : Math.floor(newValueNum / (unitSize as number));
-      const priorUnits = Math.floor(priorMaxNum / (unitSize as number));
-      const deltaUnits = Math.max(0, newUnits - priorUnits);
-      pointsForThisLog = deltaUnits * (basePointsPerUnit as number);
-    } else if (
-      action.inputType === 'number' &&
-      action.aggregationMode === 'incremental_sum'
-    ) {
-      const qty = parseFloat(dto.value ?? '0');
-      if (!isNaN(qty) && qty > 0) {
-        pointsForThisLog = Math.round(action.points * qty);
-      }
     }
+    const pointsForThisLog = computeBasePointsForSubmission(
+      action,
+      dto.value,
+      priorDailyMax,
+    );
 
     // ── SERIALIZABLE transaction: UAL + ScoreEvent + FeedEvent + RULES ───────
     // Everything the submission produces — the action write AND all derived rule
@@ -1700,38 +1917,23 @@ export class GameEngineService {
     const nextContextRaw = dto.contextJson !== undefined ? dto.contextJson : oldLog.contextJson;
     const validatedContext = validateContext(oldLog.action.contextSchemaJson, nextContextRaw);
 
-    // Compute new effectiveValue + points. Three modes mirror logAction:
+    // ── Phase 6.7 correction points via explicit strategy ──────────────────
+    // Correction math dispatches on action.baseScoringType exactly like
+    // submission math does. The compensation event (-oldPoints) is
+    // unchanged; we only recompute the NEW log's points here.
     //
-    //   1. Phase 6.6 BUNDLED-UNIT DELTA: newPoints = (newUnits - otherMaxUnits)
-    //      * basePointsPerUnit. otherMax = max of OTHER active logs today for
-    //      this action (the one being superseded is excluded since its row is
-    //      about to flip to 'superseded'). Can be negative when the corrected
-    //      value drops below another active log's value — this is intentional:
-    //      the net ledger effect of the correction still represents the real
-    //      delta to the participant's daily total. Known limitation: if an
-    //      admin corrects a NON-LATEST log in a chain of 3+ intra-day
-    //      submissions, downstream logs' pre-computed points aren't rerun,
-    //      so the daily-sum invariant can drift slightly. Single-log (the
-    //      common case — enforced by maxPerDay=1) is exact.
-    //
-    //   2. incremental_sum: action.points * qty. Unchanged.
-    //
-    //   3. Flat action.points. Unchanged.
+    // For latest_value_units_delta we need the max value of OTHER active
+    // logs today — with maxPerDay=1 enforced at save time that's always 0,
+    // but the lookup is kept for correctness if an admin relaxes maxPerDay
+    // in a future non-strict variant.
     let effectiveValue: Prisma.Decimal | null = null;
-    let newPoints = oldLog.action.points;
-    const unitSize = oldLog.action.unitSize;
-    const basePointsPerUnit = oldLog.action.basePointsPerUnit;
-    const bundledUnitMode =
-      oldLog.action.inputType === 'number' &&
-      oldLog.action.aggregationMode === 'latest_value' &&
-      unitSize !== null &&
-      unitSize !== undefined &&
-      unitSize > 0 &&
-      basePointsPerUnit !== null &&
-      basePointsPerUnit !== undefined;
-    if (bundledUnitMode) {
-      const parsed = parseFloat(newValue);
-      if (!isNaN(parsed)) effectiveValue = new Prisma.Decimal(parsed);
+    const parsedForEffective = parseFloat(newValue);
+    if (oldLog.action.inputType === 'number' && !isNaN(parsedForEffective)) {
+      effectiveValue = new Prisma.Decimal(parsedForEffective);
+    }
+
+    let otherActiveMaxValue = 0;
+    if (oldLog.action.baseScoringType === 'latest_value_units_delta') {
       const todayStart = new Date();
       todayStart.setHours(0, 0, 0, 0);
       const otherActiveLogs = await this.prisma.userActionLog.findMany({
@@ -1745,24 +1947,16 @@ export class GameEngineService {
         },
         select: { value: true },
       });
-      const otherMaxValue = otherActiveLogs
+      otherActiveMaxValue = otherActiveLogs
         .map((l) => parseFloat(l.value))
         .filter((v) => !isNaN(v) && v >= 0)
         .reduce((m, v) => Math.max(m, v), 0);
-      const newUnits = isNaN(parsed)
-        ? 0
-        : Math.floor(parsed / (unitSize as number));
-      const otherMaxUnits = Math.floor(otherMaxValue / (unitSize as number));
-      newPoints = (newUnits - otherMaxUnits) * (basePointsPerUnit as number);
-    } else if (oldLog.action.inputType === 'number') {
-      const parsed = parseFloat(newValue);
-      if (!isNaN(parsed)) {
-        effectiveValue = new Prisma.Decimal(parsed);
-        if (oldLog.action.aggregationMode === 'incremental_sum' && parsed > 0) {
-          newPoints = Math.round(oldLog.action.points * parsed);
-        }
-      }
     }
+    const newPoints = computeBasePointsForCorrection(
+      oldLog.action,
+      newValue,
+      otherActiveMaxValue,
+    );
 
     // Find the original action ScoreEvent for compensation.
     const oldScoreEvent = await this.prisma.scoreEvent.findFirst({

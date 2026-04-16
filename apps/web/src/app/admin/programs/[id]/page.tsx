@@ -356,9 +356,13 @@ interface GameAction {
   aggregationMode: string | null;
   unit: string | null;
   points: number;
-  // Phase 6.6 bundled-unit base scoring (optional). When both set + inputType
-  // = number + aggregationMode = latest_value, base points switch to
-  // `delta_units * basePointsPerUnit`.
+  // Phase 6.7 explicit base scoring strategy. Admin picks this; engine
+  // dispatches on it. aggregationMode is server-derived.
+  baseScoringType:
+    | 'flat'
+    | 'quantity_multiplier'
+    | 'latest_value_flat'
+    | 'latest_value_units_delta';
   unitSize: number | null;
   basePointsPerUnit: number | null;
   maxPerDay: number | null;
@@ -1078,11 +1082,18 @@ function ActionModal({
     name: action?.name ?? '',
     description: action?.description ?? '',
     inputType: action?.inputType ?? 'boolean',
-    aggregationMode: action?.aggregationMode ?? 'none',
+    // Phase 6.7: base scoring strategy is the primary admin choice.
+    // aggregationMode is no longer admin-set — derived server-side from
+    // baseScoringType.
+    baseScoringType:
+      (action?.baseScoringType as
+        | 'flat'
+        | 'quantity_multiplier'
+        | 'latest_value_flat'
+        | 'latest_value_units_delta'
+        | undefined) ?? 'flat',
     unit: action?.unit ?? '',
     points: String(action?.points ?? 10),
-    // Phase 6.6 bundled-unit base scoring — both optional. Form fields are
-    // strings (admin inputs); backend receives parseInt or null.
     unitSize: action?.unitSize != null ? String(action.unitSize) : '',
     basePointsPerUnit:
       action?.basePointsPerUnit != null ? String(action.basePointsPerUnit) : '',
@@ -1114,8 +1125,8 @@ function ActionModal({
   // Derived default prompt — used as placeholder in the admin form and as
   // fallback in the portal when the admin leaves the override blank.
   const derivedPrompt =
-    form.inputType === 'number' && form.aggregationMode === 'latest_value' ? 'כמה הגעת עד עכשיו?' :
-    form.inputType === 'number' && form.aggregationMode === 'incremental_sum' ? 'כמה להוסיף עכשיו?' :
+    form.inputType === 'number' && (form.baseScoringType === 'latest_value_flat' || form.baseScoringType === 'latest_value_units_delta') ? 'כמה הגעת עד עכשיו?' :
+    form.inputType === 'number' && form.baseScoringType === 'quantity_multiplier' ? 'כמה להוסיף עכשיו?' :
     'האם ביצעת פעולה זו?';
   const previewInputPrompt = form.participantPrompt.trim() || derivedPrompt;
   const previewLimit = form.maxPerDay
@@ -1214,26 +1225,37 @@ function ActionModal({
         name: form.name.trim(),
         description: form.description.trim() || null,
         inputType: form.inputType,
-        aggregationMode: form.inputType === 'number' ? form.aggregationMode : 'none',
+        // Phase 6.7: aggregationMode is SERVER-DERIVED from baseScoringType.
+        // Admin only picks inputType + baseScoringType; server sets the rest.
+        baseScoringType:
+          form.inputType === 'number' ? form.baseScoringType : 'flat',
         unit: form.inputType === 'number' ? (form.unit.trim() || null) : null,
         points: pts,
-        // Phase 6.6 bundled-unit scoring. Only meaningful for latest_value
-        // numeric actions; sent as null in every other shape so the backend
-        // sees "off" rather than a stale leftover value.
+        // Unit parameters only meaningful for the units-delta strategy.
+        // Sent as null in every other shape so the backend never stores
+        // stale leftover values.
         unitSize:
           form.inputType === 'number' &&
-          form.aggregationMode === 'latest_value' &&
+          form.baseScoringType === 'latest_value_units_delta' &&
           form.unitSize.trim()
             ? parseInt(form.unitSize)
             : null,
         basePointsPerUnit:
           form.inputType === 'number' &&
-          form.aggregationMode === 'latest_value' &&
+          form.baseScoringType === 'latest_value_units_delta' &&
           form.basePointsPerUnit.trim()
             ? parseInt(form.basePointsPerUnit)
             : null,
         // CRITICAL FIX: send null (not undefined) to properly clear maxPerDay in DB
-        maxPerDay: form.maxPerDay.trim() ? parseInt(form.maxPerDay) : null,
+        // Phase 6.7: units-delta strategy requires maxPerDay=1 (enforced
+        // server-side too). Forced here so admin isn't asked twice.
+        maxPerDay:
+          form.inputType === 'number' &&
+          form.baseScoringType === 'latest_value_units_delta'
+            ? 1
+            : form.maxPerDay.trim()
+              ? parseInt(form.maxPerDay)
+              : null,
         showInPortal: form.showInPortal,
         blockedMessage: form.blockedMessage.trim() || null,
         explanationContent: form.explanationContent.trim() || null,
@@ -1309,7 +1331,19 @@ function ActionModal({
             <div style={sectionHead}>איך המשתתפת מדווחת?</div>
             <div>
               <label style={labelStyle}>סוג דיווח</label>
-              <select style={inputStyle} value={form.inputType} onChange={(e) => setForm((p) => ({ ...p, inputType: e.target.value, aggregationMode: e.target.value === 'number' ? (p.aggregationMode === 'none' ? 'latest_value' : p.aggregationMode) : 'none' }))}>
+              <select style={inputStyle} value={form.inputType} onChange={(e) => {
+                const nextInput = e.target.value;
+                setForm((p) => ({
+                  ...p,
+                  inputType: nextInput,
+                  // Phase 6.7: when switching to/from number, also snap the
+                  // scoring strategy to a value that's valid for that input.
+                  baseScoringType:
+                    nextInput === 'number'
+                      ? (p.baseScoringType === 'flat' ? 'latest_value_flat' : p.baseScoringType)
+                      : 'flat',
+                }));
+              }}>
                 {ACTION_INPUT_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
               </select>
               <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>
@@ -1321,32 +1355,52 @@ function ActionModal({
 
             {form.inputType === 'number' && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12, borderTop: '1px solid #e2e8f0', paddingTop: 14 }}>
+                {/* Phase 6.7: explicit base scoring strategy. Replaces the
+                    old aggregationMode radio. Admin picks ONE way points
+                    are computed; server derives aggregationMode from it.
+                    Wording is product-level (not engineering). */}
                 <div>
-                  <label style={labelStyle}>שיטת מעקב מספרי</label>
+                  <label style={labelStyle}>איך מחושבות הנקודות?</label>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
                     {([
                       {
-                        value: 'latest_value',
-                        label: 'סה״כ שוטף — המשתתפת מדווחת כמה יש לה עד עכשיו',
-                        desc: 'כל דיווח מחליף את הקודם. לא ניתן לרדת. מתאים לצעדים, משקל, ק״מ.',
-                        example: 'דוגמה: "הגעת ל-7,500 צעדים?" → 7500',
+                        value: 'latest_value_flat',
+                        label: 'נקודות קבועות לפי סה״כ שוטף',
+                        desc: 'המשתתפת מדווחת כמה יש לה עד עכשיו. כל דיווח תקין מזכה בנקודות קבועות. לא ניתן לרדת.',
+                        example: 'דוגמה: "הגעת ל-7,500?" → 10 נק׳ לכל דיווח',
                       },
                       {
-                        value: 'incremental_sum',
-                        label: 'הוספה — המשתתפת מדווחת כמה עשתה עכשיו',
-                        desc: 'כל דיווח מצטרף לסכום היומי. מתאים לכוסות מים, סבבים, אימונים.',
-                        example: 'דוגמה: "כמה כוסות שתית?" → 2 (ועוד 3 בפעם הבאה = 5 ביום)',
+                        value: 'latest_value_units_delta',
+                        label: 'נקודות לפי יחידות התקדמות',
+                        desc: 'כל יחידה שלמה של התקדמות מזכה בנקודות. רק הדלתא לעומת הסה״כ הקודם מזכה. מתאים למעקב התקדמות לפי יחידות (כל X יחידות = Y נקודות).',
+                        example: 'דוגמה: גודל יחידה 1000, נקודות ליחידה 15 → דיווח 15,304 = 15 יחידות × 15 = 225 נק׳',
                       },
-                    ] as const).map((opt) => (
-                      <label key={opt.value} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer', padding: '10px 12px', border: `1.5px solid ${form.aggregationMode === opt.value ? '#2563eb' : '#e2e8f0'}`, borderRadius: 8, background: form.aggregationMode === opt.value ? '#eff6ff' : '#fff' }}>
-                        <input type="radio" name="aggregationMode" value={opt.value} checked={form.aggregationMode === opt.value} onChange={() => setForm((p) => ({ ...p, aggregationMode: opt.value }))} style={{ marginTop: 3, flexShrink: 0 }} />
-                        <div>
-                          <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a' }}>{opt.label}</div>
-                          <div style={{ fontSize: 11, color: '#64748b', marginTop: 2, lineHeight: 1.5 }}>{opt.desc}</div>
-                          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2, fontStyle: 'italic' }}>{opt.example}</div>
-                        </div>
-                      </label>
-                    ))}
+                      {
+                        value: 'quantity_multiplier',
+                        label: 'נקודות לפי כמות',
+                        desc: 'המשתתפת מדווחת כמה עשתה עכשיו. הדיווחים מצטרפים לסכום היומי. נקודות = נקודות לכל יחידה × הכמות שדווחה.',
+                        example: 'דוגמה: 5 נק׳ לכוס × 2 כוסות = 10 נק׳',
+                      },
+                    ] as const).map((opt) => {
+                      const selected = form.baseScoringType === opt.value;
+                      return (
+                        <label key={opt.value} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer', padding: '10px 12px', border: `1.5px solid ${selected ? '#2563eb' : '#e2e8f0'}`, borderRadius: 8, background: selected ? '#eff6ff' : '#fff' }}>
+                          <input
+                            type="radio"
+                            name="baseScoringType"
+                            value={opt.value}
+                            checked={selected}
+                            onChange={() => setForm((p) => ({ ...p, baseScoringType: opt.value }))}
+                            style={{ marginTop: 3, flexShrink: 0 }}
+                          />
+                          <div>
+                            <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a' }}>{opt.label}</div>
+                            <div style={{ fontSize: 11, color: '#64748b', marginTop: 2, lineHeight: 1.5 }}>{opt.desc}</div>
+                            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2, fontStyle: 'italic' }}>{opt.example}</div>
+                          </div>
+                        </label>
+                      );
+                    })}
                   </div>
                 </div>
                 <div>
@@ -1354,16 +1408,12 @@ function ActionModal({
                   <input style={inputStyle} value={form.unit} onChange={(e) => setForm((p) => ({ ...p, unit: e.target.value }))} placeholder="צעדים · קומות · דקות · כוסות · ק״מ" />
                   <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>מוצגת בפורטל וברשימת החוקים</div>
                 </div>
-                {/* Phase 6.6: bundled-unit base scoring. Only relevant for
-                    latest_value numeric actions. Leaving either blank keeps
-                    the existing flat-points behavior. */}
-                {form.aggregationMode === 'latest_value' && (
-                  <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 8, padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: '#0f172a' }}>
-                      צבירה לפי יחידות (אופציונלי)
-                    </div>
-                    <div style={{ fontSize: 11, color: '#64748b', lineHeight: 1.5 }}>
-                      כאשר שני השדות מלאים, הניקוד הבסיסי מחושב לפי כמות היחידות — לא נקודה שטוחה לכל דיווח. רק הדלתא לעומת ה״סה״כ״ הקודם מזכה בנקודות. השאירי ריק כדי לשמור על ההתנהגות הקיימת.
+                {/* Phase 6.7: unit-delta parameters. Shown ONLY for the
+                    matching scoring type, never as an optional side-panel. */}
+                {form.baseScoringType === 'latest_value_units_delta' && (
+                  <div style={{ background: '#ffffff', border: '1px solid #bfdbfe', borderRadius: 8, padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: '#1d4ed8' }}>
+                      פרמטרים לחישוב לפי יחידות התקדמות
                     </div>
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                       <div>
@@ -1377,7 +1427,7 @@ function ActionModal({
                           placeholder="למשל: 1000"
                         />
                         <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>
-                          כמה {form.unit?.trim() || 'יחידות'} שוות יחידה אחת בניקוד
+                          כל X {form.unit?.trim() || 'יחידות'} נחשבות יחידה אחת
                         </div>
                       </div>
                       <div>
@@ -1391,15 +1441,18 @@ function ActionModal({
                           placeholder="למשל: 15"
                         />
                         <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>
-                          כמה נקודות מרוויחים על כל יחידה מלאה
+                          נקודות שמזכה כל יחידה מלאה
                         </div>
                       </div>
                     </div>
-                    {form.unitSize.trim() && form.basePointsPerUnit.trim() && (
+                    {form.unitSize.trim() && form.basePointsPerUnit.trim() && parseInt(form.unitSize) > 0 && (
                       <div style={{ fontSize: 11, color: '#2563eb', fontStyle: 'italic' }}>
                         דוגמה: דיווח {(parseInt(form.unitSize) * 15 + 304).toLocaleString('he-IL')} → {Math.floor((parseInt(form.unitSize) * 15 + 304) / parseInt(form.unitSize))} יחידות × {form.basePointsPerUnit} = {Math.floor((parseInt(form.unitSize) * 15 + 304) / parseInt(form.unitSize)) * parseInt(form.basePointsPerUnit)} נק׳
                       </div>
                     )}
+                    <div style={{ fontSize: 11, color: '#92400e', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, padding: '6px 10px' }}>
+                      ⚠ שיטה זו דורשת מגבלה יומית של דיווח אחד. המערכת תגדיר זאת אוטומטית.
+                    </div>
                   </div>
                 )}
               </div>
@@ -1417,10 +1470,28 @@ function ActionModal({
               </div>
               <div>
                 <label style={labelStyle}>מגבלה יומית</label>
-                <input type="number" min={1} style={{ ...inputStyle, direction: 'ltr' }} value={form.maxPerDay} onChange={(e) => setForm((p) => ({ ...p, maxPerDay: e.target.value }))} placeholder="ללא הגבלה" />
-                <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>
-                  {form.maxPerDay ? `המשתתפת תיחסם לאחר ${form.maxPerDay} דיווחים ביום` : 'ריק = ניתן לדווח ללא הגבלה'}
-                </div>
+                {form.inputType === 'number' && form.baseScoringType === 'latest_value_units_delta' ? (
+                  // Units-delta strategy forces maxPerDay=1. Show a read-only
+                  // field with a short explanation; server also enforces this.
+                  <>
+                    <input
+                      type="number"
+                      value={1}
+                      readOnly
+                      style={{ ...inputStyle, direction: 'ltr', background: '#f1f5f9' }}
+                    />
+                    <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>
+                      מגבלה של דיווח אחד נדרשת עבור חישוב לפי יחידות התקדמות
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <input type="number" min={1} style={{ ...inputStyle, direction: 'ltr' }} value={form.maxPerDay} onChange={(e) => setForm((p) => ({ ...p, maxPerDay: e.target.value }))} placeholder="ללא הגבלה" />
+                    <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>
+                      {form.maxPerDay ? `המשתתפת תיחסם לאחר ${form.maxPerDay} דיווחים ביום` : 'ריק = ניתן לדווח ללא הגבלה'}
+                    </div>
+                  </>
+                )}
               </div>
             </div>
 

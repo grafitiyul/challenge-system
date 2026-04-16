@@ -1,4 +1,4 @@
-import { IsBoolean, IsInt, IsObject, IsOptional, IsString, Min, ValidateIf, ValidateNested, IsArray } from 'class-validator';
+import { IsBoolean, IsIn, IsInt, IsObject, IsOptional, IsString, Min, ValidateIf, ValidateNested, IsArray } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ActionContextUseDto } from './context-definition.dto';
 
@@ -36,18 +36,35 @@ export class CreateActionDto {
 
   @IsOptional()
   @IsString()
-  unit?: string; // e.g. "steps", "floors", "minutes"
+  unit?: string; // generic display unit, e.g. "צעדים", "ליטרים", "ק״מ"
 
   @IsInt()
   @Min(0)
   points: number;
 
   /**
-   * Phase 6.6 bundled-unit base scoring (optional). When BOTH unitSize AND
-   * basePointsPerUnit are set — and the action is latest_value + number —
-   * the base-point formula switches from flat-per-submission to
-   * `delta_bundled_units * basePointsPerUnit`. Leave either null to keep
-   * the existing flat-points behavior.
+   * Phase 6.7 explicit base scoring strategy (REQUIRED going forward).
+   * The engine dispatches on this value — no implicit activation.
+   * See GameAction.baseScoringType in schema for semantics per value.
+   */
+  @IsOptional()
+  @IsIn([
+    'flat',
+    'quantity_multiplier',
+    'latest_value_flat',
+    'latest_value_units_delta',
+  ])
+  baseScoringType?:
+    | 'flat'
+    | 'quantity_multiplier'
+    | 'latest_value_flat'
+    | 'latest_value_units_delta';
+
+  /**
+   * Generic unit-progress parameters. Required only when
+   * baseScoringType='latest_value_units_delta'. Ignored (and cleared) for
+   * every other scoring type. Names are generic on purpose — this layer
+   * is not about steps.
    */
   @IsOptional()
   @ValidateIf((o) => o.unitSize !== null)
@@ -153,14 +170,28 @@ export class UpdateActionDto {
   @Min(0)
   points?: number;
 
-  /** See CreateActionDto.unitSize. Pass null to disable bundled-unit mode. */
+  /** See CreateActionDto.baseScoringType. */
+  @IsOptional()
+  @IsIn([
+    'flat',
+    'quantity_multiplier',
+    'latest_value_flat',
+    'latest_value_units_delta',
+  ])
+  baseScoringType?:
+    | 'flat'
+    | 'quantity_multiplier'
+    | 'latest_value_flat'
+    | 'latest_value_units_delta';
+
+  /** See CreateActionDto.unitSize. */
   @IsOptional()
   @ValidateIf((o) => o.unitSize !== null)
   @IsInt()
   @Min(1)
   unitSize?: number | null;
 
-  /** See CreateActionDto.basePointsPerUnit. Pass null to disable bundled-unit mode. */
+  /** See CreateActionDto.basePointsPerUnit. */
   @IsOptional()
   @ValidateIf((o) => o.basePointsPerUnit !== null)
   @IsInt()
