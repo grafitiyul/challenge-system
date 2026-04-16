@@ -415,22 +415,10 @@ export class ParticipantPortalService {
     private readonly gameEngine: GameEngineService,
   ) {}
 
-  // ─── Phase 6.6 global diversity counter ───────────────────────────────────
-  // In-memory tally of how many times each insight type has been SELECTED
-  // (not just generated) across all participants since this server instance
-  // started. Used to soft-penalize overused types so rarely-seen types drift
-  // upward in ranking for the next participant.
-  //
-  // Design choices:
-  //   - NOT persisted. Server restart resets the counter. Acceptable: the
-  //     goal is nudging experience-level diversity, not a hard quota.
-  //   - NOT synchronized across multiple server instances. Each instance
-  //     builds its own tally. Acceptable for the current single-instance
-  //     Railway deploy; would need shared state (Redis etc.) for HA.
-  //   - NOT shown to the participant or surfaced in any response shape.
-  //   - Updates happen AFTER selection per-request. Single-threaded Node
-  //     event loop means `x += 1` has no race in practice.
-  private typeUsageCounter: Record<string, number> = {};
+  // ─── Phase 6.8 insight selection strategy ─────────────────────────────────
+  // Replaces the previous global `typeUsageCounter` singleton with
+  // per-program DB-backed state. No in-memory caches, no cross-program
+  // interference. See ProgramInsightTypeUsage in schema.prisma.
 
   // ─── Resolve token → participant context ──────────────────────────────────
 
@@ -1515,7 +1503,7 @@ export class ParticipantPortalService {
       ? { createdAt: { gte: since, lte: until } }
       : { createdAt: { lte: until } };
 
-    const [events, actions] = await Promise.all([
+    const [events, actions, programConfig, typeUsageRows] = await Promise.all([
       this.prisma.scoreEvent.findMany({
         where: { participantId, programId, ...rangeWhere },
         select: {
@@ -1529,7 +1517,31 @@ export class ParticipantPortalService {
         where: { programId },
         select: { id: true, name: true },
       }),
+      // Phase 6.8: per-program insight strategy config. Each program has
+      // its own strategy + tuning — no cross-program interference.
+      this.prisma.program.findUnique({
+        where: { id: programId },
+        select: {
+          insightSelectionStrategy: true,
+          insightDiversityStrength: true,
+        },
+      }),
+      // Phase 6.8: per-program per-type usage counts. Replaces the global
+      // singleton counter. Empty array when a program has never had insights
+      // selected — which is the correct starting state.
+      this.prisma.programInsightTypeUsage.findMany({
+        where: { programId },
+        select: { insightType: true, count: true },
+      }),
     ]);
+    // Resolve strategy config with defaults that match a fresh Program row.
+    const selectionStrategy =
+      programConfig?.insightSelectionStrategy ?? 'score_with_diversity';
+    const diversityStrength = programConfig?.insightDiversityStrength ?? 0.3;
+    const typeUsageByProgram: Record<string, number> = {};
+    for (const row of typeUsageRows) {
+      typeUsageByProgram[row.insightType] = row.count;
+    }
 
     const nameById = new Map<string, string>(
       actions.map((a) => [a.id, a.name]),
@@ -2154,16 +2166,20 @@ export class ParticipantPortalService {
     };
     for (const c of candidates) {
       const baseWeight = TYPE_BASE_WEIGHT[c.type] ?? 1.0;
-      // Phase 6.6: global diversity weight. The more a type has been
-      // selected recently (per server instance), the lower its multiplier.
-      //   0 uses  → weight 1.0       (no penalty)
-      //   1 use   → weight 1/1.3  ≈ 0.77
-      //   3 uses  → weight 1/1.9  ≈ 0.53
-      //   10 uses → weight 1/4.0  = 0.25
-      // Asymptotes toward 0 but never actually hits zero, so a sufficiently
-      // high-scoring type will still surface even if it's been common.
-      const usage = this.typeUsageCounter[c.type] ?? 0;
-      const diversityWeight = 1 / (1 + usage * 0.3);
+      // Phase 6.8 selection strategy dispatch:
+      //   'pure_score'           → diversity weight = 1 (no-op). Ranking
+      //                             is driven purely by raw score × base weight.
+      //   'score_with_diversity' → apply the per-program diversity formula:
+      //                             weight(usage) = 1 / (1 + usage * strength)
+      //
+      // usage comes from ProgramInsightTypeUsage (scoped to THIS program).
+      // strength is configurable on the program — 0.0 disables, higher
+      // values penalize repetition more aggressively.
+      let diversityWeight = 1;
+      if (selectionStrategy === 'score_with_diversity' && diversityStrength > 0) {
+        const usage = typeUsageByProgram[c.type] ?? 0;
+        diversityWeight = 1 / (1 + usage * diversityStrength);
+      }
       c.score = c.score * baseWeight * diversityWeight;
     }
 
@@ -2224,16 +2240,39 @@ export class ParticipantPortalService {
     narrativeDeduplicated.sort((a, b) => b.score - a.score);
     const selected = narrativeDeduplicated.slice(0, 4);
 
-    // Phase 6.6: update the global type-usage tally with what actually got
-    // selected for this participant. Only runs for types that SURFACED —
-    // types that qualified but were dropped during dedup don't count as
-    // "seen", so their diversity weight stays intact for the next request.
-    for (const c of selected) {
-      this.typeUsageCounter[c.type] =
-        (this.typeUsageCounter[c.type] ?? 0) + 1;
+    // Phase 6.8: persist per-program usage for any type that actually got
+    // selected. Only runs when the program is using the diversity strategy
+    // — `pure_score` programs skip the write entirely, so their usage
+    // table stays empty and they never incur any cross-participant coupling.
+    //
+    // Upsert is done per row with the composite-unique (programId, insightType)
+    // constraint. DB handles concurrency; no in-process synchronization.
+    // Types that qualified but were dropped during dedup do NOT count as
+    // "seen" — only what actually surfaced to the participant.
+    if (selectionStrategy === 'score_with_diversity' && selected.length > 0) {
+      await Promise.all(
+        selected.map((c) =>
+          this.prisma.programInsightTypeUsage.upsert({
+            where: {
+              programId_insightType: {
+                programId,
+                insightType: c.type,
+              },
+            },
+            create: {
+              programId,
+              insightType: c.type,
+              count: 1,
+            },
+            update: {
+              count: { increment: 1 },
+            },
+          }),
+        ),
+      );
     }
 
-    // Strip internal concept tag before returning.
+    // Strip internal concept/focus tags before returning.
     return selected.map((c) => ({
       type: c.type,
       icon: c.icon,

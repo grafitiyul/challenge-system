@@ -69,7 +69,41 @@ model Program {
   rulesContent            String?
   rulesPublished          Boolean  @default(false)
 
+  // ── Phase 6.8 insight selection strategy (per-program scope) ─────────────
+  // Controls how the insights engine ranks candidates for this program's
+  // participants. Per-program so two coexisting programs don't interfere.
+  //   "pure_score"            → no diversity re-ranking
+  //   "score_with_diversity"  → apply the diversity weight formula below
+  // Default preserves prior behavior for existing data.
+  insightSelectionStrategy String  @default("score_with_diversity")
+  // Diversity penalty tuning. 0.0 disables the effect (equivalent to
+  // pure_score); higher values suppress repeated insight types more aggressively.
+  //   weight(usage) = 1 / (1 + usage * insightDiversityStrength)
+  insightDiversityStrength Float   @default(0.3)
+  insightTypeUsages        ProgramInsightTypeUsage[]
+
   @@map("programs")
+}
+
+// Phase 6.8 — Per-program per-type usage counter for the diversity weight.
+// Replaces the previous global in-memory singleton. Each row records how
+// many times a specific insight type has been SELECTED for a participant
+// in this program. Key is (programId, insightType) so a program can hold
+// one row per type; counts are monotonically incremented during selection.
+//
+// Explainability: admins can query this table to see exactly why one
+// insight type was suppressed vs another.
+model ProgramInsightTypeUsage {
+  id          String   @id @default(cuid())
+  programId   String
+  program     Program  @relation(fields: [programId], references: [id], onDelete: Cascade)
+  insightType String
+  count       Int      @default(0)
+  updatedAt   DateTime @updatedAt
+
+  @@unique([programId, insightType])
+  @@index([programId])
+  @@map("program_insight_type_usages")
 }
 
 model ProgramMessageTemplate {
