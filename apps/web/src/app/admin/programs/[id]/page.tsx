@@ -2230,11 +2230,18 @@ function TemplateEditorModal({
 function AnalyticsGroupsSection({
   programId,
   groups,
+  definitions,
   onChanged,
 }: {
   programId: string;
   groups: AnalyticsGroup[];
-  onChanged: () => void;
+  // Phase 4.5: the full library, so each group row can render its members
+  // and the "+ הוסף הקשר" picker can offer currently-unassigned contexts.
+  // Only participant-visible + analytics-visible contexts are attachable
+  // — hidden / non-analytics ones wouldn't show up in the participant UI
+  // anyway, so offering them would be misleading.
+  definitions: ContextDefinition[];
+  onChanged: () => Promise<void> | void;
 }) {
   const [draftLabel, setDraftLabel] = useState('');
   const [creating, setCreating] = useState(false);
@@ -2242,6 +2249,9 @@ function AnalyticsGroupsSection({
   const [editingLabel, setEditingLabel] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  // Per-group "picking a new member" state — which group is currently showing
+  // its attach dropdown open.
+  const [attachingGroupId, setAttachingGroupId] = useState<string | null>(null);
 
   async function create() {
     const label = draftLabel.trim();
@@ -2290,10 +2300,56 @@ function AnalyticsGroupsSection({
         method: 'DELETE',
         cache: 'no-store',
       });
-      onChanged();
+      await onChanged();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'שגיאה במחיקה');
     } finally { setBusy(false); }
+  }
+
+  // Phase 4.5: attach/detach via the existing context-definitions PATCH
+  // endpoint — we just flip analyticsGroupId. Keeps the backend flat (no new
+  // route). On success, refresh both groups (member-count) and definitions
+  // (group assignment) in the parent.
+  async function attachContextToGroup(definitionId: string, groupId: string) {
+    setBusy(true); setError('');
+    try {
+      await apiFetch(`${BASE_URL}/game/programs/${programId}/context-definitions/${definitionId}`, {
+        method: 'PATCH',
+        cache: 'no-store',
+        body: JSON.stringify({ analyticsGroupId: groupId }),
+      });
+      setAttachingGroupId(null);
+      await onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'שגיאה בחיבור הקשר');
+    } finally { setBusy(false); }
+  }
+
+  async function detachContextFromGroup(definitionId: string) {
+    setBusy(true); setError('');
+    try {
+      await apiFetch(`${BASE_URL}/game/programs/${programId}/context-definitions/${definitionId}`, {
+        method: 'PATCH',
+        cache: 'no-store',
+        body: JSON.stringify({ analyticsGroupId: '' }),
+      });
+      await onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'שגיאה בהסרת הקשר');
+    } finally { setBusy(false); }
+  }
+
+  // Eligible contexts = analytics-visible, participant-visible, active,
+  // not already attached to THIS group. (Could be attached to a different
+  // group; attaching here reassigns — same PATCH.)
+  function eligibleForGroup(g: AnalyticsGroup): ContextDefinition[] {
+    return definitions.filter(
+      (d) =>
+        d.isActive &&
+        d.analyticsVisible &&
+        d.visibleToParticipantByDefault &&
+        d.analyticsGroupId !== g.id,
+    );
   }
 
   return (
@@ -2357,64 +2413,157 @@ function AnalyticsGroupsSection({
           עדיין לא הוגדרו קבוצות. צרי קבוצה אחת ותשייכי אליה הקשרים.
         </div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {groups.map((g) => (
-            <div
-              key={g.id}
-              style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10 }}
-            >
-              {editingId === g.id ? (
-                <>
-                  <input
-                    style={{ ...inputStyle, flex: 1 }}
-                    value={editingLabel}
-                    onChange={(e) => setEditingLabel(e.target.value)}
-                    maxLength={60}
-                  />
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => saveEdit(g.id)}
-                    style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 12px', fontSize: 12, fontWeight: 600, cursor: busy ? 'not-allowed' : 'pointer' }}
-                  >
-                    שמירה
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setEditingId(null)}
-                    style={{ background: '#f1f5f9', color: '#475569', border: '1px solid #e2e8f0', borderRadius: 6, padding: '6px 12px', fontSize: 12, cursor: 'pointer' }}
-                  >
-                    ביטול
-                  </button>
-                </>
-              ) : (
-                <>
-                  <div style={{ flex: 1, fontSize: 14, fontWeight: 600, color: '#0f172a' }}>
-                    {g.label}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {groups.map((g) => {
+            const members = definitions.filter((d) => d.analyticsGroupId === g.id);
+            const eligible = eligibleForGroup(g);
+            return (
+              <div
+                key={g.id}
+                style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: 12 }}
+              >
+                {/* Header row: label + counts + per-group actions */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  {editingId === g.id ? (
+                    <>
+                      <input
+                        style={{ ...inputStyle, flex: 1 }}
+                        value={editingLabel}
+                        onChange={(e) => setEditingLabel(e.target.value)}
+                        maxLength={60}
+                      />
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => saveEdit(g.id)}
+                        style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 12px', fontSize: 12, fontWeight: 600, cursor: busy ? 'not-allowed' : 'pointer' }}
+                      >
+                        שמירה
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditingId(null)}
+                        style={{ background: '#f1f5f9', color: '#475569', border: '1px solid #e2e8f0', borderRadius: 6, padding: '6px 12px', fontSize: 12, cursor: 'pointer' }}
+                      >
+                        ביטול
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <div style={{ flex: 1, fontSize: 14, fontWeight: 600, color: '#0f172a' }}>
+                        {g.label}
+                      </div>
+                      <span style={{ background: '#ede9fe', color: '#5b21b6', fontSize: 11, padding: '3px 9px', borderRadius: 20, fontWeight: 500 }}>
+                        {members.length} הקשרים
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => { setEditingId(g.id); setEditingLabel(g.label); setError(''); }}
+                        style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, padding: '6px 12px', fontSize: 12, color: '#374151', cursor: 'pointer', fontWeight: 500 }}
+                      >
+                        ערוך
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => remove(g)}
+                        disabled={members.length > 0}
+                        title={members.length > 0 ? 'לא ניתן למחוק — הקבוצה בשימוש' : 'מחק'}
+                        style={{ background: 'none', border: '1px solid #fecaca', color: members.length > 0 ? '#fca5a5' : '#dc2626', borderRadius: 6, padding: '6px 10px', fontSize: 12, cursor: members.length > 0 ? 'not-allowed' : 'pointer' }}
+                      >
+                        ✕
+                      </button>
+                    </>
+                  )}
+                </div>
+
+                {/* Phase 4.5: members + attach picker — full membership control
+                    from the group screen. Hidden while editing the label so
+                    the edit UX stays focused. */}
+                {editingId !== g.id && (
+                  <div style={{ marginTop: 10, borderTop: '1px solid #f1f5f9', paddingTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {members.length === 0 ? (
+                      <div style={{ fontSize: 12, color: '#94a3b8', fontStyle: 'italic' }}>
+                        אין הקשרים בקבוצה.
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                        {members.map((m) => (
+                          <span
+                            key={m.id}
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 6,
+                              background: '#f5f3ff',
+                              border: '1px solid #ddd6fe',
+                              color: '#4c1d95',
+                              borderRadius: 999,
+                              padding: '4px 10px',
+                              fontSize: 12,
+                              fontWeight: 500,
+                            }}
+                          >
+                            {m.label}
+                            <button
+                              type="button"
+                              onClick={() => detachContextFromGroup(m.id)}
+                              disabled={busy}
+                              title="הסר מקבוצה"
+                              aria-label={`הסר ${m.label} מהקבוצה`}
+                              style={{ background: 'none', border: 'none', color: '#7c3aed', cursor: busy ? 'not-allowed' : 'pointer', fontSize: 13, lineHeight: 1, padding: 0, fontWeight: 700 }}
+                            >
+                              ✕
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    {attachingGroupId === g.id ? (
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <select
+                          autoFocus
+                          style={{ ...inputStyle, flex: 1, fontSize: 13 }}
+                          value=""
+                          onChange={(e) => {
+                            if (e.target.value) attachContextToGroup(e.target.value, g.id);
+                          }}
+                          disabled={busy}
+                        >
+                          <option value="">— בחרי הקשר —</option>
+                          {eligible.map((d) => (
+                            <option key={d.id} value={d.id}>
+                              {d.label}
+                              {d.analyticsGroupId && d.analyticsGroupId !== g.id
+                                ? ` (יועבר מקבוצה אחרת)`
+                                : ''}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          onClick={() => setAttachingGroupId(null)}
+                          style={{ background: '#f1f5f9', color: '#475569', border: '1px solid #e2e8f0', borderRadius: 6, padding: '6px 12px', fontSize: 12, cursor: 'pointer' }}
+                        >
+                          ביטול
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={eligible.length === 0}
+                        title={eligible.length === 0 ? 'אין הקשרים זמינים להוספה' : ''}
+                        onClick={() => { setAttachingGroupId(g.id); setError(''); }}
+                        style={{ alignSelf: 'flex-start', background: '#faf5ff', color: '#7c3aed', border: '1px solid #ddd6fe', borderRadius: 6, padding: '6px 12px', fontSize: 12, fontWeight: 600, cursor: eligible.length === 0 ? 'not-allowed' : 'pointer', opacity: eligible.length === 0 ? 0.6 : 1 }}
+                      >
+                        + הוסף הקשר
+                      </button>
+                    )}
                   </div>
-                  <span style={{ background: '#ede9fe', color: '#5b21b6', fontSize: 11, padding: '3px 9px', borderRadius: 20, fontWeight: 500 }}>
-                    {g.memberCount} הקשרים
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => { setEditingId(g.id); setEditingLabel(g.label); setError(''); }}
-                    style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, padding: '6px 12px', fontSize: 12, color: '#374151', cursor: 'pointer', fontWeight: 500 }}
-                  >
-                    ערוך
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => remove(g)}
-                    disabled={g.memberCount > 0}
-                    title={g.memberCount > 0 ? 'לא ניתן למחוק — הקבוצה בשימוש' : 'מחק'}
-                    style={{ background: 'none', border: '1px solid #fecaca', color: g.memberCount > 0 ? '#fca5a5' : '#dc2626', borderRadius: 6, padding: '6px 10px', fontSize: 12, cursor: g.memberCount > 0 ? 'not-allowed' : 'pointer' }}
-                  >
-                    ✕
-                  </button>
-                </>
-              )}
-            </div>
-          ))}
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </section>
@@ -3195,11 +3344,16 @@ function GameEngineTab({ programId }: { programId: string }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 36 }}>
 
-      {/* ── Phase 4.3: Centralized analytics groups ── */}
+      {/* ── Phase 4.3+: Centralized analytics groups ── */}
       <AnalyticsGroupsSection
         programId={programId}
         groups={analyticsGroups}
-        onChanged={refreshAnalyticsGroups}
+        definitions={definitions}
+        onChanged={async () => {
+          // Attach/detach mutates both the group's member count AND each
+          // context's analyticsGroupId, so refresh both lists.
+          await Promise.all([refreshAnalyticsGroups(), refreshDefinitions()]);
+        }}
       />
 
       {/* ── Phase 3.2: Reusable context library ── */}

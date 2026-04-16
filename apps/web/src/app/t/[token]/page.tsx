@@ -1824,17 +1824,22 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                     she's grouping by. With many contexts, the flat toggle
                     became a wall of buttons — this keeps the first level short. */}
                 <div style={s.breakdownCard}>
-                  {/* Phase 4: presentation layer in the sub-picker.
-                        - Contexts sharing the same presentation `groupKey`
-                          collapse into ONE picker entry (value `group:<k>`).
-                        - Ungrouped contexts appear as individual entries
-                          (value `context:<k>`) below the groups.
-                        - Display labels prefer `displayLabel` (admin override)
-                          over the raw `label`. */}
+                  {/* Phase 4.5: N-view flat selector.
+                      The number of presentation views is dynamic:
+                        - "פעולה" is always present.
+                        - Each analytics group becomes one view (groupBy=group:<id>).
+                        - Each standalone context becomes one view (groupBy=context:<key>).
+                      Views render as a wrapping pill row — inline when there
+                      are a few, naturally multi-row when there are many.
+                      Never mixes contexts into one pie: every view maps to a
+                      single concrete groupBy value. */}
                   {(() => {
-                    type PickerEntry =
-                      | { kind: 'group'; key: string; label: string; members: ContextDimension[] }
-                      | { kind: 'context'; key: string; label: string };
+                    type View =
+                      | { key: 'action'; label: string }
+                      | { key: `group:${string}`; label: string; memberCount: number }
+                      | { key: `context:${string}`; label: string };
+
+                    // Build groups map + standalone list in declaration order.
                     const groupMap = new Map<string, { label: string; members: ContextDimension[] }>();
                     const standalone: ContextDimension[] = [];
                     for (const d of contextDimensions) {
@@ -1846,130 +1851,79 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                         standalone.push(d);
                       }
                     }
-                    const pickerEntries: PickerEntry[] = [
-                      ...Array.from(groupMap.entries()).map(([k, v]) => ({
-                        kind: 'group' as const,
-                        key: k,
+                    const views: View[] = [
+                      { key: 'action', label: 'פעולה' },
+                      ...Array.from(groupMap.entries()).map<View>(([gid, v]) => ({
+                        key: `group:${gid}` as const,
                         label: v.label,
-                        members: v.members,
+                        memberCount: v.members.length,
                       })),
-                      ...standalone.map((d) => ({
-                        kind: 'context' as const,
-                        key: d.key,
+                      ...standalone.map<View>((d) => ({
+                        key: `context:${d.key}` as const,
                         label: d.displayLabel?.trim() || d.label,
                       })),
                     ];
-                    const hasContexts = pickerEntries.length > 0;
 
-                    // Resolve the currently-selected entry to compute the title.
-                    const selectedEntry = (() => {
-                      if (groupBy === 'action') return null;
-                      if (groupBy.startsWith('group:')) {
-                        return pickerEntries.find(
-                          (e) => e.kind === 'group' && e.key === groupBy.slice('group:'.length),
-                        );
-                      }
-                      if (groupBy.startsWith('context:')) {
-                        const k = groupBy.slice('context:'.length);
-                        return pickerEntries.find((e) => e.kind === 'context' && e.key === k);
-                      }
-                      return null;
-                    })();
+                    // Title: resolve by matching the active groupBy against
+                    // the built views. Falls back to "לפי פעולות" for the
+                    // always-present action view.
+                    const active = views.find((v) => v.key === groupBy);
+                    const title =
+                      !active || active.key === 'action'
+                        ? 'לפי פעולות'
+                        : `לפי ${active.label}`;
 
                     return (
                       <>
                         <div style={s.chartHeader}>
-                          <p style={s.sectionTitle}>
-                            {groupBy === 'action'
-                              ? 'לפי פעולות'
-                              : selectedEntry
-                              ? `לפי ${selectedEntry.label}`
-                              : 'לפי הקשרים'}
-                          </p>
-                          {hasContexts && (
-                            <div style={s.periodToggle} role="tablist" aria-label="קיבוץ לפי">
-                              <button
-                                role="tab"
-                                aria-selected={groupBy === 'action'}
-                                onClick={() => {
-                                  if (groupBy === 'action') return;
-                                  setGroupBy('action');
-                                  setFocusedSliceKey(null);
-                                  refreshBreakdownOnly(range, 'action');
-                                }}
-                                style={{
-                                  ...s.periodBtn,
-                                  ...(groupBy === 'action' ? s.periodBtnActive : {}),
-                                }}
-                              >
-                                פעולה
-                              </button>
-                              <button
-                                role="tab"
-                                aria-selected={groupBy !== 'action'}
-                                onClick={() => {
-                                  if (groupBy !== 'action') return;
-                                  // Default to the first picker entry — group
-                                  // (if any), otherwise the first standalone.
-                                  const first = pickerEntries[0];
-                                  const next = (first.kind === 'group'
-                                    ? `group:${first.key}`
-                                    : `context:${first.key}`) as BreakdownGroupBy;
-                                  setGroupBy(next);
-                                  setFocusedSliceKey(null);
-                                  refreshBreakdownOnly(range, next);
-                                }}
-                                style={{
-                                  ...s.periodBtn,
-                                  ...(groupBy !== 'action' ? s.periodBtnActive : {}),
-                                }}
-                              >
-                                הקשרים
-                              </button>
-                            </div>
-                          )}
+                          <p style={s.sectionTitle}>{title}</p>
                         </div>
-
-                        {groupBy !== 'action' && pickerEntries.length > 1 && (
-                          <div style={{ marginBottom: 10 }}>
-                            <select
-                              value={
-                                groupBy.startsWith('group:')
-                                  ? `group:${groupBy.slice('group:'.length)}`
-                                  : `context:${groupBy.slice('context:'.length)}`
-                              }
-                              onChange={(e) => {
-                                const next = e.target.value as BreakdownGroupBy;
-                                setGroupBy(next);
-                                setFocusedSliceKey(null);
-                                refreshBreakdownOnly(range, next);
-                              }}
-                              style={{
-                                fontSize: 13,
-                                padding: '8px 10px',
-                                border: '1px solid #e5e7eb',
-                                borderRadius: 8,
-                                background: '#ffffff',
-                                fontFamily: 'inherit',
-                                color: '#111827',
-                                width: '100%',
-                              }}
-                              aria-label="בחרי הקשר"
-                            >
-                              {pickerEntries.map((e) =>
-                                e.kind === 'group' ? (
-                                  <option key={`g-${e.key}`} value={`group:${e.key}`}>
-                                    {e.label} ({e.members.length})
-                                  </option>
-                                ) : (
-                                  <option key={`c-${e.key}`} value={`context:${e.key}`}>
-                                    {e.label}
-                                  </option>
-                                ),
-                              )}
-                            </select>
-                          </div>
-                        )}
+                        <div
+                          role="tablist"
+                          aria-label="תצוגת אנליטיקות"
+                          style={{
+                            display: 'flex',
+                            flexWrap: 'wrap' as const,
+                            gap: 6,
+                            marginBottom: 12,
+                          }}
+                        >
+                          {views.map((v) => {
+                            const selected = groupBy === v.key;
+                            return (
+                              <button
+                                key={v.key}
+                                role="tab"
+                                aria-selected={selected}
+                                onClick={() => {
+                                  if (selected) return;
+                                  setGroupBy(v.key);
+                                  setFocusedSliceKey(null);
+                                  refreshBreakdownOnly(range, v.key);
+                                }}
+                                style={{
+                                  border: selected ? '1.5px solid #1d4ed8' : '1px solid #e5e7eb',
+                                  background: selected ? '#eff6ff' : '#ffffff',
+                                  color: selected ? '#1d4ed8' : '#374151',
+                                  borderRadius: 999,
+                                  padding: '6px 12px',
+                                  fontSize: 12,
+                                  fontWeight: selected ? 700 : 600,
+                                  cursor: 'pointer',
+                                  fontFamily: 'inherit',
+                                  whiteSpace: 'nowrap' as const,
+                                }}
+                              >
+                                {v.label}
+                                {v.key.startsWith('group:') && 'memberCount' in v && (
+                                  <span style={{ color: '#94a3b8', marginInlineStart: 4, fontWeight: 500 }}>
+                                    ({v.memberCount})
+                                  </span>
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
                       </>
                     );
                   })()}
