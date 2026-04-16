@@ -1625,7 +1625,16 @@ export class ParticipantPortalService {
       | 'consistency'  // streaks + active-ratio + comebacks
       | 'coverage'     // balance / gaps in category footprint
       | 'engagement';  // raw volume signal
-    type Candidate = AnalyticsInsight & { concept: InsightConcept };
+    // Phase 6.5: focusKey identifies the CATEGORY this insight is "about"
+    // (e.g. "הליכה"). Two insights from different concepts but sharing a
+    // focus — e.g. "הכי השתפרת ב־הליכה" + "70% הגיעו מ־הליכה" — tell the
+    // same narrative to the participant and should collapse to one.
+    // null = insight isn't tied to any single category (temporal, aggregate,
+    // engagement, etc.) — these never collide with each other.
+    type Candidate = AnalyticsInsight & {
+      concept: InsightConcept;
+      focusKey: string | null;
+    };
     const candidates: Candidate[] = [];
     // Per-insight score floor: anything below drops entirely. Keeps the card
     // free of weak, low-information insights even when they technically fire.
@@ -1646,6 +1655,7 @@ export class ParticipantPortalService {
         candidates.push({
           type: 'strongest',
           concept: 'dominance',
+          focusKey: top.name,
           icon: '⭐',
           text: `התחזקת במיוחד ב־${top.name}`,
           score: Math.min((1 + dominance) * 20, 80),
@@ -1667,6 +1677,7 @@ export class ParticipantPortalService {
           candidates.push({
             type: 'weakest',
             concept: 'coverage',
+            focusKey: weakest.name,
             icon: '📌',
             text: `יש לך מקום לשיפור ב־${weakest.name}`,
             score: gap * 55,
@@ -1685,6 +1696,7 @@ export class ParticipantPortalService {
           candidates.push({
             type: 'dominant_source',
             concept: 'dominance',
+            focusKey: categories[0].name,
             icon: '🔥',
             text: `${Math.round(share * 100)}% מהנקודות שלך הגיעו מ־${categories[0].name}`,
             score: share * 95,
@@ -1703,6 +1715,7 @@ export class ParticipantPortalService {
           candidates.push({
             type: 'balanced_distribution',
             concept: 'coverage',
+            focusKey: null,
             icon: '🧩',
             text: 'יש לך פיזור יפה בין כמה תחומים',
             score: (0.5 - share) * 160,
@@ -1727,6 +1740,7 @@ export class ParticipantPortalService {
         candidates.push({
           type: 'missing_category',
           concept: 'coverage',
+          focusKey: missed.name,
           icon: '🕳️',
           text: `לא הייתה פעילות בכלל ב־${missed.name}`,
           score: Math.min(missed.prev, 85),
@@ -1747,6 +1761,7 @@ export class ParticipantPortalService {
           candidates.push({
             type: 'trend',
             concept: 'improvement',
+            focusKey: null,
             icon: pct > 0 ? '📈' : '📉',
             text:
               pct > 0
@@ -1775,6 +1790,7 @@ export class ParticipantPortalService {
         candidates.push({
           type: 'most_improved',
           concept: 'improvement',
+          focusKey: best.name,
           icon: '🚀',
           text: `הכי השתפרת ב־${best.name} (+${best.pct}%)`,
           score: Math.min(best.pct, 95),
@@ -1798,6 +1814,7 @@ export class ParticipantPortalService {
         candidates.push({
           type: 'most_declined',
           concept: 'improvement',
+          focusKey: worst.name,
           icon: '⚠️',
           text: `יש ירידה ב־${worst.name} (${worst.pct}%)`,
           score: Math.min(Math.abs(worst.pct), 95),
@@ -1823,6 +1840,7 @@ export class ParticipantPortalService {
         candidates.push({
           type: 'best_day',
           concept: 'pattern',
+          focusKey: null,
           icon: '🏆',
           text: `היום הכי חזק שלך היה ${this.formatHebrewDay(best.date)} עם ${best.points} נק׳`,
           score: Math.min(deviation * 18, 55),
@@ -1883,6 +1901,7 @@ export class ParticipantPortalService {
           candidates.push({
             type: 'weekday_pattern',
             concept: 'pattern',
+            focusKey: null,
             icon: '📅',
             text: `ימי ${hebrewDays[bestWd]} הם החזקים ביותר שלך`,
             score: Math.min((bestAvg / overallAvg - 1) * 60, 80),
@@ -1934,6 +1953,7 @@ export class ParticipantPortalService {
         candidates.push({
           type: 'strongest_hour_range',
           concept: 'pattern',
+          focusKey: null,
           icon: '🕐',
           text: `השעות החזקות שלך הן ${bandLabels[topBand]}`,
           score: share * 60,
@@ -1979,6 +1999,7 @@ export class ParticipantPortalService {
         candidates.push({
           type: 'activity_comeback',
           concept: 'consistency',
+          focusKey: null,
           icon: '🔄',
           text: 'חזרת לפעילות אחרי הפסקה',
           score: Math.min(comebackGap * 6, 36),
@@ -2002,6 +2023,7 @@ export class ParticipantPortalService {
         candidates.push({
           type: 'high_concentration',
           concept: 'dominance',
+          focusKey: null,
           icon: '🎯',
           text: 'רוב הפעילות שלך מתמקדת בתחום אחד',
           score: share * 60,
@@ -2019,6 +2041,7 @@ export class ParticipantPortalService {
           candidates.push({
             type: 'low_engagement',
             concept: 'engagement',
+            focusKey: null,
             icon: '📉',
             text: 'כמות הפעילות שלך נמוכה בתקופה הזו',
             score: Math.min(raw, 75),
@@ -2040,6 +2063,7 @@ export class ParticipantPortalService {
         candidates.push({
           type: 'consistency',
           concept: 'consistency',
+          focusKey: null,
           icon: '🎯',
           text: 'היית עקבית השבוע — כל הכבוד',
           score: ratio * 22,
@@ -2048,6 +2072,7 @@ export class ParticipantPortalService {
         candidates.push({
           type: 'consistency',
           concept: 'consistency',
+          focusKey: null,
           icon: '💡',
           text: 'כדאי לנסות לשמור על עקביות גבוהה יותר',
           score: (1 - ratio) * 18,
@@ -2079,6 +2104,7 @@ export class ParticipantPortalService {
         candidates.push({
           type: 'consistent_streak',
           concept: 'consistency',
+          focusKey: null,
           icon: '🔥',
           text: `יש לך רצף של ${maxStreak} ימים פעילים`,
           score: Math.min(maxStreak * 6, 42),
@@ -2136,15 +2162,40 @@ export class ParticipantPortalService {
         bestByConcept.set(c.concept, c);
       }
     }
-    const deduplicated = Array.from(bestByConcept.values());
+    const conceptDeduplicated = Array.from(bestByConcept.values());
+
+    // ── Phase 6.5 narrative dedup ───────────────────────────────────────
+    // Two insights from DIFFERENT concepts can still tell the same story
+    // to the participant when they're focused on the same category —
+    // "הכי השתפרת ב־הליכה" (improvement) and "70% הגיעו מ־הליכה"
+    // (dominance) are two angles on the same fact. Collapse them to the
+    // higher-scoring one.
+    //
+    // Only category-based insights carry a non-null focusKey. null-keyed
+    // insights (best_day, trend, consistency, etc.) never collide here —
+    // they pass through unchanged.
+    const bestByFocus = new Map<string, Candidate>();
+    const narrativeDeduplicated: Candidate[] = [];
+    for (const c of conceptDeduplicated) {
+      if (c.focusKey === null) {
+        narrativeDeduplicated.push(c);
+        continue;
+      }
+      const current = bestByFocus.get(c.focusKey);
+      if (!current || c.score > current.score) {
+        bestByFocus.set(c.focusKey, c);
+      }
+    }
+    narrativeDeduplicated.push(...bestByFocus.values());
 
     // ── Selection ───────────────────────────────────────────────────────
-    // Sort by score DESC, take top 4. With concept-level dedup already
-    // applied, this guarantees every returned insight comes from a
-    // different concept. If fewer than 4 concepts fire, return fewer —
-    // padding with weak insights would violate the "never mislead" rule.
-    deduplicated.sort((a, b) => b.score - a.score);
-    const selected = deduplicated.slice(0, 4);
+    // Sort by score DESC, take top 4. With concept-level AND focus-level
+    // dedup already applied, every returned insight is both a different
+    // concept and a different category (or unfocused). If fewer than 4
+    // survive, return fewer — padding with weak insights would violate
+    // the "never mislead" rule.
+    narrativeDeduplicated.sort((a, b) => b.score - a.score);
+    const selected = narrativeDeduplicated.slice(0, 4);
 
     // Strip internal concept tag before returning.
     return selected.map((c) => ({
