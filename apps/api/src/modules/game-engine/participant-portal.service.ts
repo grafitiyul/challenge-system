@@ -1590,27 +1590,33 @@ export class ParticipantPortalService {
       }
     }
 
-    // ── Phase 6.1 family model ──────────────────────────────────────────
-    // Five signal families. Selection enforces 1-per-family in the strict
-    // pass, relaxing to 2-per-family only if slots remain — guarantees
-    // variety across performance / time / change / behavior / consistency.
-    type InsightFamily =
-      | 'performance'
-      | 'time'
-      | 'change'
-      | 'behavior'
-      | 'consistency';
-    type Candidate = AnalyticsInsight & { family: InsightFamily };
+    // ── Phase 6.3 concept model ─────────────────────────────────────────
+    // Concept is a tighter grouping than the old "family" — two insights
+    // that tell the same story at different angles (e.g. "strongest
+    // category" + "dominant source" + "high concentration" all say the
+    // participant's effort is concentrated in one place) share a concept.
+    // Selection keeps at most one insight per concept in the strict pass;
+    // a relaxed pass allows a second only for non-pattern concepts.
+    type InsightConcept =
+      | 'dominance'    // concentration/leader
+      | 'improvement'  // positive change / growth / decline
+      | 'pattern'      // temporal patterns
+      | 'consistency'  // streaks + active-ratio + comebacks
+      | 'coverage'     // balance / gaps in category footprint
+      | 'engagement';  // raw volume signal
+    type Candidate = AnalyticsInsight & { concept: InsightConcept };
     const candidates: Candidate[] = [];
     // Per-insight score floor: anything below drops entirely. Keeps the card
     // free of weak, low-information insights even when they technically fire.
     const MIN_SCORE = 18;
+    // Active days across the range — used by multiple eligibility gates.
+    const activeCount = days.filter((d) => d.points > 0).length;
 
     // ╔════════════════════════════════════════════════════════════════════╗
     // ║ PERFORMANCE family                                                 ║
     // ╚════════════════════════════════════════════════════════════════════╝
 
-    // strongest — require ≥2 categories AND ≥30% dominance over second.
+    // strongest — concept: dominance. ≥2 categories AND ≥30% dominance.
     if (categories.length >= 2) {
       const top = categories[0];
       const second = categories[1];
@@ -1618,7 +1624,7 @@ export class ParticipantPortalService {
       if (dominance >= 0.3) {
         candidates.push({
           type: 'strongest',
-          family: 'performance',
+          concept: 'dominance',
           icon: '⭐',
           text: `התחזקת במיוחד ב־${top.name}`,
           score: Math.min((1 + dominance) * 20, 80),
@@ -1626,7 +1632,9 @@ export class ParticipantPortalService {
       }
     }
 
-    // weakest — require ≥2 categories AND ≥15% gap below the mean.
+    // weakest — concept: coverage. Phase 6.3: score multiplier 80 → 55 so
+    // this insight no longer dominates top-4 for participants with mildly
+    // uneven distributions.
     if (categories.length >= 2) {
       const vals = categories.map((c) => c.points);
       const allEqual = vals.every((v) => v === vals[0]);
@@ -1637,16 +1645,17 @@ export class ParticipantPortalService {
         if (gap >= 0.15) {
           candidates.push({
             type: 'weakest',
-            family: 'performance',
+            concept: 'coverage',
             icon: '📌',
             text: `יש לך מקום לשיפור ב־${weakest.name}`,
-            score: gap * 80,
+            score: gap * 55,
           });
         }
       }
     }
 
-    // dominant_source — require ≥2 categories AND one holds ≥60% of points.
+    // dominant_source — concept: dominance. Phase 6.3 boosted (80 → 95):
+    // a true dominant source is high-information and actionable.
     if (categories.length >= 2) {
       const totalPts = categories.reduce((s, c) => s + c.points, 0);
       if (totalPts > 0) {
@@ -1654,18 +1663,17 @@ export class ParticipantPortalService {
         if (share >= 0.6) {
           candidates.push({
             type: 'dominant_source',
-            family: 'performance',
+            concept: 'dominance',
             icon: '🔥',
             text: `${Math.round(share * 100)}% מהנקודות שלך הגיעו מ־${categories[0].name}`,
-            score: share * 80,
+            score: share * 95,
           });
         }
       }
     }
 
-    // balanced_distribution — ≥4 categories AND top share ≤40%. Proves
-    // spread, not concentration. Mutually exclusive with dominant_source
-    // by construction (40% <> 60%).
+    // balanced_distribution — concept: coverage. Fires for participants
+    // whose effort IS spread — the symmetric answer to dominant_source.
     if (categories.length >= 4) {
       const totalPts = categories.reduce((s, c) => s + c.points, 0);
       if (totalPts > 0) {
@@ -1673,7 +1681,7 @@ export class ParticipantPortalService {
         if (share <= 0.4) {
           candidates.push({
             type: 'balanced_distribution',
-            family: 'performance',
+            concept: 'coverage',
             icon: '🧩',
             text: 'יש לך פיזור יפה בין כמה תחומים',
             score: (0.5 - share) * 160,
@@ -1682,8 +1690,9 @@ export class ParticipantPortalService {
       }
     }
 
-    // missing_category — an action that scored ≥10 points last period and
-    // exactly 0 points this period. Strong signal, not "you did less".
+    // missing_category — concept: coverage. Phase 6.3 boosted (60 → 85):
+    // a category going from non-trivial activity to zero is a strong,
+    // concrete, actionable signal and should beat generic insights.
     if (prevPointsByAction.size > 0) {
       let missed: { name: string; prev: number } | null = null;
       for (const [id, prev] of prevPointsByAction.entries()) {
@@ -1696,10 +1705,10 @@ export class ParticipantPortalService {
       if (missed) {
         candidates.push({
           type: 'missing_category',
-          family: 'performance',
+          concept: 'coverage',
           icon: '🕳️',
           text: `לא הייתה פעילות בכלל ב־${missed.name}`,
-          score: Math.min(missed.prev, 60),
+          score: Math.min(missed.prev, 85),
         });
       }
     }
@@ -1708,7 +1717,7 @@ export class ParticipantPortalService {
     // ║ CHANGE family (vs previous equal-length period)                    ║
     // ╚════════════════════════════════════════════════════════════════════╝
 
-    // trend — require prev > 0 AND curr > 0 AND |pct| ≥ 10.
+    // trend — concept: improvement. Total points vs prev period.
     if (since && dayCount >= 3) {
       const currTotal = days.reduce((a, b) => a + b.points, 0);
       if (prevTotal > 0 && currTotal > 0) {
@@ -1716,7 +1725,7 @@ export class ParticipantPortalService {
         if (Math.abs(pct) >= 10) {
           candidates.push({
             type: 'trend',
-            family: 'change',
+            concept: 'improvement',
             icon: pct > 0 ? '📈' : '📉',
             text:
               pct > 0
@@ -1728,7 +1737,9 @@ export class ParticipantPortalService {
       }
     }
 
-    // most_improved — per-category gain ≥20% off a prev baseline ≥5.
+    // most_improved — concept: improvement. Phase 6.3 boosted (80 → 95):
+    // named per-category improvement is more specific than aggregate trend
+    // and should outrank it when both qualify.
     if (prevPointsByAction.size > 0 && categories.length > 0) {
       let best: { name: string; pct: number } | null = null;
       for (const c of categories) {
@@ -1742,15 +1753,16 @@ export class ParticipantPortalService {
       if (best) {
         candidates.push({
           type: 'most_improved',
-          family: 'change',
+          concept: 'improvement',
           icon: '🚀',
           text: `הכי השתפרת ב־${best.name} (+${best.pct}%)`,
-          score: Math.min(best.pct, 80),
+          score: Math.min(best.pct, 95),
         });
       }
     }
 
-    // most_declined — per-category loss ≥25% off a prev baseline ≥5.
+    // most_declined — concept: improvement. Phase 6.3 boosted (80 → 95):
+    // named per-category decline is actionable and deserves top ranking.
     if (prevPointsByAction.size > 0) {
       let worst: { name: string; pct: number } | null = null;
       for (const [id, prev] of prevPointsByAction.entries()) {
@@ -1764,10 +1776,10 @@ export class ParticipantPortalService {
       if (worst) {
         candidates.push({
           type: 'most_declined',
-          family: 'change',
+          concept: 'improvement',
           icon: '⚠️',
           text: `יש ירידה ב־${worst.name} (${worst.pct}%)`,
-          score: Math.min(Math.abs(worst.pct), 80),
+          score: Math.min(Math.abs(worst.pct), 95),
         });
       }
     }
@@ -1776,25 +1788,24 @@ export class ParticipantPortalService {
     // ║ TIME family                                                        ║
     // ╚════════════════════════════════════════════════════════════════════╝
 
-    // best_day — require ≥5 total days AND ≥25% above average.
-    if (dayCount >= 5) {
+    // best_day — concept: pattern. Phase 6.3 truth fix: gate by ACTIVE day
+    // count (≥5), not total range length. Showing "your best day" when the
+    // participant has only 2 active days out of 14 is noise. Score multiplier
+    // also reduced 30 → 18 because best_day was overused in earlier passes.
+    if (activeCount >= 5) {
       const active = days.filter((d) => d.points > 0);
-      if (active.length > 0) {
-        const total = days.reduce((a, b) => a + b.points, 0);
-        const avg = total / days.length;
-        const best = active.reduce((bd, d) =>
-          d.points > bd.points ? d : bd,
-        );
-        const deviation = avg > 0 ? (best.points - avg) / avg : 0;
-        if (deviation > 0.25) {
-          candidates.push({
-            type: 'best_day',
-            family: 'time',
-            icon: '🏆',
-            text: `היום הכי חזק שלך היה ${this.formatHebrewDay(best.date)} עם ${best.points} נק׳`,
-            score: Math.min(deviation * 30, 80),
-          });
-        }
+      const total = days.reduce((a, b) => a + b.points, 0);
+      const avg = total / days.length;
+      const best = active.reduce((bd, d) => (d.points > bd.points ? d : bd));
+      const deviation = avg > 0 ? (best.points - avg) / avg : 0;
+      if (deviation > 0.25) {
+        candidates.push({
+          type: 'best_day',
+          concept: 'pattern',
+          icon: '🏆',
+          text: `היום הכי חזק שלך היה ${this.formatHebrewDay(best.date)} עם ${best.points} נק׳`,
+          score: Math.min(deviation * 18, 55),
+        });
       }
     }
 
@@ -1850,7 +1861,7 @@ export class ParticipantPortalService {
           ];
           candidates.push({
             type: 'weekday_pattern',
-            family: 'time',
+            concept: 'pattern',
             icon: '📅',
             text: `ימי ${hebrewDays[bestWd]} הם החזקים ביותר שלך`,
             score: Math.min((bestAvg / overallAvg - 1) * 60, 80),
@@ -1901,7 +1912,7 @@ export class ParticipantPortalService {
       if (share >= 0.5) {
         candidates.push({
           type: 'strongest_hour_range',
-          family: 'time',
+          concept: 'pattern',
           icon: '🕐',
           text: `השעות החזקות שלך הן ${bandLabels[topBand]}`,
           score: share * 60,
@@ -1909,33 +1920,47 @@ export class ParticipantPortalService {
       }
     }
 
-    // activity_comeback — a gap of ≥3 consecutive inactive days immediately
-    // followed by ≥2 consecutive active days. Requires ≥7-day range so we
-    // don't flag a 2-day dip at the start of a short range.
+    // activity_comeback — concept: consistency.
+    //
+    // Phase 6.3 truth fix (CRITICAL). A "comeback" is meaningless without a
+    // real prior activity to return to. The previous implementation would
+    // fire on any 3-day zero streak at the START of a range followed by two
+    // active days — that's not a comeback, that's simply "started tracking".
+    //
+    // Correct definition:
+    //   1. At least one active day BEFORE the gap (sawActive = true).
+    //   2. Gap of ≥3 consecutive days with zero points.
+    //   3. ≥2 consecutive active days immediately after the gap (the
+    //      current day AND the next day both non-zero).
+    //
+    // Score multiplier reduced 10 → 6 per Phase 6.3 overuse penalty.
     if (dayCount >= 7) {
       let comebackGap = 0;
       let gap = 0;
+      let sawActive = false;
       for (let i = 0; i < days.length; i++) {
         if (days[i].points === 0) {
-          gap++;
+          if (sawActive) gap++;
           continue;
         }
         if (
+          sawActive &&
           gap >= 3 &&
           i + 1 < days.length &&
           days[i + 1].points > 0
         ) {
           if (gap > comebackGap) comebackGap = gap;
         }
+        sawActive = true;
         gap = 0;
       }
       if (comebackGap >= 3) {
         candidates.push({
           type: 'activity_comeback',
-          family: 'time',
+          concept: 'consistency',
           icon: '🔄',
           text: 'חזרת לפעילות אחרי הפסקה',
-          score: Math.min(comebackGap * 10, 60),
+          score: Math.min(comebackGap * 6, 36),
         });
       }
     }
@@ -1944,9 +1969,8 @@ export class ParticipantPortalService {
     // ║ BEHAVIOR family                                                    ║
     // ╚════════════════════════════════════════════════════════════════════╝
 
-    // high_concentration — submission-count based (complements the points-
-    // based dominant_source). Fires when ≥70% of submissions come from one
-    // action AND total submissions ≥ 10.
+    // high_concentration — concept: dominance (shares the concept with
+    // strongest + dominant_source; concept dedup keeps only one of them).
     if (totalSubmissions >= 10 && submissionsByAction.size >= 2) {
       let topCount = 0;
       for (const c of submissionsByAction.values()) {
@@ -1956,7 +1980,7 @@ export class ParticipantPortalService {
       if (share >= 0.7) {
         candidates.push({
           type: 'high_concentration',
-          family: 'behavior',
+          concept: 'dominance',
           icon: '🎯',
           text: 'רוב הפעילות שלך מתמקדת בתחום אחד',
           score: share * 60,
@@ -1964,9 +1988,8 @@ export class ParticipantPortalService {
       }
     }
 
-    // low_engagement — ≥7-day range AND fewer than 0.5 submissions per day
-    // on average. Only fires below a meaningful floor so "normal" pacing
-    // doesn't trigger a nudge.
+    // low_engagement — concept: engagement. Phase 6.3 boosted (60 → 75):
+    // a genuine volume deficit is a concrete, honest, actionable signal.
     if (dayCount >= 7) {
       const perDay = totalSubmissions / dayCount;
       if (perDay < 0.5) {
@@ -1974,10 +1997,10 @@ export class ParticipantPortalService {
         if (raw >= MIN_SCORE) {
           candidates.push({
             type: 'low_engagement',
-            family: 'behavior',
+            concept: 'engagement',
             icon: '📉',
             text: 'כמות הפעילות שלך נמוכה בתקופה הזו',
-            score: Math.min(raw, 60),
+            score: Math.min(raw, 75),
           });
         }
       }
@@ -1987,16 +2010,15 @@ export class ParticipantPortalService {
     // ║ CONSISTENCY family                                                 ║
     // ╚════════════════════════════════════════════════════════════════════╝
 
-    // consistency — require ≥7-day range. High band (≥0.85 ratio) celebrates;
-    // low band (≤0.2 ratio) nudges. Mid band stays silent. Scores are low
-    // on purpose so this family rarely wins a diverse selection slot.
+    // consistency — concept: consistency. Scores are intentionally small
+    // so generic consistency never beats a concrete named insight. The
+    // mid-band stays silent so most participants don't see this at all.
     if (dayCount >= 7) {
-      const activeCount = days.filter((d) => d.points > 0).length;
       const ratio = activeCount / days.length;
       if (ratio >= 0.85) {
         candidates.push({
           type: 'consistency',
-          family: 'consistency',
+          concept: 'consistency',
           icon: '🎯',
           text: 'היית עקבית השבוע — כל הכבוד',
           score: ratio * 22,
@@ -2004,7 +2026,7 @@ export class ParticipantPortalService {
       } else if (ratio > 0 && ratio <= 0.2) {
         candidates.push({
           type: 'consistency',
-          family: 'consistency',
+          concept: 'consistency',
           icon: '💡',
           text: 'כדאי לנסות לשמור על עקביות גבוהה יותר',
           score: (1 - ratio) * 18,
@@ -2012,8 +2034,16 @@ export class ParticipantPortalService {
       }
     }
 
-    // consistent_streak — longest run of consecutive active days; require ≥3.
-    if (dayCount >= 3) {
+    // consistent_streak — concept: consistency.
+    //
+    // Phase 6.3 truth fix: require ACTIVE days ≥ 5 in addition to streak
+    // ≥ 3. A 3-day streak on a participant with only 3 active days total
+    // is trivially true (every active day is in the "streak") and says
+    // nothing interesting. Gating by activeCount ensures the insight
+    // represents real pattern, not a data-sparse coincidence.
+    //
+    // Score multiplier reduced 10 → 6 per overuse penalty.
+    if (activeCount >= 5) {
       let maxStreak = 0;
       let currentStreak = 0;
       for (const d of days) {
@@ -2027,38 +2057,12 @@ export class ParticipantPortalService {
       if (maxStreak >= 3) {
         candidates.push({
           type: 'consistent_streak',
-          family: 'consistency',
+          concept: 'consistency',
           icon: '🔥',
           text: `יש לך רצף של ${maxStreak} ימים פעילים`,
-          score: Math.min(maxStreak * 10, 70),
+          score: Math.min(maxStreak * 6, 42),
         });
       }
-    }
-
-    // ── Dedup ───────────────────────────────────────────────────────────
-    //   strongest + best_day         — same peak story, keep higher-scoring
-    //   dominant_source + high_conc. — same "one thing dominates" story
-    //                                   (points vs submissions). Keep the
-    //                                   points-based dominant_source since
-    //                                   it's more actionable.
-    const dropByType = (t: AnalyticsInsightType) => {
-      const i = candidates.findIndex((c) => c.type === t);
-      if (i >= 0) candidates.splice(i, 1);
-    };
-    const strIdx = candidates.findIndex((c) => c.type === 'strongest');
-    const bdIdx = candidates.findIndex((c) => c.type === 'best_day');
-    if (strIdx >= 0 && bdIdx >= 0) {
-      dropByType(
-        candidates[strIdx].score >= candidates[bdIdx].score
-          ? 'best_day'
-          : 'strongest',
-      );
-    }
-    if (
-      candidates.some((c) => c.type === 'dominant_source') &&
-      candidates.some((c) => c.type === 'high_concentration')
-    ) {
-      dropByType('high_concentration');
     }
 
     // ── Score floor ─────────────────────────────────────────────────────
@@ -2066,31 +2070,33 @@ export class ParticipantPortalService {
     // insights; showing fewer is always preferable.
     const strongCandidates = candidates.filter((c) => c.score >= MIN_SCORE);
 
-    // ── Diversity-aware selection ───────────────────────────────────────
-    strongCandidates.sort((a, b) => b.score - a.score);
-    const selected: Candidate[] = [];
-    const familyCount = new Map<InsightFamily, number>();
-    const bump = (f: InsightFamily) =>
-      familyCount.set(f, (familyCount.get(f) ?? 0) + 1);
-
-    // Pass 1: strict 1-per-family.
+    // ── Phase 6.3 concept-level dedup (MANDATORY) ───────────────────────
+    // Group candidates by concept, keep only the highest-scoring one per
+    // concept. This enforces "different concepts per slot" without any
+    // concept-count tracking in the selection loop — the output can have
+    // at most one dominance, one improvement, one pattern, etc.
+    //
+    // This also subsumes the old type-level dedup (strongest + best_day,
+    // dominant_source + high_concentration) because those pairs share the
+    // same concept (dominance / pattern respectively).
+    const bestByConcept = new Map<InsightConcept, Candidate>();
     for (const c of strongCandidates) {
-      if (selected.length >= 4) break;
-      if ((familyCount.get(c.family) ?? 0) >= 1) continue;
-      selected.push(c);
-      bump(c.family);
-    }
-    // Pass 2: allow up to 2 per family if slots remain open.
-    if (selected.length < 4) {
-      for (const c of strongCandidates) {
-        if (selected.length >= 4) break;
-        if (selected.includes(c)) continue;
-        if ((familyCount.get(c.family) ?? 0) >= 2) continue;
-        selected.push(c);
-        bump(c.family);
+      const current = bestByConcept.get(c.concept);
+      if (!current || c.score > current.score) {
+        bestByConcept.set(c.concept, c);
       }
     }
-    // Strip internal family tag before returning.
+    const deduplicated = Array.from(bestByConcept.values());
+
+    // ── Selection ───────────────────────────────────────────────────────
+    // Sort by score DESC, take top 4. With concept-level dedup already
+    // applied, this guarantees every returned insight comes from a
+    // different concept. If fewer than 4 concepts fire, return fewer —
+    // padding with weak insights would violate the "never mislead" rule.
+    deduplicated.sort((a, b) => b.score - a.score);
+    const selected = deduplicated.slice(0, 4);
+
+    // Strip internal concept tag before returning.
     return selected.map((c) => ({
       type: c.type,
       icon: c.icon,
