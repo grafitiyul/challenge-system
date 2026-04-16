@@ -13,11 +13,16 @@ import {
 import { AdminSessionGuard } from '../auth/admin-session.guard';
 import { GameEngineService } from './game-engine.service';
 import { ContextLibraryService } from './context-library.service';
+import { AnalyticsGroupService } from './analytics-group.service';
 import { CreateActionDto, UpdateActionDto, ReorderItemsDto } from './dto/create-action.dto';
 import {
   CreateContextDefinitionDto,
   UpdateContextDefinitionDto,
 } from './dto/context-definition.dto';
+import {
+  CreateAnalyticsGroupDto,
+  UpdateAnalyticsGroupDto,
+} from './dto/analytics-group.dto';
 import { CreateRuleDto, UpdateRuleDto } from './dto/create-rule.dto';
 import { LogActionDto } from './dto/log-action.dto';
 import { EvaluateRulesDto } from './dto/evaluate-rules.dto';
@@ -304,5 +309,42 @@ export class ContextLibraryController {
     @Param('actionId') actionId: string,
   ) {
     return this.svc.detachFromAction(id, actionId);
+  }
+}
+
+// ─── Phase 4.3: Centralized analytics groups CRUD ─────────────────────────
+//
+// One row per admin-authored presentation group. Deletion is refused when
+// any context still points at the group — admins clear the FK first.
+
+@UseGuards(AdminSessionGuard)
+@Controller('game/programs/:programId/analytics-groups')
+export class AnalyticsGroupController {
+  constructor(private readonly svc: AnalyticsGroupService) {}
+
+  @Get()
+  list(@Param('programId') programId: string) {
+    return this.svc.list(programId);
+  }
+
+  @Post()
+  create(
+    @Param('programId') programId: string,
+    @Body() dto: CreateAnalyticsGroupDto,
+  ) {
+    return this.svc.create(programId, dto);
+  }
+
+  @Patch(':id')
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateAnalyticsGroupDto,
+  ) {
+    return this.svc.update(id, dto);
+  }
+
+  @Delete(':id')
+  remove(@Param('id') id: string) {
+    return this.svc.remove(id);
   }
 }

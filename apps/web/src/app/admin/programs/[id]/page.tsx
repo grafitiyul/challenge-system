@@ -452,10 +452,18 @@ interface ContextDefinition {
   inputMode: 'participant' | 'system_fixed';
   analyticsVisible: boolean;
   fixedValue: string | null;
-  // Phase 4 analytics presentation layer. All null for legacy rows.
-  analyticsGroupKey: string | null;
-  analyticsGroupLabel: string | null;
+  // Phase 4.3: centralized analytics group (FK + hydrated label).
+  analyticsGroupId: string | null;
+  analyticsGroup: { id: string; label: string } | null;
   analyticsDisplayLabel: string | null;
+}
+
+// Phase 4.3: centralized analytics group entity.
+interface AnalyticsGroup {
+  id: string;
+  label: string;
+  sortOrder: number;
+  memberCount: number;
 }
 
 interface ActionContextUse {
@@ -2197,6 +2205,206 @@ function TemplateEditorModal({
 
 // ─── Game Engine Tab ──────────────────────────────────────────────────────────
 
+// ─── Phase 4.3: Centralized analytics groups section ───────────────────────
+// Inline CRUD for AnalyticsGroup. Label-only entity; admins create groups once
+// and then pick them from the dropdown inside each context definition. Delete
+// is refused server-side when a group is in use — we surface the count on
+// each row so the admin knows when it's safe to delete.
+
+function AnalyticsGroupsSection({
+  programId,
+  groups,
+  onChanged,
+}: {
+  programId: string;
+  groups: AnalyticsGroup[];
+  onChanged: () => void;
+}) {
+  const [draftLabel, setDraftLabel] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingLabel, setEditingLabel] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  async function create() {
+    const label = draftLabel.trim();
+    if (!label) { setError('יש להזין שם קבוצה'); return; }
+    setBusy(true); setError('');
+    try {
+      await apiFetch(`${BASE_URL}/game/programs/${programId}/analytics-groups`, {
+        method: 'POST',
+        cache: 'no-store',
+        body: JSON.stringify({ label }),
+      });
+      setDraftLabel('');
+      setCreating(false);
+      onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'שגיאה ביצירת קבוצה');
+    } finally { setBusy(false); }
+  }
+
+  async function saveEdit(id: string) {
+    const label = editingLabel.trim();
+    if (!label) { setError('שם הקבוצה לא יכול להיות ריק'); return; }
+    setBusy(true); setError('');
+    try {
+      await apiFetch(`${BASE_URL}/game/programs/${programId}/analytics-groups/${id}`, {
+        method: 'PATCH',
+        cache: 'no-store',
+        body: JSON.stringify({ label }),
+      });
+      setEditingId(null);
+      onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'שגיאה בעדכון');
+    } finally { setBusy(false); }
+  }
+
+  async function remove(g: AnalyticsGroup) {
+    if (g.memberCount > 0) {
+      setError(`לא ניתן למחוק — הקבוצה בשימוש ב-${g.memberCount} הקשרים. בטלי קודם את השיוך.`);
+      return;
+    }
+    if (!confirm(`למחוק את הקבוצה "${g.label}"?`)) return;
+    setBusy(true); setError('');
+    try {
+      await apiFetch(`${BASE_URL}/game/programs/${programId}/analytics-groups/${g.id}`, {
+        method: 'DELETE',
+        cache: 'no-store',
+      });
+      onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'שגיאה במחיקה');
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <section>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <div>
+          <h3 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', margin: '0 0 2px' }}>
+            קבוצות לאנליטיקות
+          </h3>
+          <p style={{ fontSize: 12, color: '#94a3b8', margin: 0 }}>
+            קבוצות המרכזות הקשרים באנליטיקות. הגדירי פעם אחת, שייכי הקשרים בתפריט הנפתח בעורך ההקשר.
+          </p>
+        </div>
+        {!creating && (
+          <button
+            type="button"
+            onClick={() => { setCreating(true); setError(''); }}
+            style={{ background: '#7c3aed', color: '#fff', border: 'none', borderRadius: 7, padding: '6px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
+          >
+            + קבוצה חדשה
+          </button>
+        )}
+      </div>
+
+      {creating && (
+        <div style={{ background: '#faf5ff', border: '1px solid #ddd6fe', borderRadius: 10, padding: 12, display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10 }}>
+          <input
+            autoFocus
+            style={{ ...inputStyle, flex: 1 }}
+            value={draftLabel}
+            onChange={(e) => setDraftLabel(e.target.value)}
+            placeholder="שם הקבוצה — למשל: תזונה"
+            maxLength={60}
+          />
+          <button
+            type="button"
+            disabled={busy}
+            onClick={create}
+            style={{ background: '#7c3aed', color: '#fff', border: 'none', borderRadius: 7, padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: busy ? 'not-allowed' : 'pointer' }}
+          >
+            שמירה
+          </button>
+          <button
+            type="button"
+            onClick={() => { setCreating(false); setDraftLabel(''); setError(''); }}
+            style={{ background: '#f1f5f9', color: '#475569', border: '1px solid #e2e8f0', borderRadius: 7, padding: '8px 14px', fontSize: 13, cursor: 'pointer' }}
+          >
+            ביטול
+          </button>
+        </div>
+      )}
+
+      {error && (
+        <div style={{ color: '#dc2626', fontSize: 12, background: '#fef2f2', padding: '6px 10px', borderRadius: 6, marginBottom: 10 }}>
+          {error}
+        </div>
+      )}
+
+      {groups.length === 0 && !creating ? (
+        <div style={{ padding: '20px', textAlign: 'center', border: '2px dashed #e2e8f0', borderRadius: 10, color: '#94a3b8', fontSize: 13 }}>
+          עדיין לא הוגדרו קבוצות. צרי קבוצה אחת ותשייכי אליה הקשרים.
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {groups.map((g) => (
+            <div
+              key={g.id}
+              style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10 }}
+            >
+              {editingId === g.id ? (
+                <>
+                  <input
+                    style={{ ...inputStyle, flex: 1 }}
+                    value={editingLabel}
+                    onChange={(e) => setEditingLabel(e.target.value)}
+                    maxLength={60}
+                  />
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => saveEdit(g.id)}
+                    style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 12px', fontSize: 12, fontWeight: 600, cursor: busy ? 'not-allowed' : 'pointer' }}
+                  >
+                    שמירה
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditingId(null)}
+                    style={{ background: '#f1f5f9', color: '#475569', border: '1px solid #e2e8f0', borderRadius: 6, padding: '6px 12px', fontSize: 12, cursor: 'pointer' }}
+                  >
+                    ביטול
+                  </button>
+                </>
+              ) : (
+                <>
+                  <div style={{ flex: 1, fontSize: 14, fontWeight: 600, color: '#0f172a' }}>
+                    {g.label}
+                  </div>
+                  <span style={{ background: '#ede9fe', color: '#5b21b6', fontSize: 11, padding: '3px 9px', borderRadius: 20, fontWeight: 500 }}>
+                    {g.memberCount} הקשרים
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => { setEditingId(g.id); setEditingLabel(g.label); setError(''); }}
+                    style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, padding: '6px 12px', fontSize: 12, color: '#374151', cursor: 'pointer', fontWeight: 500 }}
+                  >
+                    ערוך
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => remove(g)}
+                    disabled={g.memberCount > 0}
+                    title={g.memberCount > 0 ? 'לא ניתן למחוק — הקבוצה בשימוש' : 'מחק'}
+                    style={{ background: 'none', border: '1px solid #fecaca', color: g.memberCount > 0 ? '#fca5a5' : '#dc2626', borderRadius: 6, padding: '6px 10px', fontSize: 12, cursor: g.memberCount > 0 ? 'not-allowed' : 'pointer' }}
+                  >
+                    ✕
+                  </button>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 // ─── Phase 3.2: Context library management section ──────────────────────────
 // A compact, inline CRUD for the reusable context definitions of a program.
 // Kept simple: list visible above actions, add via inline form, edit via
@@ -2207,14 +2415,15 @@ function ContextLibrarySection({
   programId,
   definitions,
   actions,
+  analyticsGroups,
   onChanged,
   onActionsChanged,
 }: {
   programId: string;
   definitions: ContextDefinition[];
-  // Phase 3.3 UX pass: needed so the in-edit definition form can render the
-  // "מחובר לפעולות" section with a picker + attach/detach controls.
   actions: GameAction[];
+  // Phase 4.3: passed to ContextDefinitionForm for the group dropdown.
+  analyticsGroups: AnalyticsGroup[];
   onChanged: () => void;
   onActionsChanged: () => void;
 }) {
@@ -2258,6 +2467,7 @@ function ContextLibrarySection({
           programId={programId}
           definition={null}
           actions={actions}
+          analyticsGroups={analyticsGroups}
           onSaved={() => { setAdding(false); onChanged(); }}
           onCancel={() => setAdding(false)}
           onActionsChanged={onActionsChanged}
@@ -2318,9 +2528,9 @@ function ContextLibrarySection({
                               לא באנליטיקות
                             </span>
                           )}
-                          {d.analyticsVisible && d.analyticsGroupLabel && (
+                          {d.analyticsVisible && d.analyticsGroup && (
                             <span style={{ background: '#ede9fe', color: '#5b21b6', fontSize: 11, padding: '3px 9px', borderRadius: 20, fontWeight: 500 }}>
-                              קבוצה: {d.analyticsGroupLabel}
+                              קבוצה: {d.analyticsGroup.label}
                             </span>
                           )}
                         </>
@@ -2354,6 +2564,7 @@ function ContextLibrarySection({
                   programId={programId}
                   definition={d}
                   actions={actions}
+                  analyticsGroups={analyticsGroups}
                   onSaved={() => { setEditingId(null); onChanged(); }}
                   onCancel={() => setEditingId(null)}
                   onActionsChanged={onActionsChanged}
@@ -2373,6 +2584,7 @@ function ContextDefinitionForm({
   programId,
   definition,
   actions,
+  analyticsGroups,
   onSaved,
   onCancel,
   onActionsChanged,
@@ -2380,6 +2592,8 @@ function ContextDefinitionForm({
   programId: string;
   definition: ContextDefinition | null;
   actions: GameAction[];
+  // Phase 4.3: centralized group dropdown source.
+  analyticsGroups: AnalyticsGroup[];
   onSaved: () => void;
   onCancel: () => void;
   onActionsChanged: () => void;
@@ -2408,10 +2622,11 @@ function ContextDefinitionForm({
     : 'system_fixed';
   const [analyticsVisible, setAnalyticsVisible] = useState(definition?.analyticsVisible ?? true);
   const [fixedValue, setFixedValue] = useState(definition?.fixedValue ?? '');
-  // Phase 4 analytics presentation layer. Admins see label-only inputs; the
-  // internal group key is derived from the group label on save. An empty
-  // group label means "no group" — the context shows up standalone.
-  const [analyticsGroupLabel, setAnalyticsGroupLabel] = useState(definition?.analyticsGroupLabel ?? '');
+  // Phase 4.3: centralized group FK. Admin picks from a dropdown of existing
+  // groups (or "ללא קבוצה"). No free-text label input at the context level.
+  const [analyticsGroupId, setAnalyticsGroupId] = useState<string>(
+    definition?.analyticsGroupId ?? '',
+  );
   const [analyticsDisplayLabel, setAnalyticsDisplayLabel] = useState(definition?.analyticsDisplayLabel ?? '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -2446,13 +2661,8 @@ function ContextDefinitionForm({
         inputMode: derivedInputMode,
         analyticsVisible,
         fixedValue: derivedInputMode === 'system_fixed' ? fixedValue.trim() : '',
-        // Phase 4: presentation layer. Empty strings clear the field on the
-        // server (DTO maps "" → null via the trim-guard in the library service).
-        analyticsGroupLabel: analyticsGroupLabel.trim(),
-        // analyticsGroupKey is deliberately NOT sent — server derives it from
-        // the label to keep admins out of key-management internals. When the
-        // group label is blank, the server clears the key too.
-        analyticsGroupKey: analyticsGroupLabel.trim() ? undefined : '',
+        // Phase 4.3: centralized group FK. Empty string clears the assignment.
+        analyticsGroupId: analyticsGroupId || '',
         analyticsDisplayLabel: analyticsDisplayLabel.trim(),
       };
       // Phase 4.2: server derives type from visibility. Only participant-
@@ -2592,33 +2802,36 @@ function ContextDefinitionForm({
         </div>
       )}
 
-      {/* Phase 4: analytics presentation layer. Shown only when the context
-          is analytics-visible, since these fields only affect the analytics UI.
-          Admins enter labels (no internal keys); server derives the group key
-          from the group label. Blank group label → context appears standalone. */}
+      {/* Phase 4.3: centralized group dropdown. Admins define groups once in
+          the "קבוצות לאנליטיקות" section above and pick them here. */}
       {analyticsVisible && (
         <div style={{ background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 8, padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{ fontSize: 12, color: '#5b21b6', fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '0.05em' }}>
             תצוגה באנליטיקות
           </div>
           <div style={{ fontSize: 12, color: '#5b21b6', lineHeight: 1.5 }}>
-            אופציונלי. אם כמה הקשרים שייכים לאותה קבוצה, הם יאוחדו לפריט אחד באנליטיקות.
+            אופציונלי. הקשרים המשויכים לאותה קבוצה יאוחדו לפריט אחד באנליטיקות.
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             <div>
               <label style={{ fontSize: 12, fontWeight: 600, color: '#4c1d95', display: 'block', marginBottom: 4 }}>
-                קבוצת תצוגה (אופציונלי)
+                לאיזו קבוצה שייך ההקשר?
               </label>
-              <input
+              <select
                 style={inputStyle}
-                value={analyticsGroupLabel}
-                onChange={(e) => setAnalyticsGroupLabel(e.target.value)}
-                placeholder="למשל: תזונה / פעילות"
-                maxLength={60}
-              />
-              <div style={{ fontSize: 11, color: '#6d28d9', marginTop: 4 }}>
-                הקשרים עם אותה קבוצה מאוחדים.
-              </div>
+                value={analyticsGroupId}
+                onChange={(e) => setAnalyticsGroupId(e.target.value)}
+              >
+                <option value="">ללא קבוצה</option>
+                {analyticsGroups.map((g) => (
+                  <option key={g.id} value={g.id}>{g.label}</option>
+                ))}
+              </select>
+              {analyticsGroups.length === 0 && (
+                <div style={{ fontSize: 11, color: '#6d28d9', marginTop: 4, fontStyle: 'italic' }}>
+                  עדיין לא הוגדרו קבוצות. הוסיפי אחת בקטע &ldquo;קבוצות לאנליטיקות&rdquo; למעלה.
+                </div>
+              )}
             </div>
             <div>
               <label style={{ fontSize: 12, fontWeight: 600, color: '#4c1d95', display: 'block', marginBottom: 4 }}>
@@ -2831,6 +3044,8 @@ function GameEngineTab({ programId }: { programId: string }) {
   // Phase 3.2: reusable context library — loaded alongside actions/rules so
   // the ActionModal can render the attachment picker without an extra fetch.
   const [definitions, setDefinitions] = useState<ContextDefinition[]>([]);
+  // Phase 4.3: centralized analytics groups — scoped to this program.
+  const [analyticsGroups, setAnalyticsGroups] = useState<AnalyticsGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionModal, setActionModal] = useState<{ open: boolean; action: GameAction | null }>({ open: false, action: null });
   const [ruleModal, setRuleModal] = useState<{ open: boolean; rule: GameRule | null }>({ open: false, rule: null });
@@ -2845,10 +3060,12 @@ function GameEngineTab({ programId }: { programId: string }) {
       apiFetch(`${BASE_URL}/game/programs/${programId}/actions`, { cache: 'no-store' }),
       apiFetch(`${BASE_URL}/game/programs/${programId}/rules`, { cache: 'no-store' }),
       apiFetch(`${BASE_URL}/game/programs/${programId}/context-definitions?includeArchived=true`, { cache: 'no-store' }),
-    ]).then(([a, r, d]) => {
+      apiFetch(`${BASE_URL}/game/programs/${programId}/analytics-groups`, { cache: 'no-store' }),
+    ]).then(([a, r, d, g]) => {
       setActions((a as GameAction[]).filter((x) => x.isActive));
       setRules((r as GameRule[]).filter((x) => x.isActive));
       setDefinitions(d as ContextDefinition[]);
+      setAnalyticsGroups(g as AnalyticsGroup[]);
     }).finally(() => setLoading(false));
   }, [programId]);
 
@@ -2858,6 +3075,14 @@ function GameEngineTab({ programId }: { programId: string }) {
       { cache: 'no-store' },
     );
     setDefinitions(d as ContextDefinition[]);
+  }
+
+  async function refreshAnalyticsGroups() {
+    const g = await apiFetch(
+      `${BASE_URL}/game/programs/${programId}/analytics-groups`,
+      { cache: 'no-store' },
+    );
+    setAnalyticsGroups(g as AnalyticsGroup[]);
   }
 
   async function handleDeleteAction(a: GameAction) {
@@ -2954,15 +3179,21 @@ function GameEngineTab({ programId }: { programId: string }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 36 }}>
 
+      {/* ── Phase 4.3: Centralized analytics groups ── */}
+      <AnalyticsGroupsSection
+        programId={programId}
+        groups={analyticsGroups}
+        onChanged={refreshAnalyticsGroups}
+      />
+
       {/* ── Phase 3.2: Reusable context library ── */}
       <ContextLibrarySection
         programId={programId}
         definitions={definitions}
         actions={actions}
+        analyticsGroups={analyticsGroups}
         onChanged={refreshDefinitions}
         onActionsChanged={async () => {
-          // Re-fetch actions so attach/detach from the context side surfaces
-          // immediately in the action editor's "הקשרים משותפים" list.
           const refreshed = await apiFetch(
             `${BASE_URL}/game/programs/${programId}/actions`,
             { cache: 'no-store' },

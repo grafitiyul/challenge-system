@@ -36,38 +36,12 @@ export interface StoredContextOption {
 }
 
 /**
- * Phase 4: normalize the presentation-layer fields for a context definition.
- * - Empty strings → null (admin cleared the value).
- * - If the admin provided a group LABEL but no KEY, auto-slug the label into
- *   a key so the admin never has to deal with internal identifiers.
- * - If only a key is provided without a label, echo the key as the label for
- *   the time being — cleaner than a blank label in the UI.
+ * Phase 4.3: the presentation layer is now centralized into AnalyticsGroup
+ * rows. The only piece of per-definition presentation metadata that remains
+ * is `analyticsDisplayLabel` (optional shorter label for THIS context). The
+ * group FK is validated directly against the AnalyticsGroup table by the
+ * create / update methods below.
  */
-function resolvePresentationFields(opts: {
-  rawGroupKey: string | null;
-  rawGroupLabel: string | null;
-  rawDisplayLabel: string | null;
-}): {
-  analyticsGroupKey: string | null;
-  analyticsGroupLabel: string | null;
-  analyticsDisplayLabel: string | null;
-} {
-  const groupLabel = opts.rawGroupLabel?.trim() || null;
-  const providedKey = opts.rawGroupKey?.trim() || null;
-  const displayLabel = opts.rawDisplayLabel?.trim() || null;
-
-  let groupKey: string | null = null;
-  let finalGroupLabel: string | null = null;
-  if (providedKey || groupLabel) {
-    finalGroupLabel = groupLabel ?? providedKey;
-    groupKey = providedKey ?? slugifyLabel(groupLabel!);
-  }
-  return {
-    analyticsGroupKey: groupKey,
-    analyticsGroupLabel: finalGroupLabel,
-    analyticsDisplayLabel: displayLabel,
-  };
-}
 
 @Injectable()
 export class ContextLibraryService {
@@ -78,6 +52,9 @@ export class ContextLibraryService {
     return this.prisma.contextDefinition.findMany({
       where: { programId, ...(includeArchived ? {} : { isActive: true }) },
       orderBy: [{ isActive: 'desc' }, { sortOrder: 'asc' }, { createdAt: 'asc' }],
+      // Phase 4.3: surface the analytics group so the admin list can show the
+      // group name inline without a second fetch.
+      include: { analyticsGroup: { select: { id: true, label: true } } },
     });
   }
 
@@ -123,16 +100,11 @@ export class ContextLibraryService {
       fixedValue = raw;
     }
 
+    // Phase 4.3: validate the group FK (if any) belongs to THIS program.
+    const analyticsGroupId = await this.resolveGroupId(programId, dto.analyticsGroupId);
+    const analyticsDisplayLabel = (dto.analyticsDisplayLabel ?? '').trim() || null;
+
     const count = await this.prisma.contextDefinition.count({ where: { programId } });
-    // Phase 4 presentation: normalize the three optional presentation fields.
-    // The group key is auto-derived from the group label when the admin only
-    // provides a label, keeping UX simple (no internal-key input).
-    const { analyticsGroupKey, analyticsGroupLabel, analyticsDisplayLabel } =
-      resolvePresentationFields({
-        rawGroupKey: dto.analyticsGroupKey ?? null,
-        rawGroupLabel: dto.analyticsGroupLabel ?? null,
-        rawDisplayLabel: dto.analyticsDisplayLabel ?? null,
-      });
     return this.prisma.contextDefinition.create({
       data: {
         programId,
@@ -146,12 +118,34 @@ export class ContextLibraryService {
         inputMode,
         analyticsVisible: dto.analyticsVisible ?? true,
         fixedValue,
-        analyticsGroupKey,
-        analyticsGroupLabel,
+        analyticsGroupId,
         analyticsDisplayLabel,
         sortOrder: count,
       },
     });
+  }
+
+  /**
+   * Resolve a group-id field from a DTO input. Empty string / null / undefined
+   * all collapse to null (clear assignment). A non-empty value must reference
+   * an AnalyticsGroup row in the same program, otherwise 400.
+   */
+  private async resolveGroupId(
+    programId: string,
+    raw: string | null | undefined,
+  ): Promise<string | null> {
+    if (raw === undefined) return null;
+    const trimmed = (raw ?? '').trim();
+    if (!trimmed) return null;
+    const group = await this.prisma.analyticsGroup.findUnique({
+      where: { id: trimmed },
+      select: { id: true, programId: true },
+    });
+    if (!group) throw new NotFoundException(`Analytics group ${trimmed} not found`);
+    if (group.programId !== programId) {
+      throw new BadRequestException('Analytics group belongs to a different program');
+    }
+    return group.id;
   }
 
   // ─── Update ──────────────────────────────────────────────────────────────
@@ -216,40 +210,18 @@ export class ContextLibraryService {
       patch.fixedValue = null;
     }
 
-    // Phase 4: presentation-layer patching. All three fields are independent;
-    // each responds to an explicit undefined/non-undefined signal. Blank-string
-    // inputs from the form translate to nulls (clear).
-    if (
-      dto.analyticsGroupKey !== undefined ||
-      dto.analyticsGroupLabel !== undefined ||
-      dto.analyticsDisplayLabel !== undefined
-    ) {
-      const resolved = resolvePresentationFields({
-        rawGroupKey:
-          dto.analyticsGroupKey !== undefined
-            ? dto.analyticsGroupKey
-            : row.analyticsGroupKey,
-        rawGroupLabel:
-          dto.analyticsGroupLabel !== undefined
-            ? dto.analyticsGroupLabel
-            : row.analyticsGroupLabel,
-        rawDisplayLabel:
-          dto.analyticsDisplayLabel !== undefined
-            ? dto.analyticsDisplayLabel
-            : row.analyticsDisplayLabel,
-      });
-      if (dto.analyticsGroupKey !== undefined) patch.analyticsGroupKey = resolved.analyticsGroupKey;
-      if (dto.analyticsGroupLabel !== undefined) patch.analyticsGroupLabel = resolved.analyticsGroupLabel;
-      if (dto.analyticsDisplayLabel !== undefined) patch.analyticsDisplayLabel = resolved.analyticsDisplayLabel;
-      // When one of group key/label shifted, re-derive the paired field too so
-      // they stay consistent (a label without a key would be unreachable).
-      if (
-        dto.analyticsGroupKey !== undefined ||
-        dto.analyticsGroupLabel !== undefined
-      ) {
-        patch.analyticsGroupKey = resolved.analyticsGroupKey;
-        patch.analyticsGroupLabel = resolved.analyticsGroupLabel;
-      }
+    // Phase 4.3: centralized group FK. `analyticsGroupId === ""` or null
+    // clears the assignment; a non-empty value must reference a group in this
+    // program. `analyticsDisplayLabel` stays a simple per-definition override.
+    if (dto.analyticsGroupId !== undefined) {
+      const nextGroupId = await this.resolveGroupId(row.programId, dto.analyticsGroupId);
+      patch.analyticsGroup = nextGroupId
+        ? { connect: { id: nextGroupId } }
+        : { disconnect: true };
+    }
+    if (dto.analyticsDisplayLabel !== undefined) {
+      patch.analyticsDisplayLabel =
+        (dto.analyticsDisplayLabel ?? '').trim() || null;
     }
 
     return this.prisma.contextDefinition.update({ where: { id }, data: patch });

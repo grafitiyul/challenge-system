@@ -60,16 +60,14 @@ export class CreateContextDefinitionDto {
   @IsString()
   fixedValue?: string;
 
-  // ── Phase 4 analytics presentation ───────────────────────────────────────
-  /** Shared key — multiple contexts with the same value aggregate together. */
+  // ── Phase 4.3 analytics presentation (centralized groups) ────────────────
+  /**
+   * FK into the AnalyticsGroup table. Null / undefined → standalone context
+   * (no presentation group). Empty string is accepted as null on the server.
+   */
   @IsOptional()
   @IsString()
-  analyticsGroupKey?: string | null;
-
-  /** Display label for the group in the participant analytics UI. */
-  @IsOptional()
-  @IsString()
-  analyticsGroupLabel?: string | null;
+  analyticsGroupId?: string | null;
 
   /** Optional per-context label for analytics UI; falls back to `label`. */
   @IsOptional()
@@ -104,15 +102,10 @@ export class UpdateContextDefinitionDto {
   @IsString()
   fixedValue?: string;
 
-  /** See CreateContextDefinitionDto.analyticsGroupKey. Pass "" to clear. */
+  /** See CreateContextDefinitionDto.analyticsGroupId. Pass "" / null to clear. */
   @IsOptional()
   @IsString()
-  analyticsGroupKey?: string | null;
-
-  /** See CreateContextDefinitionDto.analyticsGroupLabel. Pass "" to clear. */
-  @IsOptional()
-  @IsString()
-  analyticsGroupLabel?: string | null;
+  analyticsGroupId?: string | null;
 
   /** See CreateContextDefinitionDto.analyticsDisplayLabel. Pass "" to clear. */
   @IsOptional()

@@ -747,13 +747,13 @@ export class ParticipantPortalService {
       return this.breakdownByContext(participantId, programId, since, until, [key]);
     }
     if (groupBy.startsWith('group:')) {
-      // Phase 4: analytics presentation group. Look up every context definition
-      // sharing this groupKey (within the program) and aggregate their data
-      // into one breakdown.
-      const groupKey = groupBy.slice('group:'.length);
-      if (!groupKey) throw new BadRequestException('groupBy=group: requires a key');
+      // Phase 4.3: centralized group lookup by FK. The id segment is the
+      // AnalyticsGroup.id — resolve every context pointing at that group and
+      // aggregate their data into one breakdown.
+      const groupId = groupBy.slice('group:'.length);
+      if (!groupId) throw new BadRequestException('groupBy=group: requires a group id');
       const members = await this.prisma.contextDefinition.findMany({
-        where: { programId, analyticsGroupKey: groupKey, isActive: true },
+        where: { programId, analyticsGroupId: groupId, isActive: true },
         select: { key: true },
       });
       const memberKeys = members.map((m) => m.key);
@@ -987,12 +987,13 @@ export class ParticipantPortalService {
           isActive: true,
           NOT: { type: 'text' },
         },
+        // Phase 4.3: group is now a FK to AnalyticsGroup. Pull label through it.
         select: {
           key: true,
           label: true,
-          analyticsGroupKey: true,
-          analyticsGroupLabel: true,
           analyticsDisplayLabel: true,
+          analyticsGroupId: true,
+          analyticsGroup: { select: { id: true, label: true } },
         },
       }),
     ]);
@@ -1010,8 +1011,10 @@ export class ParticipantPortalService {
         key: d.key,
         label: d.label,
         displayLabel: d.analyticsDisplayLabel ?? null,
-        groupKey: d.analyticsGroupKey ?? null,
-        groupLabel: d.analyticsGroupLabel ?? null,
+        // Phase 4.3: groupKey is the AnalyticsGroup.id; groupLabel is pulled
+        // off the related row so the UI can surface a human-friendly name.
+        groupKey: d.analyticsGroupId ?? null,
+        groupLabel: d.analyticsGroup?.label ?? null,
       });
       reusableKeys.add(d.key);
     }

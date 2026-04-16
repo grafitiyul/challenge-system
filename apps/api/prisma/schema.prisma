@@ -53,6 +53,8 @@ model Program {
   feedEvents           FeedEvent[]
   // Phase 3.2: reusable context library is scoped to a program.
   contextDefinitions   ContextDefinition[]
+  // Phase 4.3: centralized analytics groups, also program-scoped.
+  analyticsGroups      AnalyticsGroup[]
 
   // Leaderboard visibility controls
   showIndividualLeaderboard    Boolean @default(true)
@@ -815,19 +817,15 @@ model ContextDefinition {
   // Mandatory when inputMode='system_fixed'; ignored otherwise. The string
   // value is what the backend writes into UserActionLog.contextJson[key].
   fixedValue                      String?
-  // ── Phase 4 analytics presentation layer ─────────────────────────────────
-  // Optional grouping + display overrides that only affect how this context
-  // appears inside participant analytics. None of these influence submission,
-  // validation, or the ledger; they're pure presentation.
-  //
-  // analyticsGroupKey     — shared key linking contexts that should appear
-  //                         under one analytics entry. Multiple contexts may
-  //                         share it; the breakdown then aggregates them.
-  // analyticsGroupLabel   — display name for that group in the UI.
-  // analyticsDisplayLabel — optional shorter label for THIS context inside
-  //                         the analytics UI (falls back to `label`).
-  analyticsGroupKey               String?
-  analyticsGroupLabel             String?
+  // ── Phase 4.3 analytics presentation layer ───────────────────────────────
+  // Optional FK into the centralized AnalyticsGroup table. Multiple context
+  // definitions pointing at the same group aggregate together in analytics.
+  // Null = standalone (no presentation group).
+  analyticsGroupId                String?
+  analyticsGroup                  AnalyticsGroup? @relation(fields: [analyticsGroupId], references: [id])
+  // Optional shorter label for THIS context inside the analytics UI (falls
+  // back to `label` when null). Survived from the previous phase — still
+  // useful independently of groups.
   analyticsDisplayLabel           String?
   // Archived contexts don't appear in attachment pickers. Existing uses keep
   // resolving so historical data stays interpretable.
@@ -840,7 +838,34 @@ model ContextDefinition {
 
   @@unique([programId, key])
   @@index([programId])
+  @@index([analyticsGroupId])
   @@map("context_definitions")
+}
+
+// ─── Phase 4.3: Centralized analytics groups ───────────────────────────────
+//
+// Presentation-layer grouping for context definitions. Admins create groups
+// once per program; any number of context definitions can point at the same
+// group via ContextDefinition.analyticsGroupId.
+//
+// The label is what participants see in the analytics grouping UI. Group
+// label is unique per program so admins can't accidentally create two
+// "תזונה" entries.
+
+model AnalyticsGroup {
+  id        String   @id @default(cuid())
+  programId String
+  program   Program  @relation(fields: [programId], references: [id])
+  label     String
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt
+
+  definitions ContextDefinition[]
+
+  @@unique([programId, label])
+  @@index([programId])
+  @@map("analytics_groups")
 }
 
 // Join row attaching a ContextDefinition to a GameAction, with optional
