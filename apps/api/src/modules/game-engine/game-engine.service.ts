@@ -153,6 +153,9 @@ export class GameEngineService {
           aggregationMode: dto.aggregationMode ?? 'none',
           unit: dto.unit ?? null,
           points: dto.points,
+          // Phase 6.6: bundled-unit base scoring (optional).
+          unitSize: dto.unitSize ?? null,
+          basePointsPerUnit: dto.basePointsPerUnit ?? null,
           maxPerDay: dto.maxPerDay ?? null,
           showInPortal: dto.showInPortal ?? true,
           blockedMessage: dto.blockedMessage ?? null,
@@ -243,6 +246,8 @@ export class GameEngineService {
           ...(dto.aggregationMode !== undefined ? { aggregationMode: dto.aggregationMode } : {}),
           ...(dto.unit !== undefined ? { unit: dto.unit } : {}),
           ...(dto.points !== undefined ? { points: dto.points } : {}),
+          ...(dto.unitSize !== undefined ? { unitSize: dto.unitSize } : {}),
+          ...(dto.basePointsPerUnit !== undefined ? { basePointsPerUnit: dto.basePointsPerUnit } : {}),
           ...(dto.maxPerDay !== undefined ? { maxPerDay: dto.maxPerDay } : {}),
           ...(dto.showInPortal !== undefined ? { showInPortal: dto.showInPortal } : {}),
           ...(dto.blockedMessage !== undefined ? { blockedMessage: dto.blockedMessage } : {}),
@@ -564,10 +569,59 @@ export class GameEngineService {
     }
 
     // ── Points derivation ────────────────────────────────────────────────────
-    // incremental_sum: action.points is per-unit; multiply by submitted quantity.
-    // Everything else: use action.points as a flat award.
+    // Three modes, in priority order:
+    //
+    //   1. Phase 6.6 BUNDLED-UNIT DELTA (latest_value + unitSize +
+    //      basePointsPerUnit all set): award only the marginal units earned
+    //      by this submission vs. today's prior daily max. Preserves the
+    //      existing monotonic-update flow — the monotonic check above already
+    //      guarantees newValue ≥ priorMax, so delta ≥ 0 by construction.
+    //
+    //      pointsForThisLog = (floor(newValue / unitSize) -
+    //                          floor(priorDailyMax / unitSize))
+    //                         * basePointsPerUnit
+    //
+    //   2. incremental_sum: action.points is per-unit; multiply by submitted
+    //      quantity. Unchanged.
+    //
+    //   3. Everything else: flat action.points. Unchanged.
+    //
+    // All three feed the SAME ScoreEvent creation path below. Threshold rules
+    // (conditional type with ladder-delta anti-double-pay) continue to read
+    // the raw effective daily value via getEffectiveDailyValue — unaffected.
     let pointsForThisLog = action.points;
-    if (action.inputType === 'number' && action.aggregationMode === 'incremental_sum') {
+    const unitSize = action.unitSize;
+    const basePointsPerUnit = action.basePointsPerUnit;
+    const bundledUnitMode =
+      action.inputType === 'number' &&
+      action.aggregationMode === 'latest_value' &&
+      unitSize !== null &&
+      unitSize !== undefined &&
+      unitSize > 0 &&
+      basePointsPerUnit !== null &&
+      basePointsPerUnit !== undefined;
+    if (bundledUnitMode) {
+      const newValueNum = parseFloat(dto.value ?? '0');
+      const priorMaxNum = await this.getEffectiveDailyValue(
+        dto.participantId,
+        dto.programId,
+        dto.actionId,
+        (() => {
+          const d = new Date();
+          d.setHours(0, 0, 0, 0);
+          return d;
+        })(),
+      );
+      const newUnits = isNaN(newValueNum)
+        ? 0
+        : Math.floor(newValueNum / (unitSize as number));
+      const priorUnits = Math.floor(priorMaxNum / (unitSize as number));
+      const deltaUnits = Math.max(0, newUnits - priorUnits);
+      pointsForThisLog = deltaUnits * (basePointsPerUnit as number);
+    } else if (
+      action.inputType === 'number' &&
+      action.aggregationMode === 'incremental_sum'
+    ) {
       const qty = parseFloat(dto.value ?? '0');
       if (!isNaN(qty) && qty > 0) {
         pointsForThisLog = Math.round(action.points * qty);
@@ -1646,10 +1700,61 @@ export class GameEngineService {
     const nextContextRaw = dto.contextJson !== undefined ? dto.contextJson : oldLog.contextJson;
     const validatedContext = validateContext(oldLog.action.contextSchemaJson, nextContextRaw);
 
-    // Compute new effectiveValue + points the same way logAction does.
+    // Compute new effectiveValue + points. Three modes mirror logAction:
+    //
+    //   1. Phase 6.6 BUNDLED-UNIT DELTA: newPoints = (newUnits - otherMaxUnits)
+    //      * basePointsPerUnit. otherMax = max of OTHER active logs today for
+    //      this action (the one being superseded is excluded since its row is
+    //      about to flip to 'superseded'). Can be negative when the corrected
+    //      value drops below another active log's value — this is intentional:
+    //      the net ledger effect of the correction still represents the real
+    //      delta to the participant's daily total. Known limitation: if an
+    //      admin corrects a NON-LATEST log in a chain of 3+ intra-day
+    //      submissions, downstream logs' pre-computed points aren't rerun,
+    //      so the daily-sum invariant can drift slightly. Single-log (the
+    //      common case — enforced by maxPerDay=1) is exact.
+    //
+    //   2. incremental_sum: action.points * qty. Unchanged.
+    //
+    //   3. Flat action.points. Unchanged.
     let effectiveValue: Prisma.Decimal | null = null;
     let newPoints = oldLog.action.points;
-    if (oldLog.action.inputType === 'number') {
+    const unitSize = oldLog.action.unitSize;
+    const basePointsPerUnit = oldLog.action.basePointsPerUnit;
+    const bundledUnitMode =
+      oldLog.action.inputType === 'number' &&
+      oldLog.action.aggregationMode === 'latest_value' &&
+      unitSize !== null &&
+      unitSize !== undefined &&
+      unitSize > 0 &&
+      basePointsPerUnit !== null &&
+      basePointsPerUnit !== undefined;
+    if (bundledUnitMode) {
+      const parsed = parseFloat(newValue);
+      if (!isNaN(parsed)) effectiveValue = new Prisma.Decimal(parsed);
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      const otherActiveLogs = await this.prisma.userActionLog.findMany({
+        where: {
+          participantId: oldLog.participantId,
+          programId: oldLog.programId,
+          actionId: oldLog.actionId,
+          status: 'active',
+          createdAt: { gte: todayStart },
+          id: { not: oldLog.id },
+        },
+        select: { value: true },
+      });
+      const otherMaxValue = otherActiveLogs
+        .map((l) => parseFloat(l.value))
+        .filter((v) => !isNaN(v) && v >= 0)
+        .reduce((m, v) => Math.max(m, v), 0);
+      const newUnits = isNaN(parsed)
+        ? 0
+        : Math.floor(parsed / (unitSize as number));
+      const otherMaxUnits = Math.floor(otherMaxValue / (unitSize as number));
+      newPoints = (newUnits - otherMaxUnits) * (basePointsPerUnit as number);
+    } else if (oldLog.action.inputType === 'number') {
       const parsed = parseFloat(newValue);
       if (!isNaN(parsed)) {
         effectiveValue = new Prisma.Decimal(parsed);

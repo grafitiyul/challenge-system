@@ -356,6 +356,11 @@ interface GameAction {
   aggregationMode: string | null;
   unit: string | null;
   points: number;
+  // Phase 6.6 bundled-unit base scoring (optional). When both set + inputType
+  // = number + aggregationMode = latest_value, base points switch to
+  // `delta_units * basePointsPerUnit`.
+  unitSize: number | null;
+  basePointsPerUnit: number | null;
   maxPerDay: number | null;
   showInPortal: boolean;
   blockedMessage: string | null;
@@ -1076,6 +1081,11 @@ function ActionModal({
     aggregationMode: action?.aggregationMode ?? 'none',
     unit: action?.unit ?? '',
     points: String(action?.points ?? 10),
+    // Phase 6.6 bundled-unit base scoring — both optional. Form fields are
+    // strings (admin inputs); backend receives parseInt or null.
+    unitSize: action?.unitSize != null ? String(action.unitSize) : '',
+    basePointsPerUnit:
+      action?.basePointsPerUnit != null ? String(action.basePointsPerUnit) : '',
     maxPerDay: action?.maxPerDay != null ? String(action.maxPerDay) : '',
     showInPortal: action?.showInPortal ?? true,
     blockedMessage: action?.blockedMessage ?? '',
@@ -1207,6 +1217,21 @@ function ActionModal({
         aggregationMode: form.inputType === 'number' ? form.aggregationMode : 'none',
         unit: form.inputType === 'number' ? (form.unit.trim() || null) : null,
         points: pts,
+        // Phase 6.6 bundled-unit scoring. Only meaningful for latest_value
+        // numeric actions; sent as null in every other shape so the backend
+        // sees "off" rather than a stale leftover value.
+        unitSize:
+          form.inputType === 'number' &&
+          form.aggregationMode === 'latest_value' &&
+          form.unitSize.trim()
+            ? parseInt(form.unitSize)
+            : null,
+        basePointsPerUnit:
+          form.inputType === 'number' &&
+          form.aggregationMode === 'latest_value' &&
+          form.basePointsPerUnit.trim()
+            ? parseInt(form.basePointsPerUnit)
+            : null,
         // CRITICAL FIX: send null (not undefined) to properly clear maxPerDay in DB
         maxPerDay: form.maxPerDay.trim() ? parseInt(form.maxPerDay) : null,
         showInPortal: form.showInPortal,
@@ -1329,6 +1354,54 @@ function ActionModal({
                   <input style={inputStyle} value={form.unit} onChange={(e) => setForm((p) => ({ ...p, unit: e.target.value }))} placeholder="צעדים · קומות · דקות · כוסות · ק״מ" />
                   <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>מוצגת בפורטל וברשימת החוקים</div>
                 </div>
+                {/* Phase 6.6: bundled-unit base scoring. Only relevant for
+                    latest_value numeric actions. Leaving either blank keeps
+                    the existing flat-points behavior. */}
+                {form.aggregationMode === 'latest_value' && (
+                  <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 8, padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: '#0f172a' }}>
+                      צבירה לפי יחידות (אופציונלי)
+                    </div>
+                    <div style={{ fontSize: 11, color: '#64748b', lineHeight: 1.5 }}>
+                      כאשר שני השדות מלאים, הניקוד הבסיסי מחושב לפי כמות היחידות — לא נקודה שטוחה לכל דיווח. רק הדלתא לעומת ה״סה״כ״ הקודם מזכה בנקודות. השאירי ריק כדי לשמור על ההתנהגות הקיימת.
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                      <div>
+                        <label style={labelStyle}>גודל יחידה</label>
+                        <input
+                          type="number"
+                          min={1}
+                          style={{ ...inputStyle, direction: 'ltr' }}
+                          value={form.unitSize}
+                          onChange={(e) => setForm((p) => ({ ...p, unitSize: e.target.value }))}
+                          placeholder="למשל: 1000"
+                        />
+                        <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>
+                          כמה {form.unit?.trim() || 'יחידות'} שוות יחידה אחת בניקוד
+                        </div>
+                      </div>
+                      <div>
+                        <label style={labelStyle}>נקודות ליחידה</label>
+                        <input
+                          type="number"
+                          min={0}
+                          style={{ ...inputStyle, direction: 'ltr' }}
+                          value={form.basePointsPerUnit}
+                          onChange={(e) => setForm((p) => ({ ...p, basePointsPerUnit: e.target.value }))}
+                          placeholder="למשל: 15"
+                        />
+                        <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>
+                          כמה נקודות מרוויחים על כל יחידה מלאה
+                        </div>
+                      </div>
+                    </div>
+                    {form.unitSize.trim() && form.basePointsPerUnit.trim() && (
+                      <div style={{ fontSize: 11, color: '#2563eb', fontStyle: 'italic' }}>
+                        דוגמה: דיווח {(parseInt(form.unitSize) * 15 + 304).toLocaleString('he-IL')} → {Math.floor((parseInt(form.unitSize) * 15 + 304) / parseInt(form.unitSize))} יחידות × {form.basePointsPerUnit} = {Math.floor((parseInt(form.unitSize) * 15 + 304) / parseInt(form.unitSize)) * parseInt(form.basePointsPerUnit)} נק׳
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </div>

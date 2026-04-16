@@ -42,6 +42,25 @@ export class CreateActionDto {
   @Min(0)
   points: number;
 
+  /**
+   * Phase 6.6 bundled-unit base scoring (optional). When BOTH unitSize AND
+   * basePointsPerUnit are set — and the action is latest_value + number —
+   * the base-point formula switches from flat-per-submission to
+   * `delta_bundled_units * basePointsPerUnit`. Leave either null to keep
+   * the existing flat-points behavior.
+   */
+  @IsOptional()
+  @ValidateIf((o) => o.unitSize !== null)
+  @IsInt()
+  @Min(1)
+  unitSize?: number | null;
+
+  @IsOptional()
+  @ValidateIf((o) => o.basePointsPerUnit !== null)
+  @IsInt()
+  @Min(0)
+  basePointsPerUnit?: number | null;
+
   @IsOptional()
   @ValidateIf((o) => o.maxPerDay !== null)
   @IsInt()
@@ -133,6 +152,20 @@ export class UpdateActionDto {
   @IsInt()
   @Min(0)
   points?: number;
+
+  /** See CreateActionDto.unitSize. Pass null to disable bundled-unit mode. */
+  @IsOptional()
+  @ValidateIf((o) => o.unitSize !== null)
+  @IsInt()
+  @Min(1)
+  unitSize?: number | null;
+
+  /** See CreateActionDto.basePointsPerUnit. Pass null to disable bundled-unit mode. */
+  @IsOptional()
+  @ValidateIf((o) => o.basePointsPerUnit !== null)
+  @IsInt()
+  @Min(0)
+  basePointsPerUnit?: number | null;
 
   @IsOptional()
   @ValidateIf((o) => o.maxPerDay !== null)

@@ -733,6 +733,22 @@ model GameAction {
   // Optional display unit, e.g. "steps", "floors", "minutes"
   unit            String?
   points      Int      @default(0)
+  // ── Phase 6.6 bundled-unit base scoring (OPTIONAL) ────────────────────────
+  // When BOTH fields are set AND aggregationMode='latest_value' AND
+  // inputType='number', the base-points computation switches from
+  // "flat points per submission" to:
+  //
+  //   pointsForThisLog = (floor(newValue / unitSize)
+  //                       - floor(priorDailyMax / unitSize)) * basePointsPerUnit
+  //
+  // This cleanly layers DELTA-per-bundled-unit scoring on top of the
+  // existing monotonic running-total model. Threshold rules and the
+  // rule-ladder-delta logic continue to evaluate against the raw daily
+  // value and are unaffected.
+  //
+  // When either field is null, the existing flat-points behavior is used.
+  unitSize           Int?
+  basePointsPerUnit  Int?
   maxPerDay   Int?
   // Whether this action appears in the participant-facing portal
   showInPortal        Boolean  @default(true)
