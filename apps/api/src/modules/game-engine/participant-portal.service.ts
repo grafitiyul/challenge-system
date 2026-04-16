@@ -29,6 +29,17 @@ function formatLocalHourMinute(d: Date): string {
   }).format(d);
 }
 
+/** Format a UTC timestamp as YYYY-MM-DD in the participant's local day. */
+function formatLocalDate(d: Date): string {
+  // 'en-CA' gives ISO-like YYYY-MM-DD.
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: PARTICIPANT_TZ,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(d);
+}
+
 /**
  * Given a log's contextJson + the action's effective schema, return an array
  * of user-facing (dimensionLabel, valueLabel) pairs. Skips hidden / system
@@ -307,6 +318,25 @@ export interface AnalyticsBreakdownEntry {
   actionName: string;
   totalPoints: number;
   count: number;
+}
+
+/**
+ * Phase 4.6 — row returned from the pie-slice drill-down endpoint.
+ * Each row represents one UserActionLog that contributed to the tapped slice.
+ * For group views the `contextLabel` tells the participant WHICH context in
+ * the group produced this row (so "שגרה → בוקר" drill-down shows that some
+ * entries came from "ארוחה" and others from "שינה", etc.).
+ */
+export interface AnalyticsSliceEntry {
+  logId: string;
+  date: string;           // YYYY-MM-DD local
+  time: string;           // HH:MM local
+  actionId: string;
+  actionName: string;
+  contextKey: string;     // which context key produced this sample
+  contextLabel: string;   // its display label
+  valueLabel: string;     // resolved option label (e.g. "בוקר")
+  points: number;
 }
 
 /**
@@ -917,6 +947,168 @@ export class ParticipantPortalService {
    * `actionName` carries the option label resolved from the action's
    * contextSchemaJson (or the raw value if no label is declared).
    */
+
+  /**
+   * Phase 4.6 pie-slice drill-down. Returns the concrete UserActionLog rows
+   * that produced a specific breakdown slice, so the participant can see
+   * which actions + contexts + values contributed to it.
+   *
+   * Accepts the same `groupBy` semantics as breakdown:
+   *   - `context:<key>`  → one dimension key
+   *   - `group:<groupId>` → all contexts in that analytics group
+   *
+   * Rows include `contextLabel` so group drill-downs reveal WHICH context
+   * inside the group each row came from.
+   */
+  async getAnalyticsSliceDrilldown(
+    token: string,
+    opts: {
+      groupBy: string;
+      value: string;
+      period?: '7d' | '14d' | '30d' | 'all';
+      from?: string;
+      to?: string;
+    },
+  ): Promise<AnalyticsSliceEntry[]> {
+    const { participantId, programId } = await this.resolveToken(token);
+    const { since, until } = resolveRange({
+      period: opts.period,
+      from: opts.from,
+      to: opts.to,
+    });
+    if (!opts.value || !opts.groupBy) {
+      throw new BadRequestException('value and groupBy are required');
+    }
+
+    // Resolve member keys for this view.
+    let memberKeys: string[] = [];
+    if (opts.groupBy.startsWith('context:')) {
+      const k = opts.groupBy.slice('context:'.length);
+      if (!k) throw new BadRequestException('invalid groupBy');
+      memberKeys = [k];
+    } else if (opts.groupBy.startsWith('group:')) {
+      const gid = opts.groupBy.slice('group:'.length);
+      if (!gid) throw new BadRequestException('invalid groupBy');
+      const members = await this.prisma.contextDefinition.findMany({
+        where: { programId, analyticsGroupId: gid, isActive: true },
+        select: { key: true },
+      });
+      memberKeys = members.map((m) => m.key);
+    } else {
+      throw new BadRequestException('groupBy must be context:<key> or group:<id>');
+    }
+    if (memberKeys.length === 0) return [];
+
+    // Walk every active log in range; keep only logs where at least one of
+    // the member keys holds the tapped value. Build the per-row resolution
+    // (context label, value label) from the shared definitions table +
+    // action-local schema fallback.
+    const logs = await this.prisma.userActionLog.findMany({
+      where: {
+        participantId, programId,
+        status: 'active',
+        ...(since ? { createdAt: { gte: since, lte: until } } : { createdAt: { lte: until } }),
+      },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        action: { select: { id: true, name: true, contextSchemaJson: true } },
+      },
+    });
+    if (logs.length === 0) return [];
+
+    const logIds = logs.map((l) => l.id);
+    const scoreEvents = await this.prisma.scoreEvent.findMany({
+      where: { logId: { in: logIds }, sourceType: 'action' },
+      select: { logId: true, points: true },
+    });
+    const pointsByLog: Record<string, number> = {};
+    for (const se of scoreEvents) {
+      if (se.logId) pointsByLog[se.logId] = se.points;
+    }
+
+    // Resolve context label + option labels for every member key, program-wide.
+    const definitions = await this.prisma.contextDefinition.findMany({
+      where: { programId, key: { in: memberKeys } },
+      select: {
+        key: true,
+        label: true,
+        type: true,
+        optionsJson: true,
+        analyticsDisplayLabel: true,
+      },
+    });
+    const labelByKey = new Map<string, string>();
+    const optionLabelByKey = new Map<string, Map<string, string>>();
+    for (const d of definitions) {
+      labelByKey.set(d.key, d.analyticsDisplayLabel?.trim() || d.label);
+      if (d.type === 'select' && Array.isArray(d.optionsJson)) {
+        const opts = new Map<string, string>();
+        for (const o of d.optionsJson as Array<{ value?: string; label?: string }>) {
+          if (typeof o?.value === 'string' && typeof o?.label === 'string') {
+            opts.set(o.value, o.label);
+          }
+        }
+        optionLabelByKey.set(d.key, opts);
+      }
+    }
+
+    // For member keys that are local (action-only, no reusable definition),
+    // fall back to the action's schema per log.
+    function localLabelsForAction(a: { contextSchemaJson: unknown }, key: string) {
+      const schema = a.contextSchemaJson as {
+        dimensions?: Array<{ key?: string; label?: string; options?: Array<{ value?: string; label?: string }> }>;
+      } | null;
+      for (const d of schema?.dimensions ?? []) {
+        if (d.key !== key) continue;
+        const valueMap = new Map<string, string>();
+        for (const o of d.options ?? []) {
+          if (typeof o.value === 'string' && typeof o.label === 'string') {
+            valueMap.set(o.value, o.label);
+          }
+        }
+        return { dimensionLabel: d.label ?? key, options: valueMap };
+      }
+      return null;
+    }
+
+    const target = String(opts.value);
+    const out: AnalyticsSliceEntry[] = [];
+    for (const l of logs) {
+      const ctx = l.contextJson as Record<string, unknown> | null;
+      if (!ctx) continue;
+      // Find which member key in this log matches the tapped value. A single
+      // log may carry multiple matching members (rare — e.g. two contexts in
+      // one group both happen to equal the same value); emit one row per.
+      for (const k of memberKeys) {
+        const raw = ctx[k];
+        if (raw === undefined || raw === null || raw === '') continue;
+        if (String(raw) !== target) continue;
+        // Label resolution: reusable first, local schema fallback.
+        let dimensionLabel = labelByKey.get(k) ?? null;
+        let valueLabel = optionLabelByKey.get(k)?.get(target) ?? null;
+        if (!dimensionLabel || !valueLabel) {
+          const fallback = localLabelsForAction(l.action, k);
+          if (fallback) {
+            dimensionLabel = dimensionLabel ?? fallback.dimensionLabel;
+            valueLabel = valueLabel ?? fallback.options.get(target) ?? null;
+          }
+        }
+        out.push({
+          logId: l.id,
+          date: formatLocalDate(l.createdAt),
+          time: formatLocalHourMinute(l.createdAt),
+          actionId: l.action.id,
+          actionName: l.action.name,
+          contextKey: k,
+          contextLabel: dimensionLabel ?? k,
+          valueLabel: valueLabel ?? target,
+          points: pointsByLog[l.id] ?? 0,
+        });
+      }
+    }
+    return out;
+  }
+
   private async breakdownByContext(
     participantId: string,
     programId: string,

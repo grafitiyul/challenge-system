@@ -2339,15 +2339,17 @@ function AnalyticsGroupsSection({
     } finally { setBusy(false); }
   }
 
-  // Eligible contexts = analytics-visible, participant-visible, active,
-  // not already attached to THIS group. (Could be attached to a different
-  // group; attaching here reassigns — same PATCH.)
+  // Eligible contexts = any analytics-visible, active, non-text context that
+  // isn't already attached to THIS group. Text-type contexts have no slices
+  // to aggregate so they can't be meaningfully grouped. Participant-hidden
+  // (system_fixed) contexts ARE eligible as long as analyticsVisible=true
+  // — they appear in analytics even though the participant never fills them.
   function eligibleForGroup(g: AnalyticsGroup): ContextDefinition[] {
     return definitions.filter(
       (d) =>
         d.isActive &&
         d.analyticsVisible &&
-        d.visibleToParticipantByDefault &&
+        d.type !== 'text' &&
         d.analyticsGroupId !== g.id,
     );
   }
@@ -2519,33 +2521,61 @@ function AnalyticsGroupsSection({
                       </div>
                     )}
 
+                    {/* Phase 4.6 attach UX rewrite: explicit per-context
+                        button. Each eligible context is one button; clicking
+                        it synchronously calls the attach handler. This avoids
+                        the controlled-<select> onChange-reentry edge case
+                        that was silently no-opping the previous picker. */}
                     {attachingGroupId === g.id ? (
-                      <div style={{ display: 'flex', gap: 6 }}>
-                        <select
-                          autoFocus
-                          style={{ ...inputStyle, flex: 1, fontSize: 13 }}
-                          value=""
-                          onChange={(e) => {
-                            if (e.target.value) attachContextToGroup(e.target.value, g.id);
-                          }}
-                          disabled={busy}
-                        >
-                          <option value="">— בחרי הקשר —</option>
-                          {eligible.map((d) => (
-                            <option key={d.id} value={d.id}>
-                              {d.label}
-                              {d.analyticsGroupId && d.analyticsGroupId !== g.id
-                                ? ` (יועבר מקבוצה אחרת)`
-                                : ''}
-                            </option>
-                          ))}
-                        </select>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, background: '#faf5ff', border: '1px dashed #ddd6fe', borderRadius: 8, padding: 10 }}>
+                        <div style={{ fontSize: 12, color: '#6d28d9', fontWeight: 600 }}>
+                          בחרי הקשר להוספה לקבוצה
+                        </div>
+                        {eligible.length === 0 ? (
+                          <div style={{ fontSize: 12, color: '#94a3b8', fontStyle: 'italic' }}>
+                            אין הקשרים זמינים.
+                          </div>
+                        ) : (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                            {eligible.map((d) => {
+                              const reassigning =
+                                d.analyticsGroupId && d.analyticsGroupId !== g.id;
+                              return (
+                                <button
+                                  key={d.id}
+                                  type="button"
+                                  disabled={busy}
+                                  onClick={() => attachContextToGroup(d.id, g.id)}
+                                  style={{
+                                    background: '#ffffff',
+                                    border: '1px solid #ddd6fe',
+                                    color: '#4c1d95',
+                                    borderRadius: 999,
+                                    padding: '6px 10px',
+                                    fontSize: 12,
+                                    fontWeight: 600,
+                                    cursor: busy ? 'not-allowed' : 'pointer',
+                                    fontFamily: 'inherit',
+                                  }}
+                                  title={reassigning ? 'יועבר מקבוצה אחרת' : ''}
+                                >
+                                  + {d.label}
+                                  {reassigning && (
+                                    <span style={{ marginInlineStart: 6, fontSize: 10, color: '#7c3aed', fontWeight: 500 }}>
+                                      (מועבר)
+                                    </span>
+                                  )}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
                         <button
                           type="button"
                           onClick={() => setAttachingGroupId(null)}
-                          style={{ background: '#f1f5f9', color: '#475569', border: '1px solid #e2e8f0', borderRadius: 6, padding: '6px 12px', fontSize: 12, cursor: 'pointer' }}
+                          style={{ alignSelf: 'flex-start', background: 'transparent', color: '#6b7280', border: 'none', fontSize: 12, cursor: 'pointer', textDecoration: 'underline', padding: 0 }}
                         >
-                          ביטול
+                          סגור
                         </button>
                       </div>
                     ) : (

@@ -11,6 +11,7 @@ import {
   AnalyticsDayEntry,
   AnalyticsBreakdownEntry,
   AnalyticsContextDimension,
+  AnalyticsSliceEntry,
 } from './participant-portal.service';
 
 class LogActionPortalDto {
@@ -154,5 +155,27 @@ export class ParticipantPortalController {
     @Param('token') token: string,
   ): Promise<AnalyticsContextDimension[]> {
     return this.portalService.getAnalyticsContextDimensions(token);
+  }
+
+  // GET /api/public/participant/:token/analytics/slice-drilldown
+  //   ?groupBy=context:<key> | group:<groupId>
+  //   &value=<raw value>
+  //   &period=7d|14d|30d|all  OR  &from=YYYY-MM-DD&to=YYYY-MM-DD
+  @Get(':token/analytics/slice-drilldown')
+  getAnalyticsSliceDrilldown(
+    @Param('token') token: string,
+    @Query('groupBy') groupBy: string,
+    @Query('value') value: string,
+    @Query('period') period?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ): Promise<AnalyticsSliceEntry[]> {
+    return this.portalService.getAnalyticsSliceDrilldown(token, {
+      groupBy,
+      value,
+      period: period as '7d' | '14d' | '30d' | 'all' | undefined,
+      from,
+      to,
+    });
   }
 }

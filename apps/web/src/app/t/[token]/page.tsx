@@ -145,6 +145,19 @@ interface AnalyticsBreakdownEntry {
   count: number;
 }
 
+// Phase 4.6: per-log row from the slice drill-down endpoint.
+interface AnalyticsSliceEntry {
+  logId: string;
+  date: string;           // YYYY-MM-DD (local)
+  time: string;           // HH:MM (local)
+  actionId: string;
+  actionName: string;
+  contextKey: string;
+  contextLabel: string;
+  valueLabel: string;
+  points: number;
+}
+
 type TrendDays = 7 | 14 | 30;
 type BreakdownPeriod = '7d' | '14d' | '30d' | 'all';
 
@@ -960,6 +973,15 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
   // Pie interaction: focused actionId highlights the matching row + dims others.
   const [focusedSliceKey, setFocusedSliceKey] = useState<string | null>(null);
 
+  // Phase 4.6: pie-slice drill-down sheet state. Opens when the participant
+  // taps a slice; shows concrete UserActionLog rows that produced that slice.
+  const [sliceSheet, setSliceSheet] = useState<{
+    title: string;         // e.g. "שגרה · בוקר"
+    entries: AnalyticsSliceEntry[] | null;
+    loading: boolean;
+    error: string;
+  } | null>(null);
+
   // ── Day drill-down sheet ────────────────────────────────────────────────
   const [daySheetDate, setDaySheetDate] = useState<string | null>(null);
   const [daySheetEntries, setDaySheetEntries] = useState<AnalyticsDayEntry[] | null>(null);
@@ -1030,6 +1052,18 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
   //   for breakdown.
   // 'custom' passes explicit `from`/`to` to both endpoints.
   // Idempotent URL builders — no side effects — keep refetch logic predictable.
+  // Phase 4.6: build the period/from-to query chunk shared by breakdown + slice.
+  function buildRangeQuery(r: AnalyticsRange): string {
+    if (r.key === 'today') {
+      const today = new Date().toISOString().slice(0, 10);
+      return `from=${today}&to=${today}`;
+    }
+    if (r.key === 'custom' && r.from && r.to) {
+      return `from=${r.from}&to=${r.to}`;
+    }
+    return `period=${r.key === 'custom' ? '14d' : r.key}`;
+  }
+
   function buildTrendQuery(r: AnalyticsRange): string {
     if (r.key === 'today') {
       const today = new Date().toISOString().slice(0, 10);
@@ -1165,6 +1199,30 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
     setDaySheetEntries(null);
     setDaySheetError('');
   }, []);
+
+  // Phase 4.6: open the slice drill-down. Caller supplies the view title
+  // (e.g. "שגרה · בוקר") so the sheet shows the participant what she tapped.
+  const openSliceSheet = useCallback(
+    (title: string, currentGroupBy: BreakdownGroupBy, value: string, r: AnalyticsRange) => {
+      if (currentGroupBy === 'action') return; // pie in action view isn't context-based
+      setSliceSheet({ title, entries: null, loading: true, error: '' });
+      const qs =
+        `groupBy=${encodeURIComponent(currentGroupBy)}&value=${encodeURIComponent(value)}&${buildRangeQuery(r)}`;
+      apiFetch<AnalyticsSliceEntry[]>(
+        `${BASE_URL}/public/participant/${token}/analytics/slice-drilldown?${qs}`,
+        { cache: 'no-store' },
+      )
+        .then((entries) =>
+          setSliceSheet((prev) => (prev ? { ...prev, entries, loading: false } : prev)),
+        )
+        .catch(() =>
+          setSliceSheet((prev) => (prev ? { ...prev, loading: false, error: 'שגיאה בטעינת הפירוט' } : prev)),
+        );
+    },
+    [token],
+  );
+
+  const closeSliceSheet = useCallback(() => setSliceSheet(null), []);
 
   const refreshFeed = useCallback((silent = false) => {
     if (!silent) setFeedLoading(true);
@@ -1915,9 +1973,9 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                                 }}
                               >
                                 {v.label}
-                                {v.key.startsWith('group:') && 'memberCount' in v && (
+                                {v.key.startsWith('group:') && 'memberCount' in v && v.memberCount > 0 && (
                                   <span style={{ color: '#94a3b8', marginInlineStart: 4, fontWeight: 500 }}>
-                                    ({v.memberCount})
+                                    · {v.memberCount === 1 ? 'הקשר אחד' : `${v.memberCount} הקשרים`}
                                   </span>
                                 )}
                               </button>
@@ -1933,9 +1991,33 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                     <BreakdownSection
                       rows={analyticsBreakdown}
                       focusedKey={focusedSliceKey}
-                      onSelect={(k) =>
-                        setFocusedSliceKey((cur) => (cur === k ? null : k))
-                      }
+                      // Phase 4.6: tapping a slice both highlights it AND
+                      // opens the concrete drill-down — but only when the
+                      // current view is a context/group (action view has no
+                      // contextual rows to drill into).
+                      onSelect={(k) => {
+                        setFocusedSliceKey((cur) => (cur === k ? null : k));
+                        if (groupBy !== 'action') {
+                          const row = analyticsBreakdown.find((r) => r.actionId === k);
+                          const valueLabel = row?.actionName ?? k;
+                          // Title: "<viewLabel> · <valueLabel>" — viewLabel
+                          // is whichever group or context is currently active.
+                          const viewLabel = (() => {
+                            if (groupBy.startsWith('group:')) {
+                              const gid = groupBy.slice('group:'.length);
+                              const dim = contextDimensions.find((d) => d.groupKey === gid);
+                              return dim?.groupLabel ?? 'קבוצה';
+                            }
+                            if (groupBy.startsWith('context:')) {
+                              const ckey = groupBy.slice('context:'.length);
+                              const dim = contextDimensions.find((d) => d.key === ckey);
+                              return dim?.displayLabel?.trim() || dim?.label || 'הקשר';
+                            }
+                            return '';
+                          })();
+                          openSliceSheet(`${viewLabel} · ${valueLabel}`, groupBy, k, range);
+                        }
+                      }}
                     />
                   )}
                 </div>
@@ -2332,6 +2414,86 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
             )}
 
             <button onClick={closeDaySheet} style={s.cancelBtn}>סגור</button>
+          </div>
+        )}
+      </div>
+
+      {/* ── Phase 4.6: pie-slice drill-down sheet ─────────────────────────── */}
+      {sliceSheet && (
+        <div style={s.backdrop} onClick={closeSliceSheet} />
+      )}
+      <div style={{
+        ...s.sheet,
+        transform: sliceSheet ? 'translateX(-50%) translateY(0)' : 'translateX(-50%) translateY(100%)',
+      }}>
+        {sliceSheet && (
+          <div style={s.sheetInner}>
+            <div style={s.sheetHandle} />
+            <div style={s.daySheetHeader}>
+              <div style={s.daySheetHeaderLeft}>
+                <span style={s.daySheetHeaderDay}>{sliceSheet.title}</span>
+                <span style={s.daySheetHeaderSub}>כל הדיווחים שתרמו לפרוסה הזו</span>
+              </div>
+              {sliceSheet.entries && (
+                <div style={s.daySheetTotal}>
+                  <span style={s.daySheetTotalValue}>
+                    {sliceSheet.entries.reduce((sum, e) => sum + e.points, 0)}
+                  </span>
+                  <span style={s.daySheetTotalLabel}>סה״כ נק׳</span>
+                </div>
+              )}
+            </div>
+
+            {sliceSheet.loading && (
+              <div style={{ padding: '24px 0', textAlign: 'center' }}>
+                <div style={s.spinner} />
+              </div>
+            )}
+            {sliceSheet.error && <p style={s.tabError}>{sliceSheet.error}</p>}
+
+            {!sliceSheet.loading && !sliceSheet.error && sliceSheet.entries && (
+              sliceSheet.entries.length === 0 ? (
+                <p style={s.emptyHint}>לא נמצאו רשומות מתאימות.</p>
+              ) : (
+                <div style={s.daySheetList}>
+                  {sliceSheet.entries.map((entry) => (
+                    <div key={entry.logId} style={s.daySheetGroup}>
+                      <div style={s.daySheetGroupHeader}>
+                        <span style={s.daySheetGroupName}>{entry.actionName}</span>
+                        <span style={s.daySheetGroupMeta}>
+                          <span style={s.daySheetGroupTotal}>
+                            {entry.points > 0 ? `+${entry.points}` : entry.points} נק׳
+                          </span>
+                        </span>
+                      </div>
+                      <div style={s.daySheetGroupRow}>
+                        <span style={s.daySheetTime}>{entry.time}</span>
+                        <div style={s.daySheetBody}>
+                          {/* Phase 4.6: for group slice drill-downs, surface
+                              WHICH context inside the group this row came
+                              from — "ארוחה: בוקר" reads naturally and
+                              distinguishes entries from different contexts
+                              that share a value label. */}
+                          <span style={s.daySheetValue}>
+                            <b style={{ color: '#111827' }}>{entry.contextLabel}:</b>{' '}
+                            {entry.valueLabel}
+                          </span>
+                          <span style={{ fontSize: 11, color: '#9ca3af' }}>
+                            {new Date(entry.date).toLocaleDateString('he-IL', {
+                              weekday: 'short',
+                              day: 'numeric',
+                              month: 'short',
+                            })}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )
+            )}
+
+            <button onClick={closeSliceSheet} style={s.cancelBtn}>סגור</button>
           </div>
         )}
       </div>
