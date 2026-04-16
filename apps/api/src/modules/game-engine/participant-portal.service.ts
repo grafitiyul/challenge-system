@@ -912,8 +912,15 @@ export class ParticipantPortalService {
     }
     if (groupBy.startsWith('group:')) {
       // Phase 4.3: centralized group lookup by FK. The id segment is the
-      // AnalyticsGroup.id — resolve every context pointing at that group and
-      // aggregate their data into one breakdown.
+      // AnalyticsGroup.id.
+      //
+      // Phase 6.3: group aggregation is now CONTEXT-LEVEL, not value-level.
+      // Each pie slice represents one member context (e.g. ארוחות / שינה /
+      // מים), valued by the total points from logs where that context is
+      // populated. The previous value-level model mixed unrelated values
+      // from different contexts into the same pie, which was confusing and
+      // semantically wrong. Single-context views (context:<key>) keep the
+      // existing value-level behavior via breakdownByContext.
       const groupId = groupBy.slice('group:'.length);
       if (!groupId) throw new BadRequestException('groupBy=group: requires a group id');
       const members = await this.prisma.contextDefinition.findMany({
@@ -922,7 +929,7 @@ export class ParticipantPortalService {
       });
       const memberKeys = members.map((m) => m.key);
       if (memberKeys.length === 0) return [];
-      return this.breakdownByContext(participantId, programId, since, until, memberKeys);
+      return this.breakdownByContextGroup(participantId, programId, since, until, memberKeys);
     }
     if (groupBy !== 'action') {
       throw new BadRequestException('groupBy must be "action", "context:<key>", or "group:<key>"');
@@ -1125,23 +1132,35 @@ export class ParticipantPortalService {
       return null;
     }
 
-    // Phase 4.8 (audit fix): group breakdown now produces compound bucket
-    // keys `${contextKey}:${value}`. When the frontend forwards that compound
-    // key as the drill-down `value`, we parse it here so the match constrains
-    // to exactly that contextKey — clicks on "meal_period:morning" no longer
-    // falsely emit rows where sleep_quality happens to equal "morning".
+    // Drill-down target handling. Three input shapes are supported:
     //
-    // Legacy single-value inputs (no colon, or colon prefix that doesn't
-    // match a member key) fall through unchanged, preserving the pre-4.8
-    // drill-down behavior for every call site that isn't the compound one.
+    //   1. Phase 6.3 group slices (context-level) — `opts.value` is exactly
+    //      a memberKey. Emit every log where that context is populated,
+    //      regardless of value. The per-row `valueLabel` still resolves to
+    //      the actual option label so the sheet stays readable.
+    //
+    //   2. Phase 4.8 compound-value slices — `opts.value` is
+    //      `${contextKey}:${value}`. Constrain match to that contextKey AND
+    //      that value — precise row selection for multi-key context views.
+    //
+    //   3. Legacy plain value — `opts.value` is a raw option value with no
+    //      colon prefix. Any memberKey whose value matches emits a row.
+    //      Preserves pre-4.8 behavior for every call site that still sends
+    //      bare values.
     let parsedKey: string | null = null;
     let target = String(opts.value);
-    const colonIdx = target.indexOf(':');
-    if (colonIdx > 0) {
-      const prefix = target.slice(0, colonIdx);
-      if (memberKeys.includes(prefix)) {
-        parsedKey = prefix;
-        target = target.slice(colonIdx + 1);
+    let byContextOnly = false;
+    if (memberKeys.includes(target)) {
+      parsedKey = target;
+      byContextOnly = true;
+    } else {
+      const colonIdx = target.indexOf(':');
+      if (colonIdx > 0) {
+        const prefix = target.slice(0, colonIdx);
+        if (memberKeys.includes(prefix)) {
+          parsedKey = prefix;
+          target = target.slice(colonIdx + 1);
+        }
       }
     }
     const out: AnalyticsSliceEntry[] = [];
@@ -1155,15 +1174,21 @@ export class ParticipantPortalService {
         if (parsedKey !== null && k !== parsedKey) continue;
         const raw = ctx[k];
         if (raw === undefined || raw === null || raw === '') continue;
-        if (String(raw) !== target) continue;
+        if (!byContextOnly && String(raw) !== target) continue;
         // Label resolution: reusable first, local schema fallback.
+        // When byContextOnly=true, `target` is the contextKey (not a value),
+        // so resolve valueLabel off this row's actual raw value instead.
+        const rowValue = String(raw);
+        const labelLookupValue = byContextOnly ? rowValue : target;
         let dimensionLabel = labelByKey.get(k) ?? null;
-        let valueLabel = optionLabelByKey.get(k)?.get(target) ?? null;
+        let valueLabel =
+          optionLabelByKey.get(k)?.get(labelLookupValue) ?? null;
         if (!dimensionLabel || !valueLabel) {
           const fallback = localLabelsForAction(l.action, k);
           if (fallback) {
             dimensionLabel = dimensionLabel ?? fallback.dimensionLabel;
-            valueLabel = valueLabel ?? fallback.options.get(target) ?? null;
+            valueLabel =
+              valueLabel ?? fallback.options.get(labelLookupValue) ?? null;
           }
         }
         out.push({
@@ -1174,7 +1199,7 @@ export class ParticipantPortalService {
           actionName: l.action.name,
           contextKey: k,
           contextLabel: dimensionLabel ?? k,
-          valueLabel: valueLabel ?? target,
+          valueLabel: valueLabel ?? labelLookupValue,
           points: pointsByLog[l.id] ?? 0,
         });
       }
@@ -1309,6 +1334,107 @@ export class ParticipantPortalService {
       ([bucketKey, v]) => ({
         actionId: bucketKey,   // compound "contextKey:value" — unique per dim+value
         actionName: v.label,   // resolved human label (option label, else raw value)
+        totalPoints: v.points,
+        count: v.count,
+      }),
+    );
+    rows.sort((a, b) => b.totalPoints - a.totalPoints || b.count - a.count);
+    return rows;
+  }
+
+  /**
+   * Phase 6.3 — group-view aggregation, CONTEXT-LEVEL.
+   *
+   * Each slice represents one member context (e.g. "ארוחות", "שינה", "מים")
+   * rather than a value within a context. A log contributes its points to
+   * every member context that has a non-empty value in its contextJson.
+   *
+   * Why this is different from breakdownByContext:
+   *   - breakdownByContext (single context / compound-bucket) is value-level.
+   *     It's right when the pie answers "within this one dimension, which
+   *     values contributed the most?".
+   *   - breakdownByContextGroup is context-level. It answers "within this
+   *     group of dimensions, which dimensions contributed the most?".
+   *     Mixing values from different dimensions into one pie is nonsense
+   *     ("morning" from meal_period vs "morning" from sleep_quality aren't
+   *     the same slice), so groups use this model instead.
+   *
+   * System-fixed / text-type contexts are INCLUDED here. They represent
+   * something meaningful ("this log was part of the routine") — we just
+   * can't slice them by value, which is exactly why the slice is the
+   * whole context.
+   *
+   * Response shape (reused from AnalyticsBreakdownEntry):
+   *   actionId   — the context key (opaque identifier for drill-down)
+   *   actionName — the context's display label
+   *   totalPoints/count — aggregated over logs where the context is populated
+   */
+  private async breakdownByContextGroup(
+    participantId: string,
+    programId: string,
+    since: Date | null,
+    until: Date,
+    groupMemberKeys: string[],
+  ): Promise<AnalyticsBreakdownEntry[]> {
+    if (groupMemberKeys.length === 0) return [];
+
+    const logs = await this.prisma.userActionLog.findMany({
+      where: {
+        participantId,
+        programId,
+        status: 'active',
+        ...(since
+          ? { createdAt: { gte: since, lte: until } }
+          : { createdAt: { lte: until } }),
+      },
+      select: { id: true, contextJson: true },
+    });
+    if (logs.length === 0) return [];
+
+    const logIds = logs.map((l) => l.id);
+    const scoreEvents = await this.prisma.scoreEvent.findMany({
+      where: { logId: { in: logIds }, sourceType: 'action' },
+      select: { logId: true, points: true },
+    });
+    const pointsByLog: Record<string, number> = {};
+    for (const se of scoreEvents) {
+      if (se.logId) pointsByLog[se.logId] = se.points;
+    }
+
+    // Resolve a display label per member context. Prefer the per-context
+    // `analyticsDisplayLabel` (the short analytics label the admin sets),
+    // fall back to the full `label`, and finally to the raw key.
+    const definitions = await this.prisma.contextDefinition.findMany({
+      where: { programId, key: { in: groupMemberKeys } },
+      select: { key: true, label: true, analyticsDisplayLabel: true },
+    });
+    const labelByKey = new Map<string, string>();
+    for (const def of definitions) {
+      labelByKey.set(def.key, def.analyticsDisplayLabel?.trim() || def.label);
+    }
+
+    // Bucket by context key. A single log with multiple member values
+    // contributes to each member's slice — consistent with how the per-
+    // context breakdown handles multi-value logs.
+    const totals: Record<string, { points: number; count: number }> = {};
+    for (const l of logs) {
+      const ctx = l.contextJson as Record<string, unknown> | null;
+      if (!ctx) continue;
+      const pts = pointsByLog[l.id] ?? 0;
+      for (const k of groupMemberKeys) {
+        const raw = ctx[k];
+        if (raw === undefined || raw === null || raw === '') continue;
+        const entry = totals[k] ?? { points: 0, count: 0 };
+        entry.points += pts;
+        entry.count += 1;
+        totals[k] = entry;
+      }
+    }
+
+    const rows: AnalyticsBreakdownEntry[] = Object.entries(totals).map(
+      ([k, v]) => ({
+        actionId: k, // context key — drill-down matches this against memberKeys
+        actionName: labelByKey.get(k) ?? k,
         totalPoints: v.points,
         count: v.count,
       }),
