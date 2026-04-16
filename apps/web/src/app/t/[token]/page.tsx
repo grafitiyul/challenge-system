@@ -181,6 +181,12 @@ interface ContextDimension {
   displayLabel?: string | null;
   groupKey?: string | null;
   groupLabel?: string | null;
+  // Phase 4.7 standalone-pill eligibility. Only renders as a standalone
+  // selector pill when all three are true. Grouped contexts aggregate via
+  // their parent group regardless of these flags.
+  analyticsVisible?: boolean;
+  participantVisible?: boolean;
+  hasOptions?: boolean;
 }
 
 /** Breakdown grouping mode. `action` = by actionId; `context:<key>` = by that dim. */
@@ -1894,10 +1900,20 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                   {(() => {
                     type View =
                       | { key: 'action'; label: string }
-                      | { key: `group:${string}`; label: string; memberCount: number }
+                      | { key: `group:${string}`; label: string }
                       | { key: `context:${string}`; label: string };
 
                     // Build groups map + standalone list in declaration order.
+                    //
+                    // Phase 4.7 rules:
+                    //   - Grouped contexts ALWAYS populate their parent group
+                    //     (including hidden/system contexts — the group aggregation
+                    //     still counts them, but they don't appear as their own tab).
+                    //   - A context becomes a STANDALONE pill only when it has no
+                    //     group AND is both analytics-visible and was participant-
+                    //     visible during reporting AND has selectable options.
+                    //     This prevents hidden/system contexts from cluttering the
+                    //     top-level selector.
                     const groupMap = new Map<string, { label: string; members: ContextDimension[] }>();
                     const standalone: ContextDimension[] = [];
                     for (const d of contextDimensions) {
@@ -1905,7 +1921,12 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                         const g = groupMap.get(d.groupKey);
                         if (g) g.members.push(d);
                         else groupMap.set(d.groupKey, { label: d.groupLabel, members: [d] });
-                      } else {
+                        continue;
+                      }
+                      const analyticsVisible = d.analyticsVisible !== false;
+                      const participantVisible = d.participantVisible !== false;
+                      const hasOptions = d.hasOptions !== false;
+                      if (analyticsVisible && participantVisible && hasOptions) {
                         standalone.push(d);
                       }
                     }
@@ -1914,7 +1935,6 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                       ...Array.from(groupMap.entries()).map<View>(([gid, v]) => ({
                         key: `group:${gid}` as const,
                         label: v.label,
-                        memberCount: v.members.length,
                       })),
                       ...standalone.map<View>((d) => ({
                         key: `context:${d.key}` as const,
@@ -1973,11 +1993,6 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                                 }}
                               >
                                 {v.label}
-                                {v.key.startsWith('group:') && 'memberCount' in v && v.memberCount > 0 && (
-                                  <span style={{ color: '#94a3b8', marginInlineStart: 4, fontWeight: 500 }}>
-                                    · {v.memberCount === 1 ? 'הקשר אחד' : `${v.memberCount} הקשרים`}
-                                  </span>
-                                )}
                               </button>
                             );
                           })}

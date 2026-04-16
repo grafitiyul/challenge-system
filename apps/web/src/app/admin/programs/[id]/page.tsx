@@ -2310,6 +2310,19 @@ function AnalyticsGroupsSection({
   // endpoint — we just flip analyticsGroupId. Keeps the backend flat (no new
   // route). On success, refresh both groups (member-count) and definitions
   // (group assignment) in the parent.
+  // Phase 4.7: surface backend errors verbatim. `apiFetch` throws a plain
+  // `{ status, message }` object on non-OK, which is NOT `instanceof Error`,
+  // so the previous `e instanceof Error ? e.message : ...` path always showed
+  // the generic message and hid the real cause. Extract `.message` defensively.
+  function extractApiError(e: unknown, fallback: string): string {
+    if (e && typeof e === 'object' && 'message' in e) {
+      const m = (e as { message?: unknown }).message;
+      if (typeof m === 'string' && m.length > 0) return m;
+    }
+    if (e instanceof Error) return e.message;
+    return fallback;
+  }
+
   async function attachContextToGroup(definitionId: string, groupId: string) {
     setBusy(true); setError('');
     try {
@@ -2321,7 +2334,7 @@ function AnalyticsGroupsSection({
       setAttachingGroupId(null);
       await onChanged();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'שגיאה בחיבור הקשר');
+      setError(extractApiError(e, 'שגיאה בחיבור הקשר'));
     } finally { setBusy(false); }
   }
 
@@ -2335,20 +2348,24 @@ function AnalyticsGroupsSection({
       });
       await onChanged();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'שגיאה בהסרת הקשר');
+      setError(extractApiError(e, 'שגיאה בהסרת הקשר'));
     } finally { setBusy(false); }
   }
 
-  // Eligible contexts = any analytics-visible, active, non-text context that
-  // isn't already attached to THIS group. Text-type contexts have no slices
-  // to aggregate so they can't be meaningfully grouped. Participant-hidden
-  // (system_fixed) contexts ARE eligible as long as analyticsVisible=true
-  // — they appear in analytics even though the participant never fills them.
+  // Eligible contexts = any active, non-text context that isn't already
+  // attached to THIS group. Text-type contexts have no slices to aggregate
+  // so they can't be meaningfully grouped.
+  //
+  // Phase 4.7: we intentionally do NOT require `analyticsVisible` here. The
+  // whole point of grouping a hidden/system context (e.g. שינה, מים under
+  // שגרה) is that the context is NOT a standalone analytics tab, but IS a
+  // contributor to its group's aggregate. Requiring analyticsVisible would
+  // make exactly those contexts un-attachable, which was the core bug the
+  // user reported.
   function eligibleForGroup(g: AnalyticsGroup): ContextDefinition[] {
     return definitions.filter(
       (d) =>
         d.isActive &&
-        d.analyticsVisible &&
         d.type !== 'text' &&
         d.analyticsGroupId !== g.id,
     );

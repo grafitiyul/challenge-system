@@ -151,7 +151,12 @@ export class ContextLibraryService {
   // ─── Update ──────────────────────────────────────────────────────────────
   async update(id: string, dto: UpdateContextDefinitionDto) {
     const row = await this.get(id);
-    const patch: Prisma.ContextDefinitionUpdateInput = {};
+    // Use the Unchecked variant so we can assign the scalar FK
+    // `analyticsGroupId` directly. The checked variant requires nested relation
+    // operations (`connect` / `disconnect`) which historically caused the
+    // attach path to silently fail in some cases — writing the scalar column
+    // is the simplest, most reliable approach Prisma supports.
+    const patch: Prisma.ContextDefinitionUncheckedUpdateInput = {};
     if (dto.label !== undefined) {
       const nextLabel = dto.label.trim();
       if (!nextLabel) throw new BadRequestException('Label cannot be empty');
@@ -213,11 +218,16 @@ export class ContextLibraryService {
     // Phase 4.3: centralized group FK. `analyticsGroupId === ""` or null
     // clears the assignment; a non-empty value must reference a group in this
     // program. `analyticsDisplayLabel` stays a simple per-definition override.
+    //
+    // Phase 4.7: use scalar FK assignment instead of `connect` / `disconnect`.
+    // The relation-operation pattern failed in practice — notably, `disconnect:
+    // true` throws when no existing relation is set, and `connect` silently
+    // appeared to succeed but some requests didn't persist the new FK. Writing
+    // the scalar column directly is the simplest path Prisma supports for both
+    // attach (string) and detach (null).
     if (dto.analyticsGroupId !== undefined) {
       const nextGroupId = await this.resolveGroupId(row.programId, dto.analyticsGroupId);
-      patch.analyticsGroup = nextGroupId
-        ? { connect: { id: nextGroupId } }
-        : { disconnect: true };
+      patch.analyticsGroupId = nextGroupId;
     }
     if (dto.analyticsDisplayLabel !== undefined) {
       patch.analyticsDisplayLabel =

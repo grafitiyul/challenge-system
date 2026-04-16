@@ -352,6 +352,17 @@ export interface AnalyticsContextDimension {
   displayLabel: string | null;
   groupKey: string | null;
   groupLabel: string | null;
+  // Phase 4.7 standalone-pill eligibility flags. Frontend only renders a
+  // context as a STANDALONE selector pill when all three are true. Grouped
+  // contexts still aggregate via their parent AnalyticsGroup regardless of
+  // these flags, so hidden/system contexts can still participate in a group
+  // without cluttering the top-level selector.
+  //   analyticsVisible     — admin didn't suppress this context from analytics
+  //   participantVisible   — was shown to the participant during reporting
+  //   hasOptions           — type='select' with a non-empty option list
+  analyticsVisible: boolean;
+  participantVisible: boolean;
+  hasOptions: boolean;
 }
 
 @Injectable()
@@ -1255,17 +1266,29 @@ export class ParticipantPortalService {
       this.prisma.contextDefinition.findMany({
         where: {
           programId,
-          analyticsVisible: true,
           isActive: true,
           NOT: { type: 'text' },
+          // Phase 4.7: we intentionally do NOT filter by `analyticsVisible`
+          // here. Hidden/system contexts need to surface so their parent
+          // analytics group can be discovered by the frontend. The frontend
+          // then uses `participantVisible` + `hasOptions` (set below) to
+          // decide whether a context qualifies as a STANDALONE selector pill.
         },
         // Phase 4.3: group is now a FK to AnalyticsGroup. Pull label through it.
+        // Phase 4.7: also pull visibleToParticipantByDefault + type + optionsJson
+        // + analyticsVisible so the frontend can distinguish hidden/system
+        // contexts (which may still belong to a group) from participant-visible
+        // ones (which can also appear as standalone selector pills).
         select: {
           key: true,
           label: true,
+          type: true,
           analyticsDisplayLabel: true,
           analyticsGroupId: true,
           analyticsGroup: { select: { id: true, label: true } },
+          visibleToParticipantByDefault: true,
+          analyticsVisible: true,
+          optionsJson: true,
         },
       }),
     ]);
@@ -1275,10 +1298,16 @@ export class ParticipantPortalService {
       displayLabel: string | null;
       groupKey: string | null;
       groupLabel: string | null;
+      analyticsVisible: boolean;
+      participantVisible: boolean;
+      hasOptions: boolean;
     };
     const declared = new Map<string, DeclaredEntry>();
     const reusableKeys = new Set<string>();
     for (const d of definitions) {
+      const options = Array.isArray(d.optionsJson)
+        ? (d.optionsJson as unknown[])
+        : [];
       declared.set(d.key, {
         key: d.key,
         label: d.label,
@@ -1287,12 +1316,20 @@ export class ParticipantPortalService {
         // off the related row so the UI can surface a human-friendly name.
         groupKey: d.analyticsGroupId ?? null,
         groupLabel: d.analyticsGroup?.label ?? null,
+        analyticsVisible: d.analyticsVisible === true,
+        participantVisible: d.visibleToParticipantByDefault === true,
+        hasOptions: d.type === 'select' && options.length > 0,
       });
       reusableKeys.add(d.key);
     }
     for (const a of actions) {
       const schema = a.contextSchemaJson as {
-        dimensions?: { key?: string; label?: string; type?: string }[];
+        dimensions?: {
+          key?: string;
+          label?: string;
+          type?: string;
+          options?: unknown[];
+        }[];
       } | null;
       for (const d of schema?.dimensions ?? []) {
         if (d.type === 'text') continue;
@@ -1303,6 +1340,13 @@ export class ParticipantPortalService {
             displayLabel: null,
             groupKey: null,
             groupLabel: null,
+            // Legacy per-action dimensions have no presentation metadata.
+            // Treat them as analytics- and participant-visible (they were
+            // captured by the participant at reporting time) with options
+            // iff the schema declares a non-empty option list.
+            analyticsVisible: true,
+            participantVisible: true,
+            hasOptions: d.type === 'select' && Array.isArray(d.options) && d.options.length > 0,
           });
         }
       }
@@ -1330,6 +1374,9 @@ export class ParticipantPortalService {
         displayLabel: d.displayLabel,
         groupKey: d.groupKey,
         groupLabel: d.groupLabel,
+        analyticsVisible: d.analyticsVisible,
+        participantVisible: d.participantVisible,
+        hasOptions: d.hasOptions,
       }));
   }
 
