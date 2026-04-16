@@ -2440,6 +2440,74 @@ export class ParticipantPortalService {
       }));
   }
 
+  // ─── Phase 6.11: participant-scoped edit / delete of own same-day logs ──
+  //
+  // Authorization chain:
+  //   1. Token resolves to a (participantId, programId) pair.
+  //   2. The target log must belong to THAT participantId + programId.
+  //   3. The log must be status='active' (already-corrected chains are
+  //      read-only; the active head is always the editable one).
+  //   4. The log's createdAt must fall within today's UTC day. Past-day
+  //      logs are locked — admin can still correct via separate admin tools,
+  //      but participants cannot retroactively change history.
+  //
+  // All four checks run before any mutation. On success we delegate to the
+  // existing GameEngineService.correctLog / voidLog, which handle the
+  // compensation, units-delta cascade, and threshold-rule recompute.
+
+  private async resolveOwnEditableLog(token: string, logId: string) {
+    const { participantId, programId } = await this.resolveToken(token);
+    const log = await this.prisma.userActionLog.findUnique({
+      where: { id: logId },
+      select: {
+        id: true,
+        participantId: true,
+        programId: true,
+        status: true,
+        createdAt: true,
+      },
+    });
+    if (!log) throw new NotFoundException('הפעולה לא נמצאה');
+    if (log.participantId !== participantId || log.programId !== programId) {
+      // Different participant's log — don't leak existence; return same
+      // message as "not found" to avoid information disclosure.
+      throw new NotFoundException('הפעולה לא נמצאה');
+    }
+    if (log.status !== 'active') {
+      throw new BadRequestException('לא ניתן לערוך פעולה שכבר עודכנה');
+    }
+    const now = new Date();
+    const todayStart = startOfDayUTC(now);
+    const todayEnd = new Date(todayStart.getTime() + DAY_MS);
+    if (log.createdAt < todayStart || log.createdAt >= todayEnd) {
+      throw new BadRequestException(
+        'ניתן לערוך או למחוק רק פעולות שבוצעו היום',
+      );
+    }
+    return { log };
+  }
+
+  async editOwnLog(
+    token: string,
+    logId: string,
+    dto: { value: string },
+  ) {
+    await this.resolveOwnEditableLog(token, logId);
+    return this.gameEngine.correctLog({
+      logId,
+      value: dto.value,
+      actorRole: 'participant',
+    });
+  }
+
+  async deleteOwnLog(token: string, logId: string) {
+    await this.resolveOwnEditableLog(token, logId);
+    return this.gameEngine.voidLog({
+      logId,
+      actorRole: 'participant',
+    });
+  }
+
   // ─── Private helpers ───────────────────────────────────────────────────────
 
   private async resolveToken(token: string) {

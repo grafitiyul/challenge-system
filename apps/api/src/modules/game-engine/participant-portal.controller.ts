@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, Param, Patch, Post, Query } from '@nestjs/common';
 import { IsObject, IsOptional, IsString } from 'class-validator';
 import {
   ParticipantPortalService,
@@ -38,6 +38,12 @@ class LogActionPortalDto {
   extraText?: string;
 }
 
+// Phase 6.11: body for participant-scoped log editing.
+class EditLogPortalDto {
+  @IsString()
+  value: string;
+}
+
 @Controller('public/participant')
 export class ParticipantPortalController {
   constructor(private readonly portalService: ParticipantPortalService) {}
@@ -72,6 +78,34 @@ export class ParticipantPortalController {
       },
       idempotencyKey,
     );
+  }
+
+  // Phase 6.11: PATCH /api/public/participant/:token/logs/:logId
+  //
+  // Participant-scoped edit of their OWN same-day log. Delegates to the
+  // existing GameEngineService.correctLog — no new business logic. Server
+  // verifies ownership (log belongs to this token's participant) and that
+  // the log was created today; past-day logs are read-only.
+  @Patch(':token/logs/:logId')
+  editOwnLog(
+    @Param('token') token: string,
+    @Param('logId') logId: string,
+    @Body() dto: EditLogPortalDto,
+  ) {
+    return this.portalService.editOwnLog(token, logId, { value: dto.value });
+  }
+
+  // Phase 6.11: DELETE /api/public/participant/:token/logs/:logId
+  //
+  // Participant-scoped void of their own same-day log. Same ownership +
+  // today-only constraints as edit. Uses GameEngineService.voidLog, which
+  // triggers the units-delta cascade + threshold-rule recompute.
+  @Delete(':token/logs/:logId')
+  deleteOwnLog(
+    @Param('token') token: string,
+    @Param('logId') logId: string,
+  ) {
+    return this.portalService.deleteOwnLog(token, logId);
   }
 
   // GET /api/public/participant/:token/stats

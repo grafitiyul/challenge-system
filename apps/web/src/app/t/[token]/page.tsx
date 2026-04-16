@@ -720,7 +720,19 @@ function BreakdownSection({
 // rendered as a placeholder column so that when Phase 5 introduces corrections
 // the layout doesn't shift.
 
-function DaySheetGroupedList({ entries }: { entries: AnalyticsDayEntry[] }) {
+function DaySheetGroupedList({
+  entries,
+  canEdit,
+  onEdit,
+  onDelete,
+}: {
+  entries: AnalyticsDayEntry[];
+  // Phase 6.11: edit/delete are only available for today's sheet. When
+  // canEdit=false, rows render without action buttons (read-only history).
+  canEdit: boolean;
+  onEdit: (entry: AnalyticsDayEntry) => void;
+  onDelete: (entry: AnalyticsDayEntry) => void;
+}) {
   // Stable group order: first appearance in the chronological list.
   const order: string[] = [];
   const groups: Record<string, AnalyticsDayEntry[]> = {};
@@ -813,7 +825,50 @@ function DaySheetGroupedList({ entries }: { entries: AnalyticsDayEntry[] }) {
                   <span style={s.daySheetPointsSmall}>
                     {entry.points > 0 ? `+${entry.points}` : entry.points}
                   </span>
-                  <span style={s.daySheetEditPlaceholder} aria-hidden="true">⋯</span>
+                  {canEdit ? (
+                    <span style={{ display: 'inline-flex', gap: 4, flexShrink: 0 }}>
+                      {entry.effectiveValue !== null && (
+                        <button
+                          type="button"
+                          onClick={() => onEdit(entry)}
+                          aria-label={`ערוך ${entry.actionName}`}
+                          title="ערוך"
+                          style={{
+                            background: '#f1f5f9',
+                            border: '1px solid #e2e8f0',
+                            borderRadius: 6,
+                            padding: '4px 8px',
+                            fontSize: 13,
+                            cursor: 'pointer',
+                            fontFamily: 'inherit',
+                            lineHeight: 1,
+                          }}
+                        >
+                          ✏️
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => onDelete(entry)}
+                        aria-label={`מחק ${entry.actionName}`}
+                        title="מחק"
+                        style={{
+                          background: '#fef2f2',
+                          border: '1px solid #fecaca',
+                          borderRadius: 6,
+                          padding: '4px 8px',
+                          fontSize: 13,
+                          cursor: 'pointer',
+                          fontFamily: 'inherit',
+                          lineHeight: 1,
+                        }}
+                      >
+                        🗑️
+                      </button>
+                    </span>
+                  ) : (
+                    <span style={s.daySheetEditPlaceholder} aria-hidden="true">⋯</span>
+                  )}
                 </div>
               );
             })}
@@ -976,6 +1031,18 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
   const [daySheetEntries, setDaySheetEntries] = useState<AnalyticsDayEntry[] | null>(null);
   const [daySheetLoading, setDaySheetLoading] = useState(false);
   const [daySheetError, setDaySheetError] = useState('');
+
+  // Phase 6.11: inline edit / delete of today's own logs.
+  // Modals render inside the day-sheet backdrop; server call uses the
+  // participant-scoped PATCH/DELETE endpoints and then reloads the sheet +
+  // analytics so every total on screen reflects the post-recompute truth.
+  const [editTarget, setEditTarget] = useState<AnalyticsDayEntry | null>(null);
+  const [editValue, setEditValue] = useState('');
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState<AnalyticsDayEntry | null>(null);
+  const [deleteSaving, setDeleteSaving] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
 
   // Feed tab
   const [feed, setFeed] = useState<FeedItem[]>([]);
@@ -1204,6 +1271,130 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
     setDaySheetEntries(null);
     setDaySheetError('');
   }, []);
+
+  // Phase 6.11 edit/delete handlers.
+  // Server call → reload the day sheet + full analytics + ctx (today's score)
+  // so every visible total reflects the post-recompute truth. No optimistic
+  // state: we wait for the server and always refetch.
+  const openEditModal = useCallback((entry: AnalyticsDayEntry) => {
+    setEditTarget(entry);
+    setEditValue(entry.rawValue ?? '');
+    setEditError('');
+  }, []);
+  const closeEditModal = useCallback(() => {
+    if (editSaving) return;
+    setEditTarget(null);
+    setEditValue('');
+    setEditError('');
+  }, [editSaving]);
+  const submitEdit = useCallback(async () => {
+    if (!editTarget) return;
+    const trimmed = editValue.trim();
+    if (!trimmed) {
+      setEditError('יש להזין ערך');
+      return;
+    }
+    setEditSaving(true);
+    setEditError('');
+    try {
+      await apiFetch(
+        `${BASE_URL}/public/participant/${token}/logs/${editTarget.logId}`,
+        {
+          method: 'PATCH',
+          cache: 'no-store',
+          body: JSON.stringify({ value: trimmed }),
+        },
+      );
+      // Reload the day sheet, then refresh all analytics surfaces so the
+      // totals in header, chart, breakdown, and insights all shift together.
+      if (daySheetDate) {
+        const fresh = await apiFetch<AnalyticsDayEntry[]>(
+          `${BASE_URL}/public/participant/${token}/analytics/day?date=${daySheetDate}`,
+          { cache: 'no-store' },
+        );
+        setDaySheetEntries(fresh);
+      }
+      refreshAnalytics(true);
+      // Refresh portal context so the header's todayScore reflects post-
+      // recompute truth. Best-effort; stale data is an acceptable fallback.
+      try {
+        const fresh = await apiFetch<PortalContext>(
+          `${BASE_URL}/public/participant/${token}`,
+          { cache: 'no-store' },
+        );
+        setCtx((prev) =>
+          prev
+            ? { ...prev, todayScore: fresh.todayScore, todayValues: fresh.todayValues }
+            : prev,
+        );
+      } catch {
+        /* ignore */
+      }
+      setEditTarget(null);
+      setEditValue('');
+    } catch (e) {
+      const msg =
+        e && typeof e === 'object' && 'message' in e
+          ? String((e as { message?: string }).message ?? '')
+          : '';
+      setEditError(msg || 'שגיאה בשמירה');
+    } finally {
+      setEditSaving(false);
+    }
+  }, [editTarget, editValue, daySheetDate, token]);
+
+  const openDeleteModal = useCallback((entry: AnalyticsDayEntry) => {
+    setDeleteTarget(entry);
+    setDeleteError('');
+  }, []);
+  const closeDeleteModal = useCallback(() => {
+    if (deleteSaving) return;
+    setDeleteTarget(null);
+    setDeleteError('');
+  }, [deleteSaving]);
+  const confirmDelete = useCallback(async () => {
+    if (!deleteTarget) return;
+    setDeleteSaving(true);
+    setDeleteError('');
+    try {
+      await apiFetch(
+        `${BASE_URL}/public/participant/${token}/logs/${deleteTarget.logId}`,
+        { method: 'DELETE', cache: 'no-store' },
+      );
+      if (daySheetDate) {
+        const fresh = await apiFetch<AnalyticsDayEntry[]>(
+          `${BASE_URL}/public/participant/${token}/analytics/day?date=${daySheetDate}`,
+          { cache: 'no-store' },
+        );
+        setDaySheetEntries(fresh);
+      }
+      refreshAnalytics(true);
+      // Refresh portal context so the header's todayScore reflects post-
+      // recompute truth. Best-effort; stale data is an acceptable fallback.
+      try {
+        const fresh = await apiFetch<PortalContext>(
+          `${BASE_URL}/public/participant/${token}`,
+          { cache: 'no-store' },
+        );
+        setCtx((prev) =>
+          prev
+            ? { ...prev, todayScore: fresh.todayScore, todayValues: fresh.todayValues }
+            : prev,
+        );
+      } catch {
+        /* ignore */
+      }
+      setDeleteTarget(null);
+    } catch (e) {
+      const msg =
+        e && typeof e === 'object' && 'message' in e
+          ? String((e as { message?: string }).message ?? '')
+          : '';
+      setDeleteError(msg || 'שגיאה במחיקה');
+    } finally {
+      setDeleteSaving(false);
+    }
+  }, [deleteTarget, daySheetDate, token]);
 
   // Phase 4.6: open the slice drill-down. Caller supplies the view title
   // (e.g. "שגרה · בוקר") so the sheet shows the participant what she tapped.
@@ -2460,7 +2651,29 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
               daySheetEntries.length === 0 ? (
                 <p style={s.emptyHint}>לא נרשמה פעילות ביום זה.</p>
               ) : (
-                <DaySheetGroupedList entries={daySheetEntries} />
+                (() => {
+                  // Phase 6.11: edit/delete are only enabled when viewing
+                  // TODAY's sheet. Past-day sheets render as read-only
+                  // history. Both backend and frontend enforce this so the
+                  // UI never offers an action the server will reject.
+                  const todayUtc = new Date().toISOString().slice(0, 10);
+                  const canEdit = daySheetDate === todayUtc;
+                  return (
+                    <>
+                      {canEdit && (
+                        <p style={{ fontSize: 11, color: '#64748b', margin: '0 0 8px', lineHeight: 1.5 }}>
+                          עריכה או מחיקה יעדכנו את הניקוד של היום בהתאם
+                        </p>
+                      )}
+                      <DaySheetGroupedList
+                        entries={daySheetEntries}
+                        canEdit={canEdit}
+                        onEdit={openEditModal}
+                        onDelete={openDeleteModal}
+                      />
+                    </>
+                  );
+                })()
               )
             )}
 
@@ -2468,6 +2681,167 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
           </div>
         )}
       </div>
+
+      {/* ── Phase 6.11: edit-log modal ─────────────────────────────────────── */}
+      {editTarget && (
+        <>
+          <div style={{ ...s.backdrop, zIndex: 110 }} onClick={closeEditModal} />
+          <div
+            style={{
+              position: 'fixed',
+              top: '50%',
+              left: '50%',
+              transform: 'translate(-50%, -50%)',
+              background: '#fff',
+              borderRadius: 14,
+              padding: 20,
+              width: 'min(360px, calc(100vw - 32px))',
+              boxShadow: '0 18px 40px rgba(0,0,0,0.18)',
+              zIndex: 120,
+              display: 'flex',
+              flexDirection: 'column' as const,
+              gap: 12,
+            }}
+          >
+            <div style={{ fontSize: 16, fontWeight: 700, color: '#0f172a' }}>
+              עריכת {editTarget.actionName}
+            </div>
+            <p style={{ fontSize: 12, color: '#64748b', margin: 0, lineHeight: 1.5 }}>
+              הערך הנוכחי: <b>{editTarget.rawValue}</b>. שמירה תעדכן את הניקוד של היום בהתאם.
+            </p>
+            <label style={{ display: 'flex', flexDirection: 'column' as const, gap: 4 }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>ערך חדש</span>
+              <input
+                type="number"
+                inputMode="numeric"
+                dir="ltr"
+                value={editValue}
+                onChange={(e) => setEditValue(e.target.value)}
+                style={{
+                  border: '1px solid #e2e8f0',
+                  borderRadius: 8,
+                  padding: '10px 12px',
+                  fontSize: 16,
+                  fontFamily: 'inherit',
+                  direction: 'ltr' as const,
+                }}
+                autoFocus
+              />
+            </label>
+            {editError && (
+              <p style={{ fontSize: 12, color: '#dc2626', margin: 0 }}>{editError}</p>
+            )}
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                type="button"
+                onClick={closeEditModal}
+                disabled={editSaving}
+                style={{
+                  background: '#f1f5f9',
+                  color: '#475569',
+                  border: '1px solid #e2e8f0',
+                  borderRadius: 8,
+                  padding: '9px 16px',
+                  fontSize: 14,
+                  cursor: editSaving ? 'not-allowed' : 'pointer',
+                  fontFamily: 'inherit',
+                }}
+              >
+                ביטול
+              </button>
+              <button
+                type="button"
+                onClick={submitEdit}
+                disabled={editSaving}
+                style={{
+                  background: '#2563eb',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: 8,
+                  padding: '9px 18px',
+                  fontSize: 14,
+                  fontWeight: 600,
+                  cursor: editSaving ? 'not-allowed' : 'pointer',
+                  fontFamily: 'inherit',
+                }}
+              >
+                {editSaving ? 'שומרת…' : 'שמור'}
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ── Phase 6.11: delete confirmation modal ──────────────────────────── */}
+      {deleteTarget && (
+        <>
+          <div style={{ ...s.backdrop, zIndex: 110 }} onClick={closeDeleteModal} />
+          <div
+            style={{
+              position: 'fixed',
+              top: '50%',
+              left: '50%',
+              transform: 'translate(-50%, -50%)',
+              background: '#fff',
+              borderRadius: 14,
+              padding: 20,
+              width: 'min(360px, calc(100vw - 32px))',
+              boxShadow: '0 18px 40px rgba(0,0,0,0.18)',
+              zIndex: 120,
+              display: 'flex',
+              flexDirection: 'column' as const,
+              gap: 12,
+            }}
+          >
+            <div style={{ fontSize: 16, fontWeight: 700, color: '#0f172a' }}>
+              מחיקת {deleteTarget.actionName}
+            </div>
+            <p style={{ fontSize: 13, color: '#374151', margin: 0, lineHeight: 1.5 }}>
+              לא ניתן לבטל פעולה זו. הניקוד של היום יעודכן בהתאם.
+            </p>
+            {deleteError && (
+              <p style={{ fontSize: 12, color: '#dc2626', margin: 0 }}>{deleteError}</p>
+            )}
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                type="button"
+                onClick={closeDeleteModal}
+                disabled={deleteSaving}
+                style={{
+                  background: '#f1f5f9',
+                  color: '#475569',
+                  border: '1px solid #e2e8f0',
+                  borderRadius: 8,
+                  padding: '9px 16px',
+                  fontSize: 14,
+                  cursor: deleteSaving ? 'not-allowed' : 'pointer',
+                  fontFamily: 'inherit',
+                }}
+              >
+                ביטול
+              </button>
+              <button
+                type="button"
+                onClick={confirmDelete}
+                disabled={deleteSaving}
+                style={{
+                  background: '#dc2626',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: 8,
+                  padding: '9px 18px',
+                  fontSize: 14,
+                  fontWeight: 600,
+                  cursor: deleteSaving ? 'not-allowed' : 'pointer',
+                  fontFamily: 'inherit',
+                }}
+              >
+                {deleteSaving ? 'מוחקת…' : 'מחק'}
+              </button>
+            </div>
+          </div>
+        </>
+      )}
 
       {/* ── Phase 4.6: pie-slice drill-down sheet ─────────────────────────── */}
       {sliceSheet && (
