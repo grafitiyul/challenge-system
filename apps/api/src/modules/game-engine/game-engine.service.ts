@@ -2233,9 +2233,34 @@ export class GameEngineService {
     }
 
     const newValue = dto.value ?? oldLog.value;
-    // If contextJson is explicitly undefined, keep old. If provided (even as {}), replace.
-    const nextContextRaw = dto.contextJson !== undefined ? dto.contextJson : oldLog.contextJson;
-    const validatedContext = validateContext(oldLog.action.contextSchemaJson, nextContextRaw);
+    // Phase 6.13: only RE-VALIDATE context when the caller explicitly
+    // supplied a new payload. If `dto.contextJson === undefined` the caller
+    // is saying "leave context alone" — preserve whatever is stored on the
+    // existing log byte-for-byte and skip validation.
+    //
+    // This fix unblocks two paths that used to fail spuriously:
+    //   1. Participant self-edit (value-only edit). The caller never sends
+    //      contextJson; previously we'd revalidate oldLog.contextJson, which
+    //      is populated from the EFFECTIVE schema (local + reusable context
+    //      definitions), against `action.contextSchemaJson` alone (only the
+    //      LOCAL schema). Logs that carried reusable-context values got
+    //      rejected with "Action does not accept context fields".
+    //   2. Admin correction flows where the action's context schema changed
+    //      since the log was written. Re-validating stale context against
+    //      the current schema punished the admin for an orthogonal change.
+    //
+    // When the caller DOES supply a new contextJson, validate it normally —
+    // the payload is a participant/admin statement of intent that must be
+    // enforced against current rules.
+    let validatedContext: Record<string, unknown> | null;
+    if (dto.contextJson !== undefined) {
+      validatedContext = validateContext(
+        oldLog.action.contextSchemaJson,
+        dto.contextJson,
+      );
+    } else {
+      validatedContext = oldLog.contextJson as Record<string, unknown> | null;
+    }
 
     // ── Phase 6.9 correction points ────────────────────────────────────────
     // For units_delta: compute pro-forma full points; the cascade step
