@@ -415,6 +415,23 @@ export class ParticipantPortalService {
     private readonly gameEngine: GameEngineService,
   ) {}
 
+  // ─── Phase 6.6 global diversity counter ───────────────────────────────────
+  // In-memory tally of how many times each insight type has been SELECTED
+  // (not just generated) across all participants since this server instance
+  // started. Used to soft-penalize overused types so rarely-seen types drift
+  // upward in ranking for the next participant.
+  //
+  // Design choices:
+  //   - NOT persisted. Server restart resets the counter. Acceptable: the
+  //     goal is nudging experience-level diversity, not a hard quota.
+  //   - NOT synchronized across multiple server instances. Each instance
+  //     builds its own tally. Acceptable for the current single-instance
+  //     Railway deploy; would need shared state (Redis etc.) for HA.
+  //   - NOT shown to the participant or surfaced in any response shape.
+  //   - Updates happen AFTER selection per-request. Single-threaded Node
+  //     event loop means `x += 1` has no race in practice.
+  private typeUsageCounter: Record<string, number> = {};
+
   // ─── Resolve token → participant context ──────────────────────────────────
 
   async getContext(token: string, bypassSig?: string): Promise<PortalContext> {
@@ -2136,8 +2153,18 @@ export class ParticipantPortalService {
       low_engagement: 1.0,
     };
     for (const c of candidates) {
-      const w = TYPE_BASE_WEIGHT[c.type] ?? 1.0;
-      c.score = c.score * w;
+      const baseWeight = TYPE_BASE_WEIGHT[c.type] ?? 1.0;
+      // Phase 6.6: global diversity weight. The more a type has been
+      // selected recently (per server instance), the lower its multiplier.
+      //   0 uses  → weight 1.0       (no penalty)
+      //   1 use   → weight 1/1.3  ≈ 0.77
+      //   3 uses  → weight 1/1.9  ≈ 0.53
+      //   10 uses → weight 1/4.0  = 0.25
+      // Asymptotes toward 0 but never actually hits zero, so a sufficiently
+      // high-scoring type will still surface even if it's been common.
+      const usage = this.typeUsageCounter[c.type] ?? 0;
+      const diversityWeight = 1 / (1 + usage * 0.3);
+      c.score = c.score * baseWeight * diversityWeight;
     }
 
     // ── Score floor ─────────────────────────────────────────────────────
@@ -2196,6 +2223,15 @@ export class ParticipantPortalService {
     // the "never mislead" rule.
     narrativeDeduplicated.sort((a, b) => b.score - a.score);
     const selected = narrativeDeduplicated.slice(0, 4);
+
+    // Phase 6.6: update the global type-usage tally with what actually got
+    // selected for this participant. Only runs for types that SURFACED —
+    // types that qualified but were dropped during dedup don't count as
+    // "seen", so their diversity weight stays intact for the next request.
+    for (const c of selected) {
+      this.typeUsageCounter[c.type] =
+        (this.typeUsageCounter[c.type] ?? 0) + 1;
+    }
 
     // Strip internal concept tag before returning.
     return selected.map((c) => ({
