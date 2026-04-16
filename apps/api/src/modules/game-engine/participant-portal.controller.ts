@@ -12,6 +12,7 @@ import {
   AnalyticsBreakdownEntry,
   AnalyticsContextDimension,
   AnalyticsSliceEntry,
+  AnalyticsInsight,
 } from './participant-portal.service';
 
 class LogActionPortalDto {
@@ -155,6 +156,25 @@ export class ParticipantPortalController {
     @Param('token') token: string,
   ): Promise<AnalyticsContextDimension[]> {
     return this.portalService.getAnalyticsContextDimensions(token);
+  }
+
+  // GET /api/public/participant/:token/analytics/insights
+  //   ?period=7d|14d|30d|all  OR  ?from=YYYY-MM-DD&to=YYYY-MM-DD
+  // Phase 6: deterministic insights engine. Returns 0–4 short Hebrew lines
+  // summarizing the most important patterns in the participant's data for the
+  // requested range. No AI, no randomness — pure ledger-derived scoring.
+  @Get(':token/analytics/insights')
+  getAnalyticsInsights(
+    @Param('token') token: string,
+    @Query('period') period?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ): Promise<AnalyticsInsight[]> {
+    return this.portalService.getAnalyticsInsights(token, {
+      period: period as '7d' | '14d' | '30d' | 'all' | undefined,
+      from,
+      to,
+    });
   }
 
   // GET /api/public/participant/:token/analytics/slice-drilldown

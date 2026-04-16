@@ -824,61 +824,36 @@ function DaySheetGroupedList({ entries }: { entries: AnalyticsDayEntry[] }) {
   );
 }
 
-// ─── Insights (Phase 2B) ────────────────────────────────────────────────────
-// Lightweight client-side derivation from already-loaded trend + breakdown data.
-// No new fetches. Two short Hebrew sentences — only rendered when the data
-// actually supports them (skips the line otherwise instead of saying nothing).
+// ─── Insights (Phase 6) ─────────────────────────────────────────────────────
+// Backend-driven deterministic insights. The server generates candidates,
+// scores them, dedupes overlapping patterns, and returns 0–4 short lines
+// already ranked by importance. We just render them in order.
+//
+// Types:
+//   strongest   — highest-points category
+//   weakest     — lowest non-zero category with a meaningful gap
+//   best_day    — day whose points stand out from the average
+//   trend       — % change vs previous equal-length period
+//   consistency — active-days / total-days ratio (celebrates or nudges)
 
-function InsightsCard({
-  trend,
-  breakdown,
-}: {
-  trend: { date: string; points: number; submissionCount: number }[];
-  breakdown: { actionId: string; actionName: string; totalPoints: number; count: number }[];
-}) {
-  // Best day in the range. Only considers days with points > 0.
-  const bestDay = trend.reduce<null | { date: string; points: number }>((best, d) => {
-    if (d.points <= 0) return best;
-    if (!best || d.points > best.points) return { date: d.date, points: d.points };
-    return best;
-  }, null);
+interface AnalyticsInsight {
+  type: 'strongest' | 'weakest' | 'best_day' | 'trend' | 'consistency';
+  text: string;
+  icon: string;
+  score: number;
+}
 
-  // Best action in the range — positive-only so negative net rows don't "win".
-  const bestAction = breakdown
-    .filter((r) => r.totalPoints > 0)
-    .reduce<null | { name: string; points: number }>((best, r) => {
-      if (!best || r.totalPoints > best.points) return { name: r.actionName, points: r.totalPoints };
-      return best;
-    }, null);
-
-  if (!bestDay && !bestAction) return null;
-
+function InsightsCard({ insights }: { insights: AnalyticsInsight[] | null }) {
+  // Nothing to show → render nothing (no empty card shell).
+  if (!insights || insights.length === 0) return null;
   return (
     <div style={s.insightsCard}>
-      {bestDay && (
-        <div style={s.insightRow}>
-          <span style={s.insightIcon}>📈</span>
-          <span style={s.insightText}>
-            היום הכי חזק שלך בטווח:{' '}
-            <b>
-              {new Date(bestDay.date).toLocaleDateString('he-IL', {
-                weekday: 'long',
-                day: 'numeric',
-                month: 'short',
-              })}
-            </b>{' '}
-            ({bestDay.points} נק׳)
-          </span>
+      {insights.map((i, idx) => (
+        <div key={`${i.type}-${idx}`} style={s.insightRow}>
+          <span style={s.insightIcon}>{i.icon}</span>
+          <span style={s.insightText}>{i.text}</span>
         </div>
-      )}
-      {bestAction && (
-        <div style={s.insightRow}>
-          <span style={s.insightIcon}>⭐</span>
-          <span style={s.insightText}>
-            הפעולה המשתלמת שלך: <b>{bestAction.name}</b> ({bestAction.points} נק׳)
-          </span>
-        </div>
-      )}
+      ))}
     </div>
   );
 }
@@ -961,6 +936,8 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
   const [analyticsSummary, setAnalyticsSummary] = useState<AnalyticsSummary | null>(null);
   const [analyticsTrend, setAnalyticsTrend] = useState<AnalyticsTrendPoint[] | null>(null);
   const [analyticsBreakdown, setAnalyticsBreakdown] = useState<AnalyticsBreakdownEntry[] | null>(null);
+  // Phase 6: deterministic insights, fetched from the backend per range.
+  const [analyticsInsights, setAnalyticsInsights] = useState<AnalyticsInsight[] | null>(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
   const [analyticsError, setAnalyticsError] = useState('');
 
@@ -1091,6 +1068,17 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
     }
     return `${base}&groupBy=${encodeURIComponent(g)}`;
   }
+  // Phase 6: insights are range-scoped (not groupBy-scoped). They aggregate
+  // the same ledger data regardless of which category pill is selected, so
+  // we only re-fetch when the range changes, not when groupBy flips.
+  function buildInsightsQuery(r: AnalyticsRange): string {
+    if (r.key === 'today') {
+      const today = new Date().toISOString().slice(0, 10);
+      return `from=${today}&to=${today}`;
+    }
+    if (r.key === 'custom' && r.from && r.to) return `from=${r.from}&to=${r.to}`;
+    return `period=${r.key === 'custom' ? '14d' : r.key}`;
+  }
 
   const refreshAnalytics = useCallback(
     (silent = false, r: AnalyticsRange = range, g: BreakdownGroupBy = groupBy) => {
@@ -1108,11 +1096,16 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
           `${BASE_URL}/public/participant/${token}/analytics/breakdown?${buildBreakdownQuery(r, g)}`,
           { cache: 'no-store' },
         ),
+        apiFetch<AnalyticsInsight[]>(
+          `${BASE_URL}/public/participant/${token}/analytics/insights?${buildInsightsQuery(r)}`,
+          { cache: 'no-store' },
+        ),
       ])
-        .then(([summary, trend, breakdown]) => {
+        .then(([summary, trend, breakdown, insights]) => {
           setAnalyticsSummary(summary);
           setAnalyticsTrend(trend);
           setAnalyticsBreakdown(breakdown);
+          setAnalyticsInsights(insights);
           setAnalyticsError('');
         })
         .catch(() => setAnalyticsError('שגיאה בטעינת הנתונים'))
@@ -1813,10 +1806,9 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                   {rangeError && <p style={s.rangeErrorText}>{rangeError}</p>}
                 </div>
 
-                {/* ── Insights (derived client-side from already-loaded data) */}
-                {analyticsTrend && analyticsBreakdown && (
-                  <InsightsCard trend={analyticsTrend} breakdown={analyticsBreakdown} />
-                )}
+                {/* ── Insights (Phase 6: backend-driven, above the chart) ── */}
+                <InsightsCard insights={analyticsInsights} />
+
 
                 {/* ── Trend chart ─────────────────────────────────────── */}
                 {/* Product rule: progress-style timeline.

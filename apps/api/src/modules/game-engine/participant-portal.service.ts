@@ -365,6 +365,33 @@ export interface AnalyticsContextDimension {
   hasOptions: boolean;
 }
 
+/**
+ * Phase 6 — Insights engine output shape.
+ *
+ * Deterministic: every insight is derived from ScoreEvent + UserActionLog only,
+ * with no AI / randomness. Backend generates candidates, scores them, dedupes
+ * against overlapping patterns, and returns the 2–4 most important. Frontend
+ * renders them as simple one-line cards above the chart.
+ */
+export type AnalyticsInsightType =
+  | 'strongest'
+  | 'weakest'
+  | 'best_day'
+  | 'trend'
+  | 'consistency';
+
+export interface AnalyticsInsight {
+  type: AnalyticsInsightType;
+  text: string;
+  /** Short emoji or unicode glyph used as the leading decoration. */
+  icon: string;
+  /**
+   * Importance score in roughly [0, 100]. Only used for selection — the
+   * absolute value is not surfaced to the participant. Higher = more important.
+   */
+  score: number;
+}
+
 @Injectable()
 export class ParticipantPortalService {
   constructor(
@@ -1236,6 +1263,255 @@ export class ParticipantPortalService {
     );
     rows.sort((a, b) => b.totalPoints - a.totalPoints || b.count - a.count);
     return rows;
+  }
+
+  // ─── Phase 6: insights engine ─────────────────────────────────────────────
+  //
+  // Deterministic, no-AI pipeline:
+  //   1. Generate candidates from the ScoreEvent ledger + active UserActionLogs
+  //      for the requested range.
+  //   2. Score each candidate on a rough [0, 100] importance scale.
+  //   3. Dedupe overlapping messages (e.g. strongest + best_day telling the
+  //      same story).
+  //   4. Sort by score DESC and return at most 4.
+  //
+  // All five types share one DB read pair (events + logs in range) so this
+  // endpoint never adds heavy queries beyond what /trend and /breakdown already
+  // cost. Type D (previous-period trend) does one extra aggregate call.
+  async getAnalyticsInsights(
+    token: string,
+    opts: { period?: '7d' | '14d' | '30d' | 'all'; from?: string; to?: string },
+  ): Promise<AnalyticsInsight[]> {
+    const { participantId, programId } = await this.resolveToken(token);
+    const { since, until } = resolveRange({
+      period: opts.period,
+      from: opts.from,
+      to: opts.to,
+    });
+
+    const rangeWhere = since
+      ? { createdAt: { gte: since, lte: until } }
+      : { createdAt: { lte: until } };
+
+    const [events, actions] = await Promise.all([
+      this.prisma.scoreEvent.findMany({
+        where: { participantId, programId, ...rangeWhere },
+        select: {
+          points: true,
+          sourceId: true,
+          sourceType: true,
+          createdAt: true,
+        },
+      }),
+      this.prisma.gameAction.findMany({
+        where: { programId },
+        select: { id: true, name: true },
+      }),
+    ]);
+
+    const nameById = new Map<string, string>(
+      actions.map((a) => [a.id, a.name]),
+    );
+
+    // ── Daily totals (net of all ScoreEvent kinds) ──────────────────────
+    const pointsByDay = new Map<string, number>();
+    for (const e of events) {
+      const key = e.createdAt.toISOString().slice(0, 10);
+      pointsByDay.set(key, (pointsByDay.get(key) ?? 0) + e.points);
+    }
+
+    // Dense day list covers the whole requested window. Empty days sit at 0
+    // so the "active days vs total days" ratio is well defined.
+    const days: { date: string; points: number }[] = [];
+    let dayCount = 0;
+    if (since) {
+      dayCount =
+        Math.floor(
+          (startOfDayUTC(until).getTime() - since.getTime()) / DAY_MS,
+        ) + 1;
+      for (let i = 0; i < dayCount; i++) {
+        const d = new Date(since.getTime() + i * DAY_MS);
+        const key = d.toISOString().slice(0, 10);
+        days.push({ date: key, points: pointsByDay.get(key) ?? 0 });
+      }
+    }
+
+    // ── Category (action) breakdown, positive points only ───────────────
+    // Using action as the "category" is the most intuitive grouping — it's
+    // always present, always meaningful, and doesn't depend on whether the
+    // admin has configured analytics groups.
+    const pointsByAction = new Map<string, number>();
+    for (const e of events) {
+      if (
+        (e.sourceType === 'action' || e.sourceType === 'correction') &&
+        e.sourceId
+      ) {
+        pointsByAction.set(
+          e.sourceId,
+          (pointsByAction.get(e.sourceId) ?? 0) + e.points,
+        );
+      }
+    }
+    const categories = Array.from(pointsByAction.entries())
+      .filter(([, p]) => p > 0)
+      .map(([id, p]) => ({
+        id,
+        name: nameById.get(id) ?? '(פעולה שנמחקה)',
+        points: p,
+      }))
+      .sort((a, b) => b.points - a.points);
+
+    const candidates: AnalyticsInsight[] = [];
+
+    // Type A — Strongest category.
+    // Score = ratio vs second place, capped. If there's only one category the
+    // ratio is meaningless, so fall back to a modest baseline score.
+    if (categories.length >= 1) {
+      const top = categories[0];
+      const second = categories[1];
+      const ratio = second ? top.points / second.points : 2;
+      candidates.push({
+        type: 'strongest',
+        icon: '⭐',
+        text: `התחזקת במיוחד ב־${top.name}`,
+        score: Math.min(ratio, 5) * 20,
+      });
+    }
+
+    // Type B — Weakest category. Skip when there's only one category, when
+    // all values are equal, or when the gap from the average is negligible
+    // (< 15%) — a tiny gap isn't a "room to improve" signal, it's noise.
+    if (categories.length >= 2) {
+      const vals = categories.map((c) => c.points);
+      const allEqual = vals.every((v) => v === vals[0]);
+      if (!allEqual) {
+        const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+        const weakest = categories[categories.length - 1];
+        const gap = avg > 0 ? (avg - weakest.points) / avg : 0;
+        if (gap >= 0.15) {
+          candidates.push({
+            type: 'weakest',
+            icon: '📌',
+            text: `יש לך מקום לשיפור ב־${weakest.name}`,
+            score: gap * 80,
+          });
+        }
+      }
+    }
+
+    // Type C — Best day. Requires a bounded range (days.length > 0) and a
+    // distance-from-average signal. A spike of at least +25% over the mean
+    // feels worth flagging; below that it's just a normal good day.
+    if (days.length >= 2) {
+      const active = days.filter((d) => d.points > 0);
+      if (active.length > 0) {
+        const total = days.reduce((a, b) => a + b.points, 0);
+        const avg = total / days.length;
+        const best = active.reduce((bd, d) =>
+          d.points > bd.points ? d : bd,
+        );
+        const deviation = avg > 0 ? (best.points - avg) / avg : 0;
+        if (deviation > 0.25) {
+          candidates.push({
+            type: 'best_day',
+            icon: '🏆',
+            text: `היום הכי חזק שלך היה ${this.formatHebrewDay(best.date)} עם ${best.points} נק׳`,
+            score: Math.min(deviation * 30, 100),
+          });
+        }
+      }
+    }
+
+    // Type D — Trend vs previous equal-length period. Skips when the current
+    // range is 'all' (no previous period), when either side has zero points,
+    // or when the change is negligible (< 5%).
+    if (since && dayCount >= 3) {
+      const prevSince = new Date(since.getTime() - dayCount * DAY_MS);
+      const prevUntil = new Date(since.getTime() - 1);
+      const prevAgg = await this.prisma.scoreEvent.aggregate({
+        _sum: { points: true },
+        where: {
+          participantId,
+          programId,
+          createdAt: { gte: prevSince, lte: prevUntil },
+        },
+      });
+      const prevTotal = prevAgg._sum.points ?? 0;
+      const currTotal = days.reduce((a, b) => a + b.points, 0);
+      if (prevTotal > 0 && currTotal > 0) {
+        const pct = Math.round(((currTotal - prevTotal) / prevTotal) * 100);
+        if (Math.abs(pct) >= 5) {
+          candidates.push({
+            type: 'trend',
+            icon: pct > 0 ? '📈' : '📉',
+            text:
+              pct > 0
+                ? `שיפור של ${pct}% לעומת התקופה הקודמת`
+                : `ירידה של ${Math.abs(pct)}% לעומת התקופה הקודמת`,
+            score: Math.min(Math.abs(pct), 100),
+          });
+        }
+      }
+    }
+
+    // Type E — Consistency. Only meaningful for ranges with at least a few
+    // days. High (>= 75% active) celebrates a streak; low (<= 40% active)
+    // nudges the participant. The in-between band stays silent.
+    if (days.length >= 3) {
+      const activeCount = days.filter((d) => d.points > 0).length;
+      const ratio = activeCount / days.length;
+      if (ratio >= 0.75) {
+        candidates.push({
+          type: 'consistency',
+          icon: '🎯',
+          text: 'היית עקבית השבוע — כל הכבוד',
+          score: ratio * 40,
+        });
+      } else if (ratio > 0 && ratio <= 0.4) {
+        candidates.push({
+          type: 'consistency',
+          icon: '💡',
+          text: 'כדאי לנסות לשמור על עקביות גבוהה יותר',
+          score: (1 - ratio) * 40,
+        });
+      }
+    }
+
+    // ── Dedup ───────────────────────────────────────────────────────────
+    // Strongest + best_day often tell the same story (a single peak day
+    // driven by the strongest action). Keep whichever scores higher; drop
+    // the other. The spec prefers "don't show redundant messages" even if
+    // that means showing fewer than 4 cards.
+    const strongestIdx = candidates.findIndex((c) => c.type === 'strongest');
+    const bestDayIdx = candidates.findIndex((c) => c.type === 'best_day');
+    if (strongestIdx >= 0 && bestDayIdx >= 0) {
+      const loserIdx =
+        candidates[strongestIdx].score >= candidates[bestDayIdx].score
+          ? bestDayIdx
+          : strongestIdx;
+      candidates.splice(loserIdx, 1);
+    }
+
+    // ── Selection ───────────────────────────────────────────────────────
+    // Sort by score DESC, cap at 4. We never pad below 4 with "weak" (low
+    // score) insights — the spec is explicit that quality beats quantity.
+    candidates.sort((a, b) => b.score - a.score);
+    return candidates.slice(0, 4);
+  }
+
+  /**
+   * Format a YYYY-MM-DD date key as a Hebrew short weekday + day label.
+   * Uses Asia/Jerusalem so weekday alignment matches the participant's wall
+   * clock. Example: "2026-04-12" → "יום ראשון, 12 באפר׳".
+   */
+  private formatHebrewDay(isoDate: string): string {
+    const d = new Date(`${isoDate}T00:00:00.000Z`);
+    return new Intl.DateTimeFormat('he-IL', {
+      timeZone: PARTICIPANT_TZ,
+      weekday: 'long',
+      day: 'numeric',
+      month: 'short',
+    }).format(d);
   }
 
   /**
