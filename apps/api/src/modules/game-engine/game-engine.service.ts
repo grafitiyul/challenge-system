@@ -160,6 +160,7 @@ export class GameEngineService {
           soundKey: dto.soundKey ?? 'none',
           participantPrompt: dto.participantPrompt ?? null,
           participantTextPrompt: dto.participantTextPrompt ?? null,
+          participantTextRequired: dto.participantTextRequired ?? false,
           contextSchemaJson:
             (dto.contextSchemaJson ?? undefined) as Prisma.InputJsonValue | undefined,
           sortOrder: count,
@@ -250,6 +251,7 @@ export class GameEngineService {
           ...(dto.soundKey !== undefined ? { soundKey: dto.soundKey } : {}),
           ...(dto.participantPrompt !== undefined ? { participantPrompt: dto.participantPrompt } : {}),
           ...(dto.participantTextPrompt !== undefined ? { participantTextPrompt: dto.participantTextPrompt } : {}),
+          ...(dto.participantTextRequired !== undefined ? { participantTextRequired: dto.participantTextRequired } : {}),
           ...schemaPatch,
         },
       });
@@ -500,6 +502,20 @@ export class GameEngineService {
         : { ...systemInjections, ...(dto.contextJson ?? {}) };
     const validatedContext = validateContext(effectiveSchema, mergedContext);
 
+    // Phase 4.4: required action-level text input blocks submission when
+    // configured AND empty. Parallel to required-context validation; frontend
+    // mirrors this check for immediate feedback.
+    if (
+      action.participantTextRequired &&
+      action.participantTextPrompt &&
+      action.participantTextPrompt.trim() &&
+      !(dto.extraText && dto.extraText.trim())
+    ) {
+      throw new BadRequestException(
+        `חובה למלא: ${action.participantTextPrompt.trim()}`,
+      );
+    }
+
     // ── maxPerDay — counts ACTIVE logs only ──────────────────────────────────
     if (action.maxPerDay !== null) {
       const todayStart = new Date();
@@ -614,24 +630,40 @@ export class GameEngineService {
             // to the feed message so free-text participant notes surface in
             // מבזק without a UI change. Select / number dimensions already
             // show up in analytics; text is the one that otherwise vanishes.
-            const textSnippets: string[] = [];
+            // Phase 4.4: the feed must always read naturally — select/number
+            // contexts become "<dimension label>: <value label>" pairs, text
+            // contexts stay as bare quoted strings, and the action-level
+            // extra-text is quoted last. Internal value keys are NEVER shown.
+            const feedParts: string[] = [];
             if (validatedContext) {
               const dims = (effectiveSchema?.dimensions as Array<Record<string, unknown>> | undefined) ?? [];
               for (const d of dims) {
-                if (d.type !== 'text') continue;
                 if (d.visibleToParticipant === false) continue;
                 const k = d.key as string;
                 const v = validatedContext[k];
-                if (typeof v === 'string' && v.trim()) {
-                  textSnippets.push(`"${v.trim()}"`);
+                if (v === undefined || v === null || v === '') continue;
+                const dimLabel = typeof d.label === 'string' ? d.label : k;
+                if (d.type === 'text') {
+                  if (typeof v === 'string' && v.trim()) {
+                    feedParts.push(`"${v.trim()}"`);
+                  }
+                } else if (d.type === 'select') {
+                  const opts = Array.isArray(d.options)
+                    ? (d.options as Array<{ value?: string; label?: string }>)
+                    : [];
+                  const match = opts.find((o) => o.value === String(v));
+                  const valueLabel = match?.label ?? String(v);
+                  feedParts.push(`${dimLabel}: ${valueLabel}`);
+                } else {
+                  // number / any other scalar — render raw
+                  feedParts.push(`${dimLabel}: ${String(v)}`);
                 }
               }
             }
-            // Phase 4.1: action-level extra text surfaces in the feed too.
             if (dto.extraText && dto.extraText.trim()) {
-              textSnippets.push(`"${dto.extraText.trim().slice(0, 500)}"`);
+              feedParts.push(`"${dto.extraText.trim().slice(0, 500)}"`);
             }
-            const feedSuffix = textSnippets.length ? ` ${textSnippets.join(' ')}` : '';
+            const feedSuffix = feedParts.length ? ` · ${feedParts.join(' · ')}` : '';
             await tx.feedEvent.create({
               data: {
                 participantId: dto.participantId,

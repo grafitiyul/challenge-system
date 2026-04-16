@@ -365,6 +365,8 @@ interface GameAction {
   participantPrompt: string | null;
   // Phase 4.1: optional free-text question under the main input; null = not rendered.
   participantTextPrompt: string | null;
+  // Phase 4.4: when true + prompt set, submission is blocked on empty text.
+  participantTextRequired: boolean;
   isActive: boolean;
   sortOrder: number;
   // Phase 3: optional context schema. shape:
@@ -1081,6 +1083,7 @@ function ActionModal({
     soundKey: action?.soundKey ?? 'none',
     participantPrompt: action?.participantPrompt ?? '',
     participantTextPrompt: action?.participantTextPrompt ?? '',
+    participantTextRequired: action?.participantTextRequired ?? false,
     contextFields: initialContextFields,
     attachedContexts: initialAttached,
   });
@@ -1215,6 +1218,8 @@ function ActionModal({
         participantPrompt: form.participantPrompt.trim() || null,
         // Phase 4.1: empty string means "no text input rendered at all".
         participantTextPrompt: form.participantTextPrompt.trim() || null,
+        // Phase 4.4: "required" only meaningful when the prompt is set.
+        participantTextRequired: !!form.participantTextPrompt.trim() && form.participantTextRequired,
         // Phase 3: send null to clear, otherwise the schema object.
         contextSchemaJson,
         // Phase 3.2: replace-all reconciliation of attached reusable contexts.
@@ -1381,7 +1386,8 @@ function ActionModal({
             {/* Phase 4.1: optional action-level free-text question. When set,
                 the portal renders a short text input below the main submission
                 input. The value appears in drill-down + feed but never in
-                analytics aggregation (it's not a dimension). */}
+                analytics aggregation (it's not a dimension).
+                Phase 4.4: "required" checkbox shown only when a prompt is set. */}
             <div>
               <label style={labelStyle}>שדה טקסט נוסף למשתתפת (אופציונלי)</label>
               <input
@@ -1391,6 +1397,16 @@ function ActionModal({
                 placeholder="למשל: מה היה הפיתוי?"
                 maxLength={120}
               />
+              {form.participantTextPrompt.trim() && (
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#374151', cursor: 'pointer', marginTop: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={form.participantTextRequired}
+                    onChange={(e) => setForm((p) => ({ ...p, participantTextRequired: e.target.checked }))}
+                  />
+                  חובה למילוי
+                </label>
+              )}
               <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>
                 אם מוגדר — יופיע שדה טקסט קצר מתחת לבחירה. המידע מוצג במבזק ובפירוט היום, לא באנליטיקות.
               </div>

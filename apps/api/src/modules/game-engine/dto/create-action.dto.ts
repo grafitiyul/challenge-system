@@ -82,6 +82,11 @@ export class CreateActionDto {
   @IsString()
   participantTextPrompt?: string | null;
 
+  /** Phase 4.4: when true, submission is blocked on an empty text answer. */
+  @IsOptional()
+  @IsBoolean()
+  participantTextRequired?: boolean;
+
   /**
    * Phase 3: local (action-only) context dimensions schema. Kept for backward
    * compat. Phase 3.2 prefers reusable definitions via `contextUses` below.
@@ -164,6 +169,11 @@ export class UpdateActionDto {
   @IsOptional()
   @IsString()
   participantTextPrompt?: string | null;
+
+  /** See CreateActionDto.participantTextRequired. */
+  @IsOptional()
+  @IsBoolean()
+  participantTextRequired?: boolean;
 
   /** See CreateActionDto.contextSchemaJson. Pass null to clear. */
   @IsOptional()

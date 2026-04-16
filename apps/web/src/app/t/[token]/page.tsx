@@ -56,6 +56,8 @@ interface Action {
   participantPrompt?: string | null;
   // Phase 4.1: optional free-text question rendered under the main input.
   participantTextPrompt?: string | null;
+  // Phase 4.4: when true + prompt set, submission is blocked on empty text.
+  participantTextRequired?: boolean;
   // Phase 3: optional schema. null/undefined → no extra fields prompt.
   contextSchemaJson?: ContextSchemaJson | null;
   contextSchemaVersion?: number;
@@ -123,12 +125,14 @@ interface AnalyticsTrendPoint {
 
 interface AnalyticsDayEntry {
   logId: string;
-  time: string;            // HH:MM
+  time: string;            // HH:MM (server-formatted in Asia/Jerusalem, Phase 4.4)
   actionId: string;
   actionName: string;
   rawValue: string;
   effectiveValue: number | null;
   contextJson: Record<string, unknown> | null;
+  /** Phase 4.4: pre-resolved display pairs — use these for rendering, not contextJson. */
+  contextDisplay: Array<{ dimensionLabel: string; valueLabel: string }>;
   /** Phase 4.1: action-level free-text captured at submission. */
   extraText: string | null;
   points: number;
@@ -727,11 +731,19 @@ function DaySheetGroupedList({ entries }: { entries: AnalyticsDayEntry[] }) {
               </span>
             </div>
             {group.map((entry) => {
-              // Phase 3.4: surface context values in the drill-down. Rendered
-              // as chips under the row so small-select and text dimensions both
-              // show up. Internal keys are hidden — only values are rendered.
+              // Phase 4.4: chips read from the pre-resolved contextDisplay —
+              // select values show their labels (e.g. "בוקר"), never the
+              // internal option value (e.g. "bvkr"). Fallback to legacy
+              // contextJson only when the server didn't populate contextDisplay
+              // (shouldn't happen in current builds, belt-and-braces).
               const contextChips: string[] = [];
-              if (entry.contextJson && typeof entry.contextJson === 'object') {
+              if (Array.isArray(entry.contextDisplay) && entry.contextDisplay.length > 0) {
+                for (const d of entry.contextDisplay) {
+                  if (d.valueLabel && d.valueLabel.trim()) {
+                    contextChips.push(d.valueLabel.trim());
+                  }
+                }
+              } else if (entry.contextJson && typeof entry.contextJson === 'object') {
                 for (const v of Object.values(entry.contextJson)) {
                   if (v === null || v === undefined || v === '') continue;
                   const s = typeof v === 'string' ? v : String(v);
@@ -1326,6 +1338,18 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
         // text
         contextJson[d.key] = raw;
       }
+    }
+
+    // Phase 4.4: action-level required text input — block submission when
+    // configured AND empty. Mirrors the server-side check for snappy UX.
+    if (
+      activeAction.participantTextRequired &&
+      activeAction.participantTextPrompt &&
+      activeAction.participantTextPrompt.trim() &&
+      !extraTextDraft.trim()
+    ) {
+      setInputError(`חובה למלא: ${activeAction.participantTextPrompt.trim()}`);
+      return;
     }
 
     setSubmitting(true);
@@ -2269,11 +2293,15 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
               );
             })}
 
-            {/* Phase 4.1: action-level free-text input. Not a context. */}
+            {/* Phase 4.1: action-level free-text input. Not a context.
+                Phase 4.4: red asterisk when required. */}
             {activeAction.participantTextPrompt && activeAction.participantTextPrompt.trim() && (
               <div style={s.contextField}>
                 <label style={s.contextLabel}>
                   {activeAction.participantTextPrompt.trim()}
+                  {activeAction.participantTextRequired && (
+                    <span style={s.contextRequired}> *</span>
+                  )}
                 </label>
                 <input
                   type="text"

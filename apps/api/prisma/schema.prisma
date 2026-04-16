@@ -750,6 +750,10 @@ model GameAction {
   // — this field is NOT used in analytics aggregation (it's for colour /
   // journaling). When null, the text input is not rendered.
   participantTextPrompt String?
+  // Phase 4.4: when true AND participantTextPrompt is set, submission is
+  // blocked until the participant fills the text field. Default false keeps
+  // existing behavior unchanged.
+  participantTextRequired Boolean @default(false)
   // Built-in sound played on the participant portal after a successful action
   // "none" | "ding" | "celebration" | "applause"
   soundKey            String   @default("none")

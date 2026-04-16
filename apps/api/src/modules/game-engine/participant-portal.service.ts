@@ -12,6 +12,55 @@ function startOfDayUTC(d: Date): Date {
   return utc;
 }
 
+/** Participant timezone. Hardcoded for now — all our participants live here. */
+const PARTICIPANT_TZ = 'Asia/Jerusalem';
+
+/**
+ * Format a UTC timestamp as HH:MM in the participant's local wall clock.
+ * Uses Intl so it works regardless of the Node server's system timezone.
+ */
+function formatLocalHourMinute(d: Date): string {
+  // 'en-GB' gives a stable 24h HH:MM without AM/PM.
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: PARTICIPANT_TZ,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(d);
+}
+
+/**
+ * Given a log's contextJson + the action's effective schema, return an array
+ * of user-facing (dimensionLabel, valueLabel) pairs. Skips hidden / system
+ * dimensions. Select values are translated from the internal option value to
+ * the option label. Text + number values render as-is.
+ */
+function resolveContextDisplay(
+  ctx: Record<string, unknown> | null,
+  schema: Record<string, unknown> | null,
+): Array<{ dimensionLabel: string; valueLabel: string }> {
+  if (!ctx || !schema) return [];
+  const dims = (schema as { dimensions?: Array<Record<string, unknown>> }).dimensions ?? [];
+  const out: Array<{ dimensionLabel: string; valueLabel: string }> = [];
+  for (const d of dims) {
+    if (d.visibleToParticipant === false) continue;
+    if (d.inputMode && d.inputMode !== 'participant') continue;
+    const k = typeof d.key === 'string' ? d.key : null;
+    if (!k) continue;
+    const v = ctx[k];
+    if (v === undefined || v === null || v === '') continue;
+    const dimensionLabel = typeof d.label === 'string' ? d.label : k;
+    let valueLabel = String(v);
+    if (d.type === 'select' && Array.isArray(d.options)) {
+      const opts = d.options as Array<{ value?: string; label?: string }>;
+      const match = opts.find((o) => o.value === String(v));
+      if (match?.label) valueLabel = match.label;
+    }
+    out.push({ dimensionLabel, valueLabel });
+  }
+  return out;
+}
+
 /**
  * Remove dimensions the participant should never see or fill.
  * Hidden if EITHER:
@@ -148,6 +197,8 @@ export interface PortalContext {
     participantPrompt: string | null;
     /** Phase 4.1: when set, portal renders a free-text input under the main input. */
     participantTextPrompt: string | null;
+    /** Phase 4.4: when true + prompt set, portal blocks submission on empty text. */
+    participantTextRequired: boolean;
     /**
      * Phase 3: dimensions the participant must fill alongside this submission.
      * `null` (or missing `dimensions`) → action has no extra context. Backend
@@ -231,12 +282,21 @@ export interface AnalyticsTrendPoint {
 
 export interface AnalyticsDayEntry {
   logId: string;
-  time: string;           // HH:MM (24h, UTC)
+  /** Phase 4.4: HH:MM in Asia/Jerusalem (participant's local time). */
+  time: string;
   actionId: string;
   actionName: string;
   rawValue: string;
   effectiveValue: number | null;
   contextJson: Record<string, unknown> | null;
+  /**
+   * Phase 4.4: pre-resolved display pairs for the drill-down UI. Dimensions
+   * already stripped of hidden ones; select values already translated from
+   * internal value → label. Use this instead of contextJson for rendering.
+   *
+   * Shape: [{ dimensionLabel, valueLabel }]
+   */
+  contextDisplay: Array<{ dimensionLabel: string; valueLabel: string }>;
   /** Phase 4.1: optional action-level free-text. Surfaces in drill-down. */
   extraText: string | null;
   points: number;
@@ -368,6 +428,7 @@ export class ParticipantPortalService {
         maxPerDay: a.maxPerDay,
         participantPrompt: a.participantPrompt ?? null,
         participantTextPrompt: a.participantTextPrompt ?? null,
+        participantTextRequired: a.participantTextRequired ?? false,
         // Phase 3.2: effective schema = reusable attachments + local dimensions.
         // Phase 3.1 hidden-strip applied on top.
         contextSchemaJson: stripHiddenDimensions(effectiveSchemas[idx]),
@@ -707,14 +768,33 @@ export class ParticipantPortalService {
       if (se.logId) pointsByLog[se.logId] = se.points;
     }
 
+    // Phase 4.4: pre-resolve context labels for every log so the frontend
+    // never has to show raw internal values (e.g. "bvkr" instead of "בוקר").
+    // We resolve each log's effective schema once, then walk contextJson
+    // swapping values → option labels. Hidden dimensions + system dims are
+    // skipped because the participant shouldn't see them in drill-down.
+    const actionIds = Array.from(new Set(logs.map((l) => l.action.id)));
+    const schemaByAction = new Map<string, Record<string, unknown> | null>();
+    await Promise.all(
+      actionIds.map(async (aid) => {
+        schemaByAction.set(aid, await resolveEffectiveContextSchema(this.prisma, aid));
+      }),
+    );
+
     return logs.map((l) => ({
       logId: l.id,
-      time: l.createdAt.toISOString().slice(11, 16), // HH:MM
+      // Phase 4.4: participant-local clock. toLocaleString with Asia/Jerusalem
+      // returns "HH:MM" regardless of the server's wall-clock timezone.
+      time: formatLocalHourMinute(l.createdAt),
       actionId: l.action.id,
       actionName: l.action.name,
       rawValue: l.value,
       effectiveValue: l.effectiveValue !== null ? Number(l.effectiveValue) : null,
       contextJson: (l.contextJson as Record<string, unknown> | null) ?? null,
+      contextDisplay: resolveContextDisplay(
+        l.contextJson as Record<string, unknown> | null,
+        schemaByAction.get(l.action.id) ?? null,
+      ),
       extraText: l.extraText ?? null,
       points: pointsByLog[l.id] ?? 0,
     }));
