@@ -1116,7 +1116,25 @@ export class ParticipantPortalService {
       return null;
     }
 
-    const target = String(opts.value);
+    // Phase 4.8 (audit fix): group breakdown now produces compound bucket
+    // keys `${contextKey}:${value}`. When the frontend forwards that compound
+    // key as the drill-down `value`, we parse it here so the match constrains
+    // to exactly that contextKey — clicks on "meal_period:morning" no longer
+    // falsely emit rows where sleep_quality happens to equal "morning".
+    //
+    // Legacy single-value inputs (no colon, or colon prefix that doesn't
+    // match a member key) fall through unchanged, preserving the pre-4.8
+    // drill-down behavior for every call site that isn't the compound one.
+    let parsedKey: string | null = null;
+    let target = String(opts.value);
+    const colonIdx = target.indexOf(':');
+    if (colonIdx > 0) {
+      const prefix = target.slice(0, colonIdx);
+      if (memberKeys.includes(prefix)) {
+        parsedKey = prefix;
+        target = target.slice(colonIdx + 1);
+      }
+    }
     const out: AnalyticsSliceEntry[] = [];
     for (const l of logs) {
       const ctx = l.contextJson as Record<string, unknown> | null;
@@ -1125,6 +1143,7 @@ export class ParticipantPortalService {
       // log may carry multiple matching members (rare — e.g. two contexts in
       // one group both happen to equal the same value); emit one row per.
       for (const k of memberKeys) {
+        if (parsedKey !== null && k !== parsedKey) continue;
         const raw = ctx[k];
         if (raw === undefined || raw === null || raw === '') continue;
         if (String(raw) !== target) continue;
@@ -1165,7 +1184,26 @@ export class ParticipantPortalService {
     dimensionKeys: string[],
   ): Promise<AnalyticsBreakdownEntry[]> {
     if (dimensionKeys.length === 0) return [];
-    const dimensionSet = new Set(dimensionKeys);
+
+    // Phase 4.8 (audit fix): fetch definitions first so we can filter out
+    // system-fixed and text-type members BEFORE any other work. These
+    // contexts contribute a single constant/opaque value per log and produce
+    // meaningless 100%-ish slices in the pie — they don't belong in a value
+    // breakdown. Non-definition-backed keys (legacy per-action local
+    // dimensions) are kept; they carry real participant-reported values.
+    const definitions = await this.prisma.contextDefinition.findMany({
+      where: { programId, key: { in: dimensionKeys } },
+      select: { key: true, optionsJson: true, type: true, inputMode: true },
+    });
+    const excludedKeys = new Set<string>();
+    for (const def of definitions) {
+      if (def.inputMode === 'system_fixed' || def.type === 'text') {
+        excludedKeys.add(def.key);
+      }
+    }
+    const effectiveKeys = dimensionKeys.filter((k) => !excludedKeys.has(k));
+    if (effectiveKeys.length === 0) return [];
+    const effectiveKeySet = new Set(effectiveKeys);
 
     const logs = await this.prisma.userActionLog.findMany({
       where: {
@@ -1187,16 +1225,12 @@ export class ParticipantPortalService {
       if (se.logId) pointsByLog[se.logId] = se.points;
     }
 
-    // Phase 4: label resolution spans ALL dimension keys in the group. Reusable
-    // labels from each member definition merge into one big value→label map.
-    // If two members declare overlapping option values with different labels,
-    // first-declared wins (deterministic on query order).
-    const definitions = await this.prisma.contextDefinition.findMany({
-      where: { programId, key: { in: dimensionKeys } },
-      select: { key: true, optionsJson: true, type: true },
-    });
+    // Label resolution spans every effective member key. Reusable labels
+    // from each definition merge into one value→label map; action-local
+    // schema labels are a per-action fallback for legacy dimensions.
     const reusableLabels = new Map<string, string>();
     for (const def of definitions) {
+      if (excludedKeys.has(def.key)) continue;
       if (def.type === 'select' && Array.isArray(def.optionsJson)) {
         for (const o of def.optionsJson as Array<{ value?: string; label?: string }>) {
           if (typeof o?.value === 'string' && typeof o?.label === 'string') {
@@ -1218,7 +1252,7 @@ export class ParticipantPortalService {
       } | null;
       const perKey = new Map<string, string>();
       for (const d of schema?.dimensions ?? []) {
-        if (!d.key || !dimensionSet.has(d.key)) continue;
+        if (!d.key || !effectiveKeySet.has(d.key)) continue;
         for (const o of d.options ?? []) {
           if (typeof o.value === 'string' && typeof o.label === 'string') {
             if (!perKey.has(o.value)) perKey.set(o.value, o.label);
@@ -1236,34 +1270,36 @@ export class ParticipantPortalService {
       );
     }
 
-    // Phase 4 aggregation rule: for each log, emit one sample per member-key
-    // that is present in its contextJson. Logs with multiple members present
-    // contribute to each (e.g. log with meal_period=breakfast AND mood=happy
-    // feeds both buckets when both dimensions belong to the same group).
-    // Same value from different dimension keys merges under one bucket by
-    // shared value string.
+    // Phase 4.8 bucket key is COMPOUND: `${contextKey}:${value}`.
+    //   - Prevents collisions when two member keys share a value string
+    //     (e.g. two contexts that both have an option "morning" won't
+    //     silently merge into one slice).
+    //   - Each slice is uniquely identified by its dimension + value pair.
+    // Multi-context contribution is preserved: a log that fills two member
+    // keys still contributes to both buckets.
     const totals: Record<string, { points: number; count: number; label: string }> = {};
     for (const l of logs) {
       const ctx = l.contextJson as Record<string, unknown> | null;
       if (!ctx) continue;
       const pts = pointsByLog[l.id] ?? 0;
-      for (const k of dimensionKeys) {
+      for (const k of effectiveKeys) {
         const raw = ctx[k];
         if (raw === undefined || raw === null || raw === '') continue;
         const value = String(raw);
+        const bucketKey = `${k}:${value}`;
         const label = resolveLabel(l.actionId, value);
-        const entry = totals[value] ?? { points: 0, count: 0, label };
+        const entry = totals[bucketKey] ?? { points: 0, count: 0, label };
         entry.points += pts;
         entry.count += 1;
         if (entry.label === value && label !== value) entry.label = label;
-        totals[value] = entry;
+        totals[bucketKey] = entry;
       }
     }
 
     const rows: AnalyticsBreakdownEntry[] = Object.entries(totals).map(
-      ([value, v]) => ({
-        actionId: value,       // reused as "group key"
-        actionName: v.label,   // reused as "group label"
+      ([bucketKey, v]) => ({
+        actionId: bucketKey,   // compound "contextKey:value" — unique per dim+value
+        actionName: v.label,   // resolved human label (option label, else raw value)
         totalPoints: v.points,
         count: v.count,
       }),
@@ -1737,12 +1773,14 @@ export class ParticipantPortalService {
         where: {
           programId,
           isActive: true,
-          NOT: { type: 'text' },
-          // Phase 4.7: we intentionally do NOT filter by `analyticsVisible`
-          // here. Hidden/system contexts need to surface so their parent
-          // analytics group can be discovered by the frontend. The frontend
-          // then uses `participantVisible` + `hasOptions` (set below) to
-          // decide whether a context qualifies as a STANDALONE selector pill.
+          // Phase 4.8 (audit fix): removed `NOT: { type: 'text' }` so that
+          // hidden/system contexts (stored with type='text' by the Phase 4.2
+          // model) surface here too. Without them, an analytics group whose
+          // members are all hidden was invisible to the frontend even though
+          // the breakdown endpoint happily aggregated them — a discovery /
+          // aggregation mismatch. Standalone-vs-group rendering is already
+          // decided on the frontend using the three flag fields below, so
+          // surfacing every context here is safe.
         },
         // Phase 4.3: group is now a FK to AnalyticsGroup. Pull label through it.
         // Phase 4.7: also pull visibleToParticipantByDefault + type + optionsJson

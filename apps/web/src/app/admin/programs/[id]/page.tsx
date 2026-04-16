@@ -2352,22 +2352,17 @@ function AnalyticsGroupsSection({
     } finally { setBusy(false); }
   }
 
-  // Eligible contexts = any active, non-text context that isn't already
-  // attached to THIS group. Text-type contexts have no slices to aggregate
-  // so they can't be meaningfully grouped.
+  // Eligible contexts = any active context that isn't already in THIS group.
   //
-  // Phase 4.7: we intentionally do NOT require `analyticsVisible` here. The
-  // whole point of grouping a hidden/system context (e.g. שינה, מים under
-  // שגרה) is that the context is NOT a standalone analytics tab, but IS a
-  // contributor to its group's aggregate. Requiring analyticsVisible would
-  // make exactly those contexts un-attachable, which was the core bug the
-  // user reported.
+  // Phase 4.8 (audit fix): the previous `d.type !== 'text'` filter silently
+  // excluded every hidden/system context, because the simplified Phase 4.2
+  // model stores `visibleByDefault=false` contexts with `type='text'` —
+  // exactly the contexts admins want to bundle under a parent group. The
+  // aggregation layer now skips system-fixed members on its own, so the
+  // picker no longer needs to second-guess which contexts are groupable.
   function eligibleForGroup(g: AnalyticsGroup): ContextDefinition[] {
     return definitions.filter(
-      (d) =>
-        d.isActive &&
-        d.type !== 'text' &&
-        d.analyticsGroupId !== g.id,
+      (d) => d.isActive && d.analyticsGroupId !== g.id,
     );
   }
 
