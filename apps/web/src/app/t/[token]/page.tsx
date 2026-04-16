@@ -906,6 +906,12 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
   const [ctx, setCtx] = useState<PortalContext | null>(null);
   const [loadError, setLoadError] = useState('');
   const [activeTab, setActiveTab] = useState<TabId>('report');
+  // Tab persistence (Phase 6.1): restore the selected tab from `?tab=` on
+  // page load so a refresh doesn't bounce the participant back to "report".
+  // A ref guards the restore so it only runs once per session, immediately
+  // after the portal reaches the 'ready' state (tabs don't render before then,
+  // so restoring earlier would be wasted).
+  const didRestoreTab = useRef(false);
 
   // Rules: load only once (rarely changes mid-session)
   const rulesLoaded = useRef(false);
@@ -1300,6 +1306,16 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
 
   function switchTab(tab: TabId) {
     setActiveTab(tab);
+    // Phase 6.1: reflect the active tab in the URL so a refresh lands on the
+    // same tab. `report` is the default — clear the query param in that case
+    // to keep URLs clean. Use replaceState so this never adds a history entry
+    // (participants tapping tabs shouldn't pollute back-button history).
+    if (typeof window !== 'undefined') {
+      const url = new URL(window.location.href);
+      if (tab === 'report') url.searchParams.delete('tab');
+      else url.searchParams.set('tab', tab);
+      window.history.replaceState({}, '', url.toString());
+    }
     // Analytics tab ("הנתונים שלי"): always fetch fresh so numbers are never stale.
     // Skip the spinner on re-entry to avoid a flicker.
     if (tab === 'stats') {
@@ -1315,6 +1331,25 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
     }
     if (tab === 'rules') loadRules(); // once-only — rules are static mid-session
   }
+
+  // Phase 6.1 tab restore. Reads `?tab=stats|feed|rules` from the URL once
+  // the portal is ready and lands the participant on the persisted tab. Also
+  // triggers the normal tab-entry data load via switchTab so the restored tab
+  // doesn't render with empty state.
+  useEffect(() => {
+    if (didRestoreTab.current) return;
+    if (state !== 'ready') return;
+    didRestoreTab.current = true;
+    if (typeof window === 'undefined') return;
+    const raw = new URLSearchParams(window.location.search).get('tab');
+    if (raw === 'stats' || raw === 'feed' || raw === 'rules') {
+      switchTab(raw);
+    }
+    // switchTab is a stable function reference in this component (declared at
+    // top-level inside the component). Dependencies intentionally omitted —
+    // this effect must run exactly once per ready transition.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state]);
 
   // ─── Action sheet ──────────────────────────────────────────────────────────
 

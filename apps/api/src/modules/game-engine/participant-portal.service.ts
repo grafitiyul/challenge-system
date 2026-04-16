@@ -378,7 +378,14 @@ export type AnalyticsInsightType =
   | 'weakest'
   | 'best_day'
   | 'trend'
-  | 'consistency';
+  | 'consistency'
+  // Phase 6.2 diversity expansion — per-category change, concentration,
+  // weekday pattern. Deterministic, derived from the same ledger data
+  // (no extra per-type DB calls beyond one previous-period fetch).
+  | 'most_improved'
+  | 'most_declined'
+  | 'dominant_source'
+  | 'weekday_pattern';
 
 export interface AnalyticsInsight {
   type: AnalyticsInsightType;
@@ -1361,21 +1368,70 @@ export class ParticipantPortalService {
       }))
       .sort((a, b) => b.points - a.points);
 
-    const candidates: AnalyticsInsight[] = [];
+    // ── Previous-period per-action breakdown (Phase 6.2) ────────────────
+    // Needed for: Type D (aggregate trend), Type F (most improved category),
+    // Type G (most declined category). Fetched once, broken down per action.
+    // Only runs when a previous period is actually definable.
+    const prevPointsByAction = new Map<string, number>();
+    let prevTotal = 0;
+    if (since && dayCount >= 3) {
+      const prevSince = new Date(since.getTime() - dayCount * DAY_MS);
+      const prevUntil = new Date(since.getTime() - 1);
+      const prevEvents = await this.prisma.scoreEvent.findMany({
+        where: {
+          participantId,
+          programId,
+          createdAt: { gte: prevSince, lte: prevUntil },
+        },
+        select: { points: true, sourceId: true, sourceType: true },
+      });
+      for (const e of prevEvents) {
+        prevTotal += e.points;
+        if (
+          (e.sourceType === 'action' || e.sourceType === 'correction') &&
+          e.sourceId
+        ) {
+          prevPointsByAction.set(
+            e.sourceId,
+            (prevPointsByAction.get(e.sourceId) ?? 0) + e.points,
+          );
+        }
+      }
+    }
+
+    // Phase 6.2 diversity model. Each candidate carries a `family` tag so the
+    // selection step can enforce variety — max one insight per family in the
+    // strict pass, then relax to two per family if we still have < 4 slots.
+    // Families:
+    //   performance         — where the participant stands right now
+    //   improvement_decline — how it moved vs the previous period
+    //   pattern             — temporal patterns (best day, weekday)
+    //   consistency         — active-days/total-days signal
+    type InsightFamily =
+      | 'performance'
+      | 'improvement_decline'
+      | 'pattern'
+      | 'consistency';
+    type Candidate = AnalyticsInsight & { family: InsightFamily };
+    const candidates: Candidate[] = [];
 
     // Type A — Strongest category.
-    // Score = ratio vs second place, capped. If there's only one category the
-    // ratio is meaningless, so fall back to a modest baseline score.
-    if (categories.length >= 1) {
+    // Tightened threshold (Phase 6.2): only fire when there's a real runner-up
+    // AND the top is >= 1.3x the second. Single-category or near-tie cases
+    // are noise, not insight.
+    if (categories.length >= 2) {
       const top = categories[0];
       const second = categories[1];
-      const ratio = second ? top.points / second.points : 2;
-      candidates.push({
-        type: 'strongest',
-        icon: '⭐',
-        text: `התחזקת במיוחד ב־${top.name}`,
-        score: Math.min(ratio, 5) * 20,
-      });
+      const ratio = top.points / second.points;
+      if (ratio >= 1.3) {
+        candidates.push({
+          type: 'strongest',
+          family: 'performance',
+          icon: '⭐',
+          text: `התחזקת במיוחד ב־${top.name}`,
+          score: Math.min(ratio, 5) * 20,
+        });
+      }
     }
 
     // Type B — Weakest category. Skip when there's only one category, when
@@ -1391,6 +1447,7 @@ export class ParticipantPortalService {
         if (gap >= 0.15) {
           candidates.push({
             type: 'weakest',
+            family: 'performance',
             icon: '📌',
             text: `יש לך מקום לשיפור ב־${weakest.name}`,
             score: gap * 80,
@@ -1414,6 +1471,7 @@ export class ParticipantPortalService {
         if (deviation > 0.25) {
           candidates.push({
             type: 'best_day',
+            family: 'pattern',
             icon: '🏆',
             text: `היום הכי חזק שלך היה ${this.formatHebrewDay(best.date)} עם ${best.points} נק׳`,
             score: Math.min(deviation * 30, 100),
@@ -1426,23 +1484,13 @@ export class ParticipantPortalService {
     // range is 'all' (no previous period), when either side has zero points,
     // or when the change is negligible (< 5%).
     if (since && dayCount >= 3) {
-      const prevSince = new Date(since.getTime() - dayCount * DAY_MS);
-      const prevUntil = new Date(since.getTime() - 1);
-      const prevAgg = await this.prisma.scoreEvent.aggregate({
-        _sum: { points: true },
-        where: {
-          participantId,
-          programId,
-          createdAt: { gte: prevSince, lte: prevUntil },
-        },
-      });
-      const prevTotal = prevAgg._sum.points ?? 0;
       const currTotal = days.reduce((a, b) => a + b.points, 0);
       if (prevTotal > 0 && currTotal > 0) {
         const pct = Math.round(((currTotal - prevTotal) / prevTotal) * 100);
         if (Math.abs(pct) >= 5) {
           candidates.push({
             type: 'trend',
+            family: 'improvement_decline',
             icon: pct > 0 ? '📈' : '📉',
             text:
               pct > 0
@@ -1454,34 +1502,147 @@ export class ParticipantPortalService {
       }
     }
 
-    // Type E — Consistency. Only meaningful for ranges with at least a few
-    // days. High (>= 75% active) celebrates a streak; low (<= 40% active)
-    // nudges the participant. The in-between band stays silent.
-    if (days.length >= 3) {
+    // Type E — Consistency. Phase 6.2 tightens both branches so this family
+    // doesn't dominate every participant's output:
+    //   - high branch (celebrate): raised 0.75 → 0.8, multiplier 40 → 25
+    //   - low branch (nudge):      lowered 0.4 → 0.25, multiplier 40 → 20
+    // The mid band (0.25 < ratio < 0.8) stays silent — that's "normal".
+    if (days.length >= 5) {
       const activeCount = days.filter((d) => d.points > 0).length;
       const ratio = activeCount / days.length;
-      if (ratio >= 0.75) {
+      if (ratio >= 0.8) {
         candidates.push({
           type: 'consistency',
+          family: 'consistency',
           icon: '🎯',
           text: 'היית עקבית השבוע — כל הכבוד',
-          score: ratio * 40,
+          score: ratio * 25,
         });
-      } else if (ratio > 0 && ratio <= 0.4) {
+      } else if (ratio > 0 && ratio <= 0.25) {
         candidates.push({
           type: 'consistency',
+          family: 'consistency',
           icon: '💡',
           text: 'כדאי לנסות לשמור על עקביות גבוהה יותר',
-          score: (1 - ratio) * 40,
+          score: (1 - ratio) * 20,
         });
       }
     }
 
+    // Type F — Most improved category vs previous period (Phase 6.2).
+    // Only fires when a category grew by at least 15% AND had non-trivial
+    // previous-period points (≥ 5) so "went from 1 to 3" doesn't dominate.
+    if (prevPointsByAction.size > 0 && categories.length > 0) {
+      let best: { name: string; pct: number } | null = null;
+      for (const c of categories) {
+        const prev = prevPointsByAction.get(c.id) ?? 0;
+        if (prev < 5) continue;
+        const pct = Math.round(((c.points - prev) / prev) * 100);
+        if (pct >= 15 && (!best || pct > best.pct)) {
+          best = { name: c.name, pct };
+        }
+      }
+      if (best) {
+        candidates.push({
+          type: 'most_improved',
+          family: 'improvement_decline',
+          icon: '🚀',
+          text: `הכי השתפרת ב־${best.name} (+${best.pct}%)`,
+          score: Math.min(best.pct, 100),
+        });
+      }
+    }
+
+    // Type G — Most declined category vs previous period. Mirrors F: only
+    // fires when the loss is ≥ 20% of a meaningful previous baseline.
+    if (prevPointsByAction.size > 0) {
+      let worst: { name: string; pct: number } | null = null;
+      for (const [id, prev] of prevPointsByAction.entries()) {
+        if (prev < 5) continue;
+        const curr = pointsByAction.get(id) ?? 0;
+        const pct = Math.round(((curr - prev) / prev) * 100);
+        if (pct <= -20 && (!worst || pct < worst.pct)) {
+          worst = { name: nameById.get(id) ?? '(פעולה שנמחקה)', pct };
+        }
+      }
+      if (worst) {
+        candidates.push({
+          type: 'most_declined',
+          family: 'improvement_decline',
+          icon: '⚠️',
+          text: `ירידה ב־${worst.name} (${worst.pct}%)`,
+          score: Math.min(Math.abs(worst.pct), 100),
+        });
+      }
+    }
+
+    // Type H — Dominant source. Fires when a single category accounts for
+    // ≥ 60% of total category points. Requires ≥ 2 categories so "100% from
+    // the only action you tracked" doesn't surface as an insight.
+    if (categories.length >= 2) {
+      const totalCategoryPts = categories.reduce((s, c) => s + c.points, 0);
+      if (totalCategoryPts > 0) {
+        const top = categories[0];
+        const share = top.points / totalCategoryPts;
+        if (share >= 0.6) {
+          candidates.push({
+            type: 'dominant_source',
+            family: 'performance',
+            icon: '🔥',
+            text: `${Math.round(share * 100)}% מהנקודות שלך הגיעו מ־${top.name}`,
+            score: share * 80,
+          });
+        }
+      }
+    }
+
+    // Type I — Weekday pattern. Needs at least 2 weeks of data so every
+    // weekday appears a couple of times before we claim one is "strongest".
+    // Fires when a weekday's average is ≥ 1.4x the overall daily average.
+    if (days.length >= 14) {
+      const pointsByWday: number[] = [0, 0, 0, 0, 0, 0, 0];
+      const countsByWday: number[] = [0, 0, 0, 0, 0, 0, 0];
+      for (const d of days) {
+        const wd = new Date(`${d.date}T00:00:00.000Z`).getUTCDay();
+        pointsByWday[wd] += d.points;
+        countsByWday[wd] += 1;
+      }
+      const overallAvg = days.reduce((s, d) => s + d.points, 0) / days.length;
+      if (overallAvg > 0) {
+        let bestWd = -1;
+        let bestAvg = 0;
+        for (let i = 0; i < 7; i++) {
+          if (countsByWday[i] < 2) continue;
+          const avg = pointsByWday[i] / countsByWday[i];
+          if (avg > bestAvg) {
+            bestAvg = avg;
+            bestWd = i;
+          }
+        }
+        if (bestWd >= 0 && bestAvg / overallAvg >= 1.4) {
+          const hebrewDays = [
+            'ראשון',
+            'שני',
+            'שלישי',
+            'רביעי',
+            'חמישי',
+            'שישי',
+            'שבת',
+          ];
+          candidates.push({
+            type: 'weekday_pattern',
+            family: 'pattern',
+            icon: '📅',
+            text: `ימי ${hebrewDays[bestWd]} הם החזקים ביותר שלך`,
+            score: Math.min((bestAvg / overallAvg - 1) * 60, 100),
+          });
+        }
+      }
+    }
+
     // ── Dedup ───────────────────────────────────────────────────────────
-    // Strongest + best_day often tell the same story (a single peak day
-    // driven by the strongest action). Keep whichever scores higher; drop
-    // the other. The spec prefers "don't show redundant messages" even if
-    // that means showing fewer than 4 cards.
+    // Strongest + best_day often tell the same story (single peak day driven
+    // by the strongest action). Keep whichever scores higher; drop the other.
     const strongestIdx = candidates.findIndex((c) => c.type === 'strongest');
     const bestDayIdx = candidates.findIndex((c) => c.type === 'best_day');
     if (strongestIdx >= 0 && bestDayIdx >= 0) {
@@ -1492,11 +1653,44 @@ export class ParticipantPortalService {
       candidates.splice(loserIdx, 1);
     }
 
-    // ── Selection ───────────────────────────────────────────────────────
-    // Sort by score DESC, cap at 4. We never pad below 4 with "weak" (low
-    // score) insights — the spec is explicit that quality beats quantity.
+    // ── Diversity-aware selection (Phase 6.2) ───────────────────────────
+    // Sort by score DESC, then pick in two passes:
+    //   Pass 1: strict 1-per-family. This guarantees variety when ≥ 4
+    //           families have candidates — no more "same 3 insights every
+    //           time" pattern.
+    //   Pass 2: relax to 2-per-family only if still < 4 slots filled. This
+    //           keeps the card from going empty when only 2–3 families have
+    //           anything to say.
+    // We never pad below 2 with low-score insights — the spec prefers fewer
+    // cards over weak ones.
     candidates.sort((a, b) => b.score - a.score);
-    return candidates.slice(0, 4);
+    const selected: Candidate[] = [];
+    const familyCount = new Map<InsightFamily, number>();
+    const bump = (f: InsightFamily) =>
+      familyCount.set(f, (familyCount.get(f) ?? 0) + 1);
+
+    for (const c of candidates) {
+      if (selected.length >= 4) break;
+      if ((familyCount.get(c.family) ?? 0) >= 1) continue;
+      selected.push(c);
+      bump(c.family);
+    }
+    if (selected.length < 4) {
+      for (const c of candidates) {
+        if (selected.length >= 4) break;
+        if (selected.includes(c)) continue;
+        if ((familyCount.get(c.family) ?? 0) >= 2) continue;
+        selected.push(c);
+        bump(c.family);
+      }
+    }
+    // Strip internal family tag before returning to the client.
+    return selected.map((c) => ({
+      type: c.type,
+      icon: c.icon,
+      text: c.text,
+      score: c.score,
+    }));
   }
 
   /**
