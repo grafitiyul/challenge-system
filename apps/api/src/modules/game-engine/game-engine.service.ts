@@ -791,9 +791,20 @@ export class GameEngineService {
       }
     }
 
-    // ── latest_value monotonicity ────────────────────────────────────────────
-    // "Running total" actions cannot decrease intra-day. Uses effective daily value
-    // computed over active logs only (superseded ones do not anchor the floor).
+    // ── latest_value monotonicity (FORWARD path only) ───────────────────────
+    // "Running total" actions cannot decrease intra-day for NEW submissions.
+    // Uses effective daily value computed over active logs only (superseded
+    // ones do not anchor the floor).
+    //
+    // Phase 6.12: this restriction applies ONLY to the forward-submission
+    // path (logAction). The correction path (correctLog) intentionally
+    // OMITS this check — an admin or participant editing an existing log
+    // must be able to correct its value downward. The chain recompute
+    // (recomputeUnitsDeltaChain) + threshold recompute
+    // (recomputeThresholdRulesForDay) guarantee the ledger stays exact
+    // regardless of direction, so there's no safety reason to block it.
+    // Removing this check from correctLog is a PRODUCT decision: truthful
+    // corrections beat monotonic protection for historical logs.
     let effectiveValue: Prisma.Decimal | null = null;
     if (action.inputType === 'number' && action.aggregationMode === 'latest_value') {
       const parsed = parseFloat(dto.value ?? '');
@@ -2203,6 +2214,12 @@ export class GameEngineService {
    * Returns the NEW active log and the newly created action ScoreEvent.
    */
   async correctLog(dto: CorrectLogDto) {
+    // Phase 6.12 contract: corrections accept values LOWER than the day's
+    // current effective max. This is intentional and distinct from the
+    // forward-submission path (logAction) which enforces monotonicity.
+    // Downward corrections are how participants/admins fix mistakes and
+    // are fully supported by the subsequent chain + threshold recompute.
+    // Do NOT add a monotonic check here.
     const oldLog = await this.prisma.userActionLog.findUnique({
       where: { id: dto.logId },
       include: { action: true },
