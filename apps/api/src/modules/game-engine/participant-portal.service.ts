@@ -1094,14 +1094,24 @@ export class ParticipantPortalService {
         key: true,
         label: true,
         type: true,
+        inputMode: true,
         optionsJson: true,
         analyticsDisplayLabel: true,
       },
     });
     const labelByKey = new Map<string, string>();
     const optionLabelByKey = new Map<string, Map<string, string>>();
+    // Phase 6.4: mark system-fixed / text-only keys. When emitting rows for
+    // these contexts we replace the technical raw value (e.g. "tracked",
+    // "logged") with a localized auto-recorded indicator, since those tokens
+    // are internal plumbing the participant shouldn't see in analytics.
+    const isSystemByKey = new Map<string, boolean>();
     for (const d of definitions) {
       labelByKey.set(d.key, d.analyticsDisplayLabel?.trim() || d.label);
+      isSystemByKey.set(
+        d.key,
+        d.inputMode === 'system_fixed' || d.type === 'text',
+      );
       if (d.type === 'select' && Array.isArray(d.optionsJson)) {
         const opts = new Map<string, string>();
         for (const o of d.optionsJson as Array<{ value?: string; label?: string }>) {
@@ -1191,6 +1201,17 @@ export class ParticipantPortalService {
               valueLabel ?? fallback.options.get(labelLookupValue) ?? null;
           }
         }
+        // Phase 6.4 drill-down polish. System-fixed / text-only contexts
+        // store internal tokens (e.g. "tracked", "logged") as their raw
+        // value. Surfacing those in the drill-down sheet is confusing —
+        // the participant never typed them and they read as noise. Replace
+        // the value label with a localized "auto-recorded" marker so the
+        // row still reads naturally ("שינה · נרשם אוטומטית") without
+        // leaking implementation details.
+        const isSystemCtx = isSystemByKey.get(k) === true;
+        const finalValueLabel = isSystemCtx
+          ? 'נרשם אוטומטית'
+          : valueLabel ?? labelLookupValue;
         out.push({
           logId: l.id,
           date: formatLocalDate(l.createdAt),
@@ -1199,7 +1220,7 @@ export class ParticipantPortalService {
           actionName: l.action.name,
           contextKey: k,
           contextLabel: dimensionLabel ?? k,
-          valueLabel: valueLabel ?? labelLookupValue,
+          valueLabel: finalValueLabel,
           points: pointsByLog[l.id] ?? 0,
         });
       }
@@ -2065,9 +2086,38 @@ export class ParticipantPortalService {
       }
     }
 
+    // ── Phase 6.4 type-base weighting ───────────────────────────────────
+    // Per-type multipliers applied to the raw score to rebalance the output
+    // distribution across participants. This is NOT a change to the truth
+    // conditions — every insight still must meet its own eligibility gates
+    // to even exist as a candidate. The weight only nudges ranking.
+    //
+    // Weights < 1 gently suppress types that tend to fire for almost every
+    // participant (best_day, weakest, streak, comeback, generic consistency).
+    // Weights > 1 gently boost types that are named, concrete, and directly
+    // actionable (most_improved, most_declined, missing_category).
+    // Types not listed keep their raw score (weight = 1.0).
+    const TYPE_BASE_WEIGHT: Partial<Record<AnalyticsInsightType, number>> = {
+      best_day: 0.7,
+      weakest: 0.8,
+      consistent_streak: 0.75,
+      activity_comeback: 0.6,
+      consistency: 0.7,
+      dominant_source: 1.0,
+      most_improved: 1.1,
+      most_declined: 1.1,
+      missing_category: 1.05,
+      low_engagement: 1.0,
+    };
+    for (const c of candidates) {
+      const w = TYPE_BASE_WEIGHT[c.type] ?? 1.0;
+      c.score = c.score * w;
+    }
+
     // ── Score floor ─────────────────────────────────────────────────────
     // Drop anything below MIN_SCORE. Spec: never pad with weak/generic
-    // insights; showing fewer is always preferable.
+    // insights; showing fewer is always preferable. Applied AFTER weighting
+    // so a suppressed type that slips under the floor is dropped entirely.
     const strongCandidates = candidates.filter((c) => c.score >= MIN_SCORE);
 
     // ── Phase 6.3 concept-level dedup (MANDATORY) ───────────────────────
