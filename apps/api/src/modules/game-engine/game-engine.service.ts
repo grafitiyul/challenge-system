@@ -1639,34 +1639,140 @@ export class GameEngineService {
     });
   }
 
-  // ─── Admin: delete feed event — DISABLED ─────────────────────────────────────
+  // ─── (Legacy comment kept for context — superseded by Phase 6.15 below) ─
   //
   // The old implementation physically deleted ScoreEvent and UserActionLog rows,
-  // which violates the Phase 1 immutable-ledger invariant. It is disabled here
-  // with a 410 Gone so it cannot run — in any environment. Admins must use the
-  // correction service (correctLog / voidLog) once the Phase 5 admin UI lands.
+  // which violates the Phase 1 immutable-ledger invariant. Between Phase 1 and
+  // Phase 6.14 this endpoint threw 410 Gone so it could not run. Phase 6.15
+  // replaces it with a ledger-safe implementation (see below) that uses
+  // voidLog + correction events instead of hard-deletion.
   //
   // Left un-removed (argument-accepting signature preserved) so Nest's existing
   // DELETE /admin/feed/:id endpoint fails loudly rather than 404'ing silently.
 
-  async deleteFeedEvent(_feedEventId: string): Promise<never> {
-    throw new GoneException(
-      'Legacy hard-delete path disabled. Feed events can no longer be deleted; ' +
-      'use the correction service (voidLog) to reverse the underlying submission.',
-    );
+  // ─── Admin: delete feed event — LEDGER-SAFE (Phase 6.15) ──────────────────
+  //
+  // Replaces the previous 410-Gone stub with a ledger-safe implementation.
+  // Admin authority: NO same-day restriction, NO ownership check. An admin
+  // can delete any feed entry at any time.
+  //
+  // Semantics by feed-event type:
+  //   1. type='action' with an ACTIVE UserActionLog → delegate to voidLog.
+  //      Full compensation (base points + prior cascade adjustments), units-
+  //      delta chain recompute, threshold-rule recompute, feed auto-hidden.
+  //   2. type='action' with a non-active log (already voided / superseded) →
+  //      the ledger is already consistent. Just flip isPublic=false to hide.
+  //   3. type='rare' / 'system' (rule bonuses etc.) → write a compensating
+  //      ScoreEvent for the linked scoreEventId (if any) so the participant's
+  //      total drops by the bonus amount, then hide the feed event.
+  //
+  // Row-level: never hard-delete. Always preserve history via isPublic + the
+  // correction ledger. This is the Phase 1 immutable-ledger invariant.
+  async deleteFeedEvent(feedEventId: string) {
+    const event = await this.prisma.feedEvent.findUnique({
+      where: { id: feedEventId },
+      select: {
+        id: true,
+        type: true,
+        logId: true,
+        scoreEventId: true,
+        participantId: true,
+        programId: true,
+        groupId: true,
+        points: true,
+        isPublic: true,
+      },
+    });
+    if (!event) throw new NotFoundException(`Feed event ${feedEventId} not found`);
+    if (!event.isPublic) {
+      // Already hidden — idempotent no-op. Safe to call twice.
+      return { feedEventId, outcome: 'already_hidden' as const };
+    }
+
+    // Case 1: action-type with its underlying log still active.
+    if (event.type === 'action' && event.logId) {
+      const log = await this.prisma.userActionLog.findUnique({
+        where: { id: event.logId },
+        select: { status: true },
+      });
+      if (log && log.status === 'active') {
+        await this.voidLog({ logId: event.logId, actorRole: 'admin' });
+        return { feedEventId, outcome: 'voided_log' as const, logId: event.logId };
+      }
+      // Log already superseded/voided — just hide the feed row.
+      await this.prisma.feedEvent.update({
+        where: { id: event.id },
+        data: { isPublic: false },
+      });
+      return { feedEventId, outcome: 'hidden_stale_action' as const };
+    }
+
+    // Case 3: non-action feed event (rule bonus, system). Compensate the
+    // linked scoreEvent if we know it, then hide the feed row.
+    if (event.scoreEventId && event.points !== 0) {
+      const scoreEvent = await this.prisma.scoreEvent.findUnique({
+        where: { id: event.scoreEventId },
+        select: { id: true, points: true, sourceType: true, sourceId: true },
+      });
+      if (scoreEvent) {
+        await this.prisma.$transaction(async (tx) => {
+          await tx.scoreEvent.create({
+            data: {
+              participantId: event.participantId,
+              programId: event.programId,
+              groupId: event.groupId,
+              sourceType: 'correction',
+              sourceId: scoreEvent.sourceId,
+              points: -scoreEvent.points,
+              parentEventId: scoreEvent.id,
+              metadata: {
+                reason: 'admin_feed_delete',
+                feedEventId: event.id,
+                supersededScoreEventId: scoreEvent.id,
+                actorRole: 'admin',
+              },
+            },
+          });
+          await tx.feedEvent.update({
+            where: { id: event.id },
+            data: { isPublic: false },
+          });
+        });
+        return { feedEventId, outcome: 'compensated_bonus' as const };
+      }
+    }
+
+    // Fallback: no linked scoreEvent OR points=0 — just hide.
+    await this.prisma.feedEvent.update({
+      where: { id: event.id },
+      data: { isPublic: false },
+    });
+    return { feedEventId, outcome: 'hidden_only' as const };
   }
 
-  // ─── Admin: bulk delete feed events — DISABLED ──────────────────────────────
+  // ─── Admin: bulk delete feed events — LEDGER-SAFE (Phase 6.15) ──────────
   //
-  // Same rationale as deleteFeedEvent: the old implementation physically deleted
-  // ledger rows. Disabled with a 410 so legacy admin tools fail loudly instead
-  // of silently corrupting totals.
-
-  async bulkDeleteFeedEvents(_feedEventIds: string[]): Promise<never> {
-    throw new GoneException(
-      'Legacy bulk hard-delete path disabled. Feed events can no longer be deleted; ' +
-      'use the correction service (voidLog, per submission) to reverse underlying entries.',
-    );
+  // Runs deleteFeedEvent sequentially for each id so each item's transaction
+  // commits cleanly and one failure doesn't abort the rest. Returns per-item
+  // results so the admin UI can distinguish success from skip / error.
+  async bulkDeleteFeedEvents(feedEventIds: string[]) {
+    const results: Array<{
+      feedEventId: string;
+      ok: boolean;
+      outcome?: string;
+      error?: string;
+    }> = [];
+    for (const id of feedEventIds) {
+      try {
+        const r = await this.deleteFeedEvent(id);
+        results.push({ feedEventId: id, ok: true, outcome: r.outcome });
+      } catch (e) {
+        const message =
+          e instanceof Error ? e.message : typeof e === 'string' ? e : 'unknown';
+        results.push({ feedEventId: id, ok: false, error: message });
+      }
+    }
+    return { results };
   }
 
   // ─── Admin: reset participant progress — DISABLED ────────────────────────────

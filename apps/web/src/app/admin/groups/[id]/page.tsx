@@ -188,6 +188,11 @@ interface AdminFeedEvent {
   id: string;
   participantId: string;
   groupId: string;
+  // Phase 6.15: admin delete dispatches on type — 'action' voids the underlying
+  // log via voidLog; 'rare'/'system' writes a compensating ScoreEvent. The
+  // backend figures this out from the row; we just need the metadata exposed.
+  type: string;
+  logId: string | null;
   points: number;
   message: string;
   createdAt: string;
@@ -457,8 +462,15 @@ export default function GroupDetailPage() {
       setAdminFeed((prev) => prev.filter((e) => e.id !== feedEventId));
       setSelectedFeedIds((prev) => { const n = new Set(prev); n.delete(feedEventId); return n; });
       reloadAfterDelete();
-    } catch {
-      // silent — row stays, user can retry
+    } catch (e) {
+      // Phase 6.15: surface errors instead of swallowing them silently.
+      // Silent catches masked the old 410 Gone from the disabled path and
+      // made the feature look broken without any admin-visible signal.
+      const msg =
+        e && typeof e === 'object' && 'message' in e
+          ? String((e as { message?: unknown }).message ?? '')
+          : '';
+      alert(msg || 'שגיאה במחיקה. נסי שוב.');
     } finally {
       setDeletingFeedIds((prev) => { const n = new Set(prev); n.delete(feedEventId); return n; });
     }
@@ -468,16 +480,34 @@ export default function GroupDetailPage() {
     if (ids.length === 0) return;
     setBulkDeleting(true);
     try {
-      await apiFetch(`${BASE_URL}/game/admin/feed/bulk-delete`, {
+      const res = (await apiFetch(`${BASE_URL}/game/admin/feed/bulk-delete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids }),
+      })) as { results?: Array<{ feedEventId: string; ok: boolean; error?: string }> };
+      // Phase 6.15: partial-failure aware. Only remove rows the server
+      // confirmed. Surface any failures to the admin.
+      const okIds = new Set((res.results ?? []).filter((r) => r.ok).map((r) => r.feedEventId));
+      const failures = (res.results ?? []).filter((r) => !r.ok);
+      setAdminFeed((prev) => prev.filter((e) => !okIds.has(e.id)));
+      setSelectedFeedIds((prev) => {
+        const n = new Set(prev);
+        for (const id of okIds) n.delete(id);
+        return n;
       });
-      setAdminFeed((prev) => prev.filter((e) => !ids.includes(e.id)));
-      setSelectedFeedIds(new Set());
       reloadAfterDelete();
-    } catch {
-      // silent
+      if (failures.length > 0) {
+        alert(
+          `חלק מהפריטים לא נמחקו (${failures.length} מתוך ${ids.length}). ` +
+          `שגיאה ראשונה: ${failures[0].error ?? 'לא ידוע'}`,
+        );
+      }
+    } catch (e) {
+      const msg =
+        e && typeof e === 'object' && 'message' in e
+          ? String((e as { message?: unknown }).message ?? '')
+          : '';
+      alert(msg || 'שגיאה במחיקה מרובה.');
     } finally {
       setBulkDeleting(false);
     }
