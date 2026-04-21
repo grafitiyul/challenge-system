@@ -1261,6 +1261,13 @@ model PlanTask {
   estimatedMinutes Int?
   sortOrder        Int              @default(0)
   isAbandoned      Boolean          @default(false)
+  // Phase 6.16 recurrence. CSV of weekday indices (0=Sun..6=Sat). When non-null,
+  // the week-plan fetcher lazily materializes an assignment for each matching
+  // weekday in the current week that doesn't already have one (deleted-by-user
+  // assignments count as existing, preventing regeneration). Null = not recurring.
+  recurrenceWeekdays String?
+  recurrenceStartTime String?
+  recurrenceEndTime   String?
   assignments      TaskAssignment[]
   deferralEvents   DeferralEvent[]
   createdAt        DateTime         @default(now())

@@ -49,6 +49,27 @@ function formatDate(d: Date): string {
   return d.toISOString().split('T')[0];
 }
 
+/**
+ * Phase 6.16: parse + normalize the CSV weekday recurrence string.
+ * Accepts "0,2,4" (unordered, any whitespace); returns a sorted CSV like
+ * "0,2,4" with no duplicates, or null when the input is empty/invalid.
+ * Also null when the caller explicitly passes "" — that's how recurrence
+ * is turned OFF from the admin UI (set to empty string).
+ */
+function normalizeRecurrenceWeekdays(raw: string | null | undefined): string | null {
+  if (raw === null || raw === undefined) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const parts = trimmed.split(',').map((x) => x.trim());
+  const valid = new Set<number>();
+  for (const p of parts) {
+    const n = parseInt(p, 10);
+    if (Number.isFinite(n) && n >= 0 && n <= 6) valid.add(n);
+  }
+  if (valid.size === 0) return null;
+  return Array.from(valid).sort((a, b) => a - b).join(',');
+}
+
 // ─── Full week response shape ─────────────────────────────────────────────────
 
 export interface AssignmentShape {
@@ -107,7 +128,73 @@ export class TaskEngineService {
         data: { participantId, weekStart: sunday },
       });
     }
+    // Phase 6.16: lazy recurrence materialization. For every recurring task
+    // in this plan, ensure an assignment exists for each matching weekday
+    // in this week. Existing assignments (any status, including manually
+    // deleted/abandoned) count as "present" — we never regenerate over a
+    // participant's explicit override.
+    await this.materializeRecurrenceForWeek(plan.id, sunday);
     return this.buildWeekResponse(plan.id);
+  }
+
+  private async materializeRecurrenceForWeek(
+    planId: string,
+    weekSundayUtc: Date,
+  ): Promise<void> {
+    const recurringTasks = await this.prisma.planTask.findMany({
+      where: {
+        planId,
+        isAbandoned: false,
+        NOT: { recurrenceWeekdays: null },
+      },
+      select: {
+        id: true,
+        participantId: true,
+        recurrenceWeekdays: true,
+        recurrenceStartTime: true,
+        recurrenceEndTime: true,
+      },
+    });
+    if (recurringTasks.length === 0) return;
+
+    const weekEnd = addDays(weekSundayUtc, 7);
+
+    for (const task of recurringTasks) {
+      const weekdays = (task.recurrenceWeekdays ?? '')
+        .split(',')
+        .map((x) => parseInt(x.trim(), 10))
+        .filter((x) => Number.isFinite(x) && x >= 0 && x <= 6);
+      if (weekdays.length === 0) continue;
+
+      // Any existing assignment this week for this task (active, carried,
+      // abandoned — ANY). If a record exists for a given date, we skip —
+      // the participant's manual override (delete/move) wins.
+      const existing = await this.prisma.taskAssignment.findMany({
+        where: {
+          taskId: task.id,
+          scheduledDate: { gte: weekSundayUtc, lt: weekEnd },
+        },
+        select: { scheduledDate: true },
+      });
+      const existingDates = new Set(
+        existing.map((e) => formatDate(e.scheduledDate)),
+      );
+
+      for (const wd of weekdays) {
+        const target = addDays(weekSundayUtc, wd);
+        if (existingDates.has(formatDate(target))) continue;
+        await this.prisma.taskAssignment.create({
+          data: {
+            taskId: task.id,
+            participantId: task.participantId,
+            scheduledDate: target,
+            startTime: task.recurrenceStartTime,
+            endTime: task.recurrenceEndTime,
+            status: 'scheduled',
+          },
+        });
+      }
+    }
   }
 
   private async buildWeekResponse(planId: string): Promise<WeekPlanResponse> {
@@ -222,6 +309,74 @@ export class TaskEngineService {
     return this.prisma.weeklyGoal.update({ where: { id: goalId }, data: { isAbandoned: true } });
   }
 
+  // Phase 6.16: duplicate a goal, optionally into a different week. Target
+  // plan's participantId must match the source goal's plan. Task copying is
+  // opt-in (includeTasks=true) — participants typically want a fresh goal
+  // shell to plan new tasks against, but may copy the task checklist too.
+  async duplicateGoal(
+    goalId: string,
+    dto: { title?: string; planId?: string; includeTasks?: boolean },
+  ) {
+    const sourceGoal = await this.prisma.weeklyGoal.findUnique({
+      where: { id: goalId },
+      include: {
+        plan: { select: { id: true, participantId: true } },
+        tasks: {
+          where: { isAbandoned: false },
+          orderBy: { sortOrder: 'asc' },
+        },
+      },
+    });
+    if (!sourceGoal) throw new NotFoundException('Goal not found');
+
+    const targetPlanId = dto.planId ?? sourceGoal.planId;
+    if (targetPlanId !== sourceGoal.planId) {
+      const target = await this.prisma.weeklyPlan.findUnique({
+        where: { id: targetPlanId },
+      });
+      if (!target) throw new NotFoundException('Target plan not found');
+      if (target.participantId !== sourceGoal.plan.participantId) {
+        throw new BadRequestException('Target plan belongs to a different participant');
+      }
+    }
+
+    const goalCount = await this.prisma.weeklyGoal.count({
+      where: { planId: targetPlanId },
+    });
+
+    return this.prisma.$transaction(async (tx) => {
+      const copy = await tx.weeklyGoal.create({
+        data: {
+          planId: targetPlanId,
+          title: dto.title?.trim() || `${sourceGoal.title} (עותק)`,
+          description: sourceGoal.description,
+          sortOrder: goalCount,
+        },
+      });
+
+      if (dto.includeTasks) {
+        let idx = 0;
+        for (const t of sourceGoal.tasks) {
+          await tx.planTask.create({
+            data: {
+              planId: targetPlanId,
+              participantId: sourceGoal.plan.participantId,
+              goalId: copy.id,
+              title: t.title,
+              notes: t.notes,
+              estimatedMinutes: t.estimatedMinutes,
+              sortOrder: idx++,
+              // Recurrence is NOT copied — duplicate is a snapshot, not a
+              // subscription. Participant can re-enable on the new task.
+            },
+          });
+        }
+      }
+
+      return copy;
+    });
+  }
+
   async reorderGoals(planId: string, items: ReorderItemDto[]) {
     await this.prisma.$transaction(
       items.map((item) =>
@@ -242,6 +397,7 @@ export class TaskEngineService {
     const count = await this.prisma.planTask.count({
       where: { planId, goalId: dto.goalId ?? null },
     });
+    const normalized = normalizeRecurrenceWeekdays(dto.recurrenceWeekdays);
     return this.prisma.planTask.create({
       data: {
         planId,
@@ -251,6 +407,9 @@ export class TaskEngineService {
         notes: dto.notes ?? null,
         estimatedMinutes: dto.estimatedMinutes ?? null,
         sortOrder: count,
+        recurrenceWeekdays: normalized,
+        recurrenceStartTime: normalized ? (dto.recurrenceStartTime ?? null) : null,
+        recurrenceEndTime: normalized ? (dto.recurrenceEndTime ?? null) : null,
       },
       include: { assignments: true },
     });
@@ -259,6 +418,24 @@ export class TaskEngineService {
   async updateTask(taskId: string, dto: UpdateTaskDto) {
     const task = await this.prisma.planTask.findUnique({ where: { id: taskId } });
     if (!task) throw new NotFoundException('Task not found');
+    const recurrencePatch: {
+      recurrenceWeekdays?: string | null;
+      recurrenceStartTime?: string | null;
+      recurrenceEndTime?: string | null;
+    } = {};
+    if (dto.recurrenceWeekdays !== undefined) {
+      const normalized = normalizeRecurrenceWeekdays(dto.recurrenceWeekdays);
+      recurrencePatch.recurrenceWeekdays = normalized;
+      // When recurrence turns off, clear the time fields too.
+      if (normalized === null) {
+        recurrencePatch.recurrenceStartTime = null;
+        recurrencePatch.recurrenceEndTime = null;
+      }
+    }
+    if (dto.recurrenceStartTime !== undefined)
+      recurrencePatch.recurrenceStartTime = dto.recurrenceStartTime || null;
+    if (dto.recurrenceEndTime !== undefined)
+      recurrencePatch.recurrenceEndTime = dto.recurrenceEndTime || null;
     return this.prisma.planTask.update({
       where: { id: taskId },
       data: {
@@ -267,7 +444,78 @@ export class TaskEngineService {
         ...(dto.estimatedMinutes !== undefined ? { estimatedMinutes: dto.estimatedMinutes } : {}),
         ...(dto.isAbandoned !== undefined ? { isAbandoned: dto.isAbandoned } : {}),
         ...(dto.goalId !== undefined ? { goalId: dto.goalId } : {}),
+        ...recurrencePatch,
       },
+      include: { assignments: true },
+    });
+  }
+
+  // Phase 6.16: duplicate a task. Copies title/notes/estimatedMinutes/goalId
+  // by default; optional DTO overrides each. Assignments are NOT copied (a
+  // duplicate is a fresh task in whichever plan the admin picks). If the
+  // caller passes `assignToDate`, we also create a single assignment for
+  // that date so the participant doesn't have to do a second click.
+  async duplicateTask(
+    taskId: string,
+    dto: {
+      title?: string;
+      planId?: string;
+      goalId?: string | null;
+      assignToDate?: string;
+    },
+  ) {
+    const source = await this.prisma.planTask.findUnique({ where: { id: taskId } });
+    if (!source) throw new NotFoundException('Task not found');
+
+    const targetPlanId = dto.planId ?? source.planId;
+    // If the caller passed a different plan, verify participant ownership
+    // stays consistent. Participants can only duplicate their own tasks
+    // into their own plans.
+    if (targetPlanId !== source.planId) {
+      const targetPlan = await this.prisma.weeklyPlan.findUnique({ where: { id: targetPlanId } });
+      if (!targetPlan) throw new NotFoundException('Target plan not found');
+      if (targetPlan.participantId !== source.participantId) {
+        throw new BadRequestException('Target plan belongs to a different participant');
+      }
+    }
+
+    const finalGoalId = dto.goalId !== undefined ? dto.goalId : source.goalId;
+    const count = await this.prisma.planTask.count({
+      where: { planId: targetPlanId, goalId: finalGoalId ?? null },
+    });
+
+    const created = await this.prisma.$transaction(async (tx) => {
+      const copy = await tx.planTask.create({
+        data: {
+          planId: targetPlanId,
+          participantId: source.participantId,
+          goalId: finalGoalId,
+          title: dto.title?.trim() || `${source.title} (עותק)`,
+          notes: source.notes,
+          estimatedMinutes: source.estimatedMinutes,
+          sortOrder: count,
+          // Recurrence is NOT copied by default. Duplicate = one-off; if the
+          // admin wants recurrence they edit it on the new task.
+        },
+        include: { assignments: true },
+      });
+
+      if (dto.assignToDate) {
+        await tx.taskAssignment.create({
+          data: {
+            taskId: copy.id,
+            participantId: source.participantId,
+            scheduledDate: toMidnightUTC(dto.assignToDate),
+            status: 'scheduled',
+          },
+        });
+      }
+
+      return copy;
+    });
+
+    return this.prisma.planTask.findUnique({
+      where: { id: created.id },
       include: { assignments: true },
     });
   }

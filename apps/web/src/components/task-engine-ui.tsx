@@ -77,6 +77,10 @@ export interface TaskPoolRowProps {
   onEdit: () => void;
   onSchedule: () => void;
   onDelete: () => void;
+  // Phase 6.16: optional duplicate callback. When provided, a copy button
+  // appears alongside edit/delete. Undefined hides the button (keeps older
+  // call sites working without change).
+  onDuplicate?: () => void;
   viewOnly?: boolean;
   compact?: boolean;
 }
@@ -87,6 +91,7 @@ export function TaskPoolRow({
   onEdit,
   onSchedule,
   onDelete,
+  onDuplicate,
   viewOnly = false,
   compact = false,
 }: TaskPoolRowProps) {
@@ -152,6 +157,20 @@ export function TaskPoolRow({
           >
             {isAssigned ? '📅 העבר יום' : '📅 שבץ'}
           </button>
+          {onDuplicate && (
+            <button
+              onClick={onDuplicate}
+              style={{
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+                fontSize: compact ? 11 : 13,
+                padding: '2px 3px',
+                lineHeight: 1,
+              }}
+              title="שכפל משימה"
+            >📋</button>
+          )}
           <button
             onClick={onDelete}
             style={{
@@ -303,6 +322,9 @@ export interface GoalSectionProps {
   goalIndex: number;
   onEditGoal: () => void;
   onDeleteGoal: () => void;
+  // Phase 6.16: optional duplicate handler. Shown only when provided —
+  // when omitted (e.g. admin view mode), the button is hidden.
+  onDuplicateGoal?: () => void;
   onAddTask: () => void;
   renderTask: (task: SharedTask) => React.ReactNode;
   viewOnly?: boolean;
@@ -314,6 +336,7 @@ export function GoalSection({
   goalIndex,
   onEditGoal,
   onDeleteGoal,
+  onDuplicateGoal,
   onAddTask,
   renderTask,
   viewOnly = false,
@@ -375,6 +398,16 @@ export function GoalSection({
                 fontSize: 12, cursor: 'pointer', padding: '2px 6px', fontWeight: 600,
               }}
             >+ משימה</button>
+            {onDuplicateGoal && (
+              <button
+                onClick={onDuplicateGoal}
+                style={{
+                  background: 'none', border: 'none', cursor: 'pointer',
+                  fontSize: 14, padding: '2px 4px', lineHeight: 1,
+                }}
+                title="שכפל יעד לשבוע הבא"
+              >📋</button>
+            )}
             <button
               onClick={onDeleteGoal}
               style={{

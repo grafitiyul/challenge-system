@@ -20,6 +20,8 @@ import {
   UpdatePlanDto,
   ReorderDto,
   CreateNoteDto,
+  DuplicateTaskDto,
+  DuplicateGoalDto,
 } from './dto/task-engine.dto';
 
 // ─── Weekly plan ──────────────────────────────────────────────────────────────
@@ -61,6 +63,15 @@ export class TaskEngineController {
     return this.svc.deleteGoal(goalId);
   }
 
+  // Phase 6.16: duplicate a goal into the same (default) or another plan.
+  @Post('goals/:goalId/duplicate')
+  duplicateGoal(
+    @Param('goalId') goalId: string,
+    @Body() dto: DuplicateGoalDto,
+  ) {
+    return this.svc.duplicateGoal(goalId, dto);
+  }
+
   @Post('plans/:planId/goals/reorder')
   reorderGoals(@Param('planId') planId: string, @Body() dto: ReorderDto) {
     return this.svc.reorderGoals(planId, dto.items);
@@ -85,6 +96,17 @@ export class TaskEngineController {
   @Delete('tasks/:taskId')
   deleteTask(@Param('taskId') taskId: string) {
     return this.svc.deleteTask(taskId);
+  }
+
+  // Phase 6.16: duplicate a task into the same plan or a specified one.
+  // Optional assignToDate creates a single assignment on a chosen date so
+  // the participant gets a ready-to-use copy without a second click.
+  @Post('tasks/:taskId/duplicate')
+  duplicateTask(
+    @Param('taskId') taskId: string,
+    @Body() dto: DuplicateTaskDto,
+  ) {
+    return this.svc.duplicateTask(taskId, dto);
   }
 
   @Post('plans/:planId/tasks/reorder')
