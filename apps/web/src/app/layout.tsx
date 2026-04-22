@@ -38,11 +38,23 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       <head>
         <meta name="theme-color" content="#2563eb" />
         <meta name="mobile-web-app-capable" content="yes" />
+        {/* Service worker hygiene.
+            Prior deployments registered a SW for PWA installability. We no
+            longer register one (PWA installability is not worth the risk of
+            a browser serving a stale bundle after deploy). On every page
+            load we actively unregister any SW that's still present and
+            clear Cache Storage. This is the permanent fix: after one visit
+            post-deploy, the user has zero SW and always gets fresh HTML. */}
         <script dangerouslySetInnerHTML={{ __html: `
           if ('serviceWorker' in navigator) {
-            window.addEventListener('load', function() {
-              navigator.serviceWorker.register('/sw.js');
-            });
+            navigator.serviceWorker.getRegistrations().then(function(regs) {
+              regs.forEach(function(r) { r.unregister(); });
+            }).catch(function(){});
+          }
+          if (typeof caches !== 'undefined' && caches.keys) {
+            caches.keys().then(function(keys) {
+              keys.forEach(function(k) { caches.delete(k); });
+            }).catch(function(){});
           }
         ` }} />
         <style>{`
