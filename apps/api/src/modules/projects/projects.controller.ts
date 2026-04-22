@@ -68,6 +68,15 @@ export class ProjectsController {
     return this.svc.adminUpdateProject(id, dto);
   }
 
+  // Hard delete — permanent wipe of the project and all its items, logs,
+  // and notes. Admin only. Archive (PATCH status='archived') is the soft
+  // alternative and is available to participants too.
+  // DELETE /api/projects/:id/hard
+  @Delete(':id/hard')
+  hardDelete(@Param('id') id: string) {
+    return this.svc.adminHardDeleteProject(id);
+  }
+
   @Post(':id/items')
   addItem(@Param('id') id: string, @Body() dto: CreateItemDto) {
     return this.svc.adminCreateItem(id, dto);

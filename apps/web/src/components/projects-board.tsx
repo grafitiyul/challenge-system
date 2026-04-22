@@ -303,8 +303,31 @@ export function PortalProjectsBoard({ token }: PortalBoardProps) {
 
       {visibleProjects.map((p) => (
         <div key={p.id} style={{ ...s.card, borderInlineStartWidth: 4, borderInlineStartStyle: 'solid', borderInlineStartColor: p.colorHex ?? COLORS.accent }}>
-          <div style={s.projectTitle}>{p.title}</div>
-          {p.description && <div style={s.projectDesc}>{p.description}</div>}
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={s.projectTitle}>{p.title}</div>
+              {p.description && <div style={s.projectDesc}>{p.description}</div>}
+            </div>
+            {canManage && (
+              <button
+                style={{ ...s.ghostBtn, color: COLORS.danger, borderColor: COLORS.dangerSoft, minHeight: 36, padding: '6px 10px', fontSize: 12 }}
+                onClick={async () => {
+                  if (!confirm(`להעביר את הפרויקט "${p.title}" לארכיון?\n\nהוא לא יופיע יותר ברשימה, אבל הדיווחים והמטרות נשמרים.`)) return;
+                  try {
+                    await apiFetch(`${BASE_URL}/public/projects/${token}/projects/${p.id}`, {
+                      method: 'PATCH',
+                      body: JSON.stringify({ status: 'archived' }),
+                    });
+                    void reload();
+                  } catch (e: unknown) {
+                    alert(e && typeof e === 'object' && 'message' in e ? String((e as { message: string }).message) : 'שמירה נכשלה');
+                  }
+                }}
+              >
+                🗑 הסר
+              </button>
+            )}
+          </div>
 
           {p.items.filter((i) => !i.isArchived).length === 0 ? (
             <div style={{ color: COLORS.muted, fontSize: 13, padding: '8px 0' }}>
@@ -318,6 +341,7 @@ export function PortalProjectsBoard({ token }: PortalBoardProps) {
                 item={item}
                 date={dateStr}
                 visible={itemExistsOn(item, dateStr)}
+                canManage={canManage}
                 onChanged={reload}
                 onOpenSkip={() => setSkipForItem(item)}
               />
@@ -392,10 +416,11 @@ function GoalRow(props: {
   item: ProjectItem;
   date: string;
   visible: boolean;
+  canManage: boolean;
   onChanged: () => void;
   onOpenSkip: () => void;
 }) {
-  const { token, item, date, visible, onChanged, onOpenSkip } = props;
+  const { token, item, date, visible, canManage, onChanged, onOpenSkip } = props;
   const log = logForDate(item, date);
   const pill = statusPillFromLog(log);
 
@@ -470,8 +495,35 @@ function GoalRow(props: {
     );
   }
 
+  async function archiveGoal() {
+    if (!confirm(`להסיר את המטרה "${item.title}"?\n\nהיא לא תופיע יותר בדיווח היומי, אבל הדיווחים הקיימים נשמרים.`)) return;
+    try {
+      await apiFetch(`${BASE_URL}/public/projects/${token}/items/${item.id}`, { method: 'DELETE' });
+      onChanged();
+    } catch (e: unknown) {
+      alert(e && typeof e === 'object' && 'message' in e ? String((e as { message: string }).message) : 'שמירה נכשלה');
+    }
+  }
+
   const isCompleted = log?.status === 'completed';
   const saveLabel = saveState === 'saving' ? 'שומר…' : saveState === 'saved' ? 'נשמר' : saveState === 'error' ? 'שמירה נכשלה' : '';
+
+  // Save indicator lives directly under the control area so the feedback
+  // is physically associated with whatever the user just interacted with.
+  // Shared across all item types (one interactive area per row).
+  const SaveIndicator = (
+    <div
+      style={{
+        minHeight: 18,
+        marginTop: 6,
+        display: 'flex',
+        alignItems: 'center',
+      }}
+      aria-live="polite"
+    >
+      <span style={s.saveState(saveState)}>{saveLabel}</span>
+    </div>
+  );
 
   return (
     <div style={s.goalCard}>
@@ -488,26 +540,40 @@ function GoalRow(props: {
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-          <span style={s.saveState(saveState)} aria-live="polite">{saveLabel}</span>
           {pill && <span style={s.statusChip(pill.bg, pill.color)}>{pill.label}</span>}
+          {canManage && (
+            <button
+              title="הסר מטרה"
+              onClick={archiveGoal}
+              style={{
+                padding: '2px 8px', fontSize: 12, lineHeight: 1,
+                background: 'transparent', color: COLORS.mutedLight,
+                border: `1px solid ${COLORS.border}`, borderRadius: 6,
+                cursor: 'pointer',
+              }}
+            >×</button>
+          )}
         </div>
       </div>
 
       {item.itemType === 'boolean' && (
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <button
-            style={{
-              ...s.primaryBtn,
-              background: isCompleted ? COLORS.success : COLORS.accent,
-              opacity: saveState === 'saving' ? 0.65 : 1,
-            }}
-            disabled={saveState === 'saving'}
-            onClick={() => { if (isCompleted) void clearLog(); else void run({ status: 'completed' }); }}
-          >
-            {isCompleted ? '✓ בוצע (לחצי לבטל)' : '✓ סמני שבוצע'}
-          </button>
-          <button style={s.ghostBtn} disabled={saveState === 'saving'} onClick={onOpenSkip}>לא רלוונטי להיום</button>
-        </div>
+        <>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button
+              style={{
+                ...s.primaryBtn,
+                background: isCompleted ? COLORS.success : COLORS.accent,
+                opacity: saveState === 'saving' ? 0.65 : 1,
+              }}
+              disabled={saveState === 'saving'}
+              onClick={() => { if (isCompleted) void clearLog(); else void run({ status: 'completed' }); }}
+            >
+              {isCompleted ? '✓ בוצע (לחצי לבטל)' : '✓ סמני שבוצע'}
+            </button>
+            <button style={s.ghostBtn} disabled={saveState === 'saving'} onClick={onOpenSkip}>לא רלוונטי להיום</button>
+          </div>
+          {SaveIndicator}
+        </>
       )}
 
       {item.itemType === 'number' && (
@@ -532,40 +598,44 @@ function GoalRow(props: {
                 void run({ status: 'completed', numericValue: parsed });
               }, 500);
             }}
-            disabled={saveState === 'saving' && false /* allow typing while save is in flight */}
+            disabled={false /* always allow typing — debounce handles in-flight saves */}
           />
           <button style={s.ghostBtn} disabled={saveState === 'saving'} onClick={onOpenSkip}>לא רלוונטי להיום</button>
         </div>
       )}
+      {item.itemType === 'number' && SaveIndicator}
 
       {item.itemType === 'select' && item.selectOptions && (
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {item.selectOptions.map((o) => {
-            const active = log?.selectValue === o.value && log?.status !== 'skipped_today';
-            return (
-              <button
-                key={o.value}
-                disabled={saveState === 'saving'}
-                style={{
-                  padding: '10px 14px',
-                  border: `2px solid ${active ? COLORS.accent : COLORS.border}`,
-                  background: active ? COLORS.accentSoft : COLORS.card,
-                  color: active ? COLORS.accent : COLORS.text,
-                  borderRadius: 10, fontSize: 14, fontWeight: 600, cursor: 'pointer',
-                  minHeight: 44,
-                }}
-                onClick={() => {
-                  // Tapping the already-selected option clears the log (undo).
-                  if (active) void clearLog();
-                  else void run({ status: 'completed', selectValue: o.value });
-                }}
-              >
-                {o.label}
-              </button>
-            );
-          })}
-          <button style={s.ghostBtn} disabled={saveState === 'saving'} onClick={onOpenSkip}>לא רלוונטי להיום</button>
-        </div>
+        <>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {item.selectOptions.map((o) => {
+              const active = log?.selectValue === o.value && log?.status !== 'skipped_today';
+              return (
+                <button
+                  key={o.value}
+                  disabled={saveState === 'saving'}
+                  style={{
+                    padding: '10px 14px',
+                    border: `2px solid ${active ? COLORS.accent : COLORS.border}`,
+                    background: active ? COLORS.accentSoft : COLORS.card,
+                    color: active ? COLORS.accent : COLORS.text,
+                    borderRadius: 10, fontSize: 14, fontWeight: 600, cursor: 'pointer',
+                    minHeight: 44,
+                  }}
+                  onClick={() => {
+                    // Tapping the already-selected option clears the log (undo).
+                    if (active) void clearLog();
+                    else void run({ status: 'completed', selectValue: o.value });
+                  }}
+                >
+                  {o.label}
+                </button>
+              );
+            })}
+            <button style={s.ghostBtn} disabled={saveState === 'saving'} onClick={onOpenSkip}>לא רלוונטי להיום</button>
+          </div>
+          {SaveIndicator}
+        </>
       )}
 
       {log?.status === 'skipped_today' && log.skipNote && (
@@ -661,7 +731,10 @@ function AddGoalModal(props: { token: string; projectId: string; onClose: () => 
   const [itemType, setItemType] = useState<ProjectItemType>('boolean');
   const [unit, setUnit] = useState('');
   const [targetValue, setTargetValue] = useState('');
-  const [options, setOptions] = useState<SelectOption[]>([{ value: '', label: '' }]);
+  // Phase 1: admins enter ONE label per option (what the participant sees).
+  // The API still requires value + label; we use the label as both under the
+  // hood so admins never deal with an internal "English value" field.
+  const [options, setOptions] = useState<string[]>(['']);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
@@ -674,8 +747,9 @@ function AddGoalModal(props: { token: string; projectId: string; onClose: () => 
     }
     if (itemType === 'select') {
       const clean = options
-        .map((o) => ({ value: o.value.trim(), label: o.label.trim() || o.value.trim() }))
-        .filter((o) => o.value);
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0)
+        .map((s) => ({ value: s, label: s }));
       if (clean.length === 0) { setErr('חובה להגדיר לפחות אפשרות אחת'); return; }
       body.selectOptions = clean;
     }
@@ -742,25 +816,15 @@ function AddGoalModal(props: { token: string; projectId: string; onClose: () => 
         {itemType === 'select' && (
           <div style={{ marginBottom: 12 }}>
             <label style={{ display: 'block', fontSize: 13, color: COLORS.muted, marginBottom: 4 }}>אפשרויות</label>
-            {options.map((o, idx) => (
+            {options.map((label, idx) => (
               <div key={idx} style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
                 <input
                   style={{ ...s.textInput, flex: 1 }}
-                  placeholder="ערך (באנגלית)"
-                  value={o.value}
+                  placeholder="אפשרות"
+                  value={label}
                   onChange={(e) => {
                     const next = [...options];
-                    next[idx] = { ...next[idx], value: e.target.value };
-                    setOptions(next);
-                  }}
-                />
-                <input
-                  style={{ ...s.textInput, flex: 1 }}
-                  placeholder="תווית"
-                  value={o.label}
-                  onChange={(e) => {
-                    const next = [...options];
-                    next[idx] = { ...next[idx], label: e.target.value };
+                    next[idx] = e.target.value;
                     setOptions(next);
                   }}
                 />
@@ -771,7 +835,7 @@ function AddGoalModal(props: { token: string; projectId: string; onClose: () => 
                 >×</button>
               </div>
             ))}
-            <button style={s.ghostBtn} onClick={() => setOptions([...options, { value: '', label: '' }])}>
+            <button style={s.ghostBtn} onClick={() => setOptions([...options, ''])}>
               + הוסיפי אפשרות
             </button>
           </div>

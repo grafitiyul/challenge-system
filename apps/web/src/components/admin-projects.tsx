@@ -9,7 +9,6 @@ import type {
   ProjectLog,
   ProjectLogStatus,
   ProjectNote,
-  SelectOption,
 } from '@components/projects-board';
 
 // ─── Styles ──────────────────────────────────────────────────────────────────
@@ -155,6 +154,37 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
     void reload();
   }
 
+  // Permanent, irreversible delete.
+  // Two-step confirmation:
+  //   1. Plain confirm with the destructive consequences.
+  //   2. Type-to-confirm prompt with the project title to prevent
+  //      accidental clicks.
+  async function hardDeleteProject(p: Project) {
+    const stepOne = confirm(
+      `מחיקה מלאה של "${p.title}"?\n\n` +
+      `⚠ פעולה בלתי-הפיכה.\n` +
+      `תימחקו לצמיתות:\n` +
+      `• הפרויקט\n` +
+      `• כל המטרות שבו\n` +
+      `• כל הדיווחים (היסטוריה)\n` +
+      `• כל ההערות\n\n` +
+      `להמשיך?`,
+    );
+    if (!stepOne) return;
+    const typed = prompt(`לאישור סופי — רשמי את שם הפרויקט:\n"${p.title}"`);
+    if (typed === null) return;
+    if (typed.trim() !== p.title.trim()) {
+      alert('השם שהוזן לא תואם. המחיקה בוטלה.');
+      return;
+    }
+    try {
+      await apiFetch(`${BASE_URL}/projects/${p.id}/hard`, { method: 'DELETE' });
+      void reload();
+    } catch (e: unknown) {
+      alert(e && typeof e === 'object' && 'message' in e ? String((e as { message: string }).message) : 'מחיקה נכשלה');
+    }
+  }
+
   async function archiveItem(it: ProjectItem) {
     if (!confirm(`להעביר לארכיון את "${it.title}"?`)) return;
     await apiFetch(`${BASE_URL}/projects/items/${it.id}`, { method: 'DELETE' });
@@ -253,6 +283,13 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
                 ) : (
                   <button style={st.ghostBtn} onClick={() => unarchiveProject(p)}>שחזר</button>
                 )}
+                <button
+                  style={{ ...st.dangerBtn, background: C.dangerSoft, borderColor: C.danger }}
+                  onClick={() => hardDeleteProject(p)}
+                  title="מחיקה מלאה — פעולה בלתי הפיכה"
+                >
+                  🗑 מחק פרויקט
+                </button>
               </div>
             </div>
 
@@ -545,9 +582,13 @@ function ItemFormModal(props: {
     props.item?.targetValue !== null && props.item?.targetValue !== undefined
       ? String(props.item.targetValue) : '',
   );
-  const [options, setOptions] = useState<SelectOption[]>(
-    props.item?.selectOptions ?? [{ value: '', label: '' }],
-  );
+  // Phase 1: single-field per option (see AddGoalModal comment in projects-board.tsx).
+  // Pre-seed from existing labels when editing so round-trip is clean.
+  const [options, setOptions] = useState<string[]>(() => {
+    const existing = props.item?.selectOptions;
+    if (existing && existing.length > 0) return existing.map((o) => o.label);
+    return [''];
+  });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
@@ -564,8 +605,9 @@ function ItemFormModal(props: {
     }
     if (itemType === 'select') {
       const clean = options
-        .map((o) => ({ value: o.value.trim(), label: o.label.trim() || o.value.trim() }))
-        .filter((o) => o.value);
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0)
+        .map((s) => ({ value: s, label: s }));
       if (clean.length === 0) { setErr('חובה לפחות אפשרות אחת'); return; }
       body.selectOptions = clean;
     }
@@ -640,25 +682,15 @@ function ItemFormModal(props: {
         {itemType === 'select' && (
           <div style={{ marginBottom: 10 }}>
             <label style={{ display: 'block', fontSize: 12, color: C.muted, marginBottom: 4 }}>אפשרויות</label>
-            {options.map((o, idx) => (
+            {options.map((label, idx) => (
               <div key={idx} style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
                 <input
                   style={{ ...st.input, flex: 1 }}
-                  placeholder="ערך (אנגלית)"
-                  value={o.value}
+                  placeholder="אפשרות"
+                  value={label}
                   onChange={(e) => {
                     const next = [...options];
-                    next[idx] = { ...next[idx], value: e.target.value };
-                    setOptions(next);
-                  }}
-                />
-                <input
-                  style={{ ...st.input, flex: 1 }}
-                  placeholder="תווית"
-                  value={o.label}
-                  onChange={(e) => {
-                    const next = [...options];
-                    next[idx] = { ...next[idx], label: e.target.value };
+                    next[idx] = e.target.value;
                     setOptions(next);
                   }}
                 />
@@ -673,7 +705,7 @@ function ItemFormModal(props: {
             <button
               type="button"
               style={st.ghostBtn}
-              onClick={() => setOptions([...options, { value: '', label: '' }])}
+              onClick={() => setOptions([...options, ''])}
             >+ הוסף אפשרות</button>
           </div>
         )}

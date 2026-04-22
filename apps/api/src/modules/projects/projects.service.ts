@@ -323,6 +323,28 @@ export class ProjectsService {
     });
   }
 
+  // Hard-delete a project and all of its descendants. Irreversible.
+  // Intentionally admin-only — participants get archive (soft) which
+  // preserves logs. Deletion cascade order respects the FK graph:
+  //   logs → items → notes → project.
+  // Wrapped in a transaction so a partial failure can't leave orphans.
+  async adminHardDeleteProject(projectId: string) {
+    const existing = await this.prisma.project.findUnique({
+      where: { id: projectId },
+      select: { id: true },
+    });
+    if (!existing) throw new NotFoundException('Project not found');
+    await this.prisma.$transaction(async (tx) => {
+      await tx.projectItemLog.deleteMany({
+        where: { item: { projectId } },
+      });
+      await tx.projectItem.deleteMany({ where: { projectId } });
+      await tx.projectNote.deleteMany({ where: { projectId } });
+      await tx.project.delete({ where: { id: projectId } });
+    });
+    return { ok: true };
+  }
+
   async adminCreateItem(projectId: string, dto: CreateItemDto) {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException('Project not found');
