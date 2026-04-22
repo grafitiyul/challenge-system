@@ -348,7 +348,8 @@ export class TaskEngineService {
       const copy = await tx.weeklyGoal.create({
         data: {
           planId: targetPlanId,
-          title: dto.title?.trim() || `${sourceGoal.title} (עותק)`,
+          // Phase 6.18: no "(עותק)" suffix. Clean copy of the source title.
+          title: dto.title?.trim() || sourceGoal.title,
           description: sourceGoal.description,
           sortOrder: goalCount,
         },
@@ -450,11 +451,16 @@ export class TaskEngineService {
     });
   }
 
-  // Phase 6.16: duplicate a task. Copies title/notes/estimatedMinutes/goalId
+  // Phase 6.18: duplicate a task. Copies title/notes/estimatedMinutes/goalId
   // by default; optional DTO overrides each. Assignments are NOT copied (a
-  // duplicate is a fresh task in whichever plan the admin picks). If the
-  // caller passes `assignToDate`, we also create a single assignment for
-  // that date so the participant doesn't have to do a second click.
+  // duplicate is a fresh task). When the caller supplies assignToDate, we
+  // also create a single assignment for that date so the participant doesn't
+  // have to do a second round-trip. When recurrence fields are provided,
+  // we save them on the new task in the same transaction — the week fetch
+  // will then materialize assignments on matching weekdays as usual.
+  //
+  // Title default: the source title VERBATIM. No "(עותק)" suffix — the
+  // duplicate reads as a clean copy the participant can rename if they want.
   async duplicateTask(
     taskId: string,
     dto: {
@@ -462,6 +468,11 @@ export class TaskEngineService {
       planId?: string;
       goalId?: string | null;
       assignToDate?: string;
+      assignStartTime?: string;
+      assignEndTime?: string;
+      recurrenceWeekdays?: string | null;
+      recurrenceStartTime?: string | null;
+      recurrenceEndTime?: string | null;
     },
   ) {
     const source = await this.prisma.planTask.findUnique({ where: { id: taskId } });
@@ -483,6 +494,7 @@ export class TaskEngineService {
     const count = await this.prisma.planTask.count({
       where: { planId: targetPlanId, goalId: finalGoalId ?? null },
     });
+    const normalizedRecurrence = normalizeRecurrenceWeekdays(dto.recurrenceWeekdays);
 
     const created = await this.prisma.$transaction(async (tx) => {
       const copy = await tx.planTask.create({
@@ -490,12 +502,17 @@ export class TaskEngineService {
           planId: targetPlanId,
           participantId: source.participantId,
           goalId: finalGoalId,
-          title: dto.title?.trim() || `${source.title} (עותק)`,
+          title: dto.title?.trim() || source.title,
           notes: source.notes,
           estimatedMinutes: source.estimatedMinutes,
           sortOrder: count,
-          // Recurrence is NOT copied by default. Duplicate = one-off; if the
-          // admin wants recurrence they edit it on the new task.
+          recurrenceWeekdays: normalizedRecurrence,
+          recurrenceStartTime: normalizedRecurrence
+            ? (dto.recurrenceStartTime ?? null)
+            : null,
+          recurrenceEndTime: normalizedRecurrence
+            ? (dto.recurrenceEndTime ?? null)
+            : null,
         },
         include: { assignments: true },
       });
@@ -506,6 +523,8 @@ export class TaskEngineService {
             taskId: copy.id,
             participantId: source.participantId,
             scheduledDate: toMidnightUTC(dto.assignToDate),
+            startTime: dto.assignStartTime || null,
+            endTime: dto.assignEndTime || null,
             status: 'scheduled',
           },
         });

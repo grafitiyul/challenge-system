@@ -116,10 +116,19 @@ export class UpdateTaskDto {
   recurrenceEndTime?: string | null;
 }
 
-// Phase 6.16: task duplication body. If omitted, server uses sensible defaults
-// (copy into the same plan, keep the original goalId, do not auto-assign).
+// Phase 6.18 (was 6.16): task duplication body.
+//
+// The duplicate endpoint now supports a full "duplicate → assign → optionally
+// recurring" round-trip in a single call, so the client can compose the UX
+// without leaving intermediate state on the server if the user cancels. All
+// fields remain optional — an empty body duplicates the task with its source
+// title and no assignment, same as before.
 export class DuplicateTaskDto {
-  /** Override the title; if omitted, server appends "(עותק)" to the original. */
+  /**
+   * Override the title. If omitted, server uses the SOURCE title verbatim —
+   * no "(עותק)" suffix. A participant who wants to rename the copy does so
+   * through the normal edit flow.
+   */
   @IsOptional()
   @IsString()
   title?: string;
@@ -136,12 +145,37 @@ export class DuplicateTaskDto {
 
   /**
    * Optional: create an assignment for this YYYY-MM-DD after duplication.
-   * When the source had a scheduledDate, the UI typically defaults this to
-   * the next occurrence of the same weekday. Server does not auto-roll.
+   * Paired with assignStartTime / assignEndTime so the UI can land a single
+   * scheduled copy in one server call.
    */
   @IsOptional()
   @IsString()
   assignToDate?: string;
+
+  @IsOptional()
+  @IsString()
+  assignStartTime?: string;
+
+  @IsOptional()
+  @IsString()
+  assignEndTime?: string;
+
+  /**
+   * Optional: recurrence config for the new task. Uses the existing PlanTask
+   * recurrenceWeekdays/Start/End fields — no new storage. Empty / null CSV
+   * means the new task is one-off.
+   */
+  @IsOptional()
+  @IsString()
+  recurrenceWeekdays?: string | null;
+
+  @IsOptional()
+  @IsString()
+  recurrenceStartTime?: string | null;
+
+  @IsOptional()
+  @IsString()
+  recurrenceEndTime?: string | null;
 }
 
 // Phase 6.16: goal duplication body. Optional target plan so participant can

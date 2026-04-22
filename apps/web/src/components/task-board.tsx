@@ -668,14 +668,25 @@ function EditTaskModal({ task, goals, onClose, onDone }: { task: TaskShape; goal
 // ─── Assign-to-Day Modal ──────────────────────────────────────────────────────
 // Handles both "שבץ" (new assignment) and "העבר יום" (move existing).
 
-function AssignDayModal({ task, weekDateSet, currentWeekDays, onClose, onDone }: {
+function AssignDayModal({ task, weekDateSet, currentWeekDays, duplicateMode, onClose, onDone }: {
   task: TaskShape;
   weekDateSet: Set<string>;
   currentWeekDays: Date[];
+  // Phase 6.18: when set, this modal acts as the full "duplicate → assign
+  // → optionally recurring" flow. The task prop is the SOURCE task (used
+  // for title display + to pass its id to the duplicate endpoint). On save
+  // we POST /tasks/:sourceId/duplicate with assignToDate + optional times
+  // + optional recurrence. On cancel nothing is created server-side.
+  //   isDuplicate=true → duplicate flow (no "(עותק)" suffix, recurrence UI visible)
+  //   isDuplicate=false (default) → original assign/move behavior
+  duplicateMode?: boolean;
   onClose: () => void;
   onDone: () => void;
 }) {
-  const existingAssignment = task.assignments.find(a => weekDateSet.has(a.scheduledDate)) ?? null;
+  const isDuplicate = duplicateMode === true;
+  const existingAssignment = !isDuplicate
+    ? (task.assignments.find(a => weekDateSet.has(a.scheduledDate)) ?? null)
+    : null;
   const isMove = existingAssignment !== null;
 
   const [selectedDate, setSelectedDate] = useState('');
@@ -686,12 +697,26 @@ function AssignDayModal({ task, weekDateSet, currentWeekDays, onClose, onDone }:
   const [err, setErr] = useState('');
   const today = toDateStr(new Date());
 
-  // Phase 6.16: for NEW assignments, show a rolling next-7-days window
-  // starting from TODAY. Selecting "Monday" then always means "upcoming
-  // Monday", never a past Monday earlier this week. For MOVE operations
-  // we keep the calendar-week view so admins/participants can also move
-  // a task backward to an earlier day within this week if they genuinely
-  // need to.
+  // Phase 6.18: duplicate mode can optionally configure recurrence in the
+  // same sweep. Reuses the existing PlanTask recurrenceWeekdays/Start/End
+  // fields via the duplicate endpoint — no separate storage.
+  const [recurringOn, setRecurringOn] = useState<boolean>(false);
+  const [recurrenceDays, setRecurrenceDays] = useState<Set<number>>(new Set());
+  const [recurrenceStart, setRecurrenceStart] = useState<string>('');
+  const [recurrenceEnd, setRecurrenceEnd] = useState<string>('');
+  const recurrenceEndRef = useRef<HTMLInputElement>(null);
+
+  function toggleRecurrenceDay(d: number) {
+    setRecurrenceDays((prev) => {
+      const n = new Set(prev);
+      if (n.has(d)) n.delete(d); else n.add(d);
+      return n;
+    });
+  }
+
+  // Rolling next-7-days window for every non-move path (both fresh-assign
+  // and duplicate). Move keeps the calendar-week view so the participant
+  // can drag a task backwards inside the currently viewed week.
   const dayButtons: Date[] = isMove
     ? currentWeekDays
     : Array.from({ length: 7 }, (_, i) => {
@@ -705,7 +730,26 @@ function AssignDayModal({ task, weekDateSet, currentWeekDays, onClose, onDone }:
     if (!selectedDate) { setErr('יש לבחור יום'); return; }
     setSaving(true);
     try {
-      if (isMove) {
+      if (isDuplicate) {
+        // Phase 6.18: single server call. Source task is untouched; a fresh
+        // copy is created with (optional) recurrence + a one-shot assignment
+        // for the chosen day. If the user cancels before pressing save, no
+        // server state exists to clean up.
+        const body: Record<string, unknown> = {
+          assignToDate: selectedDate,
+          assignStartTime: startTime || undefined,
+          assignEndTime: endTime || undefined,
+        };
+        if (recurringOn && recurrenceDays.size > 0) {
+          body.recurrenceWeekdays = Array.from(recurrenceDays).sort((a, b) => a - b).join(',');
+          body.recurrenceStartTime = recurrenceStart || null;
+          body.recurrenceEndTime = recurrenceEnd || null;
+        }
+        await apiFetch(`${BASE_URL}/task-engine/tasks/${task.id}/duplicate`, {
+          method: 'POST',
+          body: JSON.stringify(body),
+        });
+      } else if (isMove) {
         await apiFetch(`${BASE_URL}/task-engine/assignments/${existingAssignment.id}`, {
           method: 'PATCH',
           body: JSON.stringify({ scheduledDate: selectedDate, startTime: startTime || null, endTime: endTime || null }),
@@ -722,8 +766,15 @@ function AssignDayModal({ task, weekDateSet, currentWeekDays, onClose, onDone }:
     } finally { setSaving(false); }
   }
 
+  const modalTitle = isDuplicate
+    ? 'שכפול ושיבוץ'
+    : isMove
+      ? 'העברת משימה ליום אחר'
+      : 'שבץ ליום';
+  const saveLabel = isDuplicate ? 'שכפל ושבץ' : isMove ? 'העבר' : 'שבץ';
+
   return (
-    <Modal onClose={onClose} title={isMove ? 'העברת משימה ליום אחר' : 'שבץ ליום'} width={400}>
+    <Modal onClose={onClose} title={modalTitle} width={460}>
       <div style={{ fontSize: 14, color: '#0f172a', fontWeight: 600, marginBottom: 16 }}>{task.title}</div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
@@ -777,10 +828,85 @@ function AssignDayModal({ task, weekDateSet, currentWeekDays, onClose, onDone }:
         </div>
       </div>
 
+      {/* Phase 6.18: recurrence section, duplicate mode only. Same UI
+          pattern as EditTaskModal — weekday chips + optional start/end
+          times. If the user skips it, the duplicate is a one-off. */}
+      {isDuplicate && (
+        <div style={{ border: '1px dashed #cbd5e1', borderRadius: 8, padding: 12, background: '#f8fafc', marginBottom: 16 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 14, fontWeight: 600, color: '#0f172a' }}>
+            <input
+              type="checkbox"
+              checked={recurringOn}
+              onChange={(e) => setRecurringOn(e.target.checked)}
+              style={{ width: 18, height: 18 }}
+            />
+            משימה חוזרת
+          </label>
+          {recurringOn && (
+            <>
+              <div style={{ fontSize: 12, color: '#64748b', marginTop: 8, marginBottom: 6 }}>
+                בחרי ימים בשבוע שבהם המשימה תחזור אוטומטית:
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {DAYS_HE.map((label, idx) => {
+                  const sel = recurrenceDays.has(idx);
+                  return (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => toggleRecurrenceDay(idx)}
+                      style={{
+                        background: sel ? '#eff6ff' : '#ffffff',
+                        border: `1.5px solid ${sel ? '#2563eb' : '#e2e8f0'}`,
+                        color: sel ? '#1d4ed8' : '#475569',
+                        borderRadius: 999,
+                        padding: '6px 14px',
+                        fontSize: 13,
+                        fontWeight: sel ? 700 : 500,
+                        cursor: 'pointer',
+                        fontFamily: 'inherit',
+                      }}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 10 }}>
+                <div>
+                  <label style={labelSt}>שעת התחלה (אופציונלי)</label>
+                  <input
+                    type="time"
+                    value={recurrenceStart}
+                    onChange={(e) => handleStartTimeChange(e.target.value, setRecurrenceStart, recurrenceEndRef)}
+                    style={{ ...inputSt, fontSize: 16 }}
+                    dir="ltr"
+                  />
+                </div>
+                <div>
+                  <label style={labelSt}>שעת סיום (אופציונלי)</label>
+                  <input
+                    ref={recurrenceEndRef}
+                    type="time"
+                    value={recurrenceEnd}
+                    onChange={(e) => setRecurrenceEnd(e.target.value)}
+                    style={{ ...inputSt, fontSize: 16 }}
+                    dir="ltr"
+                  />
+                </div>
+              </div>
+              <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8, lineHeight: 1.4 }}>
+                המערכת תיצור אוטומטית את המשימה בכל שבוע. מחיקה או הזזה של מופע בודד לא תשפיע על השאר.
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
       {err && <div style={{ color: '#dc2626', fontSize: 12, marginBottom: 8 }}>{err}</div>}
       <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
         <button onClick={onClose} style={btnSecondary}>ביטול</button>
-        <button onClick={handleAssign} disabled={saving || !selectedDate} style={btnPrimary}>{saving ? '...' : isMove ? 'העבר' : 'שבץ'}</button>
+        <button onClick={handleAssign} disabled={saving || !selectedDate} style={btnPrimary}>{saving ? '...' : saveLabel}</button>
       </div>
     </Modal>
   );
@@ -1110,7 +1236,11 @@ export function TaskBoard({
   const [addTaskModal, setAddTaskModal] = useState<{ open: boolean; goalId?: string } | null>(null);
   const [carryModal, setCarryModal] = useState<{ assignment: AssignmentShape; task: TaskShape } | null>(null);
   const [timeModal, setTimeModal] = useState<{ assignment: AssignmentShape; task: TaskShape } | null>(null);
-  const [assignModal, setAssignModal] = useState<TaskShape | null>(null);
+  // Phase 6.18: the assignModal state now carries a `duplicate` flag so a
+  // single component handles both "schedule an existing task" and "duplicate
+  // a task and schedule the copy". No separate modal — same UI, different
+  // save semantics inside AssignDayModal.
+  const [assignModal, setAssignModal] = useState<{ task: TaskShape; duplicate: boolean } | null>(null);
   const [summaryModal, setSummaryModal] = useState<'daily' | 'weekly' | null>(null);
   const [reportPickerOpen, setReportPickerOpen] = useState(false);
   const [reportEditorMessage, setReportEditorMessage] = useState<string | null>(null);
@@ -1148,19 +1278,19 @@ export function TaskBoard({
 
   useEffect(() => { loadPlan(); }, [loadPlan]);
 
-  // Phase 6.16: duplicate task. POSTs to the duplicate endpoint, then
-  // reloads the plan. No optimistic update — the server may mutate sortOrder
-  // and we want the refreshed tree to be the source of truth.
-  async function handleDuplicateTask(task: TaskShape) {
-    try {
-      await apiFetch(`${BASE_URL}/task-engine/tasks/${task.id}/duplicate`, {
-        method: 'POST',
-        body: JSON.stringify({}),
-      });
-      loadPlan();
-    } catch (e: unknown) {
-      alert((e as { message?: string }).message ?? 'שגיאה בשכפול המשימה');
-    }
+  // Phase 6.18: duplicate opens the AssignDayModal in duplicate mode and
+  // does NOT create anything server-side until the user presses save.
+  //
+  //   Flow:  tap 📋 → pick day + (optional) times + (optional) recurrence
+  //          → tap "שכפל ושבץ" → one server call composes duplicate +
+  //            assignment + recurrence config → plan reloads.
+  //
+  //   Cancel: close the modal. No server state is created, so there's
+  //           nothing to clean up — the duplicate is purely intent until
+  //           confirmed. This is the "discard on cancel" behavior called
+  //           out in the spec, implemented by deferring the server call.
+  function handleDuplicateTask(task: TaskShape) {
+    setAssignModal({ task, duplicate: true });
   }
 
   // Phase 6.16: duplicate goal into a target plan. Default target = NEXT
@@ -1387,7 +1517,7 @@ export function TaskBoard({
                   task={t}
                   isAssigned={t.assignments.some(a => weekDateSet.has(a.scheduledDate))}
                   onEdit={() => setEditTaskModal(ts)}
-                  onSchedule={() => setAssignModal(ts)}
+                  onSchedule={() => setAssignModal({ task: ts, duplicate: false })}
                   onDelete={() => setConfirmState({ type: 'task', id: t.id })}
                   onDuplicate={() => handleDuplicateTask(ts)}
                   compact
@@ -1409,7 +1539,7 @@ export function TaskBoard({
                   task={t}
                   isAssigned={t.assignments.some(a => weekDateSet.has(a.scheduledDate))}
                   onEdit={() => setEditTaskModal(t as unknown as TaskShape)}
-                  onSchedule={() => setAssignModal(t as unknown as TaskShape)}
+                  onSchedule={() => setAssignModal({ task: t as unknown as TaskShape, duplicate: false })}
                   onDelete={() => setConfirmState({ type: 'task', id: t.id })}
                   onDuplicate={() => handleDuplicateTask(t as unknown as TaskShape)}
                   compact
@@ -1655,9 +1785,10 @@ export function TaskBoard({
       )}
       {assignModal && (
         <AssignDayModal
-          task={assignModal}
+          task={assignModal.task}
           weekDateSet={weekDateSet}
           currentWeekDays={days}
+          duplicateMode={assignModal.duplicate}
           onClose={() => setAssignModal(null)}
           onDone={() => { setAssignModal(null); loadPlan(); }}
         />
