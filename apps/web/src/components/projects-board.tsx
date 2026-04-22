@@ -850,37 +850,17 @@ function GoalRow(props: {
                   background: COLORS.accentSoft, color: COLORS.accent,
                   border: 'none', cursor: onViewLinkedTask ? 'pointer' : 'default',
                 }}
-              >🔗 משימה בלו״ז</button>
+              >🔗 למשימה</button>
             )}
-            {schedulingStatus && schedulingStatus.state === 'planned' && (
-              <span style={{
-                marginInlineStart: 6,
-                display: 'inline-flex', alignItems: 'center',
-                padding: '2px 8px', borderRadius: 999,
-                fontSize: 11, fontWeight: 600,
-                background: COLORS.successSoft, color: COLORS.success,
-              }}>✓ בתוכנית השבוע</span>
-            )}
-            {schedulingStatus && schedulingStatus.state === 'missing' && (
-              <span style={{
-                marginInlineStart: 6,
-                display: 'inline-flex', alignItems: 'center',
-                padding: '2px 8px', borderRadius: 999,
-                fontSize: 11, fontWeight: 600,
-                background: COLORS.warnSoft, color: COLORS.warn,
-              }}>⚠ חסרים {schedulingStatus.missingCount} ימים השבוע</span>
-            )}
-            {schedulingStatus && schedulingStatus.state === 'suggested' && (
-              <span style={{
-                marginInlineStart: 6,
-                display: 'inline-flex', alignItems: 'center',
-                padding: '2px 8px', borderRadius: 999,
-                fontSize: 11, fontWeight: 600,
-                background: COLORS.accentSoft, color: COLORS.accent,
-              }}>💡 אפשר להוסיף לתוכנית</span>
-            )}
-            {/* Phase 4: ended chip (takes precedence visually). */}
-            {isEnded && (
+            {/* Phase 4.2: exactly ONE status chip per goal row.
+                 Precedence (highest wins):
+                   1. ended       → 🏁 הסתיים
+                   2. no assignments this week → ⚪ לא שובץ
+                   3. state=planned → ✓ בתוכנית השבוע
+                   4. state=missing → ⚠ חסרים N ימים השבוע
+                 The separate 💡 "אפשר להוסיף לתוכנית" chip was removed —
+                 "⚪ לא שובץ" is the single unscheduled indicator. */}
+            {isEnded ? (
               <span style={{
                 marginInlineStart: 6,
                 display: 'inline-flex', alignItems: 'center',
@@ -888,11 +868,7 @@ function GoalRow(props: {
                 fontSize: 11, fontWeight: 600,
                 background: '#f1f5f9', color: COLORS.muted,
               }}>🏁 הסתיים</span>
-            )}
-            {/* Phase 4.1: subtle "no assignments this week" chip.
-                 Shown only when there's a scheduling intent but no assignments
-                 exist in the current week, and the goal hasn't ended. */}
-            {!isEnded && schedulingStatus && schedulingStatus.actualCount === 0 && (
+            ) : schedulingStatus && schedulingStatus.actualCount === 0 ? (
               <span
                 title="אין תאריכים בלוח הזמנים השבוע"
                 style={{
@@ -903,7 +879,23 @@ function GoalRow(props: {
                   background: '#f1f5f9', color: COLORS.mutedLight,
                 }}
               >⚪ לא שובץ</span>
-            )}
+            ) : schedulingStatus && schedulingStatus.state === 'planned' ? (
+              <span style={{
+                marginInlineStart: 6,
+                display: 'inline-flex', alignItems: 'center',
+                padding: '2px 8px', borderRadius: 999,
+                fontSize: 11, fontWeight: 600,
+                background: COLORS.successSoft, color: COLORS.success,
+              }}>✓ בתוכנית השבוע</span>
+            ) : schedulingStatus && schedulingStatus.state === 'missing' ? (
+              <span style={{
+                marginInlineStart: 6,
+                display: 'inline-flex', alignItems: 'center',
+                padding: '2px 8px', borderRadius: 999,
+                fontSize: 11, fontWeight: 600,
+                background: COLORS.warnSoft, color: COLORS.warn,
+              }}>⚠ חסרים {schedulingStatus.missingCount} ימים השבוע</span>
+            ) : null}
             {/* Phase 4: "עדיין לא שובץ בלו״ז" muted tag for boolean goals
                  that have NO scheduling config set — makes it feel like a
                  temporary state, not a separate mode. */}
@@ -923,19 +915,19 @@ function GoalRow(props: {
               לא נקבע להיום בלו״ז
             </div>
           )}
-          {/* Phase 4.1: weekly clarity line — always shown for boolean goals
-               that have a scheduling intent, so the participant knows where
-               they stand this week without any interaction. */}
+          {/* Phase 4.2: single-line weekly summary — compact form. */}
           {schedulingStatus && schedulingStatus.state !== 'ended' && (
             <div style={{ fontSize: 12, color: COLORS.muted, marginTop: 3 }}>
-              {schedulingStatus.completedCount} מתוך {schedulingStatus.expectedCount} הושלמו השבוע
-              {schedulingStatus.state === 'missing' && schedulingStatus.missingCount > 0 && (
+              {schedulingStatus.completedCount} מתוך {schedulingStatus.expectedCount} הושלמו
+              {schedulingStatus.missingCount > 0 && (
                 <span style={{ color: COLORS.warn }}>
-                  {' · '}חסרים {schedulingStatus.missingCount} ימים להשלים
+                  {' · '}חסרים {schedulingStatus.missingCount}
                 </span>
               )}
             </div>
           )}
+          {/* Phase 4.2: ad-hoc completions line — shown ONLY when > 0.
+               Kept smallest in the hierarchy (11 px, muted-light). */}
           {schedulingStatus && schedulingStatus.unscheduledCompletionCount > 0 && (
             <div style={{ fontSize: 11, color: COLORS.mutedLight, marginTop: 2 }}>
               עשית {schedulingStatus.unscheduledCompletionCount} פעמים בפועל (לא שובץ בלו״ז)

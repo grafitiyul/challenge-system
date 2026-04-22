@@ -293,31 +293,31 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
                             ...st.chip(C.accentSoft, C.accent),
                             border: 'none', cursor: 'pointer',
                           }}
-                        >🔗 משימה בלו״ז</button>
+                        >🔗 למשימה</button>
                       )}
-                      {/* Phase 4.1: "⚪ לא שובץ" — no assignments this week. */}
-                      {(() => {
-                        const st2 = data.schedulingStatus[it.id];
-                        if (!st2 || st2.state === 'ended') return null;
-                        if (st2.actualCount > 0) return null;
-                        return (
-                          <span
-                            title="אין תאריכים בלוח הזמנים השבוע"
-                            style={{ marginInlineStart: 6, ...st.chip('#f1f5f9', C.mutedLight) }}
-                          >⚪ לא שובץ</span>
-                        );
-                      })()}
+                      {/* Phase 4.2: exactly ONE chip per row. Precedence:
+                            ended → actualCount=0 → planned → missing
+                          The 💡 suggested chip was removed — "⚪ לא שובץ"
+                          is the single unscheduled indicator. */}
                       {(() => {
                         const st2 = data.schedulingStatus[it.id];
                         if (!st2) return null;
+                        if (st2.state === 'ended') {
+                          return <span style={{ marginInlineStart: 6, ...st.chip('#f1f5f9', C.muted) }}>🏁 הסתיים</span>;
+                        }
+                        if (st2.actualCount === 0) {
+                          return (
+                            <span
+                              title="אין תאריכים בלוח הזמנים השבוע"
+                              style={{ marginInlineStart: 6, ...st.chip('#f1f5f9', C.mutedLight) }}
+                            >⚪ לא שובץ</span>
+                          );
+                        }
                         if (st2.state === 'planned') {
                           return <span style={{ marginInlineStart: 6, ...st.chip(C.successSoft, C.success) }}>✓ בתוכנית השבוע</span>;
                         }
                         if (st2.state === 'missing') {
                           return <span style={{ marginInlineStart: 6, ...st.chip(C.warnSoft, C.warn) }}>⚠ חסרים {st2.missingCount} ימים השבוע</span>;
-                        }
-                        if (st2.state === 'suggested') {
-                          return <span style={{ marginInlineStart: 6, ...st.chip(C.accentSoft, C.accent) }}>💡 אפשר להוסיף לתוכנית</span>;
                         }
                         return null;
                       })()}
@@ -329,10 +329,10 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
                       if (!st2 || st2.state === 'ended') return null;
                       return (
                         <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>
-                          {st2.completedCount} מתוך {st2.expectedCount} הושלמו השבוע
-                          {st2.state === 'missing' && st2.missingCount > 0 && (
+                          {st2.completedCount} מתוך {st2.expectedCount} הושלמו
+                          {st2.missingCount > 0 && (
                             <span style={{ color: C.warn }}>
-                              {' · '}חסרים {st2.missingCount} ימים להשלים
+                              {' · '}חסרים {st2.missingCount}
                             </span>
                           )}
                         </div>
