@@ -400,17 +400,22 @@ export class ProjectTaskSyncService {
             scheduledDate: { gte: args.weekStartUtc, lt: weekEnd },
             status: { in: ['scheduled', 'completed'] },
           },
-          select: { taskId: true, scheduledDate: true },
+          select: { taskId: true, scheduledDate: true, isCompleted: true },
         })
       : [];
 
-    // Index: taskId → Set<ISO-date string>
+    // Index: taskId → Set<ISO-date string>  (active assignments)
+    // and    taskId → # completed assignments   (subset where isCompleted=true)
     const assignmentDatesByTask = new Map<string, Set<string>>();
+    const completedCountByTask = new Map<string, number>();
     for (const a of assignments) {
       const iso = this.toDayString(a.scheduledDate);
       const set = assignmentDatesByTask.get(a.taskId) ?? new Set<string>();
       set.add(iso);
       assignmentDatesByTask.set(a.taskId, set);
+      if (a.isCompleted) {
+        completedCountByTask.set(a.taskId, (completedCountByTask.get(a.taskId) ?? 0) + 1);
+      }
     }
 
     const todayIso = this.toDayString(args.todayUtc);
@@ -429,6 +434,9 @@ export class ProjectTaskSyncService {
         ? assignmentDatesByTask.get(item.linkedPlanTaskId) ?? new Set<string>()
         : new Set<string>();
       const actualCount = taskAssignmentDates.size;
+      const completedCount = item.linkedPlanTaskId
+        ? completedCountByTask.get(item.linkedPlanTaskId) ?? 0
+        : 0;
       const missingCount = Math.max(0, expectedCount - actualCount);
 
       let state: 'planned' | 'missing' | 'suggested' | 'ended';
@@ -499,6 +507,7 @@ export class ProjectTaskSyncService {
         frequencyType: item.scheduleFrequencyType as 'daily' | 'weekly',
         expectedCount,
         actualCount,
+        completedCount,
         missingCount,
         state,
         preferredWeekdays,
@@ -516,7 +525,8 @@ export class ProjectTaskSyncService {
 export interface ItemSchedulingStatus {
   frequencyType: 'daily' | 'weekly';
   expectedCount: number;
-  actualCount: number;
+  actualCount: number;          // # active assignments this week (scheduled + completed)
+  completedCount: number;       // # assignments that are isCompleted=true this week
   missingCount: number;
   state: 'planned' | 'missing' | 'suggested' | 'ended';
   preferredWeekdays: number[] | null;

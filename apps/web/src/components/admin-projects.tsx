@@ -278,10 +278,35 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
                         <span style={{ color: C.muted, fontSize: 12, marginInlineStart: 6 }}>יעד {it.targetValue}</span>
                       )}
                       {it.linkedPlanTaskId && (
-                        <span style={{ marginInlineStart: 6, ...st.chip(C.accentSoft, C.accent) }}>
-                          🔗 מקושר למשימה
-                        </span>
+                        <button
+                          type="button"
+                          title="פתח את המשימה המקושרת"
+                          onClick={() => {
+                            // Admin flow: navigate to the tasks planner with
+                            // the participant pre-selected. The tasks page
+                            // picks up participantId from query string.
+                            window.location.href =
+                              `/admin/tasks?participantId=${encodeURIComponent(participantId)}`;
+                          }}
+                          style={{
+                            marginInlineStart: 6,
+                            ...st.chip(C.accentSoft, C.accent),
+                            border: 'none', cursor: 'pointer',
+                          }}
+                        >🔗 משימה בלו״ז</button>
                       )}
+                      {/* Phase 4.1: "⚪ לא שובץ" — no assignments this week. */}
+                      {(() => {
+                        const st2 = data.schedulingStatus[it.id];
+                        if (!st2 || st2.state === 'ended') return null;
+                        if (st2.actualCount > 0) return null;
+                        return (
+                          <span
+                            title="אין תאריכים בלוח הזמנים השבוע"
+                            style={{ marginInlineStart: 6, ...st.chip('#f1f5f9', C.mutedLight) }}
+                          >⚪ לא שובץ</span>
+                        );
+                      })()}
                       {(() => {
                         const st2 = data.schedulingStatus[it.id];
                         if (!st2) return null;
@@ -297,6 +322,22 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
                         return null;
                       })()}
                     </div>
+                    {/* Phase 4.1: weekly clarity line — always visible when
+                         a scheduling intent exists on this goal. */}
+                    {(() => {
+                      const st2 = data.schedulingStatus[it.id];
+                      if (!st2 || st2.state === 'ended') return null;
+                      return (
+                        <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>
+                          {st2.completedCount} מתוך {st2.expectedCount} הושלמו השבוע
+                          {st2.state === 'missing' && st2.missingCount > 0 && (
+                            <span style={{ color: C.warn }}>
+                              {' · '}חסרים {st2.missingCount} ימים להשלים
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })()}
                     <div style={{ fontSize: 11, color: C.mutedLight, marginTop: 2 }}>
                       {it.logs.length} דיווחים בטווח
                       {data.schedulingStatus[it.id]?.unscheduledCompletionCount
@@ -309,10 +350,24 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
                   {(() => {
                     const st2 = data.schedulingStatus[it.id];
                     if (!st2) return null;
-                    if (st2.state === 'missing' || st2.state === 'suggested') {
+                    // Phase 4.1: 'missing' is a text link; 'suggested' is a
+                    // primary button (the entry point to creating the task).
+                    if (st2.state === 'missing') {
+                      return (
+                        <button
+                          onClick={() => setFillWeekItem(it)}
+                          style={{
+                            background: 'none', border: 'none', padding: '4px 8px',
+                            color: C.accent, fontSize: 12, fontWeight: 600,
+                            cursor: 'pointer', textDecoration: 'underline',
+                          }}
+                        >שלימי ימים →</button>
+                      );
+                    }
+                    if (st2.state === 'suggested') {
                       return (
                         <button style={st.primaryBtn} onClick={() => setFillWeekItem(it)}>
-                          {st2.state === 'missing' ? '📅 השלימי ימים' : '🔗 הוסיפי ללוח השבוע'}
+                          🔗 הוסיפי ללוח השבוע
                         </button>
                       );
                     }

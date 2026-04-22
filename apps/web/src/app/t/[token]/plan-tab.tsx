@@ -274,7 +274,13 @@ export function PlanTab({ token }: { token: string }) {
           />
         </div>
       ) : (
-        <PortalProjectsBoard token={token} />
+        <PortalProjectsBoard
+          token={token}
+          // Phase 4.1: tapping "🔗 משימה בלו״ז" on a project goal switches
+          // back to the task plan view so the participant can see the
+          // scheduled task in context.
+          onViewLinkedTask={() => switchView('plan')}
+        />
       )}
     </div>
   );

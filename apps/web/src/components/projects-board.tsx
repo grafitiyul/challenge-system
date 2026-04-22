@@ -79,6 +79,9 @@ export interface ItemSchedulingStatus {
   frequencyType: 'daily' | 'weekly';
   expectedCount: number;
   actualCount: number;
+  // Phase 4.1: # assignments that are isCompleted=true this week.
+  // Used for the "X מתוך Y הושלמו השבוע" weekly clarity line.
+  completedCount: number;
   missingCount: number;
   // Phase 4 adds 'ended' — emitted when today > endDate.
   state: 'planned' | 'missing' | 'suggested' | 'ended';
@@ -279,9 +282,12 @@ function itemExistsOn(item: ProjectItem, date: string): boolean {
 
 interface PortalBoardProps {
   token: string;
+  // Phase 4.1: parent (PlanTab) receives this to switch to the "התכנון שלי"
+  // view when the participant taps the linked-task chip on a project goal.
+  onViewLinkedTask?: (taskId: string) => void;
 }
 
-export function PortalProjectsBoard({ token }: PortalBoardProps) {
+export function PortalProjectsBoard({ token, onViewLinkedTask }: PortalBoardProps) {
   const isDesktop = useIsDesktop();
   const [data, setData] = useState<PortalBootstrap | null>(null);
   const [loadErr, setLoadErr] = useState('');
@@ -420,6 +426,7 @@ export function PortalProjectsBoard({ token }: PortalBoardProps) {
                 onOpenSkip={() => setSkipForItem(item)}
                 onOpenRemove={() => setRemoveGoalByItem(item)}
                 onOpenFillWeek={() => setFillWeekItem(item)}
+                onViewLinkedTask={onViewLinkedTask}
               />
             ))
           )}
@@ -664,9 +671,11 @@ function GoalRow(props: {
   onOpenSkip: () => void;
   onOpenRemove: () => void;
   onOpenFillWeek: () => void;
+  // Phase 4.1: tapping "🔗 משימה בלו״ז" chip jumps to the linked task.
+  onViewLinkedTask?: (taskId: string) => void;
 }) {
   const { token, item, date, today, visible, canManage, isDesktop, scheduledKeys, schedulingStatus,
-          onChanged, onOpenSkip, onOpenRemove, onOpenFillWeek } = props;
+          onChanged, onOpenSkip, onOpenRemove, onOpenFillWeek, onViewLinkedTask } = props;
   const log = logForDate(item, date);
   const pill = statusPillFromLog(log);
   const isLinked = !!item.linkedPlanTaskId;
@@ -823,17 +832,25 @@ function GoalRow(props: {
                 יעד {item.targetValue}
               </span>
             )}
-            {isLinked && (
-              <span
-                title="מטרה זו מקושרת למשימה ברשימת התכנון"
+            {/* Phase 4.1: clickable chip → opens the linked task in the
+                 task planner (portal switches view; admin navigates). */}
+            {isLinked && item.linkedPlanTaskId && (
+              <button
+                type="button"
+                title="פתח את המשימה המקושרת"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (onViewLinkedTask) onViewLinkedTask(item.linkedPlanTaskId!);
+                }}
                 style={{
                   marginInlineStart: 6,
                   display: 'inline-flex', alignItems: 'center', gap: 4,
                   padding: '2px 8px', borderRadius: 999,
                   fontSize: 11, fontWeight: 600,
                   background: COLORS.accentSoft, color: COLORS.accent,
+                  border: 'none', cursor: onViewLinkedTask ? 'pointer' : 'default',
                 }}
-              >🔗 מקושר למשימה</span>
+              >🔗 משימה בלו״ז</button>
             )}
             {schedulingStatus && schedulingStatus.state === 'planned' && (
               <span style={{
@@ -872,6 +889,21 @@ function GoalRow(props: {
                 background: '#f1f5f9', color: COLORS.muted,
               }}>🏁 הסתיים</span>
             )}
+            {/* Phase 4.1: subtle "no assignments this week" chip.
+                 Shown only when there's a scheduling intent but no assignments
+                 exist in the current week, and the goal hasn't ended. */}
+            {!isEnded && schedulingStatus && schedulingStatus.actualCount === 0 && (
+              <span
+                title="אין תאריכים בלוח הזמנים השבוע"
+                style={{
+                  marginInlineStart: 6,
+                  display: 'inline-flex', alignItems: 'center',
+                  padding: '2px 8px', borderRadius: 999,
+                  fontSize: 11, fontWeight: 600,
+                  background: '#f1f5f9', color: COLORS.mutedLight,
+                }}
+              >⚪ לא שובץ</span>
+            )}
             {/* Phase 4: "עדיין לא שובץ בלו״ז" muted tag for boolean goals
                  that have NO scheduling config set — makes it feel like a
                  temporary state, not a separate mode. */}
@@ -889,6 +921,19 @@ function GoalRow(props: {
           {showNotScheduledHint && (
             <div style={{ fontSize: 12, color: COLORS.mutedLight, marginTop: 2 }}>
               לא נקבע להיום בלו״ז
+            </div>
+          )}
+          {/* Phase 4.1: weekly clarity line — always shown for boolean goals
+               that have a scheduling intent, so the participant knows where
+               they stand this week without any interaction. */}
+          {schedulingStatus && schedulingStatus.state !== 'ended' && (
+            <div style={{ fontSize: 12, color: COLORS.muted, marginTop: 3 }}>
+              {schedulingStatus.completedCount} מתוך {schedulingStatus.expectedCount} הושלמו השבוע
+              {schedulingStatus.state === 'missing' && schedulingStatus.missingCount > 0 && (
+                <span style={{ color: COLORS.warn }}>
+                  {' · '}חסרים {schedulingStatus.missingCount} ימים להשלים
+                </span>
+              )}
             </div>
           )}
           {schedulingStatus && schedulingStatus.unscheduledCompletionCount > 0 && (
@@ -970,12 +1015,18 @@ function GoalRow(props: {
           </>
         )}
 
+        {/* Phase 4.1: demoted from primary button to text link. The row no
+             longer shows a competing blue CTA for the "missing" state —
+             the weekly clarity line above already communicates the gap. */}
         {primaryAction === 'fillMissing' && (
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button style={s.primaryBtn} onClick={onOpenFillWeek}>
-              📅 השלימי ימים
-            </button>
-          </div>
+          <button
+            onClick={onOpenFillWeek}
+            style={{
+              background: 'none', border: 'none', padding: '4px 0',
+              color: COLORS.accent, fontSize: 13, fontWeight: 600,
+              cursor: 'pointer', textDecoration: 'underline',
+            }}
+          >שלימי ימים →</button>
         )}
 
         {primaryAction === 'schedule' && (
