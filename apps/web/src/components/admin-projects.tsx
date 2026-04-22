@@ -258,7 +258,7 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
 
             {items.length === 0 ? (
               <div style={{ fontSize: 13, color: C.muted, padding: '12px 0', borderTop: `1px solid ${C.border}` }}>
-                אין פריטים עדיין.
+                אין מטרות עדיין.
               </div>
             ) : (
               items.map((it, idx) => (
@@ -290,7 +290,7 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
             {archived.length > 0 && (
               <details style={{ marginTop: 8 }}>
                 <summary style={{ fontSize: 12, color: C.muted, cursor: 'pointer' }}>
-                  פריטים בארכיון ({archived.length})
+                  מטרות בארכיון ({archived.length})
                 </summary>
                 {archived.map((it) => (
                   <div key={it.id} style={{ ...st.itemRow, color: C.mutedLight }}>
@@ -313,7 +313,7 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
             )}
 
             <div style={{ display: 'flex', gap: 6, marginTop: 12 }}>
-              <button style={st.ghostBtn} onClick={() => setAddItemForProject(p)}>+ הוסף פריט</button>
+              <button style={st.ghostBtn} onClick={() => setAddItemForProject(p)}>+ הוסף מטרה</button>
               <button style={st.ghostBtn} onClick={() => setNoteProject(p)}>+ הוסף הערה</button>
             </div>
 
@@ -402,8 +402,9 @@ function statusLabel(s: ProjectLogStatus | null): { label: string; bg: string; c
   switch (s) {
     case 'completed': return { label: '✓', bg: C.successSoft, color: C.success };
     case 'value': return { label: '#', bg: C.accentSoft, color: C.accent };
-    case 'skipped_today': return { label: 'דילוג', bg: C.warnSoft, color: C.warn };
-    case 'committed': return { label: 'התחייב', bg: C.dangerSoft, color: C.danger };
+    case 'skipped_today': return { label: 'ל״ר', bg: C.warnSoft, color: C.warn };
+    // 'committed' is deprecated — legacy rows render as a neutral chip.
+    case 'committed': return { label: '~', bg: '#f1f5f9', color: C.muted };
   }
 }
 
@@ -428,7 +429,7 @@ function LogsMatrix({ items }: { items: ProjectItem[] }) {
       <table style={{ borderCollapse: 'collapse', fontSize: 12 }}>
         <thead>
           <tr>
-            <th style={{ textAlign: 'start', padding: '4px 8px', fontWeight: 600, color: C.muted }}>פריט</th>
+            <th style={{ textAlign: 'start', padding: '4px 8px', fontWeight: 600, color: C.muted }}>מטרה</th>
             {dates.map((d) => (
               <th key={d} style={{ textAlign: 'center', padding: '4px 6px', fontWeight: 600, color: C.muted }}>
                 {d.slice(5)}
@@ -592,7 +593,7 @@ function ItemFormModal(props: {
     <div style={st.backdrop} onClick={props.onClose}>
       <div style={st.modal} onClick={(e) => e.stopPropagation()}>
         <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 16 }}>
-          {editing ? 'ערוך פריט' : 'הוסף פריט'}
+          {editing ? 'ערוך מטרה' : 'הוסף מטרה'}
         </div>
 
         <div style={{ marginBottom: 10 }}>
@@ -714,8 +715,11 @@ function AdminLogModal(props: {
       if (!sel) { setErr('בחרי אפשרות'); return; }
       body.selectValue = sel;
     }
-    if (status === 'skipped_today' && note.trim()) body.skipNote = note.trim();
-    if (status === 'committed' && note.trim()) body.commitNote = note.trim();
+    if (status === 'skipped_today') {
+      // "לא רלוונטי להיום" — note is required (matches the participant UX)
+      if (!note.trim()) { setErr('חובה לרשום למה זה לא רלוונטי היום'); return; }
+      body.skipNote = note.trim();
+    }
     setBusy(true); setErr('');
     try {
       await apiFetch(
@@ -741,7 +745,7 @@ function AdminLogModal(props: {
         <div style={{ marginBottom: 10 }}>
           <label style={{ display: 'block', fontSize: 12, color: C.muted, marginBottom: 4 }}>סטטוס</label>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {(['completed', 'skipped_today', 'committed'] as ProjectLogStatus[]).map((ss) => (
+            {(['completed', 'skipped_today'] as ProjectLogStatus[]).map((ss) => (
               <button
                 key={ss}
                 type="button"
@@ -753,7 +757,7 @@ function AdminLogModal(props: {
                   color: status === ss ? C.accent : C.text,
                 }}
               >
-                {ss === 'completed' ? 'הושלם' : ss === 'skipped_today' ? 'דילוג' : 'התחייבות'}
+                {ss === 'completed' ? 'הושלם' : 'לא רלוונטי להיום'}
               </button>
             ))}
           </div>
@@ -776,10 +780,10 @@ function AdminLogModal(props: {
             </select>
           </div>
         )}
-        {(status === 'skipped_today' || status === 'committed') && (
+        {status === 'skipped_today' && (
           <div style={{ marginBottom: 10 }}>
             <label style={{ display: 'block', fontSize: 12, color: C.muted, marginBottom: 4 }}>
-              {status === 'skipped_today' ? 'סיבה' : 'התחייבות'} (לא חובה)
+              למה זה לא רלוונטי היום? <span style={{ color: C.danger }}>*</span>
             </label>
             <textarea style={st.textarea} value={note} onChange={(e) => setNote(e.target.value)} />
           </div>

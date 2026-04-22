@@ -402,6 +402,14 @@ export class ProjectsService {
     return this.upsertLog({ itemId, participantId, dto, editedByRole: 'admin', restrictToRecentDays: false });
   }
 
+  // Clear a (item, logDate) row — returns to the default "no log = not
+  // completed" state. Idempotent: deleting a missing row is not an error.
+  async adminDeleteLog(itemId: string, participantId: string, logDate: string) {
+    return this.deleteLog({
+      itemId, participantId, logDate, restrictToRecentDays: false,
+    });
+  }
+
   async adminCreateNote(projectId: string, participantId: string, dto: CreateNoteDto) {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException('Project not found');
@@ -522,6 +530,20 @@ export class ProjectsService {
     });
   }
 
+  // Participant clears a (item, logDate) row — used for reversible-completed
+  // UX. Same today/yesterday window as upsert. Clearing = returning to the
+  // implicit "not completed" default.
+  async portalDeleteLog(token: string, itemId: string, logDate: string) {
+    const me = await this.resolveToken(token);
+    await this.assertOwnership(me.id, { itemId });
+    return this.deleteLog({
+      itemId,
+      participantId: me.id,
+      logDate,
+      restrictToRecentDays: true,
+    });
+  }
+
   async portalCreateNote(token: string, projectId: string, dto: CreateNoteDto) {
     const me = await this.resolveToken(token);
     await this.assertOwnership(me.id, { projectId });
@@ -625,5 +647,36 @@ export class ProjectsService {
         editedByRole,
       },
     });
+  }
+
+  // Shared delete helper — clears a (item, logDate) log. Idempotent:
+  // deleting a row that doesn't exist is treated as success. Enforces
+  // ownership by checking the item → project → participantId chain so a
+  // portal caller can't delete another participant's logs.
+  private async deleteLog(args: {
+    itemId: string;
+    participantId: string;
+    logDate: string;
+    restrictToRecentDays: boolean;
+  }) {
+    const { itemId, participantId, logDate: logDateStr, restrictToRecentDays } = args;
+
+    const item = await this.prisma.projectItem.findUnique({
+      where: { id: itemId },
+      select: { project: { select: { participantId: true } } },
+    });
+    if (!item) throw new NotFoundException('Item not found');
+    if (item.project.participantId !== participantId) throw new ForbiddenException();
+
+    if (restrictToRecentDays) {
+      const allowed = new Set([todayInIsrael(), yesterdayInIsrael()]);
+      if (!allowed.has(logDateStr)) {
+        throw new BadRequestException('Participants can only clear today or yesterday');
+      }
+    }
+
+    const logDate = parseDayString(logDateStr);
+    await this.prisma.projectItemLog.deleteMany({ where: { itemId, logDate } });
+    return { ok: true };
   }
 }

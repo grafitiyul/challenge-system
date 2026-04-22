@@ -1,11 +1,14 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BASE_URL, apiFetch } from '@lib/api';
 
 // ─── Shared types (also consumed by the admin tab) ───────────────────────────
 
 export type ProjectItemType = 'boolean' | 'number' | 'select';
+// "committed" is retained in the type so historical rows round-trip through
+// the client cleanly, but the UI no longer produces or displays it as a
+// first-class state. New activity only emits completed | skipped_today | value.
 export type ProjectLogStatus = 'completed' | 'skipped_today' | 'committed' | 'value';
 
 export interface SelectOption { value: string; label: string; }
@@ -73,8 +76,10 @@ export interface PortalBootstrap {
 const COLORS = {
   bg: '#f8fafc',
   card: '#ffffff',
+  cardAlt: '#fbfbfd',
   border: '#e2e8f0',
   borderStrong: '#cbd5e1',
+  borderSoft: '#eef2f7',
   text: '#0f172a',
   muted: '#64748b',
   mutedLight: '#94a3b8',
@@ -86,6 +91,8 @@ const COLORS = {
   warnSoft: '#fef3c7',
   danger: '#b91c1c',
   dangerSoft: '#fef2f2',
+  saving: '#0891b2',
+  savingSoft: '#ecfeff',
 };
 
 const s = {
@@ -112,7 +119,7 @@ const s = {
   } as React.CSSProperties,
   card: {
     background: COLORS.card, border: `1px solid ${COLORS.border}`,
-    borderRadius: 12, padding: 16, marginBottom: 12,
+    borderRadius: 12, padding: 16, marginBottom: 16,
   } as React.CSSProperties,
   projectTitle: {
     fontSize: 17, fontWeight: 700, color: COLORS.text, marginBottom: 4,
@@ -120,11 +127,17 @@ const s = {
   projectDesc: {
     fontSize: 13, color: COLORS.muted, marginBottom: 12,
   } as React.CSSProperties,
-  itemRow: {
-    padding: '12px 0', borderTop: `1px solid ${COLORS.border}`,
+  // Each goal ("מטרה") is rendered as its own card-in-card with stronger
+  // visual separation: alternate background, rounded border, vertical gap.
+  goalCard: {
+    background: COLORS.cardAlt,
+    border: `1px solid ${COLORS.borderSoft}`,
+    borderRadius: 10,
+    padding: '14px 14px 12px',
+    marginBottom: 12,
   } as React.CSSProperties,
-  itemTitle: {
-    fontSize: 15, fontWeight: 600, color: COLORS.text, marginBottom: 8,
+  goalTitle: {
+    fontSize: 15, fontWeight: 700, color: COLORS.text, marginBottom: 10,
   } as React.CSSProperties,
   statusChip: (bg: string, color: string): React.CSSProperties => ({
     display: 'inline-flex', alignItems: 'center', gap: 4, padding: '3px 10px',
@@ -150,6 +163,19 @@ const s = {
   err: {
     fontSize: 12, color: COLORS.danger, marginTop: 6,
   } as React.CSSProperties,
+  saveState: (state: 'idle' | 'saving' | 'saved' | 'error') => ({
+    fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 999,
+    background: state === 'error' ? COLORS.dangerSoft
+      : state === 'saving' ? COLORS.savingSoft
+      : state === 'saved' ? COLORS.successSoft
+      : 'transparent',
+    color: state === 'error' ? COLORS.danger
+      : state === 'saving' ? COLORS.saving
+      : state === 'saved' ? COLORS.success
+      : COLORS.mutedLight,
+    transition: 'opacity 200ms ease',
+    opacity: state === 'idle' ? 0 : 1,
+  }) as React.CSSProperties,
   backdrop: {
     position: 'fixed' as const, inset: 0, background: 'rgba(15,23,42,0.4)',
     display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -167,26 +193,25 @@ function logForDate(item: ProjectItem, date: string): ProjectLog | null {
   return item.logs.find((l) => l.logDate === date) ?? null;
 }
 
-function statusPillFromLog(log: ProjectLog | null): { label: string; bg: string; color: string } {
+function statusPillFromLog(log: ProjectLog | null): { label: string; bg: string; color: string } | null {
   if (!log) return { label: 'לא דווח', bg: '#f1f5f9', color: COLORS.muted };
   switch (log.status) {
     case 'completed':
-      return { label: 'הושלם', bg: COLORS.successSoft, color: COLORS.success };
+      return { label: 'בוצע', bg: COLORS.successSoft, color: COLORS.success };
     case 'value':
       return { label: 'דווח ערך', bg: COLORS.accentSoft, color: COLORS.accent };
     case 'skipped_today':
-      return { label: 'דילוג ליום', bg: COLORS.warnSoft, color: COLORS.warn };
+      return { label: 'לא רלוונטי להיום', bg: COLORS.warnSoft, color: COLORS.warn };
+    // 'committed' is deprecated in UI; treat legacy rows as neutral so they
+    // are still visible but don't imply a committed-state workflow.
     case 'committed':
-      return { label: 'מתחייבת', bg: COLORS.dangerSoft, color: COLORS.danger };
+      return { label: 'דווח ישן', bg: '#f1f5f9', color: COLORS.muted };
     default:
-      return { label: log.status, bg: '#f1f5f9', color: COLORS.muted };
+      return null;
   }
 }
 
-// Whether an item's creation date is ≤ the given logDate. Used to hide the
-// "not completed" state for items that didn't exist yet on that day.
 function itemExistsOn(item: ProjectItem, date: string): boolean {
-  // Take only the YYYY-MM-DD of item.createdAt in Asia/Jerusalem
   const created = new Date(item.createdAt);
   const iso = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Jerusalem', year: 'numeric', month: '2-digit', day: '2-digit',
@@ -211,9 +236,8 @@ export function PortalProjectsBoard({ token }: PortalBoardProps) {
   const [addItemForProject, setAddItemForProject] = useState<string | null>(null);
   const [noteForProject, setNoteForProject] = useState<string | null>(null);
   const [skipForItem, setSkipForItem] = useState<ProjectItem | null>(null);
-  const [commitForItem, setCommitForItem] = useState<ProjectItem | null>(null);
 
-  async function reload() {
+  const reload = useCallback(async () => {
     try {
       const d = await apiFetch<PortalBootstrap>(
         `${BASE_URL}/public/projects/${token}`,
@@ -228,9 +252,9 @@ export function PortalProjectsBoard({ token }: PortalBoardProps) {
     } finally {
       setLoading(false);
     }
-  }
+  }, [token]);
 
-  useEffect(() => { void reload(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [token]);
+  useEffect(() => { void reload(); }, [reload]);
 
   const dateStr = data ? (selectedDay === 'today' ? data.today : data.yesterday) : '';
   const notesByProject = useMemo(() => {
@@ -253,7 +277,6 @@ export function PortalProjectsBoard({ token }: PortalBoardProps) {
 
   return (
     <div style={{ padding: 12 }}>
-      {/* Today / Yesterday toggle */}
       <div style={s.tabHeader}>
         <div style={s.toggleGroup}>
           <button style={s.toggleBtn(selectedDay === 'today')} onClick={() => setSelectedDay('today')}>
@@ -285,11 +308,11 @@ export function PortalProjectsBoard({ token }: PortalBoardProps) {
 
           {p.items.filter((i) => !i.isArchived).length === 0 ? (
             <div style={{ color: COLORS.muted, fontSize: 13, padding: '8px 0' }}>
-              {canManage ? 'אין פריטים עדיין — הוסיפי אחד למטה.' : 'אין פריטים לדווח עליהם.'}
+              {canManage ? 'אין מטרות עדיין — הוסיפי אחת למטה.' : 'אין מטרות לדווח עליהן.'}
             </div>
           ) : (
             p.items.filter((i) => !i.isArchived).map((item) => (
-              <ItemReportRow
+              <GoalRow
                 key={item.id}
                 token={token}
                 item={item}
@@ -297,14 +320,13 @@ export function PortalProjectsBoard({ token }: PortalBoardProps) {
                 visible={itemExistsOn(item, dateStr)}
                 onChanged={reload}
                 onOpenSkip={() => setSkipForItem(item)}
-                onOpenCommit={() => setCommitForItem(item)}
               />
             ))
           )}
 
           {canManage && (
             <div style={{ marginTop: 12 }}>
-              <button style={s.ghostBtn} onClick={() => setAddItemForProject(p.id)}>+ הוסף פריט</button>
+              <button style={s.ghostBtn} onClick={() => setAddItemForProject(p.id)}>+ הוסף מטרה</button>
             </div>
           )}
 
@@ -325,7 +347,7 @@ export function PortalProjectsBoard({ token }: PortalBoardProps) {
       )}
 
       {addItemForProject && (
-        <AddItemModal
+        <AddGoalModal
           token={token}
           projectId={addItemForProject}
           onClose={() => setAddItemForProject(null)}
@@ -343,48 +365,44 @@ export function PortalProjectsBoard({ token }: PortalBoardProps) {
       )}
 
       {skipForItem && (
-        <SkipCommitModal
+        <SkipModal
           token={token}
           item={skipForItem}
           date={dateStr}
-          kind="skipped_today"
           onClose={() => setSkipForItem(null)}
           onSaved={() => { setSkipForItem(null); void reload(); }}
-        />
-      )}
-
-      {commitForItem && (
-        <SkipCommitModal
-          token={token}
-          item={commitForItem}
-          date={dateStr}
-          kind="committed"
-          onClose={() => setCommitForItem(null)}
-          onSaved={() => { setCommitForItem(null); void reload(); }}
         />
       )}
     </div>
   );
 }
 
-// ─── Item row (per-day reporting UI) ─────────────────────────────────────────
+// ─── Goal row (per-day reporting UI) ─────────────────────────────────────────
+// Auto-saves on every action. No Save button anywhere on this row.
+// ① boolean: "✓ בוצע" is a two-way toggle (click again → clear).
+// ② number: debounced save on input change (500ms after last keystroke).
+// ③ select: save immediately on option choice.
+// Every variant shares the same "lo rel'vanti l'hayom" affordance, which
+// opens a modal that REQUIRES a note.
 
-function ItemReportRow(props: {
+type SaveState = 'idle' | 'saving' | 'saved' | 'error';
+
+function GoalRow(props: {
   token: string;
   item: ProjectItem;
   date: string;
   visible: boolean;
   onChanged: () => void;
   onOpenSkip: () => void;
-  onOpenCommit: () => void;
 }) {
-  const { token, item, date, visible, onChanged, onOpenSkip, onOpenCommit } = props;
+  const { token, item, date, visible, onChanged, onOpenSkip } = props;
   const log = logForDate(item, date);
   const pill = statusPillFromLog(log);
-  const [busy, setBusy] = useState(false);
+
+  const [saveState, setSaveState] = useState<SaveState>('idle');
   const [err, setErr] = useState('');
 
-  // Local editable state for number input
+  // Local editable state for number input (debounced).
   const [numDraft, setNumDraft] = useState<string>(
     log?.numericValue !== null && log?.numericValue !== undefined ? String(log.numericValue) : '',
   );
@@ -392,37 +410,74 @@ function ItemReportRow(props: {
     setNumDraft(log?.numericValue !== null && log?.numericValue !== undefined ? String(log.numericValue) : '');
   }, [log?.id, log?.numericValue]);
 
-  if (!visible) {
-    // The item didn't exist on this date — don't penalize with a "not completed" pill.
-    return (
-      <div style={s.itemRow}>
-        <div style={{ ...s.itemTitle, color: COLORS.mutedLight }}>{item.title}</div>
-        <div style={{ fontSize: 12, color: COLORS.mutedLight }}>נוצר אחרי תאריך זה</div>
-      </div>
-    );
+  // Debounce timer for the numeric input.
+  const numTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (numTimer.current) clearTimeout(numTimer.current);
+  }, []);
+
+  // Save-state chip auto-clears back to 'idle' after success.
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (hideTimer.current) clearTimeout(hideTimer.current);
+  }, []);
+  function transientSuccess() {
+    setSaveState('saved');
+    if (hideTimer.current) clearTimeout(hideTimer.current);
+    hideTimer.current = setTimeout(() => setSaveState('idle'), 1600);
   }
 
-  async function upsert(body: Record<string, unknown>) {
-    setBusy(true); setErr('');
+  async function run(body: Record<string, unknown>) {
+    setSaveState('saving'); setErr('');
     try {
       await apiFetch(`${BASE_URL}/public/projects/${token}/items/${item.id}/logs`, {
         method: 'POST',
         body: JSON.stringify({ logDate: date, ...body }),
       });
+      transientSuccess();
       onChanged();
     } catch (e: unknown) {
-      const msg = e && typeof e === 'object' && 'message' in e ? String((e as { message: string }).message) : 'שמירה נכשלה';
+      const msg = e && typeof e === 'object' && 'message' in e
+        ? String((e as { message: string }).message) : 'שמירה נכשלה';
       setErr(msg);
-    } finally {
-      setBusy(false);
+      setSaveState('error');
     }
   }
 
+  async function clearLog() {
+    setSaveState('saving'); setErr('');
+    try {
+      await apiFetch(
+        `${BASE_URL}/public/projects/${token}/items/${item.id}/logs?logDate=${encodeURIComponent(date)}`,
+        { method: 'DELETE' },
+      );
+      transientSuccess();
+      onChanged();
+    } catch (e: unknown) {
+      const msg = e && typeof e === 'object' && 'message' in e
+        ? String((e as { message: string }).message) : 'שמירה נכשלה';
+      setErr(msg);
+      setSaveState('error');
+    }
+  }
+
+  if (!visible) {
+    return (
+      <div style={s.goalCard}>
+        <div style={{ ...s.goalTitle, color: COLORS.mutedLight }}>{item.title}</div>
+        <div style={{ fontSize: 12, color: COLORS.mutedLight }}>נוצר אחרי תאריך זה</div>
+      </div>
+    );
+  }
+
+  const isCompleted = log?.status === 'completed';
+  const saveLabel = saveState === 'saving' ? 'שומר…' : saveState === 'saved' ? 'נשמר' : saveState === 'error' ? 'שמירה נכשלה' : '';
+
   return (
-    <div style={s.itemRow}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
+    <div style={s.goalCard}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={s.itemTitle}>
+          <div style={s.goalTitle}>
             {item.title}
             {item.unit && <span style={{ fontWeight: 400, color: COLORS.muted, fontSize: 13, marginInlineStart: 6 }}>({item.unit})</span>}
             {item.targetValue !== null && item.targetValue !== undefined && (
@@ -432,25 +487,26 @@ function ItemReportRow(props: {
             )}
           </div>
         </div>
-        <span style={s.statusChip(pill.bg, pill.color)}>{pill.label}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+          <span style={s.saveState(saveState)} aria-live="polite">{saveLabel}</span>
+          {pill && <span style={s.statusChip(pill.bg, pill.color)}>{pill.label}</span>}
+        </div>
       </div>
 
-      {/* Type-appropriate input */}
       {item.itemType === 'boolean' && (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button
             style={{
               ...s.primaryBtn,
-              background: log?.status === 'completed' ? COLORS.success : COLORS.accent,
-              opacity: busy ? 0.5 : 1,
+              background: isCompleted ? COLORS.success : COLORS.accent,
+              opacity: saveState === 'saving' ? 0.65 : 1,
             }}
-            disabled={busy}
-            onClick={() => upsert({ status: 'completed' })}
+            disabled={saveState === 'saving'}
+            onClick={() => { if (isCompleted) void clearLog(); else void run({ status: 'completed' }); }}
           >
-            ✓ סמני שבוצע
+            {isCompleted ? '✓ בוצע (לחצי לבטל)' : '✓ סמני שבוצע'}
           </button>
-          <button style={s.ghostBtn} disabled={busy} onClick={onOpenSkip}>דילוג ליום</button>
-          <button style={s.ghostBtn} disabled={busy} onClick={onOpenCommit}>מתחייבת לפעם הבאה</button>
+          <button style={s.ghostBtn} disabled={saveState === 'saving'} onClick={onOpenSkip}>לא רלוונטי להיום</button>
         </div>
       )}
 
@@ -461,29 +517,35 @@ function ItemReportRow(props: {
             inputMode="decimal"
             style={s.numInput}
             value={numDraft}
-            onChange={(e) => setNumDraft(e.target.value)}
-            disabled={busy}
+            onChange={(e) => {
+              const v = e.target.value;
+              setNumDraft(v);
+              if (numTimer.current) clearTimeout(numTimer.current);
+              // Empty input while a log exists = clear the row (undo).
+              if (v.trim() === '') {
+                if (log) numTimer.current = setTimeout(() => { void clearLog(); }, 500);
+                return;
+              }
+              const parsed = parseFloat(v);
+              if (isNaN(parsed)) return;
+              numTimer.current = setTimeout(() => {
+                void run({ status: 'completed', numericValue: parsed });
+              }, 500);
+            }}
+            disabled={saveState === 'saving' && false /* allow typing while save is in flight */}
           />
-          <button
-            style={{ ...s.primaryBtn, opacity: busy ? 0.5 : 1 }}
-            disabled={busy || numDraft.trim() === '' || isNaN(parseFloat(numDraft))}
-            onClick={() => upsert({ status: 'completed', numericValue: parseFloat(numDraft) })}
-          >
-            שמרי
-          </button>
-          <button style={s.ghostBtn} disabled={busy} onClick={onOpenSkip}>דילוג ליום</button>
-          <button style={s.ghostBtn} disabled={busy} onClick={onOpenCommit}>מתחייבת</button>
+          <button style={s.ghostBtn} disabled={saveState === 'saving'} onClick={onOpenSkip}>לא רלוונטי להיום</button>
         </div>
       )}
 
       {item.itemType === 'select' && item.selectOptions && (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {item.selectOptions.map((o) => {
-            const active = log?.selectValue === o.value;
+            const active = log?.selectValue === o.value && log?.status !== 'skipped_today';
             return (
               <button
                 key={o.value}
-                disabled={busy}
+                disabled={saveState === 'saving'}
                 style={{
                   padding: '10px 14px',
                   border: `2px solid ${active ? COLORS.accent : COLORS.border}`,
@@ -492,22 +554,24 @@ function ItemReportRow(props: {
                   borderRadius: 10, fontSize: 14, fontWeight: 600, cursor: 'pointer',
                   minHeight: 44,
                 }}
-                onClick={() => upsert({ status: 'completed', selectValue: o.value })}
+                onClick={() => {
+                  // Tapping the already-selected option clears the log (undo).
+                  if (active) void clearLog();
+                  else void run({ status: 'completed', selectValue: o.value });
+                }}
               >
                 {o.label}
               </button>
             );
           })}
-          <button style={s.ghostBtn} disabled={busy} onClick={onOpenSkip}>דילוג ליום</button>
-          <button style={s.ghostBtn} disabled={busy} onClick={onOpenCommit}>מתחייבת</button>
+          <button style={s.ghostBtn} disabled={saveState === 'saving'} onClick={onOpenSkip}>לא רלוונטי להיום</button>
         </div>
       )}
 
       {log?.status === 'skipped_today' && log.skipNote && (
-        <div style={{ fontSize: 12, color: COLORS.warn, marginTop: 6 }}>סיבה: {log.skipNote}</div>
-      )}
-      {log?.status === 'committed' && log.commitNote && (
-        <div style={{ fontSize: 12, color: COLORS.danger, marginTop: 6 }}>התחייבות: {log.commitNote}</div>
+        <div style={{ fontSize: 12, color: COLORS.warn, marginTop: 8 }}>
+          <strong>למה לא רלוונטי:</strong> {log.skipNote}
+        </div>
       )}
       {err && <div style={s.err}>{err}</div>}
     </div>
@@ -592,7 +656,7 @@ function CreateProjectModal(props: { token: string; onClose: () => void; onCreat
   );
 }
 
-function AddItemModal(props: { token: string; projectId: string; onClose: () => void; onCreated: () => void }) {
+function AddGoalModal(props: { token: string; projectId: string; onClose: () => void; onCreated: () => void }) {
   const [title, setTitle] = useState('');
   const [itemType, setItemType] = useState<ProjectItemType>('boolean');
   const [unit, setUnit] = useState('');
@@ -633,7 +697,7 @@ function AddItemModal(props: { token: string; projectId: string; onClose: () => 
   return (
     <div style={s.backdrop} onClick={props.onClose}>
       <div style={s.modal} onClick={(e) => e.stopPropagation()}>
-        <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 16 }}>הוסיפי פריט</div>
+        <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 16 }}>הוסיפי מטרה</div>
 
         <div style={{ marginBottom: 12 }}>
           <label style={{ display: 'block', fontSize: 13, color: COLORS.muted, marginBottom: 4 }}>כותרת</label>
@@ -759,33 +823,33 @@ function AddNoteModal(props: { token: string; projectId: string; onClose: () => 
   );
 }
 
-function SkipCommitModal(props: {
+// "לא רלוונטי להיום" modal — the skip_today state now REQUIRES a note.
+// Submit button stays disabled until the textarea has non-whitespace content.
+function SkipModal(props: {
   token: string;
   item: ProjectItem;
   date: string;
-  kind: 'skipped_today' | 'committed';
   onClose: () => void;
   onSaved: () => void;
 }) {
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  const title = props.kind === 'skipped_today' ? 'דילוג ליום הזה' : 'מתחייבת לפעם הבאה';
-  const noteLabel = props.kind === 'skipped_today' ? 'סיבה (לא חובה)' : 'מה את מתחייבת (לא חובה)';
 
   async function submit() {
+    if (!note.trim()) { setErr('חובה לרשום למה זה לא רלוונטי היום'); return; }
     setBusy(true); setErr('');
     try {
-      const body: Record<string, unknown> = {
-        logDate: props.date,
-        status: props.kind,
-      };
-      if (note.trim()) {
-        body[props.kind === 'skipped_today' ? 'skipNote' : 'commitNote'] = note.trim();
-      }
       await apiFetch(
         `${BASE_URL}/public/projects/${props.token}/items/${props.item.id}/logs`,
-        { method: 'POST', body: JSON.stringify(body) },
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            logDate: props.date,
+            status: 'skipped_today',
+            skipNote: note.trim(),
+          }),
+        },
       );
       props.onSaved();
     } catch (e: unknown) {
@@ -794,28 +858,36 @@ function SkipCommitModal(props: {
     } finally { setBusy(false); }
   }
 
+  const canSubmit = note.trim().length > 0 && !busy;
+
   return (
     <div style={s.backdrop} onClick={props.onClose}>
       <div style={s.modal} onClick={(e) => e.stopPropagation()}>
-        <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>{title}</div>
+        <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>לא רלוונטי להיום</div>
         <div style={{ fontSize: 13, color: COLORS.muted, marginBottom: 12 }}>{props.item.title}</div>
-        <label style={{ display: 'block', fontSize: 13, color: COLORS.muted, marginBottom: 4 }}>{noteLabel}</label>
-        <textarea style={s.textarea} value={note} onChange={(e) => setNote(e.target.value)} />
+        <label style={{ display: 'block', fontSize: 13, color: COLORS.muted, marginBottom: 4 }}>
+          למה זה לא רלוונטי היום? <span style={{ color: COLORS.danger }}>*</span>
+        </label>
+        <textarea style={s.textarea} value={note} onChange={(e) => setNote(e.target.value)} autoFocus />
         {err && <div style={s.err}>{err}</div>}
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
           <button style={s.ghostBtn} onClick={props.onClose} disabled={busy}>ביטול</button>
-          <button style={s.primaryBtn} onClick={submit} disabled={busy}>אישור</button>
+          <button
+            style={{ ...s.primaryBtn, opacity: canSubmit ? 1 : 0.55, cursor: canSubmit ? 'pointer' : 'not-allowed' }}
+            onClick={submit}
+            disabled={!canSubmit}
+          >
+            אישור
+          </button>
         </div>
       </div>
     </div>
   );
 }
 
-// ─── Utility to decide if the portal tab should be visible at all ────────────
-// Exported so the portal page can call it without re-fetching twice: once
-// the bootstrap has loaded, the page knows whether there are projects or
-// whether the participant has management rights. If neither is true, hide
-// the tab entirely (per the product spec).
+// Kept exported for any consumer that still wants a visibility predicate.
+// The portal itself no longer uses this — the tab is always rendered and
+// the board shows empty-state inside the panel.
 export function shouldShowPortalTab(b: PortalBootstrap | null): boolean {
   if (!b) return false;
   if (b.participant.canManageProjects) return true;

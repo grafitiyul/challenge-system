@@ -100,6 +100,18 @@ export class ProjectsController {
     return this.svc.adminUpsertLog(itemId, participantId, dto);
   }
 
+  // Clear a log row: returns the (item, date) cell to the default
+  // "no log = not completed" state.
+  // DELETE /api/projects/items/:itemId/logs?participantId=&logDate=YYYY-MM-DD
+  @Delete('items/:itemId/logs')
+  deleteLog(
+    @Param('itemId') itemId: string,
+    @Query('participantId') participantId: string,
+    @Query('logDate') logDate: string,
+  ) {
+    return this.svc.adminDeleteLog(itemId, participantId, logDate);
+  }
+
   // POST /api/projects/:id/notes?participantId=
   @Post(':id/notes')
   addNote(

@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { ProjectsService } from './projects.service';
 import {
   CreateItemDto,
@@ -82,6 +82,18 @@ export class PortalProjectsController {
     @Body() dto: UpsertLogDto,
   ) {
     return this.svc.portalUpsertLog(token, itemId, dto);
+  }
+
+  // Clear a (item, logDate) log row. Idempotent. Used for the reversible-
+  // completed UX (tapping ✓ a second time clears the cell).
+  // DELETE /api/public/projects/:token/items/:itemId/logs?logDate=YYYY-MM-DD
+  @Delete(':token/items/:itemId/logs')
+  deleteLog(
+    @Param('token') token: string,
+    @Param('itemId') itemId: string,
+    @Query('logDate') logDate: string,
+  ) {
+    return this.svc.portalDeleteLog(token, itemId, logDate);
   }
 
   @Post(':token/projects/:projectId/notes')
