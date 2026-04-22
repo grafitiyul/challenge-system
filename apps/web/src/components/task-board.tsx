@@ -162,6 +162,31 @@ const btnSecondary: React.CSSProperties = {
   padding: '10px 20px', fontSize: 14, cursor: 'pointer',
 };
 
+// Phase 6.17: after the participant completes a valid HH:MM start-time, shift
+// focus to the end-time input so they can keep typing without a manual tap.
+// Used on every start/end time pair in the task module.
+//
+// <input type="time"> only emits a value that matches HH:MM when the native
+// picker (mobile) or spinner (desktop) yields a complete time — partial
+// keystrokes produce an empty string. So checking the regex in onChange is
+// the right trigger; no timeouts or heuristics.
+//
+// Edge cases handled implicitly:
+//   - User clears start (value = "")  → regex fails → no focus shift.
+//   - End input unmounted / missing   → ref.current is null → no-op.
+//   - End input already has a value   → still shift focus per spec
+//     (user can overwrite) — we don't inspect end's value.
+function handleStartTimeChange(
+  nextValue: string,
+  setStart: (s: string) => void,
+  endRef: React.RefObject<HTMLInputElement | null>,
+): void {
+  setStart(nextValue);
+  if (/^\d{2}:\d{2}$/.test(nextValue)) {
+    endRef.current?.focus();
+  }
+}
+
 // ─── Modal base ───────────────────────────────────────────────────────────────
 
 function Modal({ onClose, title, children, width = 480 }: {
@@ -298,6 +323,7 @@ function TimeModal({ assignment, task, onClose, onDone }: {
 }) {
   const [startTime, setStartTime] = useState(assignment.startTime ?? '');
   const [endTime, setEndTime] = useState(assignment.endTime ?? '');
+  const endTimeRef = useRef<HTMLInputElement>(null);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
 
@@ -320,11 +346,24 @@ function TimeModal({ assignment, task, onClose, onDone }: {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
         <div>
           <label style={labelSt}>שעת התחלה</label>
-          <input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} style={{ ...inputSt, fontSize: 16 }} dir="ltr" />
+          <input
+            type="time"
+            value={startTime}
+            onChange={(e) => handleStartTimeChange(e.target.value, setStartTime, endTimeRef)}
+            style={{ ...inputSt, fontSize: 16 }}
+            dir="ltr"
+          />
         </div>
         <div>
           <label style={labelSt}>שעת סיום</label>
-          <input type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} style={{ ...inputSt, fontSize: 16 }} dir="ltr" />
+          <input
+            ref={endTimeRef}
+            type="time"
+            value={endTime}
+            onChange={(e) => setEndTime(e.target.value)}
+            style={{ ...inputSt, fontSize: 16 }}
+            dir="ltr"
+          />
         </div>
       </div>
       {err && <div style={{ color: '#dc2626', fontSize: 12, marginBottom: 8 }}>{err}</div>}
@@ -490,6 +529,7 @@ function EditTaskModal({ task, goals, onClose, onDone }: { task: TaskShape; goal
   const [weekdays, setWeekdays] = useState<Set<number>>(initialDays);
   const [recurrenceStart, setRecurrenceStart] = useState<string>(task.recurrenceStartTime ?? '');
   const [recurrenceEnd, setRecurrenceEnd] = useState<string>(task.recurrenceEndTime ?? '');
+  const recurrenceEndRef = useRef<HTMLInputElement>(null);
   const [saving, setSaving] = useState(false);
 
   function toggleWeekday(d: number) {
@@ -590,11 +630,24 @@ function EditTaskModal({ task, goals, onClose, onDone }: { task: TaskShape; goal
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 10 }}>
                 <div>
                   <label style={labelSt}>שעת התחלה (אופציונלי)</label>
-                  <input type="time" value={recurrenceStart} onChange={(e) => setRecurrenceStart(e.target.value)} style={{ ...inputSt, fontSize: 16 }} dir="ltr" />
+                  <input
+                    type="time"
+                    value={recurrenceStart}
+                    onChange={(e) => handleStartTimeChange(e.target.value, setRecurrenceStart, recurrenceEndRef)}
+                    style={{ ...inputSt, fontSize: 16 }}
+                    dir="ltr"
+                  />
                 </div>
                 <div>
                   <label style={labelSt}>שעת סיום (אופציונלי)</label>
-                  <input type="time" value={recurrenceEnd} onChange={(e) => setRecurrenceEnd(e.target.value)} style={{ ...inputSt, fontSize: 16 }} dir="ltr" />
+                  <input
+                    ref={recurrenceEndRef}
+                    type="time"
+                    value={recurrenceEnd}
+                    onChange={(e) => setRecurrenceEnd(e.target.value)}
+                    style={{ ...inputSt, fontSize: 16 }}
+                    dir="ltr"
+                  />
                 </div>
               </div>
               <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8, lineHeight: 1.4 }}>
@@ -628,6 +681,7 @@ function AssignDayModal({ task, weekDateSet, currentWeekDays, onClose, onDone }:
   const [selectedDate, setSelectedDate] = useState('');
   const [startTime, setStartTime] = useState('');
   const [endTime, setEndTime] = useState('');
+  const endTimeRef = useRef<HTMLInputElement>(null);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
   const today = toDateStr(new Date());
@@ -702,11 +756,24 @@ function AssignDayModal({ task, weekDateSet, currentWeekDays, onClose, onDone }:
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 16 }}>
         <div>
           <label style={labelSt}>שעת התחלה (אופציונלי)</label>
-          <input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} style={{ ...inputSt, fontSize: 16 }} dir="ltr" />
+          <input
+            type="time"
+            value={startTime}
+            onChange={(e) => handleStartTimeChange(e.target.value, setStartTime, endTimeRef)}
+            style={{ ...inputSt, fontSize: 16 }}
+            dir="ltr"
+          />
         </div>
         <div>
           <label style={labelSt}>שעת סיום (אופציונלי)</label>
-          <input type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} style={{ ...inputSt, fontSize: 16 }} dir="ltr" />
+          <input
+            ref={endTimeRef}
+            type="time"
+            value={endTime}
+            onChange={(e) => setEndTime(e.target.value)}
+            style={{ ...inputSt, fontSize: 16 }}
+            dir="ltr"
+          />
         </div>
       </div>
 
