@@ -236,6 +236,9 @@ export function PortalProjectsBoard({ token }: PortalBoardProps) {
   const [addItemForProject, setAddItemForProject] = useState<string | null>(null);
   const [noteForProject, setNoteForProject] = useState<string | null>(null);
   const [skipForItem, setSkipForItem] = useState<ProjectItem | null>(null);
+  // Remove-confirmation (in-app modal; replaces browser confirm()).
+  const [removeProject, setRemoveProject] = useState<Project | null>(null);
+  const [removeGoalByItem, setRemoveGoalByItem] = useState<ProjectItem | null>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -311,18 +314,7 @@ export function PortalProjectsBoard({ token }: PortalBoardProps) {
             {canManage && (
               <button
                 style={{ ...s.ghostBtn, color: COLORS.danger, borderColor: COLORS.dangerSoft, minHeight: 36, padding: '6px 10px', fontSize: 12 }}
-                onClick={async () => {
-                  if (!confirm(`להעביר את הפרויקט "${p.title}" לארכיון?\n\nהוא לא יופיע יותר ברשימה, אבל הדיווחים והמטרות נשמרים.`)) return;
-                  try {
-                    await apiFetch(`${BASE_URL}/public/projects/${token}/projects/${p.id}`, {
-                      method: 'PATCH',
-                      body: JSON.stringify({ status: 'archived' }),
-                    });
-                    void reload();
-                  } catch (e: unknown) {
-                    alert(e && typeof e === 'object' && 'message' in e ? String((e as { message: string }).message) : 'שמירה נכשלה');
-                  }
-                }}
+                onClick={() => setRemoveProject(p)}
               >
                 🗑 הסר
               </button>
@@ -344,6 +336,7 @@ export function PortalProjectsBoard({ token }: PortalBoardProps) {
                 canManage={canManage}
                 onChanged={reload}
                 onOpenSkip={() => setSkipForItem(item)}
+                onOpenRemove={() => setRemoveGoalByItem(item)}
               />
             ))
           )}
@@ -397,7 +390,119 @@ export function PortalProjectsBoard({ token }: PortalBoardProps) {
           onSaved={() => { setSkipForItem(null); void reload(); }}
         />
       )}
+
+      {removeProject && (
+        <ConfirmRemoveModal
+          title="להסיר פרויקט?"
+          body="הפעולה תסיר את הפרויקט מהרשימה, אך תשמור את ההיסטוריה."
+          confirmLabel="הסר"
+          onClose={() => setRemoveProject(null)}
+          onConfirm={async () => {
+            try {
+              await apiFetch(`${BASE_URL}/public/projects/${token}/projects/${removeProject.id}`, {
+                method: 'PATCH',
+                body: JSON.stringify({ status: 'archived' }),
+              });
+              setRemoveProject(null);
+              void reload();
+            } catch (e: unknown) {
+              throw e;
+            }
+          }}
+        />
+      )}
+
+      {removeGoalByItem && (
+        <ConfirmRemoveModal
+          title="להסיר מטרה?"
+          body="הפעולה תסיר את המטרה מהרשימה, אך תשמור את ההיסטוריה."
+          confirmLabel="הסר"
+          onClose={() => setRemoveGoalByItem(null)}
+          onConfirm={async () => {
+            await apiFetch(`${BASE_URL}/public/projects/${token}/items/${removeGoalByItem.id}`, { method: 'DELETE' });
+            setRemoveGoalByItem(null);
+            void reload();
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+// ─── In-app modal primitives ────────────────────────────────────────────────
+// LockedModalShell: backdrop click does NOT close. Explicit × button and a
+// configurable footer. All destructive confirmations use this — no more
+// browser confirm()/prompt() anywhere in the UI.
+
+function LockedModalShell(props: {
+  title: string;
+  onClose: () => void;
+  children: React.ReactNode;
+  footer: React.ReactNode;
+}) {
+  return (
+    <div style={s.backdrop} onClick={(e) => e.stopPropagation()}>
+      <div style={s.modal} role="dialog" aria-modal="true">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          <div style={{ fontSize: 18, fontWeight: 700 }}>{props.title}</div>
+          <button
+            aria-label="סגור"
+            onClick={props.onClose}
+            style={{
+              width: 32, height: 32, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              border: 'none', background: 'transparent', color: COLORS.muted, cursor: 'pointer',
+              fontSize: 20, lineHeight: 1, borderRadius: 8,
+            }}
+          >×</button>
+        </div>
+        {props.children}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+          {props.footer}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmRemoveModal(props: {
+  title: string;
+  body: string;
+  confirmLabel: string;
+  onClose: () => void;
+  onConfirm: () => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  async function run() {
+    setBusy(true); setErr('');
+    try {
+      await props.onConfirm();
+    } catch (e: unknown) {
+      setErr(e && typeof e === 'object' && 'message' in e ? String((e as { message: string }).message) : 'הפעולה נכשלה');
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <LockedModalShell
+      title={props.title}
+      onClose={props.onClose}
+      footer={(
+        <>
+          <button style={s.ghostBtn} disabled={busy} onClick={props.onClose}>ביטול</button>
+          <button
+            style={{ ...s.primaryBtn, background: COLORS.danger, opacity: busy ? 0.65 : 1 }}
+            disabled={busy}
+            onClick={run}
+          >
+            {props.confirmLabel}
+          </button>
+        </>
+      )}
+    >
+      <div style={{ fontSize: 14, color: COLORS.text, lineHeight: 1.6 }}>{props.body}</div>
+      {err && <div style={{ ...s.err, marginTop: 10 }}>{err}</div>}
+    </LockedModalShell>
   );
 }
 
@@ -419,8 +524,9 @@ function GoalRow(props: {
   canManage: boolean;
   onChanged: () => void;
   onOpenSkip: () => void;
+  onOpenRemove: () => void;
 }) {
-  const { token, item, date, visible, canManage, onChanged, onOpenSkip } = props;
+  const { token, item, date, visible, canManage, onChanged, onOpenSkip, onOpenRemove } = props;
   const log = logForDate(item, date);
   const pill = statusPillFromLog(log);
 
@@ -495,16 +601,6 @@ function GoalRow(props: {
     );
   }
 
-  async function archiveGoal() {
-    if (!confirm(`להסיר את המטרה "${item.title}"?\n\nהיא לא תופיע יותר בדיווח היומי, אבל הדיווחים הקיימים נשמרים.`)) return;
-    try {
-      await apiFetch(`${BASE_URL}/public/projects/${token}/items/${item.id}`, { method: 'DELETE' });
-      onChanged();
-    } catch (e: unknown) {
-      alert(e && typeof e === 'object' && 'message' in e ? String((e as { message: string }).message) : 'שמירה נכשלה');
-    }
-  }
-
   const isCompleted = log?.status === 'completed';
   const saveLabel = saveState === 'saving' ? 'שומר…' : saveState === 'saved' ? 'נשמר' : saveState === 'error' ? 'שמירה נכשלה' : '';
 
@@ -544,7 +640,7 @@ function GoalRow(props: {
           {canManage && (
             <button
               title="הסר מטרה"
-              onClick={archiveGoal}
+              onClick={onOpenRemove}
               style={{
                 padding: '2px 8px', fontSize: 12, lineHeight: 1,
                 background: 'transparent', color: COLORS.mutedLight,
@@ -705,24 +801,26 @@ function CreateProjectModal(props: { token: string; onClose: () => void; onCreat
   }
 
   return (
-    <div style={s.backdrop} onClick={props.onClose}>
-      <div style={s.modal} onClick={(e) => e.stopPropagation()}>
-        <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 16 }}>צור פרויקט חדש</div>
-        <div style={{ marginBottom: 12 }}>
-          <label style={{ display: 'block', fontSize: 13, color: COLORS.muted, marginBottom: 4 }}>כותרת</label>
-          <input style={s.textInput} value={title} onChange={(e) => setTitle(e.target.value)} />
-        </div>
-        <div style={{ marginBottom: 16 }}>
-          <label style={{ display: 'block', fontSize: 13, color: COLORS.muted, marginBottom: 4 }}>תיאור (לא חובה)</label>
-          <textarea style={s.textarea} value={description} onChange={(e) => setDescription(e.target.value)} />
-        </div>
-        {err && <div style={s.err}>{err}</div>}
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 8 }}>
+    <LockedModalShell
+      title="צור פרויקט חדש"
+      onClose={props.onClose}
+      footer={(
+        <>
           <button style={s.ghostBtn} onClick={props.onClose} disabled={busy}>ביטול</button>
           <button style={s.primaryBtn} onClick={submit} disabled={busy}>שמרי</button>
-        </div>
+        </>
+      )}
+    >
+      <div style={{ marginBottom: 12 }}>
+        <label style={{ display: 'block', fontSize: 13, color: COLORS.muted, marginBottom: 4 }}>כותרת</label>
+        <input style={s.textInput} value={title} onChange={(e) => setTitle(e.target.value)} />
       </div>
-    </div>
+      <div style={{ marginBottom: 16 }}>
+        <label style={{ display: 'block', fontSize: 13, color: COLORS.muted, marginBottom: 4 }}>תיאור (לא חובה)</label>
+        <textarea style={s.textarea} value={description} onChange={(e) => setDescription(e.target.value)} />
+      </div>
+      {err && <div style={s.err}>{err}</div>}
+    </LockedModalShell>
   );
 }
 
@@ -769,86 +867,86 @@ function AddGoalModal(props: { token: string; projectId: string; onClose: () => 
   }
 
   return (
-    <div style={s.backdrop} onClick={props.onClose}>
-      <div style={s.modal} onClick={(e) => e.stopPropagation()}>
-        <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 16 }}>הוסיפי מטרה</div>
-
-        <div style={{ marginBottom: 12 }}>
-          <label style={{ display: 'block', fontSize: 13, color: COLORS.muted, marginBottom: 4 }}>כותרת</label>
-          <input style={s.textInput} value={title} onChange={(e) => setTitle(e.target.value)} />
-        </div>
-
-        <div style={{ marginBottom: 12 }}>
-          <label style={{ display: 'block', fontSize: 13, color: COLORS.muted, marginBottom: 4 }}>סוג</label>
-          <div style={{ display: 'flex', gap: 6 }}>
-            {(['boolean', 'number', 'select'] as ProjectItemType[]).map((t) => (
-              <button
-                key={t}
-                onClick={() => setItemType(t)}
-                style={{
-                  flex: 1,
-                  padding: '10px 8px',
-                  border: `2px solid ${itemType === t ? COLORS.accent : COLORS.border}`,
-                  background: itemType === t ? COLORS.accentSoft : COLORS.card,
-                  color: itemType === t ? COLORS.accent : COLORS.text,
-                  borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer', minHeight: 44,
-                }}
-              >
-                {t === 'boolean' ? 'בוצע/לא' : t === 'number' ? 'מספרי' : 'בחירה'}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {itemType === 'number' && (
-          <>
-            <div style={{ marginBottom: 12 }}>
-              <label style={{ display: 'block', fontSize: 13, color: COLORS.muted, marginBottom: 4 }}>יחידה (לא חובה)</label>
-              <input style={s.textInput} placeholder="למשל: כוסות" value={unit} onChange={(e) => setUnit(e.target.value)} />
-            </div>
-            <div style={{ marginBottom: 12 }}>
-              <label style={{ display: 'block', fontSize: 13, color: COLORS.muted, marginBottom: 4 }}>יעד יומי (לא חובה)</label>
-              <input type="number" style={s.textInput} value={targetValue} onChange={(e) => setTargetValue(e.target.value)} />
-            </div>
-          </>
-        )}
-
-        {itemType === 'select' && (
-          <div style={{ marginBottom: 12 }}>
-            <label style={{ display: 'block', fontSize: 13, color: COLORS.muted, marginBottom: 4 }}>אפשרויות</label>
-            {options.map((label, idx) => (
-              <div key={idx} style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
-                <input
-                  style={{ ...s.textInput, flex: 1 }}
-                  placeholder="אפשרות"
-                  value={label}
-                  onChange={(e) => {
-                    const next = [...options];
-                    next[idx] = e.target.value;
-                    setOptions(next);
-                  }}
-                />
-                <button
-                  style={s.ghostBtn}
-                  onClick={() => setOptions(options.filter((_, i) => i !== idx))}
-                  disabled={options.length === 1}
-                >×</button>
-              </div>
-            ))}
-            <button style={s.ghostBtn} onClick={() => setOptions([...options, ''])}>
-              + הוסיפי אפשרות
-            </button>
-          </div>
-        )}
-
-        {err && <div style={s.err}>{err}</div>}
-
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 8 }}>
+    <LockedModalShell
+      title="הוסיפי מטרה"
+      onClose={props.onClose}
+      footer={(
+        <>
           <button style={s.ghostBtn} onClick={props.onClose} disabled={busy}>ביטול</button>
           <button style={s.primaryBtn} onClick={submit} disabled={busy}>שמרי</button>
+        </>
+      )}
+    >
+      <div style={{ marginBottom: 12 }}>
+        <label style={{ display: 'block', fontSize: 13, color: COLORS.muted, marginBottom: 4 }}>כותרת</label>
+        <input style={s.textInput} value={title} onChange={(e) => setTitle(e.target.value)} />
+      </div>
+
+      <div style={{ marginBottom: 12 }}>
+        <label style={{ display: 'block', fontSize: 13, color: COLORS.muted, marginBottom: 4 }}>סוג</label>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {(['boolean', 'number', 'select'] as ProjectItemType[]).map((t) => (
+            <button
+              key={t}
+              onClick={() => setItemType(t)}
+              style={{
+                flex: 1,
+                padding: '10px 8px',
+                border: `2px solid ${itemType === t ? COLORS.accent : COLORS.border}`,
+                background: itemType === t ? COLORS.accentSoft : COLORS.card,
+                color: itemType === t ? COLORS.accent : COLORS.text,
+                borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer', minHeight: 44,
+              }}
+            >
+              {t === 'boolean' ? 'בוצע/לא' : t === 'number' ? 'מספרי' : 'בחירה'}
+            </button>
+          ))}
         </div>
       </div>
-    </div>
+
+      {itemType === 'number' && (
+        <>
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ display: 'block', fontSize: 13, color: COLORS.muted, marginBottom: 4 }}>יחידה (לא חובה)</label>
+            <input style={s.textInput} placeholder="למשל: כוסות" value={unit} onChange={(e) => setUnit(e.target.value)} />
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ display: 'block', fontSize: 13, color: COLORS.muted, marginBottom: 4 }}>יעד יומי (לא חובה)</label>
+            <input type="number" style={s.textInput} value={targetValue} onChange={(e) => setTargetValue(e.target.value)} />
+          </div>
+        </>
+      )}
+
+      {itemType === 'select' && (
+        <div style={{ marginBottom: 12 }}>
+          <label style={{ display: 'block', fontSize: 13, color: COLORS.muted, marginBottom: 4 }}>אפשרויות</label>
+          {options.map((label, idx) => (
+            <div key={idx} style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+              <input
+                style={{ ...s.textInput, flex: 1 }}
+                placeholder="אפשרות"
+                value={label}
+                onChange={(e) => {
+                  const next = [...options];
+                  next[idx] = e.target.value;
+                  setOptions(next);
+                }}
+              />
+              <button
+                style={s.ghostBtn}
+                onClick={() => setOptions(options.filter((_, i) => i !== idx))}
+                disabled={options.length === 1}
+              >×</button>
+            </div>
+          ))}
+          <button style={s.ghostBtn} onClick={() => setOptions([...options, ''])}>
+            + הוסיפי אפשרות
+          </button>
+        </div>
+      )}
+
+      {err && <div style={s.err}>{err}</div>}
+    </LockedModalShell>
   );
 }
 
@@ -873,17 +971,19 @@ function AddNoteModal(props: { token: string; projectId: string; onClose: () => 
   }
 
   return (
-    <div style={s.backdrop} onClick={props.onClose}>
-      <div style={s.modal} onClick={(e) => e.stopPropagation()}>
-        <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 16 }}>הוסיפי הערה</div>
-        <textarea style={s.textarea} value={content} onChange={(e) => setContent(e.target.value)} autoFocus />
-        {err && <div style={s.err}>{err}</div>}
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+    <LockedModalShell
+      title="הוסיפי הערה"
+      onClose={props.onClose}
+      footer={(
+        <>
           <button style={s.ghostBtn} onClick={props.onClose} disabled={busy}>ביטול</button>
           <button style={s.primaryBtn} onClick={submit} disabled={busy}>שמרי</button>
-        </div>
-      </div>
-    </div>
+        </>
+      )}
+    >
+      <textarea style={s.textarea} value={content} onChange={(e) => setContent(e.target.value)} autoFocus />
+      {err && <div style={s.err}>{err}</div>}
+    </LockedModalShell>
   );
 }
 
@@ -925,16 +1025,11 @@ function SkipModal(props: {
   const canSubmit = note.trim().length > 0 && !busy;
 
   return (
-    <div style={s.backdrop} onClick={props.onClose}>
-      <div style={s.modal} onClick={(e) => e.stopPropagation()}>
-        <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>לא רלוונטי להיום</div>
-        <div style={{ fontSize: 13, color: COLORS.muted, marginBottom: 12 }}>{props.item.title}</div>
-        <label style={{ display: 'block', fontSize: 13, color: COLORS.muted, marginBottom: 4 }}>
-          למה זה לא רלוונטי היום? <span style={{ color: COLORS.danger }}>*</span>
-        </label>
-        <textarea style={s.textarea} value={note} onChange={(e) => setNote(e.target.value)} autoFocus />
-        {err && <div style={s.err}>{err}</div>}
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+    <LockedModalShell
+      title="לא רלוונטי להיום"
+      onClose={props.onClose}
+      footer={(
+        <>
           <button style={s.ghostBtn} onClick={props.onClose} disabled={busy}>ביטול</button>
           <button
             style={{ ...s.primaryBtn, opacity: canSubmit ? 1 : 0.55, cursor: canSubmit ? 'pointer' : 'not-allowed' }}
@@ -943,9 +1038,16 @@ function SkipModal(props: {
           >
             אישור
           </button>
-        </div>
-      </div>
-    </div>
+        </>
+      )}
+    >
+      <div style={{ fontSize: 13, color: COLORS.muted, marginBottom: 12 }}>{props.item.title}</div>
+      <label style={{ display: 'block', fontSize: 13, color: COLORS.muted, marginBottom: 4 }}>
+        למה זה לא רלוונטי היום? <span style={{ color: COLORS.danger }}>*</span>
+      </label>
+      <textarea style={s.textarea} value={note} onChange={(e) => setNote(e.target.value)} autoFocus />
+      {err && <div style={s.err}>{err}</div>}
+    </LockedModalShell>
   );
 }
 

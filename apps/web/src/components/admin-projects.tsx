@@ -137,57 +137,16 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
     } finally { setPermBusy(false); }
   }
 
-  async function archiveProject(p: Project) {
-    if (!confirm(`להעביר לארכיון את "${p.title}"?`)) return;
-    await apiFetch(`${BASE_URL}/projects/${p.id}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ status: 'archived' }),
-    });
-    void reload();
-  }
+  // All destructive confirmations use in-app modals — no browser dialogs.
+  const [archiveProjectTarget, setArchiveProjectTarget] = useState<Project | null>(null);
+  const [archiveItemTarget, setArchiveItemTarget] = useState<ProjectItem | null>(null);
+  const [hardDeleteTarget, setHardDeleteTarget] = useState<Project | null>(null);
 
   async function unarchiveProject(p: Project) {
     await apiFetch(`${BASE_URL}/projects/${p.id}`, {
       method: 'PATCH',
       body: JSON.stringify({ status: 'active' }),
     });
-    void reload();
-  }
-
-  // Permanent, irreversible delete.
-  // Two-step confirmation:
-  //   1. Plain confirm with the destructive consequences.
-  //   2. Type-to-confirm prompt with the project title to prevent
-  //      accidental clicks.
-  async function hardDeleteProject(p: Project) {
-    const stepOne = confirm(
-      `מחיקה מלאה של "${p.title}"?\n\n` +
-      `⚠ פעולה בלתי-הפיכה.\n` +
-      `תימחקו לצמיתות:\n` +
-      `• הפרויקט\n` +
-      `• כל המטרות שבו\n` +
-      `• כל הדיווחים (היסטוריה)\n` +
-      `• כל ההערות\n\n` +
-      `להמשיך?`,
-    );
-    if (!stepOne) return;
-    const typed = prompt(`לאישור סופי — רשמי את שם הפרויקט:\n"${p.title}"`);
-    if (typed === null) return;
-    if (typed.trim() !== p.title.trim()) {
-      alert('השם שהוזן לא תואם. המחיקה בוטלה.');
-      return;
-    }
-    try {
-      await apiFetch(`${BASE_URL}/projects/${p.id}/hard`, { method: 'DELETE' });
-      void reload();
-    } catch (e: unknown) {
-      alert(e && typeof e === 'object' && 'message' in e ? String((e as { message: string }).message) : 'מחיקה נכשלה');
-    }
-  }
-
-  async function archiveItem(it: ProjectItem) {
-    if (!confirm(`להעביר לארכיון את "${it.title}"?`)) return;
-    await apiFetch(`${BASE_URL}/projects/items/${it.id}`, { method: 'DELETE' });
     void reload();
   }
 
@@ -279,13 +238,13 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
               <div style={{ display: 'flex', gap: 6 }}>
                 <button style={st.ghostBtn} onClick={() => setEditProject(p)}>ערוך</button>
                 {p.status === 'active' ? (
-                  <button style={st.dangerBtn} onClick={() => archiveProject(p)}>לארכיון</button>
+                  <button style={st.dangerBtn} onClick={() => setArchiveProjectTarget(p)}>לארכיון</button>
                 ) : (
                   <button style={st.ghostBtn} onClick={() => unarchiveProject(p)}>שחזר</button>
                 )}
                 <button
                   style={{ ...st.dangerBtn, background: C.dangerSoft, borderColor: C.danger }}
-                  onClick={() => hardDeleteProject(p)}
+                  onClick={() => setHardDeleteTarget(p)}
                   title="מחיקה מלאה — פעולה בלתי הפיכה"
                 >
                   🗑 מחק פרויקט
@@ -319,7 +278,7 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
                   <button style={st.ghostBtn} title="הזז למטה" disabled={idx === items.length - 1} onClick={() => moveItem(p.id, items, idx, 1)}>↓</button>
                   <button style={st.ghostBtn} onClick={() => setLogItem({ item: it, date: todayStr() })}>דווח</button>
                   <button style={st.ghostBtn} onClick={() => setEditItem(it)}>ערוך</button>
-                  <button style={st.dangerBtn} onClick={() => archiveItem(it)}>לארכיון</button>
+                  <button style={st.dangerBtn} onClick={() => setArchiveItemTarget(it)}>לארכיון</button>
                 </div>
               ))
             )}
@@ -422,7 +381,189 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
           onSaved={() => { setNoteProject(null); void reload(); }}
         />
       )}
+
+      {archiveProjectTarget && (
+        <AdminConfirmModal
+          title="להעביר לארכיון?"
+          body={`פרויקט "${archiveProjectTarget.title}" יוסתר מהרשימה הפעילה. ההיסטוריה נשמרת ואפשר לשחזר אותו בכל שלב.`}
+          confirmLabel="העבר לארכיון"
+          onClose={() => setArchiveProjectTarget(null)}
+          onConfirm={async () => {
+            await apiFetch(`${BASE_URL}/projects/${archiveProjectTarget.id}`, {
+              method: 'PATCH',
+              body: JSON.stringify({ status: 'archived' }),
+            });
+            setArchiveProjectTarget(null);
+            void reload();
+          }}
+        />
+      )}
+
+      {archiveItemTarget && (
+        <AdminConfirmModal
+          title="להעביר מטרה לארכיון?"
+          body={`המטרה "${archiveItemTarget.title}" לא תופיע יותר ברשימת הדיווח. הדיווחים הקיימים נשמרים.`}
+          confirmLabel="העבר לארכיון"
+          onClose={() => setArchiveItemTarget(null)}
+          onConfirm={async () => {
+            await apiFetch(`${BASE_URL}/projects/items/${archiveItemTarget.id}`, { method: 'DELETE' });
+            setArchiveItemTarget(null);
+            void reload();
+          }}
+        />
+      )}
+
+      {hardDeleteTarget && (
+        <HardDeleteProjectModal
+          project={hardDeleteTarget}
+          onClose={() => setHardDeleteTarget(null)}
+          onConfirmed={async () => {
+            await apiFetch(`${BASE_URL}/projects/${hardDeleteTarget.id}/hard`, { method: 'DELETE' });
+            setHardDeleteTarget(null);
+            void reload();
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+// ─── In-app modal primitives (admin side) ─────────────────────────────────
+// Locked: backdrop click does NOT close. Explicit × button. Every admin
+// destructive confirmation renders through one of these; no browser
+// confirm()/prompt()/alert() remain in this file.
+
+function AdminModalShell(props: {
+  title: string;
+  onClose: () => void;
+  children: React.ReactNode;
+  footer: React.ReactNode;
+}) {
+  return (
+    <div style={st.backdrop}>
+      <div style={st.modal} role="dialog" aria-modal="true">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          <div style={{ fontSize: 17, fontWeight: 700 }}>{props.title}</div>
+          <button
+            aria-label="סגור"
+            onClick={props.onClose}
+            style={{
+              width: 30, height: 30, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              border: 'none', background: 'transparent', color: C.muted, cursor: 'pointer',
+              fontSize: 20, lineHeight: 1, borderRadius: 6,
+            }}
+          >×</button>
+        </div>
+        {props.children}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+          {props.footer}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AdminConfirmModal(props: {
+  title: string;
+  body: string;
+  confirmLabel: string;
+  onClose: () => void;
+  onConfirm: () => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  async function run() {
+    setBusy(true); setErr('');
+    try { await props.onConfirm(); }
+    catch (e: unknown) {
+      setErr(e && typeof e === 'object' && 'message' in e ? String((e as { message: string }).message) : 'הפעולה נכשלה');
+    } finally { setBusy(false); }
+  }
+  return (
+    <AdminModalShell
+      title={props.title}
+      onClose={props.onClose}
+      footer={(
+        <>
+          <button style={st.ghostBtn} disabled={busy} onClick={props.onClose}>ביטול</button>
+          <button
+            style={{ ...st.primaryBtn, background: C.danger, opacity: busy ? 0.65 : 1 }}
+            disabled={busy}
+            onClick={run}
+          >{props.confirmLabel}</button>
+        </>
+      )}
+    >
+      <div style={{ fontSize: 14, color: C.text, lineHeight: 1.6 }}>{props.body}</div>
+      {err && <div style={{ ...st.err, marginTop: 10 }}>{err}</div>}
+    </AdminModalShell>
+  );
+}
+
+// Hard-delete requires typing the project title to arm the Delete button.
+// This replaces the legacy confirm() + prompt() + alert() chain.
+function HardDeleteProjectModal(props: {
+  project: Project;
+  onClose: () => void;
+  onConfirmed: () => Promise<void>;
+}) {
+  const [typed, setTyped] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const armed = typed.trim() === props.project.title.trim();
+
+  async function run() {
+    if (!armed) return;
+    setBusy(true); setErr('');
+    try { await props.onConfirmed(); }
+    catch (e: unknown) {
+      setErr(e && typeof e === 'object' && 'message' in e ? String((e as { message: string }).message) : 'המחיקה נכשלה');
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <AdminModalShell
+      title="מחק פרויקט"
+      onClose={props.onClose}
+      footer={(
+        <>
+          <button style={st.ghostBtn} disabled={busy} onClick={props.onClose}>ביטול</button>
+          <button
+            style={{
+              ...st.primaryBtn,
+              background: armed ? C.danger : C.mutedLight,
+              opacity: busy ? 0.65 : 1,
+              cursor: armed && !busy ? 'pointer' : 'not-allowed',
+            }}
+            disabled={!armed || busy}
+            onClick={run}
+          >מחק</button>
+        </>
+      )}
+    >
+      <div style={{ fontSize: 14, color: C.text, lineHeight: 1.65 }}>
+        <div style={{ marginBottom: 10 }}>מחיקה תמחק לצמיתות את:</div>
+        <ul style={{ margin: '0 0 12px', paddingInlineStart: 20 }}>
+          <li>כל המטרות</li>
+          <li>כל הדיווחים</li>
+          <li>כל ההערות</li>
+        </ul>
+        <div style={{ padding: 10, background: C.dangerSoft, color: C.danger, borderRadius: 8, fontWeight: 600, marginBottom: 14 }}>
+          שימו לב: לא ניתן לשחזר פעולה זו
+        </div>
+        <label style={{ display: 'block', fontSize: 13, color: C.muted, marginBottom: 4 }}>
+          לאישור, רשמי את שם הפרויקט: <strong style={{ color: C.text }}>{props.project.title}</strong>
+        </label>
+        <input
+          style={st.input}
+          value={typed}
+          onChange={(e) => setTyped(e.target.value)}
+          placeholder={props.project.title}
+          autoFocus
+        />
+        {err && <div style={{ ...st.err, marginTop: 10 }}>{err}</div>}
+      </div>
+    </AdminModalShell>
   );
 }
 
@@ -541,30 +682,30 @@ function ProjectFormModal(props: {
   }
 
   return (
-    <div style={st.backdrop} onClick={props.onClose}>
-      <div style={st.modal} onClick={(e) => e.stopPropagation()}>
-        <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 16 }}>
-          {project ? 'ערוך פרויקט' : 'צור פרויקט חדש'}
-        </div>
-        <div style={{ marginBottom: 10 }}>
-          <label style={{ display: 'block', fontSize: 12, color: C.muted, marginBottom: 4 }}>כותרת</label>
-          <input style={st.input} value={title} onChange={(e) => setTitle(e.target.value)} />
-        </div>
-        <div style={{ marginBottom: 10 }}>
-          <label style={{ display: 'block', fontSize: 12, color: C.muted, marginBottom: 4 }}>תיאור (לא חובה)</label>
-          <textarea style={st.textarea} value={description} onChange={(e) => setDescription(e.target.value)} />
-        </div>
-        <div style={{ marginBottom: 10 }}>
-          <label style={{ display: 'block', fontSize: 12, color: C.muted, marginBottom: 4 }}>צבע</label>
-          <input type="color" value={colorHex} onChange={(e) => setColorHex(e.target.value)} style={{ width: 60, height: 36, border: `1px solid ${C.border}`, borderRadius: 6, cursor: 'pointer' }} />
-        </div>
-        {err && <div style={st.err}>{err}</div>}
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
+    <AdminModalShell
+      title={project ? 'ערוך פרויקט' : 'צור פרויקט חדש'}
+      onClose={props.onClose}
+      footer={(
+        <>
           <button style={st.ghostBtn} disabled={busy} onClick={props.onClose}>ביטול</button>
           <button style={st.primaryBtn} disabled={busy} onClick={submit}>שמור</button>
-        </div>
+        </>
+      )}
+    >
+      <div style={{ marginBottom: 10 }}>
+        <label style={{ display: 'block', fontSize: 12, color: C.muted, marginBottom: 4 }}>כותרת</label>
+        <input style={st.input} value={title} onChange={(e) => setTitle(e.target.value)} />
       </div>
-    </div>
+      <div style={{ marginBottom: 10 }}>
+        <label style={{ display: 'block', fontSize: 12, color: C.muted, marginBottom: 4 }}>תיאור (לא חובה)</label>
+        <textarea style={st.textarea} value={description} onChange={(e) => setDescription(e.target.value)} />
+      </div>
+      <div style={{ marginBottom: 10 }}>
+        <label style={{ display: 'block', fontSize: 12, color: C.muted, marginBottom: 4 }}>צבע</label>
+        <input type="color" value={colorHex} onChange={(e) => setColorHex(e.target.value)} style={{ width: 60, height: 36, border: `1px solid ${C.border}`, borderRadius: 6, cursor: 'pointer' }} />
+      </div>
+      {err && <div style={st.err}>{err}</div>}
+    </AdminModalShell>
   );
 }
 
@@ -632,92 +773,90 @@ function ItemFormModal(props: {
   }
 
   return (
-    <div style={st.backdrop} onClick={props.onClose}>
-      <div style={st.modal} onClick={(e) => e.stopPropagation()}>
-        <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 16 }}>
-          {editing ? 'ערוך מטרה' : 'הוסף מטרה'}
-        </div>
-
-        <div style={{ marginBottom: 10 }}>
-          <label style={{ display: 'block', fontSize: 12, color: C.muted, marginBottom: 4 }}>כותרת</label>
-          <input style={st.input} value={title} onChange={(e) => setTitle(e.target.value)} />
-        </div>
-
-        {!editing && (
-          <div style={{ marginBottom: 10 }}>
-            <label style={{ display: 'block', fontSize: 12, color: C.muted, marginBottom: 4 }}>סוג</label>
-            <div style={{ display: 'flex', gap: 6 }}>
-              {(['boolean', 'number', 'select'] as ProjectItemType[]).map((t) => (
-                <button
-                  key={t}
-                  type="button"
-                  onClick={() => setItemType(t)}
-                  style={{
-                    flex: 1, padding: '8px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                    borderRadius: 6, border: `2px solid ${itemType === t ? C.accent : C.border}`,
-                    background: itemType === t ? C.accentSoft : '#fff',
-                    color: itemType === t ? C.accent : C.text,
-                  }}
-                >
-                  {t === 'boolean' ? 'בוצע/לא' : t === 'number' ? 'מספרי' : 'בחירה'}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {itemType === 'number' && (
-          <>
-            <div style={{ marginBottom: 10 }}>
-              <label style={{ display: 'block', fontSize: 12, color: C.muted, marginBottom: 4 }}>יחידה (לא חובה)</label>
-              <input style={st.input} value={unit} onChange={(e) => setUnit(e.target.value)} />
-            </div>
-            <div style={{ marginBottom: 10 }}>
-              <label style={{ display: 'block', fontSize: 12, color: C.muted, marginBottom: 4 }}>יעד (לא חובה)</label>
-              <input type="number" style={st.input} value={targetValue} onChange={(e) => setTargetValue(e.target.value)} />
-            </div>
-          </>
-        )}
-
-        {itemType === 'select' && (
-          <div style={{ marginBottom: 10 }}>
-            <label style={{ display: 'block', fontSize: 12, color: C.muted, marginBottom: 4 }}>אפשרויות</label>
-            {options.map((label, idx) => (
-              <div key={idx} style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
-                <input
-                  style={{ ...st.input, flex: 1 }}
-                  placeholder="אפשרות"
-                  value={label}
-                  onChange={(e) => {
-                    const next = [...options];
-                    next[idx] = e.target.value;
-                    setOptions(next);
-                  }}
-                />
-                <button
-                  type="button"
-                  style={st.ghostBtn}
-                  onClick={() => setOptions(options.filter((_, i) => i !== idx))}
-                  disabled={options.length === 1}
-                >×</button>
-              </div>
-            ))}
-            <button
-              type="button"
-              style={st.ghostBtn}
-              onClick={() => setOptions([...options, ''])}
-            >+ הוסף אפשרות</button>
-          </div>
-        )}
-
-        {err && <div style={st.err}>{err}</div>}
-
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
+    <AdminModalShell
+      title={editing ? 'ערוך מטרה' : 'הוסף מטרה'}
+      onClose={props.onClose}
+      footer={(
+        <>
           <button style={st.ghostBtn} disabled={busy} onClick={props.onClose}>ביטול</button>
           <button style={st.primaryBtn} disabled={busy} onClick={submit}>שמור</button>
-        </div>
+        </>
+      )}
+    >
+      <div style={{ marginBottom: 10 }}>
+        <label style={{ display: 'block', fontSize: 12, color: C.muted, marginBottom: 4 }}>כותרת</label>
+        <input style={st.input} value={title} onChange={(e) => setTitle(e.target.value)} />
       </div>
-    </div>
+
+      {!editing && (
+        <div style={{ marginBottom: 10 }}>
+          <label style={{ display: 'block', fontSize: 12, color: C.muted, marginBottom: 4 }}>סוג</label>
+          <div style={{ display: 'flex', gap: 6 }}>
+            {(['boolean', 'number', 'select'] as ProjectItemType[]).map((t) => (
+              <button
+                key={t}
+                type="button"
+                onClick={() => setItemType(t)}
+                style={{
+                  flex: 1, padding: '8px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                  borderRadius: 6, border: `2px solid ${itemType === t ? C.accent : C.border}`,
+                  background: itemType === t ? C.accentSoft : '#fff',
+                  color: itemType === t ? C.accent : C.text,
+                }}
+              >
+                {t === 'boolean' ? 'בוצע/לא' : t === 'number' ? 'מספרי' : 'בחירה'}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {itemType === 'number' && (
+        <>
+          <div style={{ marginBottom: 10 }}>
+            <label style={{ display: 'block', fontSize: 12, color: C.muted, marginBottom: 4 }}>יחידה (לא חובה)</label>
+            <input style={st.input} value={unit} onChange={(e) => setUnit(e.target.value)} />
+          </div>
+          <div style={{ marginBottom: 10 }}>
+            <label style={{ display: 'block', fontSize: 12, color: C.muted, marginBottom: 4 }}>יעד (לא חובה)</label>
+            <input type="number" style={st.input} value={targetValue} onChange={(e) => setTargetValue(e.target.value)} />
+          </div>
+        </>
+      )}
+
+      {itemType === 'select' && (
+        <div style={{ marginBottom: 10 }}>
+          <label style={{ display: 'block', fontSize: 12, color: C.muted, marginBottom: 4 }}>אפשרויות</label>
+          {options.map((label, idx) => (
+            <div key={idx} style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+              <input
+                style={{ ...st.input, flex: 1 }}
+                placeholder="אפשרות"
+                value={label}
+                onChange={(e) => {
+                  const next = [...options];
+                  next[idx] = e.target.value;
+                  setOptions(next);
+                }}
+              />
+              <button
+                type="button"
+                style={st.ghostBtn}
+                onClick={() => setOptions(options.filter((_, i) => i !== idx))}
+                disabled={options.length === 1}
+              >×</button>
+            </div>
+          ))}
+          <button
+            type="button"
+            style={st.ghostBtn}
+            onClick={() => setOptions([...options, ''])}
+          >+ הוסף אפשרות</button>
+        </div>
+      )}
+
+      {err && <div style={st.err}>{err}</div>}
+    </AdminModalShell>
   );
 }
 
@@ -766,69 +905,70 @@ function AdminLogModal(props: {
   }
 
   return (
-    <div style={st.backdrop} onClick={props.onClose}>
-      <div style={st.modal} onClick={(e) => e.stopPropagation()}>
-        <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 4 }}>דיווח / עריכה</div>
-        <div style={{ fontSize: 13, color: C.muted, marginBottom: 12 }}>{item.title}</div>
-        <div style={{ marginBottom: 10 }}>
-          <label style={{ display: 'block', fontSize: 12, color: C.muted, marginBottom: 4 }}>תאריך</label>
-          <input type="date" style={st.input} value={date} onChange={(e) => setDate(e.target.value)} />
-        </div>
-        <div style={{ marginBottom: 10 }}>
-          <label style={{ display: 'block', fontSize: 12, color: C.muted, marginBottom: 4 }}>סטטוס</label>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {(['completed', 'skipped_today'] as ProjectLogStatus[]).map((ss) => (
-              <button
-                key={ss}
-                type="button"
-                onClick={() => setStatus(ss)}
-                style={{
-                  flex: 1, minWidth: 100, padding: '8px 6px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                  borderRadius: 6, border: `2px solid ${status === ss ? C.accent : C.border}`,
-                  background: status === ss ? C.accentSoft : '#fff',
-                  color: status === ss ? C.accent : C.text,
-                }}
-              >
-                {ss === 'completed' ? 'הושלם' : 'לא רלוונטי להיום'}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {item.itemType === 'number' && status === 'completed' && (
-          <div style={{ marginBottom: 10 }}>
-            <label style={{ display: 'block', fontSize: 12, color: C.muted, marginBottom: 4 }}>ערך</label>
-            <input type="number" style={st.input} value={num} onChange={(e) => setNum(e.target.value)} />
-          </div>
-        )}
-        {item.itemType === 'select' && status === 'completed' && item.selectOptions && (
-          <div style={{ marginBottom: 10 }}>
-            <label style={{ display: 'block', fontSize: 12, color: C.muted, marginBottom: 4 }}>אפשרות</label>
-            <select style={st.input} value={sel} onChange={(e) => setSel(e.target.value)}>
-              <option value="">— בחרי —</option>
-              {item.selectOptions.map((o) => (
-                <option key={o.value} value={o.value}>{o.label}</option>
-              ))}
-            </select>
-          </div>
-        )}
-        {status === 'skipped_today' && (
-          <div style={{ marginBottom: 10 }}>
-            <label style={{ display: 'block', fontSize: 12, color: C.muted, marginBottom: 4 }}>
-              למה זה לא רלוונטי היום? <span style={{ color: C.danger }}>*</span>
-            </label>
-            <textarea style={st.textarea} value={note} onChange={(e) => setNote(e.target.value)} />
-          </div>
-        )}
-
-        {err && <div style={st.err}>{err}</div>}
-
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
+    <AdminModalShell
+      title="דיווח / עריכה"
+      onClose={props.onClose}
+      footer={(
+        <>
           <button style={st.ghostBtn} disabled={busy} onClick={props.onClose}>ביטול</button>
           <button style={st.primaryBtn} disabled={busy} onClick={submit}>שמור</button>
+        </>
+      )}
+    >
+      <div style={{ fontSize: 13, color: C.muted, marginBottom: 12 }}>{item.title}</div>
+      <div style={{ marginBottom: 10 }}>
+        <label style={{ display: 'block', fontSize: 12, color: C.muted, marginBottom: 4 }}>תאריך</label>
+        <input type="date" style={st.input} value={date} onChange={(e) => setDate(e.target.value)} />
+      </div>
+      <div style={{ marginBottom: 10 }}>
+        <label style={{ display: 'block', fontSize: 12, color: C.muted, marginBottom: 4 }}>סטטוס</label>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {(['completed', 'skipped_today'] as ProjectLogStatus[]).map((ss) => (
+            <button
+              key={ss}
+              type="button"
+              onClick={() => setStatus(ss)}
+              style={{
+                flex: 1, minWidth: 100, padding: '8px 6px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                borderRadius: 6, border: `2px solid ${status === ss ? C.accent : C.border}`,
+                background: status === ss ? C.accentSoft : '#fff',
+                color: status === ss ? C.accent : C.text,
+              }}
+            >
+              {ss === 'completed' ? 'הושלם' : 'לא רלוונטי להיום'}
+            </button>
+          ))}
         </div>
       </div>
-    </div>
+
+      {item.itemType === 'number' && status === 'completed' && (
+        <div style={{ marginBottom: 10 }}>
+          <label style={{ display: 'block', fontSize: 12, color: C.muted, marginBottom: 4 }}>ערך</label>
+          <input type="number" style={st.input} value={num} onChange={(e) => setNum(e.target.value)} />
+        </div>
+      )}
+      {item.itemType === 'select' && status === 'completed' && item.selectOptions && (
+        <div style={{ marginBottom: 10 }}>
+          <label style={{ display: 'block', fontSize: 12, color: C.muted, marginBottom: 4 }}>אפשרות</label>
+          <select style={st.input} value={sel} onChange={(e) => setSel(e.target.value)}>
+            <option value="">— בחרי —</option>
+            {item.selectOptions.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+        </div>
+      )}
+      {status === 'skipped_today' && (
+        <div style={{ marginBottom: 10 }}>
+          <label style={{ display: 'block', fontSize: 12, color: C.muted, marginBottom: 4 }}>
+            למה זה לא רלוונטי היום? <span style={{ color: C.danger }}>*</span>
+          </label>
+          <textarea style={st.textarea} value={note} onChange={(e) => setNote(e.target.value)} />
+        </div>
+      )}
+
+      {err && <div style={st.err}>{err}</div>}
+    </AdminModalShell>
   );
 }
 
@@ -856,16 +996,18 @@ function NoteModal(props: {
     } finally { setBusy(false); }
   }
   return (
-    <div style={st.backdrop} onClick={props.onClose}>
-      <div style={st.modal} onClick={(e) => e.stopPropagation()}>
-        <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 16 }}>הוסף הערה</div>
-        <textarea style={st.textarea} value={content} onChange={(e) => setContent(e.target.value)} autoFocus />
-        {err && <div style={st.err}>{err}</div>}
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
+    <AdminModalShell
+      title="הוסף הערה"
+      onClose={props.onClose}
+      footer={(
+        <>
           <button style={st.ghostBtn} disabled={busy} onClick={props.onClose}>ביטול</button>
           <button style={st.primaryBtn} disabled={busy} onClick={submit}>שמור</button>
-        </div>
-      </div>
-    </div>
+        </>
+      )}
+    >
+      <textarea style={st.textarea} value={content} onChange={(e) => setContent(e.target.value)} autoFocus />
+      {err && <div style={st.err}>{err}</div>}
+    </AdminModalShell>
   );
 }
