@@ -4,6 +4,7 @@ import { use, useCallback, useEffect, useRef, useState } from 'react';
 // REFRESH_INTERVAL_MS: background refresh cadence while portal is open
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 import { BASE_URL, apiFetch } from '@lib/api';
+import { PortalProjectsBoard, shouldShowPortalTab, type PortalBootstrap } from '@components/projects-board';
 
 // ─── Sound helper — plays built-in static audio files ────────────────────────
 // Files live in /public/sounds/. Played via HTMLAudioElement so they work
@@ -218,7 +219,7 @@ interface PortalRules {
   }[]; // conditionJson/rewardJson typed as Record for frontend convenience
 }
 
-type TabId = 'report' | 'stats' | 'feed' | 'rules';
+type TabId = 'report' | 'stats' | 'feed' | 'rules' | 'tracking';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -1054,6 +1055,11 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
   const [rulesLoading, setRulesLoading] = useState(false);
   const [rulesError, setRulesError] = useState('');
 
+  // Projects Tracking tab visibility — decided by a one-shot bootstrap fetch
+  // after the portal is ready. Tab is shown when the participant has at least
+  // one active project OR canManageProjects=true.
+  const [projectsBootstrap, setProjectsBootstrap] = useState<PortalBootstrap | null>(null);
+
   // ─── Load context ──────────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -1086,6 +1092,13 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
         setLoadError(msg || 'שגיאה בטעינת הדף');
         setState('invalid');
       });
+
+    // One-shot projects bootstrap — decides whether the "המעקב שלי" tab is
+    // visible. Failures are intentionally swallowed (tab just stays hidden);
+    // the tab's own component will re-fetch on open and surface errors there.
+    apiFetch<PortalBootstrap>(`${BASE_URL}/public/projects/${token}`, { cache: 'no-store' })
+      .then((b) => setProjectsBootstrap(b))
+      .catch(() => { /* leave null → tab hidden */ });
   }, [token]);
 
   // ─── Data loaders ──────────────────────────────────────────────────────────
@@ -1541,7 +1554,7 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
     didRestoreTab.current = true;
     if (typeof window === 'undefined') return;
     const raw = new URLSearchParams(window.location.search).get('tab');
-    if (raw === 'stats' || raw === 'feed' || raw === 'rules') {
+    if (raw === 'stats' || raw === 'feed' || raw === 'rules' || raw === 'tracking') {
       switchTab(raw);
     }
     // switchTab is a stable function reference in this component (declared at
@@ -2427,12 +2440,19 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
             )}
           </div>
         )}
+
+        {/* ── Tab 5: המעקב שלי (Phase 1 projects tracking) ── */}
+        {activeTab === 'tracking' && shouldShowPortalTab(projectsBootstrap) && (
+          <div style={s.tabPane}>
+            <PortalProjectsBoard token={token} />
+          </div>
+        )}
       </div>
 
       {/* ── Bottom navigation ── */}
       <nav style={s.bottomNav}>
-        {(
-          [
+        {(() => {
+          const baseTabs: { id: TabId; label: string; icon: string; iconNode?: true }[] = [
             { id: 'report', label: 'דיווח',       icon: '✏️' },
             { id: 'stats',  label: 'הנתונים שלי', icon: '📊' },
             // Group tab uses a real inline SVG (not an emoji) so its color can
@@ -2440,8 +2460,12 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
             // Rendered via `iconNode` below; `icon` is kept as a fallback string.
             { id: 'feed',   label: 'הקבוצה',      icon: '',   iconNode: true as const },
             { id: 'rules',  label: 'חוקים',       icon: '📋' },
-          ] as { id: TabId; label: string; icon: string; iconNode?: true }[]
-        ).map((tab) => {
+          ];
+          if (shouldShowPortalTab(projectsBootstrap)) {
+            baseTabs.push({ id: 'tracking', label: 'המעקב שלי', icon: '🎯' });
+          }
+          return baseTabs;
+        })().map((tab) => {
           const isActive = activeTab === tab.id;
           return (
             <button

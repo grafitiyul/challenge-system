@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { use } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { BASE_URL, apiFetch } from '@lib/api';
+import { AdminProjectsTab } from '@components/admin-projects';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -29,6 +30,7 @@ interface Participant {
   gender: Gender;
   joinedAt: string;
   isActive: boolean;
+  canManageProjects?: boolean;
   participantGroups: ParticipantGroup[];
 }
 
@@ -66,9 +68,9 @@ interface Submission {
   answers: SubmissionAnswer[];
 }
 
-type Tab = 'questionnaires' | 'forms' | 'goals' | 'collected' | 'communication' | 'reports' | 'payments' | 'history';
+type Tab = 'questionnaires' | 'forms' | 'goals' | 'projects' | 'collected' | 'communication' | 'reports' | 'payments' | 'history';
 
-const VALID_TABS: Tab[] = ['questionnaires', 'forms', 'goals', 'collected', 'communication', 'reports', 'payments', 'history'];
+const VALID_TABS: Tab[] = ['questionnaires', 'forms', 'goals', 'projects', 'collected', 'communication', 'reports', 'payments', 'history'];
 
 interface FormSubmission {
   id: string;
@@ -689,6 +691,7 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
     { key: 'questionnaires', label: 'שאלונים' },
     { key: 'forms',          label: 'טפסים' },
     { key: 'goals',          label: 'מטרות והתקדמות' },
+    { key: 'projects',       label: 'פרויקטים' },
     { key: 'collected',      label: 'מידע שנאסף' },
     { key: 'communication',  label: 'תקשורת' },
     { key: 'reports',        label: 'דיווחים שוטפים' },
@@ -938,6 +941,18 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
         )}
         {activeTab === 'goals' && (
           <GoalsTab participantId={participant.id} participantGroups={participant.participantGroups} />
+        )}
+        {activeTab === 'projects' && (
+          <AdminProjectsTab
+            participantId={participant.id}
+            canManageProjects={participant.canManageProjects ?? false}
+            onPermissionChanged={(next) => {
+              // Update local participant state so the toggle reflects the new
+              // value without a full refetch. Refetching the whole participant
+              // would reset the user's scroll position and feels jumpy.
+              setParticipant((prev) => prev ? { ...prev, canManageProjects: next } : prev);
+            }}
+          />
         )}
         {activeTab === 'collected' && (
           <CollectedInfoTab participant={participant} />

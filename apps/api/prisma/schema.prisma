@@ -298,6 +298,15 @@ model Participant {
   deferralConfigs  DeferralTriggerConfig[]
   taskNotes        ParticipantTaskNote[]
 
+  // Projects Tracking (Phase 1)
+  // Binary permission — when true the participant can create and structurally
+  // manage their own projects. When false they can still fill logs and notes
+  // on projects assigned to them by an admin, but cannot create/edit structure.
+  canManageProjects Boolean @default(false)
+  projects          Project[]
+  projectItemLogs   ProjectItemLog[]
+  projectNotes      ProjectNote[]
+
   createdAt                 DateTime                  @default(now())
   updatedAt                 DateTime                  @updatedAt
 
@@ -1369,4 +1378,109 @@ model ParticipantTaskNote {
 
   @@index([participantId])
   @@map("participant_task_notes")
+}
+
+// =============================================================================
+// PROJECTS TRACKING (Phase 1)
+// Admin- or participant-owned projects composed of manual-metric items
+// (boolean / number / select). Each (item, day) pair defaults to "not completed"
+// when no log row exists — only an explicit log overrides that default.
+// No task linkage in Phase 1. Phase 2 will introduce itemType='linked_task'
+// and a sourceProjectItemId column on PlanTask; neither exists yet.
+// =============================================================================
+
+model Project {
+  id            String      @id @default(cuid())
+  participantId String
+  participant   Participant @relation(fields: [participantId], references: [id])
+  title         String
+  description   String?
+  colorHex      String?
+  // "active" | "archived" | "cancelled"
+  status        String      @default("active")
+  // "admin" | "participant" — who originally created the project
+  createdByRole String      @default("admin")
+
+  items ProjectItem[]
+  notes ProjectNote[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([participantId])
+  @@map("projects")
+}
+
+model ProjectItem {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+  title     String
+  // "boolean" | "number" | "select"
+  // Phase 1 only — "linked_task" is Phase 2, not accepted by validation yet.
+  itemType  String
+  // Display unit for number items (e.g. "כוסות", "ק״מ"). Null for boolean/select.
+  unit         String?
+  // Optional daily target for number items. Null for boolean/select.
+  targetValue  Float?
+  // Array of { value, label } for select items; null otherwise.
+  selectOptionsJson Json?
+  sortOrder  Int     @default(0)
+  isArchived Boolean @default(false)
+
+  logs ProjectItemLog[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([projectId])
+  @@map("project_items")
+}
+
+model ProjectItemLog {
+  id            String      @id @default(cuid())
+  itemId        String
+  item          ProjectItem @relation(fields: [itemId], references: [id])
+  participantId String
+  participant   Participant @relation(fields: [participantId], references: [id])
+  // Day-only date in Asia/Jerusalem. Stored as a DATE column — no time component.
+  logDate       DateTime    @db.Date
+  // "completed" | "skipped_today" | "committed" | "value"
+  //   completed      → boolean item marked done, OR select item with chosen value,
+  //                    OR number item reported and ≥ targetValue (set by server).
+  //   value          → number item reported but below target (or no target set).
+  //   skipped_today  → explicit one-day skip (counts against completion).
+  //   committed      → participant acknowledges the miss and commits to do it
+  //                    next time (counts against completion, distinct from skip).
+  status        String
+  numericValue  Float?
+  selectValue   String?
+  skipNote      String?
+  commitNote    String?
+  editedAt      DateTime?
+  // "participant" | "admin" — who last edited this row.
+  editedByRole  String?
+  createdAt     DateTime    @default(now())
+
+  // One log per (item, day). Upsert on conflict keeps the row immutable-at-key
+  // so "today's state" is always unambiguous.
+  @@unique([itemId, logDate])
+  @@index([participantId, logDate])
+  @@index([itemId])
+  @@map("project_item_logs")
+}
+
+model ProjectNote {
+  id            String      @id @default(cuid())
+  projectId     String
+  project       Project     @relation(fields: [projectId], references: [id])
+  participantId String
+  participant   Participant @relation(fields: [participantId], references: [id])
+  content       String
+  // "admin" | "participant" — surface label only; no permission effect.
+  authorRole    String      @default("participant")
+  createdAt     DateTime    @default(now())
+
+  @@index([projectId])
+  @@map("project_notes")
 }

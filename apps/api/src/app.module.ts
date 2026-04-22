@@ -19,6 +19,7 @@ import { GameEngineModule } from './modules/game-engine/game-engine.module';
 import { ImportModule } from './modules/import/import.module';
 import { SettingsModule } from './modules/settings/settings.module';
 import { TaskEngineModule } from './modules/task-engine/task-engine.module';
+import { ProjectsModule } from './modules/projects/projects.module';
 import { AdminUsersModule } from './modules/admin-users/admin-users.module';
 
 @Module({
@@ -39,6 +40,7 @@ import { AdminUsersModule } from './modules/admin-users/admin-users.module';
     ImportModule,
     SettingsModule,
     TaskEngineModule,
+    ProjectsModule,
     AdminUsersModule,
   ],
   controllers: [HealthController, WassengerController],

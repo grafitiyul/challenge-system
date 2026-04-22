@@ -145,6 +145,7 @@ export class ParticipantsService {
         ...(dto.profileImageUrl !== undefined ? { profileImageUrl: dto.profileImageUrl || null } : {}),
         ...(dto.source !== undefined ? { source: dto.source || null } : {}),
         ...(dto.birthDate !== undefined ? { birthDate: dto.birthDate ? new Date(dto.birthDate) : null } : {}),
+        ...(dto.canManageProjects !== undefined ? { canManageProjects: dto.canManageProjects } : {}),
       },
       include: { gender: true },
     });

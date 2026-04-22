@@ -1,4 +1,4 @@
-import { IsDateString, IsEmail, IsOptional, IsString } from 'class-validator';
+import { IsBoolean, IsDateString, IsEmail, IsOptional, IsString } from 'class-validator';
 
 export class UpdateParticipantDto {
   @IsOptional()
@@ -44,4 +44,8 @@ export class UpdateParticipantDto {
   @IsOptional()
   @IsDateString()
   birthDate?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  canManageProjects?: boolean;
 }
