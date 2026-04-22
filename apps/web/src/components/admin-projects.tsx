@@ -310,7 +310,7 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
                             <span
                               title="אין תאריכים בלוח הזמנים השבוע"
                               style={{ marginInlineStart: 6, ...st.chip('#f1f5f9', C.mutedLight) }}
-                            >⚪ לא שובץ</span>
+                            >⏳ לא שובץ עדיין</span>
                           );
                         }
                         if (st2.state === 'planned') {
@@ -329,11 +329,17 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
                       if (!st2 || st2.state === 'ended') return null;
                       return (
                         <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>
-                          {st2.completedCount} מתוך {st2.expectedCount} הושלמו
-                          {st2.missingCount > 0 && (
-                            <span style={{ color: C.warn }}>
-                              {' · '}חסרים {st2.missingCount}
-                            </span>
+                          {st2.completedCount === 0 ? (
+                            'עדיין לא התחלת השבוע'
+                          ) : (
+                            <>
+                              {st2.completedCount} מתוך {st2.expectedCount} הושלמו
+                              {st2.missingCount > 0 && (
+                                <span style={{ color: C.warn }}>
+                                  {' · '}חסרים {st2.missingCount}
+                                </span>
+                              )}
+                            </>
                           )}
                         </div>
                       );
@@ -361,7 +367,7 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
                             color: C.accent, fontSize: 12, fontWeight: 600,
                             cursor: 'pointer', textDecoration: 'underline',
                           }}
-                        >שלימי ימים →</button>
+                        >הוסיפי ימים חסרים →</button>
                       );
                     }
                     if (st2.state === 'suggested') {

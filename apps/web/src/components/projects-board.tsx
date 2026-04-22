@@ -878,7 +878,7 @@ function GoalRow(props: {
                   fontSize: 11, fontWeight: 600,
                   background: '#f1f5f9', color: COLORS.mutedLight,
                 }}
-              >⚪ לא שובץ</span>
+              >⏳ לא שובץ עדיין</span>
             ) : schedulingStatus && schedulingStatus.state === 'planned' ? (
               <span style={{
                 marginInlineStart: 6,
@@ -915,14 +915,21 @@ function GoalRow(props: {
               לא נקבע להיום בלו״ז
             </div>
           )}
-          {/* Phase 4.2: single-line weekly summary — compact form. */}
+          {/* Phase 4.2: single-line weekly summary — compact form.
+               Phase 4.3: encouraging wording when completedCount === 0. */}
           {schedulingStatus && schedulingStatus.state !== 'ended' && (
             <div style={{ fontSize: 12, color: COLORS.muted, marginTop: 3 }}>
-              {schedulingStatus.completedCount} מתוך {schedulingStatus.expectedCount} הושלמו
-              {schedulingStatus.missingCount > 0 && (
-                <span style={{ color: COLORS.warn }}>
-                  {' · '}חסרים {schedulingStatus.missingCount}
-                </span>
+              {schedulingStatus.completedCount === 0 ? (
+                'עדיין לא התחלת השבוע'
+              ) : (
+                <>
+                  {schedulingStatus.completedCount} מתוך {schedulingStatus.expectedCount} הושלמו
+                  {schedulingStatus.missingCount > 0 && (
+                    <span style={{ color: COLORS.warn }}>
+                      {' · '}חסרים {schedulingStatus.missingCount}
+                    </span>
+                  )}
+                </>
               )}
             </div>
           )}
@@ -1018,7 +1025,7 @@ function GoalRow(props: {
               color: COLORS.accent, fontSize: 13, fontWeight: 600,
               cursor: 'pointer', textDecoration: 'underline',
             }}
-          >שלימי ימים →</button>
+          >הוסיפי ימים חסרים →</button>
         )}
 
         {primaryAction === 'schedule' && (
