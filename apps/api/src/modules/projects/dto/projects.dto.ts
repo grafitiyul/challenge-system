@@ -118,6 +118,11 @@ export class CreateItemDto {
   @IsOptional()
   @IsString()
   schedulePreferredWeekdays?: string | null;
+
+  // Phase 4: optional end date ("YYYY-MM-DD"). null/undefined = indefinite.
+  @IsOptional()
+  @IsDateString()
+  endDate?: string | null;
 }
 
 export class UpdateItemDto {
@@ -165,14 +170,20 @@ export class UpdateItemDto {
   @IsOptional()
   @IsString()
   schedulePreferredWeekdays?: string | null;
+
+  // Phase 4: update end date. Send null to clear, string to set.
+  @IsOptional()
+  @IsDateString()
+  endDate?: string | null;
 }
 
-// Phase 3: dedicated "fill the week" endpoint body. Accepts a list of
-// target dates for the given item; if the item is currently unlinked,
-// optionally creates a PlanTask with the given title and links it first.
-// All dates are processed in one transaction; each assignment creation
-// flows through the existing assignTask path (so the Phase 2 adoption
-// rule applies per date automatically).
+// Phase 3/4: "fill the week" endpoint body. Accepts a list of target dates
+// plus a scope flag. When scope='recurring', the server also writes
+// PlanTask.recurrenceWeekdays derived from the picked weekdays so future
+// weeks auto-materialize via the existing materializer.
+export const SCHEDULE_SCOPES = ['week', 'recurring'] as const;
+export type ScheduleScope = (typeof SCHEDULE_SCOPES)[number];
+
 export class ScheduleItemDto {
   // YYYY-MM-DD strings. Server-side validated for shape and recency.
   @IsArray()
@@ -186,6 +197,15 @@ export class ScheduleItemDto {
   @IsOptional()
   @IsString()
   taskTitle?: string;
+
+  // Phase 4 scope. Defaults to 'week' (non-destructive).
+  //   'week'      → create assignments only for the picked dates
+  //   'recurring' → additionally set PlanTask.recurrenceWeekdays to the
+  //                 union of weekdays of the picked dates so future weeks
+  //                 auto-materialize.
+  @IsOptional()
+  @IsIn(SCHEDULE_SCOPES as unknown as string[])
+  scope?: ScheduleScope;
 }
 
 export class ReorderItemDto {

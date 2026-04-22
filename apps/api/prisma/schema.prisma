@@ -1454,6 +1454,13 @@ model ProjectItem {
   scheduleTimesPerWeek     Int?
   schedulePreferredWeekdays String?
 
+  // Phase 4 optional end-of-life date for the goal. Date-only (no time).
+  //   null  → indefinite (default)
+  //   set   → scheduler caps suggestions; status becomes 'ended' past this
+  // Validation: must be >= item.createdAt's civil day (can't end before it
+  // existed). Allowed to be < today — historical goals that have finished.
+  endDate                  DateTime? @db.Date
+
   logs ProjectItemLog[]
 
   createdAt DateTime @default(now())

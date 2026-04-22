@@ -3,6 +3,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BASE_URL, apiFetch } from '@lib/api';
 
+// Phase 4: single media-query breakpoint shared by all project surfaces.
+// ≥ 768 px → desktop row-based layout; below → mobile card layout.
+const DESKTOP_MQ = '(min-width: 768px)';
+
+function useIsDesktop(): boolean {
+  const [isDesktop, setIsDesktop] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.matchMedia(DESKTOP_MQ).matches;
+  });
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mq = window.matchMedia(DESKTOP_MQ);
+    const onChange = () => setIsDesktop(mq.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+  return isDesktop;
+}
+
 // ─── Shared types (also consumed by the admin tab) ───────────────────────────
 
 export type ProjectItemType = 'boolean' | 'number' | 'select';
@@ -47,6 +66,8 @@ export interface ProjectItem {
   scheduleFrequencyType: 'none' | 'daily' | 'weekly';
   scheduleTimesPerWeek: number | null;
   schedulePreferredWeekdays: string | null; // CSV of 0..6
+  // Phase 4: optional end date for the goal. null = indefinite.
+  endDate: string | null;
   createdAt: string;
   logs: ProjectLog[];
 }
@@ -59,7 +80,8 @@ export interface ItemSchedulingStatus {
   expectedCount: number;
   actualCount: number;
   missingCount: number;
-  state: 'planned' | 'missing' | 'suggested';
+  // Phase 4 adds 'ended' — emitted when today > endDate.
+  state: 'planned' | 'missing' | 'suggested' | 'ended';
   preferredWeekdays: number[] | null;
   unscheduledCompletionCount: number;
   suggestedDates: string[]; // YYYY-MM-DD
@@ -260,6 +282,7 @@ interface PortalBoardProps {
 }
 
 export function PortalProjectsBoard({ token }: PortalBoardProps) {
+  const isDesktop = useIsDesktop();
   const [data, setData] = useState<PortalBootstrap | null>(null);
   const [loadErr, setLoadErr] = useState('');
   const [loading, setLoading] = useState(true);
@@ -275,6 +298,9 @@ export function PortalProjectsBoard({ token }: PortalBoardProps) {
   const [removeGoalByItem, setRemoveGoalByItem] = useState<ProjectItem | null>(null);
   // Phase 3: "fill week" modal state
   const [fillWeekItem, setFillWeekItem] = useState<ProjectItem | null>(null);
+  // Phase 4: after a goal with a frequency is created, auto-open the fill
+  // modal the first time the goal appears in state after reload.
+  const autoOpenPendingIdRef = useRef<string | null>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -294,6 +320,22 @@ export function PortalProjectsBoard({ token }: PortalBoardProps) {
   }, [token]);
 
   useEffect(() => { void reload(); }, [reload]);
+
+  // Phase 4: after goal creation reload, auto-open FillWeekModal once for
+  // the freshly-created goal. Runs whenever data changes; short-circuits
+  // when no pending id is queued.
+  useEffect(() => {
+    if (!autoOpenPendingIdRef.current) return;
+    if (!data) return;
+    const pendingId = autoOpenPendingIdRef.current;
+    const newly = data.projects
+      .flatMap((p) => p.items)
+      .find((it) => it.id === pendingId);
+    if (newly) {
+      autoOpenPendingIdRef.current = null;
+      setFillWeekItem(newly);
+    }
+  }, [data]);
 
   const dateStr = data ? (selectedDay === 'today' ? data.today : data.yesterday) : '';
   const notesByProject = useMemo(() => {
@@ -368,8 +410,10 @@ export function PortalProjectsBoard({ token }: PortalBoardProps) {
                 token={token}
                 item={item}
                 date={dateStr}
+                today={data.today}
                 visible={itemExistsOn(item, dateStr)}
                 canManage={canManage}
+                isDesktop={isDesktop}
                 scheduledKeys={data.scheduledKeys}
                 schedulingStatus={data.schedulingStatus[item.id] ?? null}
                 onChanged={reload}
@@ -408,7 +452,22 @@ export function PortalProjectsBoard({ token }: PortalBoardProps) {
           projectId={addItemForProject}
           linkableTasks={data.linkableTasks}
           onClose={() => setAddItemForProject(null)}
-          onCreated={() => { setAddItemForProject(null); void reload(); }}
+          onCreated={(newItem) => {
+            setAddItemForProject(null);
+            // Phase 4 auto-open flow: if the new goal has a frequency,
+            // immediately open FillWeekModal so the participant doesn't
+            // land on an action-less row.
+            if (newItem && newItem.frequencyType !== 'none') {
+              void reload().then(() => {
+                // Wait for the reload so the fresh item appears in state
+                // before we reference it from data.projects.
+                // Find it after reload via a deferred effect.
+                autoOpenPendingIdRef.current = newItem.id;
+              });
+            } else {
+              void reload();
+            }
+          }}
         />
       )}
 
@@ -595,8 +654,10 @@ function GoalRow(props: {
   token: string;
   item: ProjectItem;
   date: string;
+  today: string;              // ← Phase 4: pass today explicitly for the ended check
   visible: boolean;
   canManage: boolean;
+  isDesktop: boolean;         // ← Phase 4: desktop layout switch at ≥ 768px
   scheduledKeys: string[];
   schedulingStatus: ItemSchedulingStatus | null;
   onChanged: () => void;
@@ -604,7 +665,7 @@ function GoalRow(props: {
   onOpenRemove: () => void;
   onOpenFillWeek: () => void;
 }) {
-  const { token, item, date, visible, canManage, scheduledKeys, schedulingStatus,
+  const { token, item, date, today, visible, canManage, isDesktop, scheduledKeys, schedulingStatus,
           onChanged, onOpenSkip, onOpenRemove, onOpenFillWeek } = props;
   const log = logForDate(item, date);
   const pill = statusPillFromLog(log);
@@ -612,6 +673,30 @@ function GoalRow(props: {
   const hasScheduledAssignment = isLinked && scheduledKeys.includes(`${item.id}|${date}`);
   const completedViaTask = log?.syncSource === 'task';
   const showNotScheduledHint = isLinked && log?.status === 'completed' && !hasScheduledAssignment;
+
+  // Phase 4 strict single-primary-action dispatch (boolean goals only).
+  //   'ended'       → disabled "המטרה הסתיימה"
+  //   'complete'    → "✓ סמני שבוצע" (or its reversible variant)
+  //   'fillMissing' → "📅 השלימי ימים"  (missing state, selected day not scheduled)
+  //   'schedule'    → "🔗 הוסיפי ללוח השבוע"  (no/nothing on this day)
+  //   'nonBoolean'  → falls through to the existing number/select UIs
+  const isEnded =
+    schedulingStatus?.state === 'ended'
+    || (!!item.endDate && today > item.endDate);
+
+  type PrimaryAction = 'ended' | 'complete' | 'fillMissing' | 'schedule' | 'nonBoolean';
+  let primaryAction: PrimaryAction;
+  if (item.itemType !== 'boolean') primaryAction = 'nonBoolean';
+  else if (isEnded) primaryAction = 'ended';
+  else if (hasScheduledAssignment) primaryAction = 'complete';
+  else if (schedulingStatus?.state === 'missing') primaryAction = 'fillMissing';
+  else primaryAction = 'schedule';
+
+  // Phase 4 secondary: tertiary text link shown ONLY alongside 'complete' when
+  // the week has gaps. Never alongside 'schedule' or 'fillMissing' (those are
+  // themselves the primary fill action).
+  const showFillMissingTertiary =
+    primaryAction === 'complete' && schedulingStatus?.state === 'missing';
 
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [err, setErr] = useState('');
@@ -704,11 +789,33 @@ function GoalRow(props: {
     </div>
   );
 
+  // Phase 4 desktop layout: row (flex) with compact columns for title,
+  // chips, info lines, and the single primary action cluster. Mobile
+  // continues with the existing stacked card.
   return (
-    <div style={s.goalCard}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
+    <div
+      style={{
+        ...s.goalCard,
+        ...(isDesktop ? {
+          display: 'flex',
+          alignItems: 'center',
+          gap: 16,
+          padding: '10px 14px',
+          marginBottom: 8,
+        } : {}),
+      }}
+    >
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 8,
+        marginBottom: isDesktop ? 0 : 10,
+        flex: isDesktop ? 1 : undefined,
+        minWidth: 0,
+      }}>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={s.goalTitle}>
+          <div style={{ ...s.goalTitle, marginBottom: isDesktop ? 0 : 10 }}>
             {item.title}
             {item.unit && <span style={{ fontWeight: 400, color: COLORS.muted, fontSize: 13, marginInlineStart: 6 }}>({item.unit})</span>}
             {item.targetValue !== null && item.targetValue !== undefined && (
@@ -755,6 +862,26 @@ function GoalRow(props: {
                 background: COLORS.accentSoft, color: COLORS.accent,
               }}>💡 אפשר להוסיף לתוכנית</span>
             )}
+            {/* Phase 4: ended chip (takes precedence visually). */}
+            {isEnded && (
+              <span style={{
+                marginInlineStart: 6,
+                display: 'inline-flex', alignItems: 'center',
+                padding: '2px 8px', borderRadius: 999,
+                fontSize: 11, fontWeight: 600,
+                background: '#f1f5f9', color: COLORS.muted,
+              }}>🏁 הסתיים</span>
+            )}
+            {/* Phase 4: "עדיין לא שובץ בלו״ז" muted tag for boolean goals
+                 that have NO scheduling config set — makes it feel like a
+                 temporary state, not a separate mode. */}
+            {item.itemType === 'boolean' && !isEnded
+              && (!schedulingStatus || schedulingStatus.state === undefined) && (
+              <span style={{
+                marginInlineStart: 6,
+                fontSize: 11, color: COLORS.mutedLight, fontStyle: 'italic' as const,
+              }}>עדיין לא שובץ בלו״ז</span>
+            )}
           </div>
           {completedViaTask && (
             <div style={{ fontSize: 12, color: COLORS.muted, marginTop: 2 }}>סומן במשימה</div>
@@ -769,21 +896,9 @@ function GoalRow(props: {
               עשית {schedulingStatus.unscheduledCompletionCount} פעמים בפועל (לא שובץ בלו״ז)
             </div>
           )}
-          {canManage && schedulingStatus
-            && (schedulingStatus.state === 'missing' || schedulingStatus.state === 'suggested') && (
-            <div style={{ marginTop: 6 }}>
-              <button
-                onClick={onOpenFillWeek}
-                style={{
-                  padding: '6px 12px', fontSize: 12, fontWeight: 600,
-                  background: COLORS.accent, color: '#fff', border: 'none',
-                  borderRadius: 8, cursor: 'pointer',
-                }}
-              >
-                {schedulingStatus.state === 'missing' ? '📅 השלימי ימים' : '🔗 הוסיפי ללוח השבוע'}
-              </button>
-            </div>
-          )}
+          {/* Phase 4: old in-title fill CTA removed — the primary action now
+               lives in the single action cluster below to enforce the
+               "one primary per row" rule. */}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
           {pill && <span style={s.statusChip(pill.bg, pill.color)}>{pill.label}</span>}
@@ -802,28 +917,82 @@ function GoalRow(props: {
         </div>
       </div>
 
-      {item.itemType === 'boolean' && (
-        <>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+      {/* Phase 4 strict single-primary-action dispatch for boolean goals.
+           Exactly ONE of {ended, complete, fillMissing, schedule} renders.
+           On desktop this cluster sits as a right-aligned column; on mobile
+           it sits under the title block. Not rendered for number/select —
+           those types have their own action UIs below. */}
+      {primaryAction !== 'nonBoolean' && (
+      <div style={isDesktop
+        ? { flexShrink: 0, minWidth: 200, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }
+        : {}}>
+        {primaryAction === 'ended' && (
+          <div style={{ display: 'flex', gap: 8 }}>
             <button
+              disabled
               style={{
                 ...s.primaryBtn,
-                background: isCompleted ? COLORS.success : COLORS.accent,
-                opacity: saveState === 'saving' ? 0.65 : 1,
+                background: COLORS.mutedLight, color: '#fff',
+                cursor: 'not-allowed', opacity: 0.75,
               }}
-              disabled={saveState === 'saving'}
-              onClick={() => { if (isCompleted) void clearLog(); else void run({ status: 'completed' }); }}
-            >
-              {isCompleted ? '✓ בוצע (לחצי לבטל)' : '✓ סמני שבוצע'}
-            </button>
-            <button style={s.ghostBtn} disabled={saveState === 'saving'} onClick={onOpenSkip}>לא רלוונטי להיום</button>
+            >🏁 המטרה הסתיימה</button>
           </div>
-          {SaveIndicator}
-        </>
+        )}
+
+        {primaryAction === 'complete' && (
+          <>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              <button
+                style={{
+                  ...s.primaryBtn,
+                  background: isCompleted ? COLORS.success : COLORS.accent,
+                  opacity: saveState === 'saving' ? 0.65 : 1,
+                }}
+                disabled={saveState === 'saving'}
+                onClick={() => { if (isCompleted) void clearLog(); else void run({ status: 'completed' }); }}
+              >
+                {isCompleted ? '✓ בוצע (לחצי לבטל)' : '✓ סמני שבוצע'}
+              </button>
+              <button style={s.ghostBtn} disabled={saveState === 'saving'} onClick={onOpenSkip}>לא רלוונטי להיום</button>
+            </div>
+            {/* Phase 4 tertiary: text-only link. Never competes with the primary. */}
+            {showFillMissingTertiary && (
+              <button
+                onClick={onOpenFillWeek}
+                style={{
+                  background: 'none', border: 'none', padding: 0,
+                  color: COLORS.muted, fontSize: 12, cursor: 'pointer',
+                  textDecoration: 'underline', marginTop: 4,
+                }}
+              >השלימי שאר הימים →</button>
+            )}
+            {SaveIndicator}
+          </>
+        )}
+
+        {primaryAction === 'fillMissing' && (
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button style={s.primaryBtn} onClick={onOpenFillWeek}>
+              📅 השלימי ימים
+            </button>
+          </div>
+        )}
+
+        {primaryAction === 'schedule' && (
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button style={s.primaryBtn} onClick={onOpenFillWeek}>
+              🔗 הוסיפי ללוח השבוע
+            </button>
+          </div>
+        )}
+      </div>
       )}
 
       {item.itemType === 'number' && (
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div style={{
+          display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center',
+          ...(isDesktop ? { flexShrink: 0, minWidth: 200 } : {}),
+        }}>
           <input
             type="number"
             inputMode="decimal"
@@ -852,7 +1021,7 @@ function GoalRow(props: {
       {item.itemType === 'number' && SaveIndicator}
 
       {item.itemType === 'select' && item.selectOptions && (
-        <>
+        <div style={isDesktop ? { flexShrink: 0, minWidth: 200 } : {}}>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {item.selectOptions.map((o) => {
               const active = log?.selectValue === o.value && log?.status !== 'skipped_today';
@@ -881,7 +1050,7 @@ function GoalRow(props: {
             <button style={s.ghostBtn} disabled={saveState === 'saving'} onClick={onOpenSkip}>לא רלוונטי להיום</button>
           </div>
           {SaveIndicator}
-        </>
+        </div>
       )}
 
       {log?.status === 'skipped_today' && log.skipNote && (
@@ -979,7 +1148,10 @@ function AddGoalModal(props: {
   projectId: string;
   linkableTasks: LinkableTask[];
   onClose: () => void;
-  onCreated: () => void;
+  // Phase 4: onCreated receives the new item so the board can auto-open
+  // FillWeekModal when the goal was created with a frequency and has no
+  // assignments yet.
+  onCreated: (newItem?: { id: string; frequencyType: 'none' | 'daily' | 'weekly' }) => void;
 }) {
   const [title, setTitle] = useState('');
   const [itemType, setItemType] = useState<ProjectItemType>('boolean');
@@ -996,6 +1168,8 @@ function AddGoalModal(props: {
   const [freq, setFreq] = useState<'none' | 'daily' | 'weekly'>('none');
   const [timesPerWeek, setTimesPerWeek] = useState<number>(3);
   const [preferredDays, setPreferredDays] = useState<number[]>([]);
+  // Phase 4: optional end date. '' = no end date, else "YYYY-MM-DD".
+  const [endDate, setEndDate] = useState<string>('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
@@ -1023,14 +1197,18 @@ function AddGoalModal(props: {
       if (freq !== 'none' && preferredDays.length > 0) {
         body.schedulePreferredWeekdays = preferredDays.slice().sort((a, b) => a - b).join(',');
       }
+      if (endDate.trim()) body.endDate = endDate.trim();
     }
     setBusy(true); setErr('');
     try {
-      await apiFetch(
+      const created = await apiFetch<{ id: string }>(
         `${BASE_URL}/public/projects/${props.token}/projects/${props.projectId}/items`,
         { method: 'POST', body: JSON.stringify(body) },
       );
-      props.onCreated();
+      props.onCreated({
+        id: created.id,
+        frequencyType: itemType === 'boolean' ? freq : 'none',
+      });
     } catch (e: unknown) {
       const msg = e && typeof e === 'object' && 'message' in e ? String((e as { message: string }).message) : 'שמירה נכשלה';
       setErr(msg);
@@ -1115,6 +1293,10 @@ function AddGoalModal(props: {
           onTimesPerWeek={setTimesPerWeek}
           onPreferredDays={setPreferredDays}
         />
+      )}
+
+      {itemType === 'boolean' && (
+        <EndDateSection endDate={endDate} onEndDate={setEndDate} />
       )}
 
       {itemType === 'select' && (
@@ -1267,6 +1449,62 @@ export function shouldShowPortalTab(b: PortalBootstrap | null): boolean {
 
 const WEEKDAY_LABELS = ['א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ש'];
 
+// Phase 4: reusable end-date picker for goal create/edit modals.
+// Controls whether a goal has a bounded lifetime. Null/empty → indefinite.
+export function EndDateSection(props: {
+  endDate: string; // "YYYY-MM-DD" or ""
+  onEndDate: (v: string) => void;
+}) {
+  const hasEnd = props.endDate !== '';
+  return (
+    <div style={{ marginBottom: 12, paddingTop: 10, borderTop: `1px dashed ${COLORS.border}` }}>
+      <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: COLORS.text, marginBottom: 6 }}>
+        עד מתי המטרה רלוונטית?
+      </label>
+      <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+        <button
+          type="button"
+          onClick={() => props.onEndDate('')}
+          style={{
+            flex: 1, padding: '8px 6px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+            borderRadius: 8, minHeight: 40,
+            border: `2px solid ${!hasEnd ? COLORS.accent : COLORS.border}`,
+            background: !hasEnd ? COLORS.accentSoft : COLORS.card,
+            color: !hasEnd ? COLORS.accent : COLORS.text,
+          }}
+        >ללא תאריך סיום</button>
+        <button
+          type="button"
+          onClick={() => {
+            if (!hasEnd) {
+              // Default to 3 months from today when user first picks "עד תאריך".
+              const d = new Date();
+              d.setDate(d.getDate() + 90);
+              const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+              props.onEndDate(iso);
+            }
+          }}
+          style={{
+            flex: 1, padding: '8px 6px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+            borderRadius: 8, minHeight: 40,
+            border: `2px solid ${hasEnd ? COLORS.accent : COLORS.border}`,
+            background: hasEnd ? COLORS.accentSoft : COLORS.card,
+            color: hasEnd ? COLORS.accent : COLORS.text,
+          }}
+        >עד תאריך</button>
+      </div>
+      {hasEnd && (
+        <input
+          type="date"
+          style={s.textInput}
+          value={props.endDate}
+          onChange={(e) => props.onEndDate(e.target.value)}
+        />
+      )}
+    </div>
+  );
+}
+
 export function ScheduleSection(props: {
   freq: 'none' | 'daily' | 'weekly';
   timesPerWeek: number;
@@ -1283,7 +1521,7 @@ export function ScheduleSection(props: {
       </label>
       <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
         {([
-          { k: 'none' as const, label: 'ללא לוח זמנים' },
+          { k: 'none' as const, label: 'עדיין לא שובץ בלו״ז' },
           { k: 'daily' as const, label: 'כל יום' },
           { k: 'weekly' as const, label: 'פעמים בשבוע' },
         ]).map((opt) => (
@@ -1365,6 +1603,8 @@ export function FillWeekModal(props: {
 }) {
   const [picked, setPicked] = useState<string[]>(props.suggestedDates);
   const [taskTitle, setTaskTitle] = useState<string>(props.item.title);
+  // Phase 4: scope. Defaults to "רק השבוע" (non-destructive).
+  const [scope, setScope] = useState<'week' | 'recurring'>('week');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
@@ -1372,7 +1612,7 @@ export function FillWeekModal(props: {
     if (picked.length === 0) { setErr('חובה לבחור לפחות יום אחד'); return; }
     if (props.needsTaskTitle && !taskTitle.trim()) { setErr('חובה למלא שם משימה'); return; }
     setBusy(true); setErr('');
-    const body: Record<string, unknown> = { dates: picked };
+    const body: Record<string, unknown> = { dates: picked, scope };
     if (props.needsTaskTitle) body.taskTitle = taskTitle.trim();
     try {
       if (props.token) {
@@ -1414,7 +1654,7 @@ export function FillWeekModal(props: {
         </div>
       )}
       <div style={{ fontSize: 12, color: COLORS.muted, marginBottom: 6 }}>ימים השבוע:</div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4, marginBottom: 14 }}>
         {props.availableWeekDates.map((d) => {
           const disabled = d.inPast || d.alreadyScheduled;
           const checked = picked.includes(d.iso);
@@ -1451,6 +1691,35 @@ export function FillWeekModal(props: {
           );
         })}
       </div>
+
+      {/* Phase 4: scope choice — never silently assume one option. */}
+      <div style={{ marginTop: 6, paddingTop: 12, borderTop: `1px dashed ${COLORS.border}` }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.text, marginBottom: 6 }}>היקף:</div>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, marginBottom: 6, cursor: 'pointer' }}>
+          <input
+            type="radio"
+            name="schedule-scope"
+            checked={scope === 'week'}
+            onChange={() => setScope('week')}
+          />
+          רק השבוע הזה
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+          <input
+            type="radio"
+            name="schedule-scope"
+            checked={scope === 'recurring'}
+            onChange={() => setScope('recurring')}
+          />
+          כל שבוע מהיום והלאה
+        </label>
+        {scope === 'recurring' && (
+          <div style={{ fontSize: 11, color: COLORS.mutedLight, marginTop: 4, marginInlineStart: 24 }}>
+            ניתן לשנות בהמשך דרך עריכת המשימה
+          </div>
+        )}
+      </div>
+
       {err && <div style={{ ...s.err, marginTop: 10 }}>{err}</div>}
     </LockedModalShell>
   );

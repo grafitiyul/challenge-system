@@ -12,7 +12,7 @@ import type {
   ProjectLogStatus,
   ProjectNote,
 } from '@components/projects-board';
-import { FillWeekModal, ScheduleSection } from '@components/projects-board';
+import { EndDateSection, FillWeekModal, ScheduleSection } from '@components/projects-board';
 
 // ─── Styles ──────────────────────────────────────────────────────────────────
 
@@ -827,6 +827,8 @@ function ItemFormModal(props: {
     if (!csv) return [];
     return csv.split(',').map((x) => parseInt(x.trim(), 10)).filter((n) => Number.isFinite(n));
   });
+  // Phase 4: end date. Pre-fills from existing item.endDate when editing.
+  const [endDate, setEndDate] = useState<string>(props.item?.endDate ?? '');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
@@ -862,6 +864,8 @@ function ItemFormModal(props: {
       body.schedulePreferredWeekdays = (freq !== 'none' && preferredDays.length > 0)
         ? preferredDays.slice().sort((a, b) => a - b).join(',')
         : null;
+      // Phase 4: end date. Always send (null to clear, string to set).
+      body.endDate = endDate.trim() || null;
     }
     setBusy(true); setErr('');
     try {
@@ -964,6 +968,10 @@ function ItemFormModal(props: {
           onTimesPerWeek={setTimesPerWeek}
           onPreferredDays={setPreferredDays}
         />
+      )}
+
+      {itemType === 'boolean' && (
+        <EndDateSection endDate={endDate} onEndDate={setEndDate} />
       )}
 
       {itemType === 'select' && (

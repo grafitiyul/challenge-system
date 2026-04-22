@@ -375,6 +375,7 @@ export class ProjectTaskSyncService {
       schedulePreferredWeekdays: string | null;
       itemType: string;
       isArchived: boolean;
+      endDate: string | null; // YYYY-MM-DD or null
     }>;
     weekStartUtc: Date;  // Sunday 00:00 UTC of the current week
     todayUtc: Date;      // midnight UTC of today (Asia/Jerusalem civil day)
@@ -430,8 +431,11 @@ export class ProjectTaskSyncService {
       const actualCount = taskAssignmentDates.size;
       const missingCount = Math.max(0, expectedCount - actualCount);
 
-      let state: 'planned' | 'missing' | 'suggested';
-      if (!item.linkedPlanTaskId) state = 'suggested';
+      let state: 'planned' | 'missing' | 'suggested' | 'ended';
+      // Phase 4: past endDate takes precedence over everything else.
+      if (item.endDate && todayIso > item.endDate) {
+        state = 'ended';
+      } else if (!item.linkedPlanTaskId) state = 'suggested';
       else if (actualCount >= expectedCount) state = 'planned';
       else state = 'missing';
 
@@ -450,13 +454,15 @@ export class ProjectTaskSyncService {
 
       // Suggested days for the "fill week" flow — future days of this week
       // (including today) not already scheduled, clamped to missingCount.
+      // Phase 4: past endDate also disqualifies a day from suggestions.
       const suggestedDates: string[] = [];
-      if (state !== 'planned' && missingCount > 0) {
+      if (state !== 'planned' && state !== 'ended' && missingCount > 0) {
         const availableIsos: string[] = [];
         const availableWeekdays: number[] = [];
         for (const d of weekDays) {
           const iso = this.toDayString(d);
           if (iso < todayIso) continue;
+          if (item.endDate && iso > item.endDate) continue;
           if (taskAssignmentDates.has(iso)) continue;
           availableIsos.push(iso);
           availableWeekdays.push(d.getUTCDay());
@@ -512,7 +518,7 @@ export interface ItemSchedulingStatus {
   expectedCount: number;
   actualCount: number;
   missingCount: number;
-  state: 'planned' | 'missing' | 'suggested';
+  state: 'planned' | 'missing' | 'suggested' | 'ended';
   preferredWeekdays: number[] | null;
   unscheduledCompletionCount: number;
   suggestedDates: string[];    // YYYY-MM-DD pre-fill for the day picker

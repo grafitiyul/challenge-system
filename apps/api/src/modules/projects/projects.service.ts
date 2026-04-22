@@ -184,6 +184,8 @@ export class ProjectsService {
         scheduleFrequencyType: it.scheduleFrequencyType,
         scheduleTimesPerWeek: it.scheduleTimesPerWeek,
         schedulePreferredWeekdays: it.schedulePreferredWeekdays,
+        // Phase 4 end date (YYYY-MM-DD string or null).
+        endDate: it.endDate ? formatDayString(it.endDate) : null,
         createdAt: it.createdAt.toISOString(),
         logs: it.logs.map((l) => ({
           id: l.id,
@@ -319,6 +321,7 @@ export class ProjectsService {
       schedulePreferredWeekdays: string | null;
       itemType: string;
       isArchived: boolean;
+      endDate: string | null;
       logs: { logDate: string; status: string }[];
     }> }>,
   ): Promise<Record<string, unknown>> {
@@ -334,6 +337,7 @@ export class ProjectsService {
           schedulePreferredWeekdays: it.schedulePreferredWeekdays,
           itemType: it.itemType,
           isArchived: it.isArchived,
+          endDate: it.endDate,
         });
         logsByItem.set(it.id, it.logs.map((l) => ({ logDate: l.logDate, status: l.status })));
       }
@@ -478,6 +482,7 @@ export class ProjectsService {
     });
 
     const count = await this.prisma.projectItem.count({ where: { projectId } });
+    const endDate = this.normalizeEndDate(dto.endDate);
     return this.prisma.projectItem.create({
       data: {
         projectId,
@@ -491,6 +496,7 @@ export class ProjectsService {
         scheduleFrequencyType: schedule.frequencyType,
         scheduleTimesPerWeek: schedule.timesPerWeek,
         schedulePreferredWeekdays: schedule.preferredWeekdays,
+        endDate,
       },
     });
   }
@@ -559,6 +565,12 @@ export class ProjectsService {
       };
     }
 
+    // Phase 4 endDate: undefined → leave; null → clear; string → set/validate.
+    const endDateUpdate =
+      dto.endDate === undefined
+        ? {}
+        : { endDate: this.normalizeEndDate(dto.endDate) };
+
     return this.prisma.projectItem.update({
       where: { id: itemId },
       data: {
@@ -571,6 +583,7 @@ export class ProjectsService {
         ...(dto.isArchived !== undefined ? { isArchived: dto.isArchived } : {}),
         ...linkUpdate,
         ...scheduleUpdate,
+        ...endDateUpdate,
       },
     });
   }
@@ -595,6 +608,15 @@ export class ProjectsService {
     const trimmed = raw.trim();
     if (trimmed === '' || trimmed === 'null') return null;
     return trimmed;
+  }
+
+  // Phase 4: normalize client-supplied endDate. Null/undefined/empty → null.
+  // String is parsed as a civil day; returned as a Date at midnight UTC.
+  private normalizeEndDate(raw: string | null | undefined): Date | null {
+    if (raw === undefined || raw === null) return null;
+    const trimmed = String(raw).trim();
+    if (trimmed === '' || trimmed === 'null') return null;
+    return parseDayString(trimmed);
   }
 
   // Phase 3: validates + normalizes the scheduling bundle so every write
@@ -725,9 +747,17 @@ export class ProjectsService {
         taskId = task.id;
       }
 
+      // Phase 4: reject dates past the goal's endDate (when set). Silent
+      // filter rather than throw — the picker shouldn't have surfaced them,
+      // but if a stale payload arrives we ignore out-of-range entries.
+      const endDateStr = item.endDate ? formatDayString(item.endDate) : null;
+      const eligibleDates = endDateStr
+        ? uniqueDates.filter((d) => d <= endDateStr)
+        : uniqueDates;
+
       // Create assignments — applying the adoption rule per date.
       const createdAssignmentIds: string[] = [];
-      for (const iso of uniqueDates) {
+      for (const iso of eligibleDates) {
         const scheduled = parseDayString(iso);
         // Skip dates that already have an active assignment (idempotent).
         const existing = await tx.taskAssignment.findFirst({
@@ -751,6 +781,24 @@ export class ProjectsService {
           },
         });
         createdAssignmentIds.push(row.id);
+      }
+
+      // Phase 4: scope='recurring' — also write PlanTask.recurrenceWeekdays
+      // so future weeks auto-materialize via the existing materializer.
+      // Derived from picked dates' weekdays. Overwrites any prior recurrence
+      // setting (the user just made an explicit choice).
+      if (args.dto.scope === 'recurring') {
+        const weekdaySet = new Set<number>();
+        for (const iso of eligibleDates) {
+          weekdaySet.add(parseDayString(iso).getUTCDay());
+        }
+        if (weekdaySet.size > 0) {
+          const csv = [...weekdaySet].sort((a, b) => a - b).join(',');
+          await tx.planTask.update({
+            where: { id: taskId! },
+            data: { recurrenceWeekdays: csv },
+          });
+        }
       }
 
       return { linkedPlanTaskId: taskId!, createdAssignmentIds };
