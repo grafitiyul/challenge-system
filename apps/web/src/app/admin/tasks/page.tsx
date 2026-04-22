@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { Suspense } from 'react';
 import { BASE_URL, apiFetch } from '@lib/api';
 import { TaskBoard, toDateStr, weekSunday, addDays } from '@components/task-board';
@@ -27,6 +27,13 @@ const inputSt: React.CSSProperties = {
 function TasksPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  // Phase 6.19: use the CURRENT pathname in URL-sync writes. The hardcoded
+  // '/tasks' path used previously caused a remount loop: router.replace
+  // would navigate from /admin/tasks → /tasks, but /tasks is a server-side
+  // redirect back to /admin/tasks, which re-mounted this component and
+  // re-ran the same effect. Using pathname keeps the sync on whichever
+  // route the component is actually mounted at (admin-facing or legacy).
+  const pathname = usePathname();
 
   const participantIdParam = searchParams.get('participantId') ?? '';
   const weekParam = searchParams.get('week') ?? '';
@@ -59,8 +66,15 @@ function TasksPageInner() {
       localStorage.setItem('tasks_participantId', participantId);
     }
     params.set('week', toDateStr(currentSunday));
-    router.replace(`/tasks?${params.toString()}`, { scroll: false });
-  }, [participantId, currentSunday, router]);
+    const target = `${pathname}?${params.toString()}`;
+    // Avoid calling replace when nothing about the URL would change — some
+    // router configs still fire a re-render on identical replaces, which in
+    // combination with the old hardcoded path caused the flicker loop.
+    const current = `${pathname}?${searchParams.toString()}`;
+    if (target !== current) {
+      router.replace(target, { scroll: false });
+    }
+  }, [participantId, currentSunday, router, pathname, searchParams]);
 
   function handleChangeParticipant(id: string) {
     setParticipantId(id);
@@ -72,7 +86,7 @@ function TasksPageInner() {
     const params = new URLSearchParams();
     if (participantId) params.set('participantId', participantId);
     params.set('week', toDateStr(sunday));
-    router.replace(`/tasks?${params.toString()}`, { scroll: false });
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
   }
 
   const selectedParticipant = participants.find((p) => p.id === participantId);
