@@ -1691,36 +1691,38 @@ export function StatsGrid(props: {
   if (props.err) return <div style={{ padding: 20, color: COLORS.danger, textAlign: 'center' }}>{props.err}</div>;
   if (!props.data) return <div style={{ padding: 20, color: COLORS.muted, textAlign: 'center' }}>בחרי טווח תאריכים</div>;
 
-  // Flatten all gridable items across projects (boolean with schedule or any
-  // boolean with logs in range). Items with empty perDay are excluded.
+  // Include every non-archived goal from every project — the grid is a
+  // visual rollup, not a filtered stats subset. Items with short/empty
+  // perDay (e.g. just created) still show up with empty cells.
   const rows: Array<{ project: StatsProject; item: StatsItem }> = [];
   for (const p of props.data.projects) {
     for (const it of p.items) {
-      if (it.itemType !== 'boolean') continue;
-      if (it.perDay.length === 0) continue;
       rows.push({ project: p, item: it });
     }
   }
-  if (rows.length === 0) {
-    return <div style={{ padding: 20, color: COLORS.muted, textAlign: 'center' }}>אין נתונים בטווח זה</div>;
+
+  // Day headers come from the server-authoritative range (from..to), NOT
+  // from the longest item.perDay. This guarantees the grid always renders
+  // all date columns even when every row has an empty/short perDay (new
+  // goals, archived goals, no-log windows).
+  const dayHeaders: Array<{ date: string; weekday: number; dayOfMonth: number; isToday: boolean }> = [];
+  {
+    const [fy, fm, fd] = props.data.range.from.split('-').map((n) => parseInt(n, 10));
+    const [ty, tm, td] = props.data.range.to.split('-').map((n) => parseInt(n, 10));
+    const start = Date.UTC(fy, fm - 1, fd);
+    const end = Date.UTC(ty, tm - 1, td);
+    for (let ms = start; ms <= end; ms += 86_400_000) {
+      const d = new Date(ms);
+      const iso = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+      dayHeaders.push({
+        date: iso,
+        weekday: d.getUTCDay(),
+        dayOfMonth: d.getUTCDate(),
+        isToday: iso === props.today,
+      });
+    }
   }
 
-  // All rows share the same perDay window. Use the longest as the header.
-  const maxPerDay = rows.reduce((a, b) => (b.item.perDay.length > a.length ? b.item.perDay : a), rows[0].item.perDay);
-  const dayHeaders = maxPerDay.map((d) => {
-    const [, m, day] = d.date.split('-');
-    const jsDate = new Date(Date.UTC(
-      parseInt(d.date.slice(0, 4), 10),
-      parseInt(m, 10) - 1,
-      parseInt(day, 10),
-    ));
-    return {
-      date: d.date,
-      weekday: jsDate.getUTCDay(), // 0=Sun .. 6=Sat
-      dayOfMonth: parseInt(day, 10),
-      isToday: d.date === props.today,
-    };
-  });
 
   // Style helpers
   const CELL_W = 32;
@@ -1771,6 +1773,14 @@ export function StatsGrid(props: {
             <div style={{ width: 120, minWidth: 120, flexShrink: 0, padding: '8px 10px', fontSize: 11, color: COLORS.mutedLight, textAlign: 'end' as const }}>רצף</div>
           </div>
 
+          {/* No goals — show an empty-state row that still preserves the
+              column grid so the dates remain visible. */}
+          {rows.length === 0 && (
+            <div style={{ padding: 24, color: COLORS.muted, fontSize: 13, textAlign: 'center' }}>
+              עדיין אין מטרות להצגה בטווח זה
+            </div>
+          )}
+
           {/* Data rows */}
           {rows.map(({ project, item }) => {
             const dayMap = new Map(item.perDay.map((d) => [d.date, d]));
@@ -1812,7 +1822,7 @@ export function StatsGrid(props: {
                       {done ? (
                         <span style={{ color: h.isToday ? '#fff' : COLORS.success, fontWeight: 700 }}>✔</span>
                       ) : (
-                        <span style={{ color: COLORS.border }}>·</span>
+                        <span style={{ color: COLORS.mutedLight, fontSize: 14 }}>·</span>
                       )}
                     </div>
                   );
