@@ -7,6 +7,7 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  Max,
   Min,
   ValidateNested,
 } from 'class-validator';
@@ -23,6 +24,10 @@ export const PROJECT_LOG_STATUSES = [
   'value',
 ] as const;
 export type ProjectLogStatus = (typeof PROJECT_LOG_STATUSES)[number];
+
+// Phase 3 scheduling.
+export const SCHEDULE_FREQUENCY_TYPES = ['none', 'daily', 'weekly'] as const;
+export type ScheduleFrequencyType = (typeof SCHEDULE_FREQUENCY_TYPES)[number];
 
 // ─── Project ────────────────────────────────────────────────────────────────
 
@@ -95,6 +100,24 @@ export class CreateItemDto {
   @IsOptional()
   @IsString()
   linkedPlanTaskId?: string | null;
+
+  // Phase 3 scheduling intent. Only valid when itemType='boolean'.
+  //   frequencyType   "none" | "daily" | "weekly"
+  //   timesPerWeek    required 1..7 when type='weekly'
+  //   preferredWeekdays  CSV of 0..6, soft preference (optional)
+  @IsOptional()
+  @IsIn(SCHEDULE_FREQUENCY_TYPES as unknown as string[])
+  scheduleFrequencyType?: ScheduleFrequencyType;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(7)
+  scheduleTimesPerWeek?: number | null;
+
+  @IsOptional()
+  @IsString()
+  schedulePreferredWeekdays?: string | null;
 }
 
 export class UpdateItemDto {
@@ -126,6 +149,43 @@ export class UpdateItemDto {
   @IsOptional()
   @IsString()
   linkedPlanTaskId?: string | null;
+
+  // Phase 3 scheduling intent. Same semantics as on create. Omit to leave
+  // unchanged; send 'none' to clear.
+  @IsOptional()
+  @IsIn(SCHEDULE_FREQUENCY_TYPES as unknown as string[])
+  scheduleFrequencyType?: ScheduleFrequencyType;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(7)
+  scheduleTimesPerWeek?: number | null;
+
+  @IsOptional()
+  @IsString()
+  schedulePreferredWeekdays?: string | null;
+}
+
+// Phase 3: dedicated "fill the week" endpoint body. Accepts a list of
+// target dates for the given item; if the item is currently unlinked,
+// optionally creates a PlanTask with the given title and links it first.
+// All dates are processed in one transaction; each assignment creation
+// flows through the existing assignTask path (so the Phase 2 adoption
+// rule applies per date automatically).
+export class ScheduleItemDto {
+  // YYYY-MM-DD strings. Server-side validated for shape and recency.
+  @IsArray()
+  @IsDateString({}, { each: true })
+  dates: string[];
+
+  // Optional: when provided AND the item has no linkedPlanTaskId, server
+  // creates a PlanTask with this title and links the goal to it before
+  // creating the assignments. When the item is already linked, this field
+  // is ignored.
+  @IsOptional()
+  @IsString()
+  taskTitle?: string;
 }
 
 export class ReorderItemDto {

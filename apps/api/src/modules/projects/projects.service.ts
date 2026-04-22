@@ -15,6 +15,7 @@ import {
   PROJECT_LOG_STATUSES,
   ProjectItemType,
   ReorderItemDto,
+  ScheduleItemDto,
   UpdateItemDto,
   UpdateProjectDto,
   UpsertLogDto,
@@ -178,6 +179,11 @@ export class ProjectsService {
         sortOrder: it.sortOrder,
         isArchived: it.isArchived,
         linkedPlanTaskId: it.linkedPlanTaskId,
+        // Phase 3 scheduling fields — always returned so the frontend can
+        // pre-fill edit forms without a second fetch.
+        scheduleFrequencyType: it.scheduleFrequencyType,
+        scheduleTimesPerWeek: it.scheduleTimesPerWeek,
+        schedulePreferredWeekdays: it.schedulePreferredWeekdays,
         createdAt: it.createdAt.toISOString(),
         logs: it.logs.map((l) => ({
           id: l.id,
@@ -297,7 +303,59 @@ export class ProjectsService {
     const notes = await this.loadNotes(projects.map((p) => p.id));
     const linkableTasks = await this.sync.listLinkableTasks(participantId);
     const scheduledKeys = await this.computeScheduledKeys(projects, fromDate, toDate);
-    return { projects, notes, linkableTasks, scheduledKeys };
+    const schedulingStatus = await this.buildSchedulingStatusMap(projects);
+    return { projects, notes, linkableTasks, scheduledKeys, schedulingStatus };
+  }
+
+  // Phase 3: compute per-linked-goal scheduling status for the CURRENT week
+  // (Asia/Jerusalem), regardless of the bootstrap's read window. The chip is
+  // always about "this week now," not the historical log window.
+  private async buildSchedulingStatusMap(
+    projects: Array<{ id: string; items: Array<{
+      id: string;
+      linkedPlanTaskId: string | null;
+      scheduleFrequencyType: string;
+      scheduleTimesPerWeek: number | null;
+      schedulePreferredWeekdays: string | null;
+      itemType: string;
+      isArchived: boolean;
+      logs: { logDate: string; status: string }[];
+    }> }>,
+  ): Promise<Record<string, unknown>> {
+    const allItems: Parameters<ProjectTaskSyncService['computeSchedulingStatus']>[0]['items'] = [];
+    const logsByItem = new Map<string, { logDate: string; status: string }[]>();
+    for (const p of projects) {
+      for (const it of p.items) {
+        allItems.push({
+          id: it.id,
+          linkedPlanTaskId: it.linkedPlanTaskId,
+          scheduleFrequencyType: it.scheduleFrequencyType,
+          scheduleTimesPerWeek: it.scheduleTimesPerWeek,
+          schedulePreferredWeekdays: it.schedulePreferredWeekdays,
+          itemType: it.itemType,
+          isArchived: it.isArchived,
+        });
+        logsByItem.set(it.id, it.logs.map((l) => ({ logDate: l.logDate, status: l.status })));
+      }
+    }
+
+    // Week start = Sunday 00:00 UTC in Asia/Jerusalem terms.
+    const todayIso = todayInIsrael();
+    const [y, m, d] = todayIso.split('-').map((n) => parseInt(n, 10));
+    const todayUtc = new Date(Date.UTC(y, m - 1, d));
+    const dayOfWeek = todayUtc.getUTCDay();
+    const weekStartUtc = new Date(Date.UTC(y, m - 1, d - dayOfWeek));
+
+    const statusMap = await this.sync.computeSchedulingStatus({
+      items: allItems,
+      weekStartUtc,
+      todayUtc,
+      logsByItem,
+    });
+
+    const out: Record<string, unknown> = {};
+    statusMap.forEach((v, k) => { out[k] = v; });
+    return out;
   }
 
   // Returns a Set-like array of "itemId|YYYY-MM-DD" keys indicating that the
@@ -409,6 +467,16 @@ export class ProjectsService {
       });
     }
 
+    // Phase 3 schedule validation + normalization. Only boolean goals may
+    // carry a schedule; non-boolean + non-'none' is rejected early so the
+    // row never commits with an inconsistent shape.
+    const schedule = this.normalizeSchedule({
+      itemType: dto.itemType,
+      frequencyType: dto.scheduleFrequencyType,
+      timesPerWeek: dto.scheduleTimesPerWeek,
+      preferredWeekdays: dto.schedulePreferredWeekdays,
+    });
+
     const count = await this.prisma.projectItem.count({ where: { projectId } });
     return this.prisma.projectItem.create({
       data: {
@@ -420,6 +488,9 @@ export class ProjectsService {
         selectOptionsJson: (dto.selectOptions ?? null) as unknown as Prisma.InputJsonValue,
         sortOrder: count,
         linkedPlanTaskId: linkId,
+        scheduleFrequencyType: schedule.frequencyType,
+        scheduleTimesPerWeek: schedule.timesPerWeek,
+        schedulePreferredWeekdays: schedule.preferredWeekdays,
       },
     });
   }
@@ -454,6 +525,40 @@ export class ProjectsService {
       linkUpdate = { linkedPlanTaskId: normalized };
     }
 
+    // Phase 3 schedule update: only apply if ANY of the three fields was
+    // provided. Treat them as a coherent bundle so admins can't leave the
+    // row in an invalid combo (e.g. weekly without timesPerWeek).
+    let scheduleUpdate: {
+      scheduleFrequencyType?: string;
+      scheduleTimesPerWeek?: number | null;
+      schedulePreferredWeekdays?: string | null;
+    } = {};
+    const scheduleTouched =
+      dto.scheduleFrequencyType !== undefined
+      || dto.scheduleTimesPerWeek !== undefined
+      || dto.schedulePreferredWeekdays !== undefined;
+    if (scheduleTouched) {
+      const freq =
+        dto.scheduleFrequencyType !== undefined
+          ? dto.scheduleFrequencyType
+          : (existing.scheduleFrequencyType as 'none' | 'daily' | 'weekly');
+      const schedule = this.normalizeSchedule({
+        itemType: existing.itemType,
+        frequencyType: freq,
+        timesPerWeek: dto.scheduleTimesPerWeek !== undefined
+          ? dto.scheduleTimesPerWeek
+          : existing.scheduleTimesPerWeek,
+        preferredWeekdays: dto.schedulePreferredWeekdays !== undefined
+          ? dto.schedulePreferredWeekdays
+          : existing.schedulePreferredWeekdays,
+      });
+      scheduleUpdate = {
+        scheduleFrequencyType: schedule.frequencyType,
+        scheduleTimesPerWeek: schedule.timesPerWeek,
+        schedulePreferredWeekdays: schedule.preferredWeekdays,
+      };
+    }
+
     return this.prisma.projectItem.update({
       where: { id: itemId },
       data: {
@@ -465,6 +570,7 @@ export class ProjectsService {
           : {}),
         ...(dto.isArchived !== undefined ? { isArchived: dto.isArchived } : {}),
         ...linkUpdate,
+        ...scheduleUpdate,
       },
     });
   }
@@ -489,6 +595,166 @@ export class ProjectsService {
     const trimmed = raw.trim();
     if (trimmed === '' || trimmed === 'null') return null;
     return trimmed;
+  }
+
+  // Phase 3: validates + normalizes the scheduling bundle so every write
+  // lands in one of 3 canonical shapes:
+  //   none    → { type:'none',   timesPerWeek:null, preferredWeekdays:null }
+  //   daily   → { type:'daily',  timesPerWeek:null, preferredWeekdays:null|csv }
+  //   weekly  → { type:'weekly', timesPerWeek:1..6,  preferredWeekdays:null|csv }
+  // timesPerWeek=7 on 'weekly' is normalized to 'daily' — same semantics.
+  private normalizeSchedule(args: {
+    itemType: string;
+    frequencyType: string | undefined;
+    timesPerWeek: number | null | undefined;
+    preferredWeekdays: string | null | undefined;
+  }): { frequencyType: string; timesPerWeek: number | null; preferredWeekdays: string | null } {
+    const freq = args.frequencyType ?? 'none';
+
+    if (freq !== 'none' && args.itemType !== 'boolean') {
+      throw new BadRequestException('ניתן לקבוע לוח זמנים רק למטרות "בוצע/לא"');
+    }
+
+    if (freq === 'none') {
+      return { frequencyType: 'none', timesPerWeek: null, preferredWeekdays: null };
+    }
+
+    // Validate preferredWeekdays shape.
+    const preferredCsv = args.preferredWeekdays ?? null;
+    let cleanPreferred: string | null = null;
+    if (preferredCsv !== null && preferredCsv !== '') {
+      const parts = preferredCsv.split(',').map((p) => parseInt(p.trim(), 10));
+      const valid = parts.filter((n) => Number.isFinite(n) && n >= 0 && n <= 6);
+      if (valid.length !== parts.length) {
+        throw new BadRequestException('ימים מועדפים לא חוקיים');
+      }
+      const uniq: number[] = [];
+      for (const n of valid) if (!uniq.includes(n)) uniq.push(n);
+      uniq.sort((a, b) => a - b);
+      cleanPreferred = uniq.length ? uniq.join(',') : null;
+    }
+
+    if (freq === 'daily') {
+      return { frequencyType: 'daily', timesPerWeek: null, preferredWeekdays: cleanPreferred };
+    }
+
+    // freq === 'weekly'
+    const tpw = args.timesPerWeek ?? null;
+    if (tpw === null || !Number.isFinite(tpw) || tpw < 1 || tpw > 7) {
+      throw new BadRequestException('חובה לציין כמה פעמים בשבוע (1–7)');
+    }
+    if (tpw === 7) {
+      // Same semantics as 'daily' — normalize to avoid two representations.
+      return { frequencyType: 'daily', timesPerWeek: null, preferredWeekdays: cleanPreferred };
+    }
+    return { frequencyType: 'weekly', timesPerWeek: tpw, preferredWeekdays: cleanPreferred };
+  }
+
+  // Phase 3 "fill the week" orchestration. Called for two scenarios:
+  //   1. suggested → goal is not yet linked; create PlanTask + link + assign
+  //   2. missing   → goal is linked; just create assignments
+  // Each assignment is created via the shared creator which applies the
+  // Phase 2 adoption rule, so no unreconciled state can emerge.
+  //
+  // Participant path: this orchestration allows a portal caller to schedule
+  // WITHOUT canManageProjects (scheduling tasks is a first-class participant
+  // action). BUT: creating a fresh PlanTask (the suggested case) requires
+  // `canManageProjects` on the portal side, because that's a structural
+  // addition to the plan. Admin side has no such gate.
+  async scheduleItemWeek(args: {
+    itemId: string;
+    participantId: string;
+    dto: ScheduleItemDto;
+    requireCanManageForTaskCreation: boolean; // true on portal, false on admin
+  }): Promise<{ linkedPlanTaskId: string; createdAssignmentIds: string[] }> {
+    const item = await this.prisma.projectItem.findUnique({
+      where: { id: args.itemId },
+      include: { project: { select: { participantId: true, status: true } } },
+    });
+    if (!item) throw new NotFoundException('Item not found');
+    if (item.project.participantId !== args.participantId) throw new ForbiddenException();
+    if (item.isArchived) throw new BadRequestException('Item is archived');
+    if (item.project.status === 'cancelled') throw new BadRequestException('Project is cancelled');
+    if (item.itemType !== 'boolean') {
+      throw new BadRequestException('ניתן לתזמן רק מטרות מסוג "בוצע/לא"');
+    }
+    if (!args.dto.dates || args.dto.dates.length === 0) {
+      throw new BadRequestException('רשימת תאריכים ריקה');
+    }
+
+    const uniqueDates = [...new Set(args.dto.dates)].sort();
+
+    return this.prisma.$transaction(async (tx) => {
+      let taskId = item.linkedPlanTaskId;
+
+      // Create PlanTask + link if not yet linked.
+      if (!taskId) {
+        if (args.requireCanManageForTaskCreation) {
+          const p = await tx.participant.findUnique({
+            where: { id: args.participantId },
+            select: { canManageProjects: true },
+          });
+          if (!p?.canManageProjects) {
+            throw new ForbiddenException('Participant cannot create tasks');
+          }
+        }
+        // Build or reuse the current week's plan.
+        const today = new Date();
+        const todayIsrael = new Intl.DateTimeFormat('en-CA', {
+          timeZone: ISRAEL_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
+        }).format(today);
+        const [y, m, d] = todayIsrael.split('-').map((n) => parseInt(n, 10));
+        const dayOfWeek = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+        const weekStart = new Date(Date.UTC(y, m - 1, d - dayOfWeek));
+        const plan = await tx.weeklyPlan.upsert({
+          where: { participantId_weekStart: { participantId: args.participantId, weekStart } },
+          create: { participantId: args.participantId, weekStart },
+          update: {},
+        });
+        const task = await tx.planTask.create({
+          data: {
+            planId: plan.id,
+            participantId: args.participantId,
+            title: (args.dto.taskTitle && args.dto.taskTitle.trim()) || item.title,
+          },
+        });
+        await tx.projectItem.update({
+          where: { id: item.id },
+          data: { linkedPlanTaskId: task.id },
+        });
+        taskId = task.id;
+      }
+
+      // Create assignments — applying the adoption rule per date.
+      const createdAssignmentIds: string[] = [];
+      for (const iso of uniqueDates) {
+        const scheduled = parseDayString(iso);
+        // Skip dates that already have an active assignment (idempotent).
+        const existing = await tx.taskAssignment.findFirst({
+          where: {
+            taskId,
+            scheduledDate: scheduled,
+            status: { in: ['scheduled', 'completed'] },
+          },
+          select: { id: true },
+        });
+        if (existing) continue;
+        const initial = await this.sync.computeInitialAssignmentState(taskId!, scheduled, tx);
+        const row = await tx.taskAssignment.create({
+          data: {
+            taskId: taskId!,
+            participantId: args.participantId,
+            scheduledDate: scheduled,
+            isCompleted: initial.isCompleted,
+            status: initial.status,
+            completedAt: initial.completedAt,
+          },
+        });
+        createdAssignmentIds.push(row.id);
+      }
+
+      return { linkedPlanTaskId: taskId!, createdAssignmentIds };
+    });
   }
 
   async adminReorderItems(projectId: string, items: ReorderItemDto[]) {
@@ -569,6 +835,7 @@ export class ProjectsService {
     const notes = await this.loadNotes(projects.map((p) => p.id));
     const linkableTasks = await this.sync.listLinkableTasks(me.id);
     const scheduledKeys = await this.computeScheduledKeys(projects, fromDate, toDate);
+    const schedulingStatus = await this.buildSchedulingStatusMap(projects);
     return {
       participant: {
         id: me.id,
@@ -585,6 +852,9 @@ export class ProjectsService {
       // Phase 2: "itemId|YYYY-MM-DD" keys where a linked task has an ACTIVE
       // assignment. Used to drive the "לא נקבע להיום בלו״ז" hint.
       scheduledKeys,
+      // Phase 3: per-item scheduling status for the current week. Keyed by
+      // item id. Missing entries = goal has no schedule config (frequencyType='none').
+      schedulingStatus,
     };
   }
 
@@ -664,6 +934,17 @@ export class ProjectsService {
       participantId: me.id,
       logDate,
       restrictToRecentDays: true,
+    });
+  }
+
+  async portalScheduleItemWeek(token: string, itemId: string, dto: ScheduleItemDto) {
+    const me = await this.resolveToken(token);
+    await this.assertOwnership(me.id, { itemId });
+    return this.scheduleItemWeek({
+      itemId,
+      participantId: me.id,
+      dto,
+      requireCanManageForTaskCreation: true,
     });
   }
 

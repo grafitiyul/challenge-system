@@ -358,4 +358,187 @@ export class ProjectTaskSyncService {
   // refactor drops them. Both helpers are exported-in-spirit, so keep them.
   // (noop referenced in non-production test paths)
   _unused() { void parseDayString; void sameDay; }
+
+  // ── Phase 3 scheduling-layer computation ─────────────────────────────────
+  //
+  // Computes, per linked boolean goal with a schedule, the per-week status
+  // chip + suggested-days array. Called from bootstrap enrichment.
+  //
+  // Source of truth for completion counts is TaskAssignment rows — logs are
+  // NEVER counted here (by design; they drive the informational line only).
+  async computeSchedulingStatus(args: {
+    items: Array<{
+      id: string;
+      linkedPlanTaskId: string | null;
+      scheduleFrequencyType: string;
+      scheduleTimesPerWeek: number | null;
+      schedulePreferredWeekdays: string | null;
+      itemType: string;
+      isArchived: boolean;
+    }>;
+    weekStartUtc: Date;  // Sunday 00:00 UTC of the current week
+    todayUtc: Date;      // midnight UTC of today (Asia/Jerusalem civil day)
+    logsByItem: Map<string, { logDate: string; status: string }[]>;
+  }): Promise<Map<string, ItemSchedulingStatus>> {
+    const out = new Map<string, ItemSchedulingStatus>();
+    const weekDays: Date[] = [];
+    for (let i = 0; i < 7; i++) {
+      weekDays.push(new Date(args.weekStartUtc.getTime() + i * 86_400_000));
+    }
+    const weekEnd = new Date(args.weekStartUtc.getTime() + 7 * 86_400_000);
+
+    // Batch-fetch assignments for every linked task in the given week.
+    const linkedTaskIds = args.items
+      .filter((i) => i.linkedPlanTaskId && !i.isArchived
+        && i.itemType === 'boolean' && i.scheduleFrequencyType !== 'none')
+      .map((i) => i.linkedPlanTaskId!) as string[];
+    const assignments = linkedTaskIds.length
+      ? await this.prisma.taskAssignment.findMany({
+          where: {
+            taskId: { in: linkedTaskIds },
+            scheduledDate: { gte: args.weekStartUtc, lt: weekEnd },
+            status: { in: ['scheduled', 'completed'] },
+          },
+          select: { taskId: true, scheduledDate: true },
+        })
+      : [];
+
+    // Index: taskId → Set<ISO-date string>
+    const assignmentDatesByTask = new Map<string, Set<string>>();
+    for (const a of assignments) {
+      const iso = this.toDayString(a.scheduledDate);
+      const set = assignmentDatesByTask.get(a.taskId) ?? new Set<string>();
+      set.add(iso);
+      assignmentDatesByTask.set(a.taskId, set);
+    }
+
+    const todayIso = this.toDayString(args.todayUtc);
+
+    for (const item of args.items) {
+      if (item.itemType !== 'boolean') continue;
+      if (item.scheduleFrequencyType === 'none') continue;
+      if (item.isArchived) continue;
+
+      const expectedCount =
+        item.scheduleFrequencyType === 'daily'
+          ? 7
+          : (item.scheduleTimesPerWeek ?? 0);
+
+      const taskAssignmentDates = item.linkedPlanTaskId
+        ? assignmentDatesByTask.get(item.linkedPlanTaskId) ?? new Set<string>()
+        : new Set<string>();
+      const actualCount = taskAssignmentDates.size;
+      const missingCount = Math.max(0, expectedCount - actualCount);
+
+      let state: 'planned' | 'missing' | 'suggested';
+      if (!item.linkedPlanTaskId) state = 'suggested';
+      else if (actualCount >= expectedCount) state = 'planned';
+      else state = 'missing';
+
+      // Informational (NOT counted): logs completed this week on days that
+      // don't coincide with an active assignment for the linked task.
+      let unscheduledCompletionCount = 0;
+      const logs = args.logsByItem.get(item.id) ?? [];
+      for (const l of logs) {
+        if (l.status !== 'completed') continue;
+        if (l.logDate < this.toDayString(args.weekStartUtc)) continue;
+        if (l.logDate >= this.toDayString(weekEnd)) continue;
+        if (!taskAssignmentDates.has(l.logDate)) unscheduledCompletionCount++;
+      }
+
+      const preferredWeekdays = parseWeekdayCsv(item.schedulePreferredWeekdays);
+
+      // Suggested days for the "fill week" flow — future days of this week
+      // (including today) not already scheduled, clamped to missingCount.
+      const suggestedDates: string[] = [];
+      if (state !== 'planned' && missingCount > 0) {
+        const availableIsos: string[] = [];
+        const availableWeekdays: number[] = [];
+        for (const d of weekDays) {
+          const iso = this.toDayString(d);
+          if (iso < todayIso) continue;
+          if (taskAssignmentDates.has(iso)) continue;
+          availableIsos.push(iso);
+          availableWeekdays.push(d.getUTCDay());
+        }
+
+        const picks: number[] = []; // indices into availableIsos
+        if (preferredWeekdays && preferredWeekdays.length > 0) {
+          // Preferred-first: take days whose weekday is in the preferred set,
+          // in the order they appear in the week.
+          for (let i = 0; i < availableWeekdays.length && picks.length < missingCount; i++) {
+            if (preferredWeekdays.includes(availableWeekdays[i])) picks.push(i);
+          }
+          // Fill the rest evenly from the non-preferred remainder.
+          const remainingNeeded = missingCount - picks.length;
+          if (remainingNeeded > 0) {
+            const nonPreferred: number[] = [];
+            for (let i = 0; i < availableWeekdays.length; i++) {
+              if (!preferredWeekdays.includes(availableWeekdays[i])) nonPreferred.push(i);
+            }
+            const evenly = pickEvenly(nonPreferred.length, remainingNeeded).map((k) => nonPreferred[k]);
+            picks.push(...evenly);
+          }
+        } else {
+          // No preferred — spread evenly across all available days.
+          const evenly = pickEvenly(availableIsos.length, missingCount);
+          picks.push(...evenly);
+        }
+
+        picks.sort((a, b) => a - b);
+        for (const p of picks) suggestedDates.push(availableIsos[p]);
+      }
+
+      out.set(item.id, {
+        frequencyType: item.scheduleFrequencyType as 'daily' | 'weekly',
+        expectedCount,
+        actualCount,
+        missingCount,
+        state,
+        preferredWeekdays,
+        unscheduledCompletionCount,
+        suggestedDates,
+      });
+    }
+
+    return out;
+  }
+}
+
+// ─── Scheduling helpers (module-scoped, pure) ────────────────────────────────
+
+export interface ItemSchedulingStatus {
+  frequencyType: 'daily' | 'weekly';
+  expectedCount: number;
+  actualCount: number;
+  missingCount: number;
+  state: 'planned' | 'missing' | 'suggested';
+  preferredWeekdays: number[] | null;
+  unscheduledCompletionCount: number;
+  suggestedDates: string[];    // YYYY-MM-DD pre-fill for the day picker
+}
+
+function parseWeekdayCsv(csv: string | null): number[] | null {
+  if (!csv) return null;
+  const out: number[] = [];
+  for (const p of csv.split(',')) {
+    const n = parseInt(p.trim(), 10);
+    if (!Number.isFinite(n) || n < 0 || n > 6) continue;
+    if (!out.includes(n)) out.push(n);
+  }
+  return out.length ? out : null;
+}
+
+// Even-distribution picker: choose K evenly-spaced indices from [0, N).
+// Endpoints are included when K >= 2.
+function pickEvenly(N: number, K: number): number[] {
+  if (K <= 0 || N <= 0) return [];
+  const take = Math.min(K, N);
+  if (take === 1) return [Math.round((N - 1) / 2)];
+  const picks: number[] = [];
+  for (let i = 0; i < take; i++) {
+    picks.push(Math.round((i * (N - 1)) / (take - 1)));
+  }
+  // Dedupe and compact in the (rare) case rounding collapses two indices.
+  return [...new Set(picks)];
 }

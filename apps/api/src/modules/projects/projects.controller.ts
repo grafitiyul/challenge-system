@@ -17,6 +17,7 @@ import {
   CreateNoteDto,
   CreateProjectDto,
   ReorderItemsDto,
+  ScheduleItemDto,
   UpdateItemDto,
   UpdateProjectDto,
   UpsertLogDto,
@@ -119,6 +120,20 @@ export class ProjectsController {
     @Query('logDate') logDate: string,
   ) {
     return this.svc.adminDeleteLog(itemId, participantId, logDate);
+  }
+
+  // Phase 3: schedule (or create + link + schedule) a linked boolean goal
+  // across a list of dates. Body: { dates: string[], taskTitle?: string }.
+  // POST /api/projects/items/:itemId/schedule?participantId=
+  @Post('items/:itemId/schedule')
+  scheduleWeek(
+    @Param('itemId') itemId: string,
+    @Query('participantId') participantId: string,
+    @Body() dto: ScheduleItemDto,
+  ) {
+    return this.svc.scheduleItemWeek({
+      itemId, participantId, dto, requireCanManageForTaskCreation: false,
+    });
   }
 
   // POST /api/projects/:id/notes?participantId=

@@ -5,6 +5,7 @@ import {
   CreateNoteDto,
   CreateProjectDto,
   ReorderItemsDto,
+  ScheduleItemDto,
   UpdateItemDto,
   UpdateProjectDto,
   UpsertLogDto,
@@ -94,6 +95,19 @@ export class PortalProjectsController {
     @Query('logDate') logDate: string,
   ) {
     return this.svc.portalDeleteLog(token, itemId, logDate);
+  }
+
+  // Phase 3: schedule (or create+link+schedule) a linked boolean goal.
+  // Creating a new PlanTask requires canManageProjects; filling dates on
+  // an already-linked goal does not.
+  // POST /api/public/projects/:token/items/:itemId/schedule
+  @Post(':token/items/:itemId/schedule')
+  scheduleWeek(
+    @Param('token') token: string,
+    @Param('itemId') itemId: string,
+    @Body() dto: ScheduleItemDto,
+  ) {
+    return this.svc.portalScheduleItemWeek(token, itemId, dto);
   }
 
   @Post(':token/projects/:projectId/notes')

@@ -42,11 +42,28 @@ export interface ProjectItem {
   isArchived: boolean;
   // Phase 2: optional bidirectional link. Only meaningful for boolean items.
   linkedPlanTaskId: string | null;
+  // Phase 3: scheduling intent (boolean items only). Drives the per-week
+  // status chip and "suggested days" picker — never counts toward completion.
+  scheduleFrequencyType: 'none' | 'daily' | 'weekly';
+  scheduleTimesPerWeek: number | null;
+  schedulePreferredWeekdays: string | null; // CSV of 0..6
   createdAt: string;
   logs: ProjectLog[];
 }
 
 export interface LinkableTask { id: string; title: string; }
+
+// Phase 3: per-week scheduling status, keyed by item id in PortalBootstrap.
+export interface ItemSchedulingStatus {
+  frequencyType: 'daily' | 'weekly';
+  expectedCount: number;
+  actualCount: number;
+  missingCount: number;
+  state: 'planned' | 'missing' | 'suggested';
+  preferredWeekdays: number[] | null;
+  unscheduledCompletionCount: number;
+  suggestedDates: string[]; // YYYY-MM-DD
+}
 
 export interface Project {
   id: string;
@@ -83,6 +100,9 @@ export interface PortalBootstrap {
   // the linked task has an ACTIVE assignment. Used to decide the
   // "לא נקבע להיום בלו״ז" hint.
   scheduledKeys: string[];
+  // Phase 3: per-item scheduling status for the current week. Missing entries
+  // = goal has no schedule config (no chip shown).
+  schedulingStatus: Record<string, ItemSchedulingStatus>;
 }
 
 // ─── Styles ──────────────────────────────────────────────────────────────────
@@ -253,6 +273,8 @@ export function PortalProjectsBoard({ token }: PortalBoardProps) {
   // Remove-confirmation (in-app modal; replaces browser confirm()).
   const [removeProject, setRemoveProject] = useState<Project | null>(null);
   const [removeGoalByItem, setRemoveGoalByItem] = useState<ProjectItem | null>(null);
+  // Phase 3: "fill week" modal state
+  const [fillWeekItem, setFillWeekItem] = useState<ProjectItem | null>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -349,9 +371,11 @@ export function PortalProjectsBoard({ token }: PortalBoardProps) {
                 visible={itemExistsOn(item, dateStr)}
                 canManage={canManage}
                 scheduledKeys={data.scheduledKeys}
+                schedulingStatus={data.schedulingStatus[item.id] ?? null}
                 onChanged={reload}
                 onOpenSkip={() => setSkipForItem(item)}
                 onOpenRemove={() => setRemoveGoalByItem(item)}
+                onOpenFillWeek={() => setFillWeekItem(item)}
               />
             ))
           )}
@@ -441,6 +465,41 @@ export function PortalProjectsBoard({ token }: PortalBoardProps) {
           }}
         />
       )}
+
+      {fillWeekItem && (() => {
+        const status = data.schedulingStatus[fillWeekItem.id];
+        if (!status) { setFillWeekItem(null); return null; }
+        // Build available week dates: Sun..Sat starting from this week's Sunday.
+        const [ty, tm, td] = data.today.split('-').map((n) => parseInt(n, 10));
+        const todayUtc = new Date(Date.UTC(ty, tm - 1, td));
+        const dayOfWeek = todayUtc.getUTCDay();
+        const weekStart = new Date(Date.UTC(ty, tm - 1, td - dayOfWeek));
+        const scheduledSet = new Set(
+          data.scheduledKeys.filter((k) => k.startsWith(`${fillWeekItem.id}|`)).map((k) => k.split('|')[1]),
+        );
+        const availableWeekDates = [] as { iso: string; weekdayLabel: string; alreadyScheduled: boolean; inPast: boolean }[];
+        for (let i = 0; i < 7; i++) {
+          const d = new Date(weekStart.getTime() + i * 86_400_000);
+          const iso = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+          availableWeekDates.push({
+            iso,
+            weekdayLabel: WEEKDAY_LABELS[d.getUTCDay()],
+            alreadyScheduled: scheduledSet.has(iso),
+            inPast: iso < data.today,
+          });
+        }
+        return (
+          <FillWeekModal
+            token={token}
+            item={fillWeekItem}
+            suggestedDates={status.suggestedDates}
+            availableWeekDates={availableWeekDates}
+            needsTaskTitle={status.state === 'suggested'}
+            onClose={() => setFillWeekItem(null)}
+            onSaved={() => { setFillWeekItem(null); void reload(); }}
+          />
+        );
+      })()}
     </div>
   );
 }
@@ -539,11 +598,14 @@ function GoalRow(props: {
   visible: boolean;
   canManage: boolean;
   scheduledKeys: string[];
+  schedulingStatus: ItemSchedulingStatus | null;
   onChanged: () => void;
   onOpenSkip: () => void;
   onOpenRemove: () => void;
+  onOpenFillWeek: () => void;
 }) {
-  const { token, item, date, visible, canManage, scheduledKeys, onChanged, onOpenSkip, onOpenRemove } = props;
+  const { token, item, date, visible, canManage, scheduledKeys, schedulingStatus,
+          onChanged, onOpenSkip, onOpenRemove, onOpenFillWeek } = props;
   const log = logForDate(item, date);
   const pill = statusPillFromLog(log);
   const isLinked = !!item.linkedPlanTaskId;
@@ -666,21 +728,60 @@ function GoalRow(props: {
                 }}
               >🔗 מקושר למשימה</span>
             )}
+            {schedulingStatus && schedulingStatus.state === 'planned' && (
+              <span style={{
+                marginInlineStart: 6,
+                display: 'inline-flex', alignItems: 'center',
+                padding: '2px 8px', borderRadius: 999,
+                fontSize: 11, fontWeight: 600,
+                background: COLORS.successSoft, color: COLORS.success,
+              }}>✓ בתוכנית השבוע</span>
+            )}
+            {schedulingStatus && schedulingStatus.state === 'missing' && (
+              <span style={{
+                marginInlineStart: 6,
+                display: 'inline-flex', alignItems: 'center',
+                padding: '2px 8px', borderRadius: 999,
+                fontSize: 11, fontWeight: 600,
+                background: COLORS.warnSoft, color: COLORS.warn,
+              }}>⚠ חסרים {schedulingStatus.missingCount} ימים השבוע</span>
+            )}
+            {schedulingStatus && schedulingStatus.state === 'suggested' && (
+              <span style={{
+                marginInlineStart: 6,
+                display: 'inline-flex', alignItems: 'center',
+                padding: '2px 8px', borderRadius: 999,
+                fontSize: 11, fontWeight: 600,
+                background: COLORS.accentSoft, color: COLORS.accent,
+              }}>💡 אפשר להוסיף לתוכנית</span>
+            )}
           </div>
           {completedViaTask && (
             <div style={{ fontSize: 12, color: COLORS.muted, marginTop: 2 }}>סומן במשימה</div>
           )}
-          {showNotScheduledHint && !completedViaTask && (
+          {showNotScheduledHint && (
             <div style={{ fontSize: 12, color: COLORS.mutedLight, marginTop: 2 }}>
               לא נקבע להיום בלו״ז
             </div>
           )}
-          {showNotScheduledHint && completedViaTask && (
-            // Extremely rare (completed via task BUT no active assignment —
-            // would require an assignment to have been deleted after sync).
-            // Still render the hint for consistency.
-            <div style={{ fontSize: 12, color: COLORS.mutedLight, marginTop: 2 }}>
-              לא נקבע להיום בלו״ז
+          {schedulingStatus && schedulingStatus.unscheduledCompletionCount > 0 && (
+            <div style={{ fontSize: 11, color: COLORS.mutedLight, marginTop: 2 }}>
+              עשית {schedulingStatus.unscheduledCompletionCount} פעמים בפועל (לא שובץ בלו״ז)
+            </div>
+          )}
+          {canManage && schedulingStatus
+            && (schedulingStatus.state === 'missing' || schedulingStatus.state === 'suggested') && (
+            <div style={{ marginTop: 6 }}>
+              <button
+                onClick={onOpenFillWeek}
+                style={{
+                  padding: '6px 12px', fontSize: 12, fontWeight: 600,
+                  background: COLORS.accent, color: '#fff', border: 'none',
+                  borderRadius: 8, cursor: 'pointer',
+                }}
+              >
+                {schedulingStatus.state === 'missing' ? '📅 השלימי ימים' : '🔗 הוסיפי ללוח השבוע'}
+              </button>
             </div>
           )}
         </div>
@@ -891,6 +992,10 @@ function AddGoalModal(props: {
   // Phase 2 link picker. Only shown when itemType='boolean'. Empty string
   // means "no link".
   const [linkedTaskId, setLinkedTaskId] = useState<string>('');
+  // Phase 3 scheduling fields (boolean only).
+  const [freq, setFreq] = useState<'none' | 'daily' | 'weekly'>('none');
+  const [timesPerWeek, setTimesPerWeek] = useState<number>(3);
+  const [preferredDays, setPreferredDays] = useState<number[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
@@ -911,6 +1016,13 @@ function AddGoalModal(props: {
     }
     if (itemType === 'boolean' && linkedTaskId) {
       body.linkedPlanTaskId = linkedTaskId;
+    }
+    if (itemType === 'boolean') {
+      body.scheduleFrequencyType = freq;
+      if (freq === 'weekly') body.scheduleTimesPerWeek = timesPerWeek;
+      if (freq !== 'none' && preferredDays.length > 0) {
+        body.schedulePreferredWeekdays = preferredDays.slice().sort((a, b) => a - b).join(',');
+      }
     }
     setBusy(true); setErr('');
     try {
@@ -992,6 +1104,17 @@ function AddGoalModal(props: {
             ))}
           </select>
         </div>
+      )}
+
+      {itemType === 'boolean' && (
+        <ScheduleSection
+          freq={freq}
+          timesPerWeek={timesPerWeek}
+          preferredDays={preferredDays}
+          onFreq={setFreq}
+          onTimesPerWeek={setTimesPerWeek}
+          onPreferredDays={setPreferredDays}
+        />
       )}
 
       {itemType === 'select' && (
@@ -1135,4 +1258,200 @@ export function shouldShowPortalTab(b: PortalBootstrap | null): boolean {
   if (!b) return false;
   if (b.participant.canManageProjects) return true;
   return b.projects.some((p) => p.status === 'active');
+}
+
+// ─── ScheduleSection ────────────────────────────────────────────────────────
+// Reusable form section for "איך המטרה הזו מתבצעת?". Used in both
+// AddGoalModal (portal) and the admin ItemFormModal (via export). Three
+// frequency modes + optional preferred-weekdays pill row.
+
+const WEEKDAY_LABELS = ['א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ש'];
+
+export function ScheduleSection(props: {
+  freq: 'none' | 'daily' | 'weekly';
+  timesPerWeek: number;
+  preferredDays: number[];
+  onFreq: (f: 'none' | 'daily' | 'weekly') => void;
+  onTimesPerWeek: (n: number) => void;
+  onPreferredDays: (d: number[]) => void;
+}) {
+  const { freq, timesPerWeek, preferredDays, onFreq, onTimesPerWeek, onPreferredDays } = props;
+  return (
+    <div style={{ marginBottom: 12, paddingTop: 10, borderTop: `1px dashed ${COLORS.border}` }}>
+      <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: COLORS.text, marginBottom: 6 }}>
+        איך המטרה הזו מתבצעת?
+      </label>
+      <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+        {([
+          { k: 'none' as const, label: 'ללא לוח זמנים' },
+          { k: 'daily' as const, label: 'כל יום' },
+          { k: 'weekly' as const, label: 'פעמים בשבוע' },
+        ]).map((opt) => (
+          <button
+            key={opt.k}
+            type="button"
+            onClick={() => onFreq(opt.k)}
+            style={{
+              flex: 1, padding: '8px 6px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+              borderRadius: 8, minHeight: 40,
+              border: `2px solid ${freq === opt.k ? COLORS.accent : COLORS.border}`,
+              background: freq === opt.k ? COLORS.accentSoft : COLORS.card,
+              color: freq === opt.k ? COLORS.accent : COLORS.text,
+            }}
+          >{opt.label}</button>
+        ))}
+      </div>
+      {freq === 'weekly' && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          <span style={{ fontSize: 13, color: COLORS.muted }}>כמה פעמים בשבוע?</span>
+          <input
+            type="number" min={1} max={7}
+            style={{ ...s.textInput, width: 80 }}
+            value={timesPerWeek}
+            onChange={(e) => {
+              const n = parseInt(e.target.value, 10);
+              if (Number.isFinite(n)) onTimesPerWeek(Math.max(1, Math.min(7, n)));
+            }}
+          />
+        </div>
+      )}
+      {freq !== 'none' && (
+        <div>
+          <div style={{ fontSize: 12, color: COLORS.mutedLight, marginBottom: 6 }}>
+            ימים מועדפים (לא חובה):
+          </div>
+          <div style={{ display: 'flex', gap: 4 }}>
+            {WEEKDAY_LABELS.map((lab, idx) => {
+              const active = preferredDays.includes(idx);
+              return (
+                <button
+                  key={idx}
+                  type="button"
+                  onClick={() => {
+                    if (active) onPreferredDays(preferredDays.filter((d) => d !== idx));
+                    else onPreferredDays([...preferredDays, idx]);
+                  }}
+                  style={{
+                    flex: 1, padding: '8px 2px', minHeight: 36, fontSize: 13, fontWeight: 600,
+                    cursor: 'pointer', borderRadius: 8,
+                    border: `1px solid ${active ? COLORS.accent : COLORS.border}`,
+                    background: active ? COLORS.accentSoft : COLORS.card,
+                    color: active ? COLORS.accent : COLORS.text,
+                  }}
+                >{lab}</button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── FillWeekModal ──────────────────────────────────────────────────────────
+// Day picker for the "השלימי ימים" / "הוסיפי ללוח השבוע" CTAs. Pre-checks
+// `initialDates` from the server-computed `suggestedDates`; participant can
+// un-check freely. On submit, POSTs to the unified schedule endpoint.
+
+export function FillWeekModal(props: {
+  token: string | null;        // null → admin flow
+  participantId?: string;      // required for admin flow
+  item: ProjectItem;
+  suggestedDates: string[];
+  availableWeekDates: { iso: string; weekdayLabel: string; alreadyScheduled: boolean; inPast: boolean }[];
+  needsTaskTitle: boolean;     // true for suggested state (no linked task yet)
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [picked, setPicked] = useState<string[]>(props.suggestedDates);
+  const [taskTitle, setTaskTitle] = useState<string>(props.item.title);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  async function submit() {
+    if (picked.length === 0) { setErr('חובה לבחור לפחות יום אחד'); return; }
+    if (props.needsTaskTitle && !taskTitle.trim()) { setErr('חובה למלא שם משימה'); return; }
+    setBusy(true); setErr('');
+    const body: Record<string, unknown> = { dates: picked };
+    if (props.needsTaskTitle) body.taskTitle = taskTitle.trim();
+    try {
+      if (props.token) {
+        await apiFetch(
+          `${BASE_URL}/public/projects/${props.token}/items/${props.item.id}/schedule`,
+          { method: 'POST', body: JSON.stringify(body) },
+        );
+      } else if (props.participantId) {
+        await apiFetch(
+          `${BASE_URL}/projects/items/${props.item.id}/schedule?participantId=${encodeURIComponent(props.participantId)}`,
+          { method: 'POST', body: JSON.stringify(body) },
+        );
+      }
+      props.onSaved();
+    } catch (e: unknown) {
+      const msg = e && typeof e === 'object' && 'message' in e ? String((e as { message: string }).message) : 'שמירה נכשלה';
+      setErr(msg);
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <LockedModalShell
+      title={props.needsTaskTitle ? 'הוסיפי ללוח השבוע' : 'השלימי ימים'}
+      onClose={props.onClose}
+      footer={(
+        <>
+          <button style={s.ghostBtn} disabled={busy} onClick={props.onClose}>ביטול</button>
+          <button style={s.primaryBtn} disabled={busy || picked.length === 0} onClick={submit}>
+            {props.needsTaskTitle ? 'צרי ושבצי' : 'שבצי'}
+          </button>
+        </>
+      )}
+    >
+      <div style={{ fontSize: 13, color: COLORS.muted, marginBottom: 10 }}>{props.item.title}</div>
+      {props.needsTaskTitle && (
+        <div style={{ marginBottom: 12 }}>
+          <label style={{ display: 'block', fontSize: 12, color: COLORS.muted, marginBottom: 4 }}>שם המשימה</label>
+          <input style={s.textInput} value={taskTitle} onChange={(e) => setTaskTitle(e.target.value)} />
+        </div>
+      )}
+      <div style={{ fontSize: 12, color: COLORS.muted, marginBottom: 6 }}>ימים השבוע:</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4 }}>
+        {props.availableWeekDates.map((d) => {
+          const disabled = d.inPast || d.alreadyScheduled;
+          const checked = picked.includes(d.iso);
+          return (
+            <button
+              key={d.iso}
+              type="button"
+              disabled={disabled}
+              onClick={() => {
+                if (checked) setPicked(picked.filter((x) => x !== d.iso));
+                else setPicked([...picked, d.iso]);
+              }}
+              style={{
+                padding: '12px 2px', minHeight: 56, fontSize: 13, fontWeight: 600,
+                borderRadius: 8,
+                cursor: disabled ? 'not-allowed' : 'pointer',
+                border: `2px solid ${checked ? COLORS.accent : d.alreadyScheduled ? COLORS.success : COLORS.border}`,
+                background: checked ? COLORS.accentSoft
+                  : d.alreadyScheduled ? COLORS.successSoft
+                  : d.inPast ? '#f1f5f9' : COLORS.card,
+                color: checked ? COLORS.accent
+                  : d.alreadyScheduled ? COLORS.success
+                  : d.inPast ? COLORS.mutedLight : COLORS.text,
+                opacity: disabled && !d.alreadyScheduled ? 0.55 : 1,
+              }}
+              title={
+                d.alreadyScheduled ? 'כבר מתוזמן'
+                : d.inPast ? 'עבר' : ''
+              }
+            >
+              {d.weekdayLabel}
+              {d.alreadyScheduled && <div style={{ fontSize: 9, marginTop: 2 }}>מתוזמן</div>}
+            </button>
+          );
+        })}
+      </div>
+      {err && <div style={{ ...s.err, marginTop: 10 }}>{err}</div>}
+    </LockedModalShell>
+  );
 }

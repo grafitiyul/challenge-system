@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { BASE_URL, apiFetch } from '@lib/api';
 import type {
+  ItemSchedulingStatus,
   LinkableTask,
   Project,
   ProjectItem,
@@ -11,6 +12,7 @@ import type {
   ProjectLogStatus,
   ProjectNote,
 } from '@components/projects-board';
+import { FillWeekModal, ScheduleSection } from '@components/projects-board';
 
 // ─── Styles ──────────────────────────────────────────────────────────────────
 
@@ -86,6 +88,7 @@ interface AdminListResponse {
   notes: ProjectNote[];
   linkableTasks: LinkableTask[];
   scheduledKeys: string[];
+  schedulingStatus: Record<string, ItemSchedulingStatus>;
 }
 
 // ─── Props ───────────────────────────────────────────────────────────────────
@@ -111,6 +114,8 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
   const [editItem, setEditItem] = useState<ProjectItem | null>(null);
   const [logItem, setLogItem] = useState<{ item: ProjectItem; date: string } | null>(null);
   const [noteProject, setNoteProject] = useState<Project | null>(null);
+  // Phase 3: fill week modal state (admin side)
+  const [fillWeekItem, setFillWeekItem] = useState<ProjectItem | null>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -277,13 +282,42 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
                           🔗 מקושר למשימה
                         </span>
                       )}
+                      {(() => {
+                        const st2 = data.schedulingStatus[it.id];
+                        if (!st2) return null;
+                        if (st2.state === 'planned') {
+                          return <span style={{ marginInlineStart: 6, ...st.chip(C.successSoft, C.success) }}>✓ בתוכנית השבוע</span>;
+                        }
+                        if (st2.state === 'missing') {
+                          return <span style={{ marginInlineStart: 6, ...st.chip(C.warnSoft, C.warn) }}>⚠ חסרים {st2.missingCount} ימים השבוע</span>;
+                        }
+                        if (st2.state === 'suggested') {
+                          return <span style={{ marginInlineStart: 6, ...st.chip(C.accentSoft, C.accent) }}>💡 אפשר להוסיף לתוכנית</span>;
+                        }
+                        return null;
+                      })()}
                     </div>
                     <div style={{ fontSize: 11, color: C.mutedLight, marginTop: 2 }}>
                       {it.logs.length} דיווחים בטווח
+                      {data.schedulingStatus[it.id]?.unscheduledCompletionCount
+                        ? ` · עשית ${data.schedulingStatus[it.id].unscheduledCompletionCount} פעמים בפועל (לא שובץ בלו״ז)`
+                        : ''}
                     </div>
                   </div>
                   <button style={st.ghostBtn} title="הזז למעלה" disabled={idx === 0} onClick={() => moveItem(p.id, items, idx, -1)}>↑</button>
                   <button style={st.ghostBtn} title="הזז למטה" disabled={idx === items.length - 1} onClick={() => moveItem(p.id, items, idx, 1)}>↓</button>
+                  {(() => {
+                    const st2 = data.schedulingStatus[it.id];
+                    if (!st2) return null;
+                    if (st2.state === 'missing' || st2.state === 'suggested') {
+                      return (
+                        <button style={st.primaryBtn} onClick={() => setFillWeekItem(it)}>
+                          {st2.state === 'missing' ? '📅 השלימי ימים' : '🔗 הוסיפי ללוח השבוע'}
+                        </button>
+                      );
+                    }
+                    return null;
+                  })()}
                   <button style={st.ghostBtn} onClick={() => setLogItem({ item: it, date: todayStr() })}>דווח</button>
                   <button style={st.ghostBtn} onClick={() => setEditItem(it)}>ערוך</button>
                   <button style={st.dangerBtn} onClick={() => setArchiveItemTarget(it)}>לארכיון</button>
@@ -434,6 +468,46 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
           }}
         />
       )}
+
+      {fillWeekItem && (() => {
+        const st2 = data.schedulingStatus[fillWeekItem.id];
+        if (!st2) { setFillWeekItem(null); return null; }
+        // Build this week's Sun..Sat dates in UTC civil-day form.
+        const today = todayStr();
+        const [ty, tm, td] = today.split('-').map((n) => parseInt(n, 10));
+        const todayUtc = new Date(Date.UTC(ty, tm - 1, td));
+        const dayOfWeek = todayUtc.getUTCDay();
+        const weekStart = new Date(Date.UTC(ty, tm - 1, td - dayOfWeek));
+        const WEEKDAY_LABELS = ['א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ש'];
+        const scheduledSet = new Set(
+          data.scheduledKeys
+            .filter((k) => k.startsWith(`${fillWeekItem.id}|`))
+            .map((k) => k.split('|')[1]),
+        );
+        const availableWeekDates = [];
+        for (let i = 0; i < 7; i++) {
+          const d = new Date(weekStart.getTime() + i * 86_400_000);
+          const iso = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+          availableWeekDates.push({
+            iso,
+            weekdayLabel: WEEKDAY_LABELS[d.getUTCDay()],
+            alreadyScheduled: scheduledSet.has(iso),
+            inPast: iso < today,
+          });
+        }
+        return (
+          <FillWeekModal
+            token={null}
+            participantId={participantId}
+            item={fillWeekItem}
+            suggestedDates={st2.suggestedDates}
+            availableWeekDates={availableWeekDates}
+            needsTaskTitle={st2.state === 'suggested'}
+            onClose={() => setFillWeekItem(null)}
+            onSaved={() => { setFillWeekItem(null); void reload(); }}
+          />
+        );
+      })()}
     </div>
   );
 }
@@ -743,6 +817,16 @@ function ItemFormModal(props: {
   });
   // Phase 2 link picker. Empty string = "no link" / "ללא קישור".
   const [linkedTaskId, setLinkedTaskId] = useState<string>(props.item?.linkedPlanTaskId ?? '');
+  // Phase 3 scheduling fields. Pre-fill from existing item when editing.
+  const [freq, setFreq] = useState<'none' | 'daily' | 'weekly'>(
+    (props.item?.scheduleFrequencyType as 'none' | 'daily' | 'weekly') ?? 'none',
+  );
+  const [timesPerWeek, setTimesPerWeek] = useState<number>(props.item?.scheduleTimesPerWeek ?? 3);
+  const [preferredDays, setPreferredDays] = useState<number[]>(() => {
+    const csv = props.item?.schedulePreferredWeekdays;
+    if (!csv) return [];
+    return csv.split(',').map((x) => parseInt(x.trim(), 10)).filter((n) => Number.isFinite(n));
+  });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
@@ -771,6 +855,13 @@ function ItemFormModal(props: {
     // on an untouched edit of an old select/number goal.
     if (itemType === 'boolean') {
       body.linkedPlanTaskId = linkedTaskId || null;
+      // Phase 3 schedule bundle — always send for boolean to keep the row
+      // canonical. Non-boolean items never send these fields.
+      body.scheduleFrequencyType = freq;
+      body.scheduleTimesPerWeek = freq === 'weekly' ? timesPerWeek : null;
+      body.schedulePreferredWeekdays = (freq !== 'none' && preferredDays.length > 0)
+        ? preferredDays.slice().sort((a, b) => a - b).join(',')
+        : null;
     }
     setBusy(true); setErr('');
     try {
@@ -862,6 +953,17 @@ function ItemFormModal(props: {
             ))}
           </select>
         </div>
+      )}
+
+      {itemType === 'boolean' && (
+        <ScheduleSection
+          freq={freq}
+          timesPerWeek={timesPerWeek}
+          preferredDays={preferredDays}
+          onFreq={setFreq}
+          onTimesPerWeek={setTimesPerWeek}
+          onPreferredDays={setPreferredDays}
+        />
       )}
 
       {itemType === 'select' && (

@@ -1439,6 +1439,21 @@ model ProjectItem {
   linkedPlanTaskId String?   @unique
   linkedPlanTask   PlanTask? @relation(fields: [linkedPlanTaskId], references: [id])
 
+  // Phase 3 scheduling intent. Drives the per-week status chip
+  // (planned/missing/suggested). Correctness of completion counts still
+  // depends solely on TaskAssignment rows — this is a *planning* layer,
+  // never a data-recording layer.
+  //   frequencyType   "none" | "daily" | "weekly"  (default "none" keeps
+  //                   pre-Phase-3 goals behaving identically)
+  //   timesPerWeek    required 1..7 when type='weekly'; null otherwise.
+  //                   Server normalizes timesPerWeek=7 → type='daily'.
+  //   preferredWeekdays  CSV of 0..6 (Sun..Sat), optional soft preference
+  //                      for suggested-days algorithm.
+  // Only allowed when itemType='boolean'. Validation rejects other types.
+  scheduleFrequencyType    String  @default("none")
+  scheduleTimesPerWeek     Int?
+  schedulePreferredWeekdays String?
+
   logs ProjectItemLog[]
 
   createdAt DateTime @default(now())
