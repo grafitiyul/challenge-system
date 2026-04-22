@@ -14,6 +14,13 @@
 import { useEffect, useState } from 'react';
 import { BASE_URL, apiFetch } from '@lib/api';
 import { TaskBoard } from '@components/task-board';
+import { PortalProjectsBoard } from '@components/projects-board';
+
+// Two sibling views inside the task portal. 'plan' is the default — the
+// weekly task plan the portal was originally built for. 'projects' is the
+// Phase 1 Projects Tracking surface; intentionally lives here (alongside
+// Tasks) rather than in the /t/ game portal.
+type PortalView = 'plan' | 'projects';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -38,6 +45,21 @@ export function PlanTab({ token }: { token: string }) {
   const [ctxErr, setCtxErr] = useState('');
   const [portalState, setPortalState] = useState<'loading' | 'waiting_a' | 'waiting_b' | 'open'>('loading');
   const [countdown, setCountdown] = useState({ days: 0, hours: 0, minutes: 0, seconds: 0 });
+  // Current sibling view inside the open portal. Persisted in the URL so
+  // a refresh doesn't bounce the participant back to the plan view.
+  const [view, setView] = useState<PortalView>(() => {
+    if (typeof window === 'undefined') return 'plan';
+    const v = new URLSearchParams(window.location.search).get('view');
+    return v === 'projects' ? 'projects' : 'plan';
+  });
+  function switchView(next: PortalView) {
+    setView(next);
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    if (next === 'plan') url.searchParams.delete('view');
+    else url.searchParams.set('view', next);
+    window.history.replaceState({}, '', url.toString());
+  }
 
   useEffect(() => {
     apiFetch<PortalCtx>(`${BASE_URL}/task-engine/portal/${token}`, { cache: 'no-store' })
@@ -205,14 +227,55 @@ export function PlanTab({ token }: { token: string }) {
   }
 
   // ── State C: portal open ─────────────────────────────────────────────────
+  // Inline tab strip switches between the weekly plan and Projects Tracking.
+  // Mobile-first: full-width equal-column buttons; active tab gets a bottom
+  // underline matching the admin tab style.
+  const tabStripStyle: React.CSSProperties = {
+    display: 'flex', gap: 0, background: '#ffffff',
+    borderBottom: '1px solid #e2e8f0',
+    position: 'sticky', top: 0, zIndex: 5,
+  };
+  const tabBtn = (active: boolean): React.CSSProperties => ({
+    flex: 1, padding: '14px 12px',
+    border: 'none',
+    borderBottom: active ? '2px solid #2563eb' : '2px solid transparent',
+    background: 'transparent',
+    color: active ? '#2563eb' : '#64748b',
+    fontWeight: active ? 700 : 500,
+    fontSize: 15, cursor: 'pointer',
+    fontFamily: 'inherit',
+  });
+
   return (
     <div style={{ ...rootStyle, paddingBottom: 32 }}>
-      <div style={{ padding: '16px 16px 0' }}>
-        <TaskBoard
-          participantId={ctx.participantId}
-          participantName={ctx.participantName}
-        />
+      <div style={tabStripStyle} role="tablist">
+        <button
+          role="tab"
+          aria-selected={view === 'plan'}
+          style={tabBtn(view === 'plan')}
+          onClick={() => switchView('plan')}
+        >
+          📅 התכנון שלי
+        </button>
+        <button
+          role="tab"
+          aria-selected={view === 'projects'}
+          style={tabBtn(view === 'projects')}
+          onClick={() => switchView('projects')}
+        >
+          🎯 המעקב שלי
+        </button>
       </div>
+      {view === 'plan' ? (
+        <div style={{ padding: '16px 16px 0' }}>
+          <TaskBoard
+            participantId={ctx.participantId}
+            participantName={ctx.participantName}
+          />
+        </div>
+      ) : (
+        <PortalProjectsBoard token={token} />
+      )}
     </div>
   );
 }

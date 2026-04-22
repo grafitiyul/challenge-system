@@ -4,7 +4,6 @@ import { use, useCallback, useEffect, useRef, useState } from 'react';
 // REFRESH_INTERVAL_MS: background refresh cadence while portal is open
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 import { BASE_URL, apiFetch } from '@lib/api';
-import { PortalProjectsBoard, type PortalBootstrap } from '@components/projects-board';
 
 // ─── Sound helper — plays built-in static audio files ────────────────────────
 // Files live in /public/sounds/. Played via HTMLAudioElement so they work
@@ -219,7 +218,7 @@ interface PortalRules {
   }[]; // conditionJson/rewardJson typed as Record for frontend convenience
 }
 
-type TabId = 'report' | 'stats' | 'feed' | 'rules' | 'tracking';
+type TabId = 'report' | 'stats' | 'feed' | 'rules';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -1055,12 +1054,6 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
   const [rulesLoading, setRulesLoading] = useState(false);
   const [rulesError, setRulesError] = useState('');
 
-  // Projects Tracking tab — always rendered in the bottom nav so participants
-  // can discover the feature. Empty-state messaging happens INSIDE the tab
-  // content. Error state is surfaced (not silently swallowed) so wiring
-  // failures are diagnosable instead of manifesting as a missing tab.
-  const [projectsBootstrap, setProjectsBootstrap] = useState<PortalBootstrap | null>(null);
-  const [projectsLoadError, setProjectsLoadError] = useState('');
 
   // ─── Load context ──────────────────────────────────────────────────────────
 
@@ -1095,16 +1088,6 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
         setState('invalid');
       });
 
-    // One-shot projects bootstrap. Errors are surfaced so a wiring failure
-    // doesn't silently hide the feature — the tab still renders (empty +
-    // error message) so there's always a discoverable entry point.
-    apiFetch<PortalBootstrap>(`${BASE_URL}/public/projects/${token}`, { cache: 'no-store' })
-      .then((b) => { setProjectsBootstrap(b); setProjectsLoadError(''); })
-      .catch((e: unknown) => {
-        const msg = e && typeof e === 'object' && 'message' in e
-          ? String((e as { message: string }).message) : 'טעינת הפרויקטים נכשלה';
-        setProjectsLoadError(msg);
-      });
   }, [token]);
 
   // ─── Data loaders ──────────────────────────────────────────────────────────
@@ -1560,7 +1543,7 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
     didRestoreTab.current = true;
     if (typeof window === 'undefined') return;
     const raw = new URLSearchParams(window.location.search).get('tab');
-    if (raw === 'stats' || raw === 'feed' || raw === 'rules' || raw === 'tracking') {
+    if (raw === 'stats' || raw === 'feed' || raw === 'rules') {
       switchTab(raw);
     }
     // switchTab is a stable function reference in this component (declared at
@@ -2447,46 +2430,21 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
           </div>
         )}
 
-        {/* ── Tab 5: המעקב שלי (Phase 1 projects tracking) ──
-             Tab is always mounted. Three states:
-               1. load error (backend unreachable / schema mismatch): visible error
-               2. still loading: spinner
-               3. loaded — board handles its own empty state
-             (shouldShowPortalTab remains exported for callers that want to
-             differentiate discovery vs availability; no longer used here.) */}
-        {activeTab === 'tracking' && (
-          <div style={s.tabPane}>
-            {projectsLoadError ? (
-              <div style={{ padding: 20, textAlign: 'center', color: '#b91c1c' }}>
-                <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 8 }}>
-                  שגיאה בטעינת הפרויקטים
-                </div>
-                <div style={{ fontSize: 13, color: '#64748b' }}>{projectsLoadError}</div>
-              </div>
-            ) : projectsBootstrap === null ? (
-              <div style={{ padding: 32, textAlign: 'center', color: '#94a3b8' }}>טוען...</div>
-            ) : (
-              <PortalProjectsBoard token={token} />
-            )}
-          </div>
-        )}
       </div>
 
       {/* ── Bottom navigation ── */}
       <nav style={s.bottomNav}>
-        {([
-          { id: 'report', label: 'דיווח',       icon: '✏️' },
-          { id: 'stats',  label: 'הנתונים שלי', icon: '📊' },
-          // Group tab uses a real inline SVG (not an emoji) so its color can
-          // track the active-state palette the same way the other tabs do.
-          // Rendered via `iconNode` below; `icon` is kept as a fallback string.
-          { id: 'feed',   label: 'הקבוצה',      icon: '',   iconNode: true as const },
-          // Projects tracking tab — always rendered (no data-dependent hiding).
-          // Empty state is surfaced inside the tab content so discoverability
-          // doesn't depend on timing of a bootstrap fetch.
-          { id: 'tracking', label: 'המעקב שלי', icon: '🎯' },
-          { id: 'rules',  label: 'חוקים',       icon: '📋' },
-        ] as { id: TabId; label: string; icon: string; iconNode?: true }[]).map((tab) => {
+        {(
+          [
+            { id: 'report', label: 'דיווח',       icon: '✏️' },
+            { id: 'stats',  label: 'הנתונים שלי', icon: '📊' },
+            // Group tab uses a real inline SVG (not an emoji) so its color can
+            // track the active-state palette the same way the other tabs do.
+            // Rendered via `iconNode` below; `icon` is kept as a fallback string.
+            { id: 'feed',   label: 'הקבוצה',      icon: '',   iconNode: true as const },
+            { id: 'rules',  label: 'חוקים',       icon: '📋' },
+          ] as { id: TabId; label: string; icon: string; iconNode?: true }[]
+        ).map((tab) => {
           const isActive = activeTab === tab.id;
           return (
             <button
