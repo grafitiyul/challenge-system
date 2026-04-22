@@ -1022,7 +1022,7 @@ function GoalRow(props: {
                 padding: '2px 8px', borderRadius: 999,
                 fontSize: 11, fontWeight: 600,
                 background: COLORS.warnSoft, color: COLORS.warn,
-              }}>⚠ חסרים {schedulingStatus.missingCount} ימים השבוע</span>
+              }}>⚠ {schedulingStatus.missingCount === 1 ? 'חסר יום אחד' : `חסרים ${schedulingStatus.missingCount} ימים`}</span>
             ) : null}
             {/* Phase 4: "עדיין לא שובץ בלו״ז" muted tag for boolean goals
                  that have NO scheduling config set — makes it feel like a
@@ -1044,11 +1044,15 @@ function GoalRow(props: {
             </div>
           )}
           {/* Phase 4.2: single-line weekly summary — compact form.
-               Phase 4.3: encouraging wording when completedCount === 0. */}
+               Phase 4.3: encouraging wording when completedCount === 0.
+               Phase 4.4: positive reinforcement when completedCount === expectedCount. */}
           {schedulingStatus && schedulingStatus.state !== 'ended' && (
             <div style={{ fontSize: 12, color: COLORS.muted, marginTop: 3 }}>
               {schedulingStatus.completedCount === 0 ? (
                 'עדיין לא התחלת השבוע'
+              ) : schedulingStatus.expectedCount > 0
+                  && schedulingStatus.completedCount >= schedulingStatus.expectedCount ? (
+                <span style={{ color: COLORS.success, fontWeight: 700 }}>✔ הושלם השבוע</span>
               ) : (
                 <>
                   {schedulingStatus.completedCount} מתוך {schedulingStatus.expectedCount} הושלמו

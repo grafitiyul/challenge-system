@@ -402,7 +402,7 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
                           return <span style={{ marginInlineStart: 6, ...st.chip(C.successSoft, C.success) }}>✓ בתוכנית השבוע</span>;
                         }
                         if (st2.state === 'missing') {
-                          return <span style={{ marginInlineStart: 6, ...st.chip(C.warnSoft, C.warn) }}>⚠ חסרים {st2.missingCount} ימים השבוע</span>;
+                          return <span style={{ marginInlineStart: 6, ...st.chip(C.warnSoft, C.warn) }}>⚠ {st2.missingCount === 1 ? 'חסר יום אחד' : `חסרים ${st2.missingCount} ימים`}</span>;
                         }
                         return null;
                       })()}
@@ -416,6 +416,8 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
                         <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>
                           {st2.completedCount === 0 ? (
                             'עדיין לא התחלת השבוע'
+                          ) : st2.expectedCount > 0 && st2.completedCount >= st2.expectedCount ? (
+                            <span style={{ color: C.success, fontWeight: 700 }}>✔ הושלם השבוע</span>
                           ) : (
                             <>
                               {st2.completedCount} מתוך {st2.expectedCount} הושלמו
