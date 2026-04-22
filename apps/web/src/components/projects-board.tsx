@@ -96,6 +96,8 @@ export interface StatsItem {
   expectedCount: number;
   percentage: number | null; // null when expectedCount === 0
   colorBand: 'green' | 'yellow' | 'red' | null;
+  // Phase 5: trailing consecutive-completed-days count (today-not-yet-done skipped).
+  currentStreak: number;
   perDay: StatsPerDay[];
 }
 
@@ -329,14 +331,17 @@ export function PortalProjectsBoard({ token, onViewLinkedTask }: PortalBoardProp
   const [data, setData] = useState<PortalBootstrap | null>(null);
   const [loadErr, setLoadErr] = useState('');
   const [loading, setLoading] = useState(true);
-  // Phase 5: extended from day-only to include range-level stats views.
-  const [selectedView, setSelectedView] = useState<'today' | 'yesterday' | 'week' | 'month' | 'custom'>('today');
+  // Phase 5: day views + range-level grid views.
+  // "week" retained as 7-day quick view; "fortnight" is the new 14-day default grid.
+  const [selectedView, setSelectedView] = useState<'today' | 'yesterday' | 'fortnight' | 'month' | 'custom'>('today');
   const [customFrom, setCustomFrom] = useState<string>('');
   const [customTo, setCustomTo] = useState<string>('');
   const [statsData, setStatsData] = useState<StatsResponse | null>(null);
   const [statsLoading, setStatsLoading] = useState(false);
   const [statsErr, setStatsErr] = useState('');
   const [statsDetail, setStatsDetail] = useState<StatsItem | null>(null);
+  // Phase 5: previous-period data for week-over-week comparison in the detail modal.
+  const [statsPrev, setStatsPrev] = useState<StatsResponse | null>(null);
 
   // Modal state
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
@@ -387,7 +392,7 @@ export function PortalProjectsBoard({ token, onViewLinkedTask }: PortalBoardProp
     }
   }, [data]);
 
-  const isStatsView = selectedView === 'week' || selectedView === 'month' || selectedView === 'custom';
+  const isStatsView = selectedView === 'fortnight' || selectedView === 'month' || selectedView === 'custom';
   const dateStr = data ? (selectedView === 'today' ? data.today : selectedView === 'yesterday' ? data.yesterday : '') : '';
 
   // Phase 5: derive stats range from the selected view.
@@ -395,11 +400,10 @@ export function PortalProjectsBoard({ token, onViewLinkedTask }: PortalBoardProp
     if (!data || !isStatsView) return null;
     const todayIso = data.today;
     const [y, m, d] = todayIso.split('-').map((n) => parseInt(n, 10));
-    const todayUtc = new Date(Date.UTC(y, m - 1, d));
-    if (selectedView === 'week') {
-      const dow = todayUtc.getUTCDay();
-      const start = new Date(Date.UTC(y, m - 1, d - dow));
-      const end = new Date(Date.UTC(y, m - 1, d - dow + 6));
+    if (selectedView === 'fortnight') {
+      // 14-day window ending today. Today + 13 days back.
+      const start = new Date(Date.UTC(y, m - 1, d - 13));
+      const end = new Date(Date.UTC(y, m - 1, d));
       return { from: toIso(start), to: toIso(end) };
     }
     if (selectedView === 'month') {
@@ -430,6 +434,29 @@ export function PortalProjectsBoard({ token, onViewLinkedTask }: PortalBoardProp
       .finally(() => setStatsLoading(false));
   }, [token, statsRange, isStatsView]);
 
+  // Phase 5: when a detail modal opens, fetch the equal-length previous
+  // window so the comparison section has data. Each fetch is cancellable
+  // via a stale-detail guard: if the user closes or opens a different
+  // item before this promise resolves, we drop the result.
+  useEffect(() => {
+    if (!statsDetail || !statsRange) { setStatsPrev(null); return; }
+    const [fy, fm, fd] = statsRange.from.split('-').map((n) => parseInt(n, 10));
+    const [ty, tm, td] = statsRange.to.split('-').map((n) => parseInt(n, 10));
+    const fromUtc = new Date(Date.UTC(fy, fm - 1, fd));
+    const toUtc = new Date(Date.UTC(ty, tm - 1, td));
+    const days = Math.round((toUtc.getTime() - fromUtc.getTime()) / 86_400_000) + 1;
+    const prevEnd = new Date(fromUtc.getTime() - 86_400_000);
+    const prevStart = new Date(prevEnd.getTime() - (days - 1) * 86_400_000);
+    const prevFrom = toIso(prevStart);
+    const prevTo = toIso(prevEnd);
+    let cancelled = false;
+    apiFetch<StatsResponse>(
+      `${BASE_URL}/public/projects/${token}/stats?from=${prevFrom}&to=${prevTo}`,
+      { cache: 'no-store' },
+    ).then((r) => { if (!cancelled) setStatsPrev(r); }).catch(() => { if (!cancelled) setStatsPrev(null); });
+    return () => { cancelled = true; };
+  }, [statsDetail, statsRange, token]);
+
   const notesByProject = useMemo(() => {
     const m = new Map<string, ProjectNote[]>();
     if (!data) return m;
@@ -456,7 +483,7 @@ export function PortalProjectsBoard({ token, onViewLinkedTask }: PortalBoardProp
           {([
             ['today', 'היום'],
             ['yesterday', 'אתמול'],
-            ['week', 'שבוע'],
+            ['fortnight', '14 ימים'],
             ['month', 'חודש'],
             ['custom', 'מותאם'],
           ] as const).map(([k, label]) => (
@@ -490,12 +517,13 @@ export function PortalProjectsBoard({ token, onViewLinkedTask }: PortalBoardProp
         </div>
       )}
 
-      {/* Phase 5: stats view takes over when a range view is selected. */}
+      {/* Phase 5: grid view takes over when a range view is selected. */}
       {isStatsView && (
-        <StatsView
+        <StatsGrid
           loading={statsLoading}
           err={statsErr}
           data={statsData}
+          today={data.today}
           onOpenDetail={(it) => setStatsDetail(it)}
         />
       )}
@@ -652,11 +680,19 @@ export function PortalProjectsBoard({ token, onViewLinkedTask }: PortalBoardProp
         />
       )}
 
-      {/* Phase 5: stats detail modal with day-strip chart. */}
+      {/* Phase 5: stats detail modal — trend chart + comparison + volume. */}
       {statsDetail && (
         <StatsDetailModal
           item={statsDetail}
-          onClose={() => setStatsDetail(null)}
+          previousItem={(() => {
+            if (!statsPrev) return null;
+            for (const p of statsPrev.projects) {
+              const match = p.items.find((it) => it.id === statsDetail.id);
+              if (match) return match;
+            }
+            return null;
+          })()}
+          onClose={() => { setStatsDetail(null); setStatsPrev(null); }}
         />
       )}
 
@@ -1632,112 +1668,203 @@ export function shouldShowPortalTab(b: PortalBootstrap | null): boolean {
 const WEEKDAY_LABELS = ['א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ש'];
 
 // ─── Phase 5 Stats ──────────────────────────────────────────────────────────
-// Range-level roll-up rendered when the participant picks שבוע / חודש / מותאם.
-// Shows per-item: title · "X מתוך Y (N%)" · color band. Tapping a row opens
-// a detail modal with a day-strip chart.
+// Two-layer experience. Main surface = StatsGrid (rows × days). Clicking a
+// goal row or a cell opens StatsDetailModal (trend chart + comparison).
 
+// ── Streak helpers (shared) ────────────────────────────────────────────────
+function streakLabel(n: number): string {
+  if (n <= 0) return '';
+  if (n === 1) return 'רצף: יום אחד';
+  return `רצף: ${n} ימים`;
+}
+
+// StatsGrid — goals × days. Horizontal scroll for mobile. Week dividers
+// between Sat→Sun transitions. Today column highlighted.
+export function StatsGrid(props: {
+  loading: boolean;
+  err: string;
+  data: StatsResponse | null;
+  today: string; // YYYY-MM-DD
+  onOpenDetail: (item: StatsItem) => void;
+}) {
+  if (props.loading) return <div style={{ padding: 20, color: COLORS.muted, textAlign: 'center' }}>טוען סטטיסטיקה...</div>;
+  if (props.err) return <div style={{ padding: 20, color: COLORS.danger, textAlign: 'center' }}>{props.err}</div>;
+  if (!props.data) return <div style={{ padding: 20, color: COLORS.muted, textAlign: 'center' }}>בחרי טווח תאריכים</div>;
+
+  // Flatten all gridable items across projects (boolean with schedule or any
+  // boolean with logs in range). Items with empty perDay are excluded.
+  const rows: Array<{ project: StatsProject; item: StatsItem }> = [];
+  for (const p of props.data.projects) {
+    for (const it of p.items) {
+      if (it.itemType !== 'boolean') continue;
+      if (it.perDay.length === 0) continue;
+      rows.push({ project: p, item: it });
+    }
+  }
+  if (rows.length === 0) {
+    return <div style={{ padding: 20, color: COLORS.muted, textAlign: 'center' }}>אין נתונים בטווח זה</div>;
+  }
+
+  // All rows share the same perDay window. Use the longest as the header.
+  const maxPerDay = rows.reduce((a, b) => (b.item.perDay.length > a.length ? b.item.perDay : a), rows[0].item.perDay);
+  const dayHeaders = maxPerDay.map((d) => {
+    const [, m, day] = d.date.split('-');
+    const jsDate = new Date(Date.UTC(
+      parseInt(d.date.slice(0, 4), 10),
+      parseInt(m, 10) - 1,
+      parseInt(day, 10),
+    ));
+    return {
+      date: d.date,
+      weekday: jsDate.getUTCDay(), // 0=Sun .. 6=Sat
+      dayOfMonth: parseInt(day, 10),
+      isToday: d.date === props.today,
+    };
+  });
+
+  // Style helpers
+  const CELL_W = 32;
+  const LABEL_W = 128;
+  const cellBase: React.CSSProperties = {
+    width: CELL_W, minWidth: CELL_W, height: 32,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    fontSize: 13, color: COLORS.text, flexShrink: 0,
+    borderRadius: 4,
+  };
+  const weekDivider = (idx: number): React.CSSProperties => {
+    // Insert a divider BEFORE a Sunday column that's not the first column.
+    if (idx > 0 && dayHeaders[idx].weekday === 0) {
+      return { borderInlineStart: `2px solid ${COLORS.border}` };
+    }
+    return {};
+  };
+
+  return (
+    <div style={{
+      background: COLORS.card, border: `1px solid ${COLORS.border}`,
+      borderRadius: 10, overflow: 'hidden',
+    }}>
+      <div style={{ overflowX: 'auto' as const }}>
+        <div style={{ minWidth: LABEL_W + dayHeaders.length * CELL_W + 120 }}>
+          {/* Header row: day numbers + weekday short */}
+          <div style={{ display: 'flex', alignItems: 'stretch', borderBottom: `1px solid ${COLORS.border}` }}>
+            <div style={{ width: LABEL_W, minWidth: LABEL_W, flexShrink: 0, padding: '8px 10px', fontSize: 11, color: COLORS.mutedLight }}>מטרה</div>
+            {dayHeaders.map((h, idx) => (
+              <div
+                key={h.date}
+                style={{
+                  ...cellBase,
+                  ...weekDivider(idx),
+                  flexDirection: 'column' as const,
+                  padding: '4px 0',
+                  background: h.isToday ? COLORS.accentSoft : 'transparent',
+                  color: h.isToday ? COLORS.accent : COLORS.muted,
+                  fontWeight: h.isToday ? 700 : 400,
+                  height: 40,
+                }}
+                title={h.date}
+              >
+                <span style={{ fontSize: 10 }}>{['א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ש'][h.weekday]}</span>
+                <span style={{ fontSize: 11 }}>{h.dayOfMonth}</span>
+              </div>
+            ))}
+            <div style={{ width: 120, minWidth: 120, flexShrink: 0, padding: '8px 10px', fontSize: 11, color: COLORS.mutedLight, textAlign: 'end' as const }}>רצף</div>
+          </div>
+
+          {/* Data rows */}
+          {rows.map(({ project, item }) => {
+            const dayMap = new Map(item.perDay.map((d) => [d.date, d]));
+            return (
+              <div
+                key={item.id}
+                onClick={() => props.onOpenDetail(item)}
+                style={{
+                  display: 'flex', alignItems: 'stretch',
+                  borderBottom: `1px solid ${COLORS.borderSoft}`,
+                  cursor: 'pointer',
+                }}
+              >
+                <div style={{
+                  width: LABEL_W, minWidth: LABEL_W, flexShrink: 0,
+                  padding: '10px 10px',
+                  fontSize: 13, fontWeight: 600, color: COLORS.text,
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const,
+                  borderInlineStart: `3px solid ${project.colorHex ?? COLORS.accent}`,
+                }}
+                title={`${project.title} · ${item.title}`}>
+                  {item.title}
+                </div>
+                {dayHeaders.map((h, idx) => {
+                  const cell = dayMap.get(h.date);
+                  const done = cell?.completed;
+                  const hasNote = !!cell?.noteText;
+                  return (
+                    <div
+                      key={h.date}
+                      onClick={(e) => { e.stopPropagation(); props.onOpenDetail(item); }}
+                      style={{
+                        ...cellBase,
+                        ...weekDivider(idx),
+                        background: h.isToday ? (done ? COLORS.success : COLORS.accentSoft) : 'transparent',
+                      }}
+                      title={h.date + (hasNote ? ` · ${cell!.noteText}` : '')}
+                    >
+                      {done ? (
+                        <span style={{ color: h.isToday ? '#fff' : COLORS.success, fontWeight: 700 }}>✔</span>
+                      ) : (
+                        <span style={{ color: COLORS.border }}>·</span>
+                      )}
+                    </div>
+                  );
+                })}
+                <div style={{
+                  width: 120, minWidth: 120, flexShrink: 0,
+                  padding: '10px 10px',
+                  fontSize: 12, fontWeight: 600,
+                  color: item.currentStreak > 0 ? COLORS.success : COLORS.mutedLight,
+                  textAlign: 'end' as const,
+                  overflow: 'hidden', whiteSpace: 'nowrap' as const,
+                }}>
+                  {item.currentStreak > 0 && <>🔥 {streakLabel(item.currentStreak)}</>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Kept for any external consumer that used the prior list layout.
+// Internally the board no longer calls StatsView — grid took over. The
+// export stays so admin-projects.tsx doesn't break mid-refactor; same
+// implementation forwards to StatsGrid with a reasonable today fallback.
 export function StatsView(props: {
   loading: boolean;
   err: string;
   data: StatsResponse | null;
   onOpenDetail: (item: StatsItem) => void;
 }) {
-  if (props.loading) return <div style={{ padding: 20, color: COLORS.muted, textAlign: 'center' }}>טוען סטטיסטיקה...</div>;
-  if (props.err) return <div style={{ padding: 20, color: COLORS.danger, textAlign: 'center' }}>{props.err}</div>;
-  if (!props.data) return <div style={{ padding: 20, color: COLORS.muted, textAlign: 'center' }}>בחרי טווח תאריכים</div>;
-  if (props.data.projects.length === 0) {
-    return <div style={{ padding: 20, color: COLORS.muted, textAlign: 'center' }}>אין פרויקטים בטווח זה.</div>;
-  }
-
-  const hasAnyItem = props.data.projects.some((p) => p.items.length > 0);
-  if (!hasAnyItem) {
-    return <div style={{ padding: 20, color: COLORS.muted, textAlign: 'center' }}>אין נתונים בטווח זה</div>;
-  }
-
-  const bandColor = (b: StatsItem['colorBand']) => {
-    if (b === 'green') return COLORS.success;
-    if (b === 'yellow') return COLORS.warn;
-    if (b === 'red') return COLORS.danger;
-    return COLORS.mutedLight;
-  };
-
-  return (
-    <div>
-      {props.data.projects.map((p) => (
-        <div
-          key={p.id}
-          style={{ ...s.card, borderInlineStartWidth: 4, borderInlineStartStyle: 'solid', borderInlineStartColor: p.colorHex ?? COLORS.accent }}
-        >
-          <div style={s.projectTitle}>{p.title}</div>
-          {p.items.length === 0 ? (
-            <div style={{ fontSize: 13, color: COLORS.muted, padding: '8px 0' }}>אין מטרות בטווח זה.</div>
-          ) : p.items.map((it) => {
-            const hasNotes = it.perDay.some((d) => d.noteText);
-            return (
-              <button
-                key={it.id}
-                onClick={() => props.onOpenDetail(it)}
-                style={{
-                  width: '100%',
-                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                  gap: 8,
-                  padding: '12px 14px',
-                  background: COLORS.cardAlt,
-                  border: `1px solid ${COLORS.borderSoft}`,
-                  borderRadius: 10,
-                  marginBottom: 8,
-                  cursor: 'pointer',
-                  textAlign: 'start' as const,
-                }}
-              >
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.text }}>
-                    {it.title}
-                    {hasNotes && (
-                      <span title="יש הערות בטווח זה" style={{ marginInlineStart: 6, fontSize: 12 }}>📝</span>
-                    )}
-                  </div>
-                  <div style={{ fontSize: 12, color: COLORS.muted, marginTop: 2 }}>
-                    {it.percentage === null ? (
-                      `${it.completedCount} דיווחים`
-                    ) : (
-                      <>
-                        {it.completedCount} מתוך {it.expectedCount}
-                        <span style={{ marginInlineStart: 6, fontWeight: 700, color: bandColor(it.colorBand) }}>
-                          ({it.percentage}%)
-                        </span>
-                      </>
-                    )}
-                  </div>
-                </div>
-                {it.percentage !== null && (
-                  <div
-                    style={{
-                      width: 12, height: 12, borderRadius: 999,
-                      background: bandColor(it.colorBand),
-                      flexShrink: 0,
-                    }}
-                    aria-label={`${it.percentage}%`}
-                  />
-                )}
-              </button>
-            );
-          })}
-        </div>
-      ))}
-    </div>
-  );
+  const today = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Jerusalem', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date());
+  return <StatsGrid {...props} today={today} />;
 }
 
-// Day-strip chart. Renders one dot per day in the item's perDay[]. Grouped
-// into 7-column rows so ranges >1 week wrap nicely. Tapping a dot with a
-// note surfaces the note inline.
+// Detail modal: trend chart + week-over-week comparison + volume metrics +
+// notes markers. Rendered when the participant (or admin) taps a goal row
+// in StatsGrid.
 
 export function StatsDetailModal(props: {
   item: StatsItem;
+  // Current window percentage fallback. If previousItem is provided (same
+  // item title, previous equal-length window), we render comparison.
+  previousItem?: StatsItem | null;
   onClose: () => void;
 }) {
-  const { item } = props;
+  const { item, previousItem } = props;
+  const [chartMode, setChartMode] = useState<'daily' | 'weekly'>('daily');
   const [expandedDate, setExpandedDate] = useState<string | null>(null);
   const bandColor = item.colorBand === 'green' ? COLORS.success
     : item.colorBand === 'yellow' ? COLORS.warn
@@ -1745,6 +1872,35 @@ export function StatsDetailModal(props: {
     : COLORS.mutedLight;
 
   const expandedDay = expandedDate ? item.perDay.find((d) => d.date === expandedDate) : null;
+  const hasData = item.perDay.length > 0;
+
+  // Weekly aggregation for the toggle.
+  const weeklyBuckets = useMemo(() => {
+    const out: Array<{ label: string; completed: number; total: number; startDate: string }> = [];
+    if (item.perDay.length === 0) return out;
+    // Group by Sunday-starting week of the perDay date.
+    let bucket: { label: string; completed: number; total: number; startDate: string } | null = null;
+    for (const d of item.perDay) {
+      const [y, m, day] = d.date.split('-').map((n) => parseInt(n, 10));
+      const dt = new Date(Date.UTC(y, m - 1, day));
+      const sundayOffset = dt.getUTCDay();
+      const sunday = new Date(Date.UTC(y, m - 1, day - sundayOffset));
+      const label = `${sunday.getUTCMonth() + 1}/${sunday.getUTCDate()}`;
+      if (!bucket || bucket.label !== label) {
+        if (bucket) out.push(bucket);
+        bucket = {
+          label,
+          completed: 0,
+          total: 0,
+          startDate: `${sunday.getUTCFullYear()}-${String(sunday.getUTCMonth() + 1).padStart(2, '0')}-${String(sunday.getUTCDate()).padStart(2, '0')}`,
+        };
+      }
+      bucket.total++;
+      if (d.completed) bucket.completed++;
+    }
+    if (bucket) out.push(bucket);
+    return out;
+  }, [item.perDay]);
 
   return (
     <LockedModalShell
@@ -1752,84 +1908,64 @@ export function StatsDetailModal(props: {
       onClose={props.onClose}
       footer={<button style={s.primaryBtn} onClick={props.onClose}>סגור</button>}
     >
-      {item.percentage !== null ? (
-        <div style={{ fontSize: 14, color: COLORS.text, marginBottom: 12 }}>
-          {item.completedCount} מתוך {item.expectedCount}
-          <span style={{ marginInlineStart: 8, fontWeight: 700, color: bandColor }}>
-            ({item.percentage}%)
-          </span>
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 12 }}>
+        <div style={{ fontSize: 14, color: COLORS.text }}>
+          {item.percentage !== null ? (
+            <>
+              <span style={{ fontWeight: 700, color: bandColor }}>{item.percentage}%</span>
+              <span style={{ marginInlineStart: 6, color: COLORS.muted }}>השלמה · {item.completedCount} מתוך {item.expectedCount}</span>
+            </>
+          ) : (
+            <span>{item.completedCount} דיווחים בטווח זה</span>
+          )}
         </div>
-      ) : (
-        <div style={{ fontSize: 14, color: COLORS.text, marginBottom: 12 }}>
-          {item.completedCount} דיווחים בטווח זה
-        </div>
-      )}
+        {item.currentStreak > 0 && (
+          <div style={{ fontSize: 12, fontWeight: 700, color: COLORS.success }}>
+            🔥 {streakLabel(item.currentStreak)}
+          </div>
+        )}
+      </div>
 
-      {item.perDay.length === 0 ? (
+      {!hasData ? (
         <div style={{ fontSize: 13, color: COLORS.mutedLight }}>אין ימים בטווח.</div>
       ) : (
         <>
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(7, 1fr)',
-            gap: 6,
-          }}>
-            {item.perDay.map((d) => {
-              const hasNote = !!d.noteText;
-              const filled = d.completed;
-              const skipped = d.skipped;
-              const selected = expandedDate === d.date;
-              return (
-                <button
-                  key={d.date}
-                  onClick={() => setExpandedDate(selected ? null : hasNote ? d.date : null)}
-                  title={d.date + (d.noteText ? ` — ${d.noteText}` : '')}
-                  style={{
-                    width: '100%', aspectRatio: '1 / 1',
-                    border: filled ? `none` : `1px solid ${skipped ? COLORS.warn : COLORS.border}`,
-                    background: filled ? COLORS.success : skipped ? COLORS.warnSoft : COLORS.card,
-                    borderRadius: 999,
-                    cursor: hasNote ? 'pointer' : 'default',
-                    position: 'relative' as const,
-                    padding: 0,
-                    boxShadow: selected ? `0 0 0 2px ${COLORS.accent}` : 'none',
-                  }}
-                  aria-label={`${d.date} ${filled ? 'הושלם' : skipped ? 'לא רלוונטי' : 'לא דווח'}`}
-                >
-                  {hasNote && (
-                    <span style={{
-                      position: 'absolute',
-                      top: -4, insetInlineEnd: -4,
-                      fontSize: 11, lineHeight: 1,
-                      background: '#fff', borderRadius: 999,
-                    }}>📝</span>
-                  )}
-                </button>
-              );
-            })}
+          {/* Chart mode toggle */}
+          <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+            {([
+              ['daily', 'יומי'],
+              ['weekly', 'שבועי'],
+            ] as const).map(([k, label]) => (
+              <button
+                key={k}
+                onClick={() => setChartMode(k)}
+                style={{
+                  padding: '6px 12px', fontSize: 12, fontWeight: 600,
+                  border: `1px solid ${chartMode === k ? COLORS.accent : COLORS.border}`,
+                  background: chartMode === k ? COLORS.accentSoft : COLORS.card,
+                  color: chartMode === k ? COLORS.accent : COLORS.text,
+                  borderRadius: 6, cursor: 'pointer',
+                }}
+              >{label}</button>
+            ))}
           </div>
 
-          {/* Legend */}
-          <div style={{ display: 'flex', gap: 12, marginTop: 12, fontSize: 11, color: COLORS.mutedLight, flexWrap: 'wrap' as const }}>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-              <span style={{ width: 10, height: 10, borderRadius: 999, background: COLORS.success, display: 'inline-block' }} />
-              הושלם
-            </span>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-              <span style={{ width: 10, height: 10, borderRadius: 999, background: COLORS.warnSoft, border: `1px solid ${COLORS.warn}`, display: 'inline-block' }} />
-              לא רלוונטי
-            </span>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-              <span style={{ width: 10, height: 10, borderRadius: 999, background: COLORS.card, border: `1px solid ${COLORS.border}`, display: 'inline-block' }} />
-              לא דווח
-            </span>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>📝 הערה</span>
-          </div>
+          {/* Trend chart — SVG. Daily mode: cumulative-completions line.
+              Weekly mode: one point per week showing completion %. */}
+          <TrendChart
+            perDay={item.perDay}
+            weekly={weeklyBuckets}
+            mode={chartMode}
+            expected={item.expectedCount}
+            onNoteClick={(iso) => setExpandedDate(iso === expandedDate ? null : iso)}
+            selected={expandedDate}
+          />
 
           {/* Note drawer */}
           {expandedDay && expandedDay.noteText && (
             <div style={{
-              marginTop: 12,
+              marginTop: 10,
               padding: '10px 12px',
               background: COLORS.warnSoft,
               border: `1px solid ${COLORS.warn}`,
@@ -1840,9 +1976,194 @@ export function StatsDetailModal(props: {
               <div style={{ whiteSpace: 'pre-wrap' as const }}>{expandedDay.noteText}</div>
             </div>
           )}
+
+          {/* Week-over-week comparison */}
+          {previousItem !== undefined && (
+            <ComparisonSection current={item} previous={previousItem} />
+          )}
+
+          {/* Volume metrics */}
+          <div style={{
+            marginTop: 14, paddingTop: 10, borderTop: `1px solid ${COLORS.borderSoft}`,
+            display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6,
+            fontSize: 12, color: COLORS.muted,
+          }}>
+            <div>סה״כ הושלם</div>
+            <div style={{ textAlign: 'end' as const, fontWeight: 700, color: COLORS.text }}>{item.completedCount}</div>
+            <div>סה״כ יעד</div>
+            <div style={{ textAlign: 'end' as const, fontWeight: 700, color: COLORS.text }}>
+              {item.expectedCount > 0 ? item.expectedCount : '—'}
+            </div>
+          </div>
         </>
       )}
     </LockedModalShell>
+  );
+}
+
+// ── Trend chart (SVG) ───────────────────────────────────────────────────────
+// Daily mode: cumulative completions line. Y scale = item.expectedCount
+// (fallback to perDay.length if no target). Notes shown as 📝 markers
+// above the line on dates with a skipNote.
+// Weekly mode: one point per week, height = weekly completion %.
+
+function TrendChart(props: {
+  perDay: StatsPerDay[];
+  weekly: Array<{ label: string; completed: number; total: number; startDate: string }>;
+  mode: 'daily' | 'weekly';
+  expected: number;
+  onNoteClick: (date: string) => void;
+  selected: string | null;
+}) {
+  const W = 360;
+  const H = 120;
+  const padL = 28, padR = 12, padT = 16, padB = 22;
+  const innerW = W - padL - padR;
+  const innerH = H - padT - padB;
+
+  if (props.mode === 'daily') {
+    const points = props.perDay;
+    const yMax = Math.max(1, props.expected || points.length);
+    let cumul = 0;
+    const coords = points.map((d, i) => {
+      if (d.completed) cumul++;
+      const x = padL + (points.length === 1 ? innerW / 2 : (i / (points.length - 1)) * innerW);
+      const y = padT + innerH - (Math.min(cumul, yMax) / yMax) * innerH;
+      return { x, y, d, cumul };
+    });
+    const path = coords.map((c, i) => (i === 0 ? `M ${c.x} ${c.y}` : `L ${c.x} ${c.y}`)).join(' ');
+    const gridY = [0, 0.5, 1];
+
+    return (
+      <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ background: COLORS.cardAlt, borderRadius: 8 }}>
+        {/* Y-axis gridlines + labels */}
+        {gridY.map((g) => {
+          const y = padT + (1 - g) * innerH;
+          return (
+            <g key={g}>
+              <line x1={padL} y1={y} x2={W - padR} y2={y} stroke={COLORS.borderSoft} strokeWidth={1} />
+              <text x={padL - 4} y={y + 3} fontSize={9} textAnchor="end" fill={COLORS.mutedLight}>
+                {Math.round(g * yMax)}
+              </text>
+            </g>
+          );
+        })}
+        {/* Cumulative line */}
+        <path d={path} stroke={COLORS.accent} strokeWidth={2} fill="none" />
+        {/* Note markers */}
+        {coords.map((c) => c.d.noteText ? (
+          <g key={c.d.date} style={{ cursor: 'pointer' }} onClick={() => props.onNoteClick(c.d.date)}>
+            <circle
+              cx={c.x} cy={padT - 4} r={6}
+              fill={props.selected === c.d.date ? COLORS.warn : COLORS.warnSoft}
+              stroke={COLORS.warn} strokeWidth={1}
+            />
+            <text x={c.x} y={padT - 1} fontSize={8} textAnchor="middle" fill={COLORS.warn}>📝</text>
+          </g>
+        ) : null)}
+        {/* X-axis sparse labels */}
+        {coords.map((c, i) => {
+          // Show first, last, and every few in between to avoid clutter.
+          const n = coords.length;
+          if (!(i === 0 || i === n - 1 || (n >= 7 && i % Math.ceil(n / 6) === 0))) return null;
+          return (
+            <text
+              key={c.d.date}
+              x={c.x} y={H - 6}
+              fontSize={9} textAnchor="middle" fill={COLORS.mutedLight}
+            >
+              {c.d.date.slice(5)}
+            </text>
+          );
+        })}
+      </svg>
+    );
+  }
+
+  // Weekly mode
+  const buckets = props.weekly;
+  if (buckets.length === 0) {
+    return <div style={{ fontSize: 12, color: COLORS.mutedLight, textAlign: 'center', padding: 20 }}>אין שבועות בטווח</div>;
+  }
+  const pts = buckets.map((b, i) => {
+    const pct = b.total > 0 ? b.completed / b.total : 0;
+    const x = padL + (buckets.length === 1 ? innerW / 2 : (i / (buckets.length - 1)) * innerW);
+    const y = padT + innerH - pct * innerH;
+    return { x, y, b, pct };
+  });
+  const path = pts.map((p, i) => (i === 0 ? `M ${p.x} ${p.y}` : `L ${p.x} ${p.y}`)).join(' ');
+
+  return (
+    <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ background: COLORS.cardAlt, borderRadius: 8 }}>
+      {[0, 0.5, 1].map((g) => {
+        const y = padT + (1 - g) * innerH;
+        return (
+          <g key={g}>
+            <line x1={padL} y1={y} x2={W - padR} y2={y} stroke={COLORS.borderSoft} strokeWidth={1} />
+            <text x={padL - 4} y={y + 3} fontSize={9} textAnchor="end" fill={COLORS.mutedLight}>
+              {Math.round(g * 100)}%
+            </text>
+          </g>
+        );
+      })}
+      <path d={path} stroke={COLORS.accent} strokeWidth={2} fill="none" />
+      {pts.map((p) => (
+        <circle key={p.b.startDate} cx={p.x} cy={p.y} r={3} fill={COLORS.accent} />
+      ))}
+      {pts.map((p, i) => {
+        if (!(i === 0 || i === pts.length - 1 || pts.length <= 4)) return null;
+        return (
+          <text
+            key={`lbl-${p.b.startDate}`}
+            x={p.x} y={H - 6}
+            fontSize={9} textAnchor="middle" fill={COLORS.mutedLight}
+          >
+            {p.b.label}
+          </text>
+        );
+      })}
+    </svg>
+  );
+}
+
+// ── Week-over-week comparison row ───────────────────────────────────────────
+function ComparisonSection(props: { current: StatsItem; previous: StatsItem | null }) {
+  const cur = props.current;
+  const prev = props.previous;
+  if (!prev || cur.expectedCount === 0 || prev.expectedCount === 0) {
+    return (
+      <div style={{
+        marginTop: 12, padding: '8px 12px',
+        background: COLORS.cardAlt, borderRadius: 8,
+        fontSize: 12, color: COLORS.mutedLight,
+      }}>
+        השוואה: — (אין מספיק נתונים)
+      </div>
+    );
+  }
+  const curPct = cur.percentage ?? Math.round(100 * cur.completedCount / cur.expectedCount);
+  const prevPct = prev.percentage ?? Math.round(100 * prev.completedCount / prev.expectedCount);
+  const delta = curPct - prevPct;
+  const color = delta > 0 ? COLORS.success : delta < 0 ? COLORS.danger : COLORS.muted;
+  const label = delta > 0 ? `📈 עלייה של ${delta}%`
+    : delta < 0 ? `📉 ירידה של ${Math.abs(delta)}%`
+    : 'ללא שינוי';
+  return (
+    <div style={{
+      marginTop: 12, padding: '10px 12px',
+      background: COLORS.cardAlt, borderRadius: 8,
+      fontSize: 12, color: COLORS.muted,
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+        <span>השבוע</span>
+        <span style={{ fontWeight: 700, color: COLORS.text }}>{cur.completedCount}/{cur.expectedCount} ({curPct}%)</span>
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+        <span>שבוע שעבר</span>
+        <span style={{ fontWeight: 700, color: COLORS.text }}>{prev.completedCount}/{prev.expectedCount} ({prevPct}%)</span>
+      </div>
+      <div style={{ color, fontWeight: 700 }}>{label}</div>
+    </div>
   );
 }
 

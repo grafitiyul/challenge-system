@@ -14,7 +14,7 @@ import type {
   StatsItem,
   StatsResponse,
 } from '@components/projects-board';
-import { EndDateSection, FillWeekModal, ScheduleSection, StatsDetailModal, StatsView } from '@components/projects-board';
+import { EndDateSection, FillWeekModal, ScheduleSection, StatsDetailModal, StatsGrid } from '@components/projects-board';
 
 // ─── Styles ──────────────────────────────────────────────────────────────────
 
@@ -119,13 +119,16 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
   // Phase 3: fill week modal state (admin side)
   const [fillWeekItem, setFillWeekItem] = useState<ProjectItem | null>(null);
   // Phase 5: stats view state
-  const [statsView, setStatsView] = useState<'none' | 'week' | 'month' | 'custom'>('none');
+  const [statsView, setStatsView] = useState<'none' | 'fortnight' | 'month' | 'custom'>('none');
   const [statsFrom, setStatsFrom] = useState<string>('');
   const [statsTo, setStatsTo] = useState<string>('');
   const [statsData, setStatsData] = useState<StatsResponse | null>(null);
   const [statsLoading, setStatsLoading] = useState(false);
   const [statsErr, setStatsErr] = useState('');
   const [statsDetail, setStatsDetail] = useState<StatsItem | null>(null);
+  const [statsPrev, setStatsPrev] = useState<StatsResponse | null>(null);
+  const [statsRangeFrom, setStatsRangeFrom] = useState<string>('');
+  const [statsRangeTo, setStatsRangeTo] = useState<string>('');
 
   const reload = useCallback(async () => {
     try {
@@ -144,14 +147,14 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
 
   // Phase 5: derive + fetch stats when a range view is active.
   useEffect(() => {
-    if (statsView === 'none') { setStatsData(null); return; }
+    if (statsView === 'none') { setStatsData(null); setStatsRangeFrom(''); setStatsRangeTo(''); return; }
     const today = todayStr();
     const [ty, tm, td] = today.split('-').map((n) => parseInt(n, 10));
     let from = '', to = '';
-    if (statsView === 'week') {
-      const dow = new Date(Date.UTC(ty, tm - 1, td)).getUTCDay();
-      const start = new Date(Date.UTC(ty, tm - 1, td - dow));
-      const end = new Date(Date.UTC(ty, tm - 1, td - dow + 6));
+    if (statsView === 'fortnight') {
+      // 14-day window ending today.
+      const start = new Date(Date.UTC(ty, tm - 1, td - 13));
+      const end = new Date(Date.UTC(ty, tm - 1, td));
       from = `${start.getUTCFullYear()}-${String(start.getUTCMonth() + 1).padStart(2, '0')}-${String(start.getUTCDate()).padStart(2, '0')}`;
       to = `${end.getUTCFullYear()}-${String(end.getUTCMonth() + 1).padStart(2, '0')}-${String(end.getUTCDate()).padStart(2, '0')}`;
     } else if (statsView === 'month') {
@@ -163,6 +166,7 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
       if (!statsFrom || !statsTo || statsFrom > statsTo) { setStatsData(null); return; }
       from = statsFrom; to = statsTo;
     }
+    setStatsRangeFrom(from); setStatsRangeTo(to);
     setStatsLoading(true); setStatsErr('');
     apiFetch<StatsResponse>(
       `${BASE_URL}/projects/stats/by-participant/${participantId}?from=${from}&to=${to}`,
@@ -175,6 +179,25 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
       })
       .finally(() => setStatsLoading(false));
   }, [statsView, statsFrom, statsTo, participantId]);
+
+  // Phase 5: previous-period fetch (for comparison) fires when detail opens.
+  useEffect(() => {
+    if (!statsDetail || !statsRangeFrom || !statsRangeTo) { setStatsPrev(null); return; }
+    const [fy, fm, fd] = statsRangeFrom.split('-').map((n) => parseInt(n, 10));
+    const [ty, tm, td] = statsRangeTo.split('-').map((n) => parseInt(n, 10));
+    const fromUtc = new Date(Date.UTC(fy, fm - 1, fd));
+    const toUtc = new Date(Date.UTC(ty, tm - 1, td));
+    const days = Math.round((toUtc.getTime() - fromUtc.getTime()) / 86_400_000) + 1;
+    const prevEnd = new Date(fromUtc.getTime() - 86_400_000);
+    const prevStart = new Date(prevEnd.getTime() - (days - 1) * 86_400_000);
+    const fmt = (dt: Date) => `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`;
+    let cancelled = false;
+    apiFetch<StatsResponse>(
+      `${BASE_URL}/projects/stats/by-participant/${participantId}?from=${fmt(prevStart)}&to=${fmt(prevEnd)}`,
+      { cache: 'no-store' },
+    ).then((r) => { if (!cancelled) setStatsPrev(r); }).catch(() => { if (!cancelled) setStatsPrev(null); });
+    return () => { cancelled = true; };
+  }, [statsDetail, statsRangeFrom, statsRangeTo, participantId]);
 
   async function togglePermission() {
     setPermBusy(true);
@@ -263,7 +286,7 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
         <span style={{ fontSize: 12, color: C.muted }}>סטטיסטיקה:</span>
         {([
           ['none', 'ניהול'],
-          ['week', 'שבוע'],
+          ['fortnight', '14 ימים'],
           ['month', 'חודש'],
           ['custom', 'מותאם'],
         ] as const).map(([k, label]) => (
@@ -290,10 +313,11 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
       </div>
 
       {statsView !== 'none' && (
-        <StatsView
+        <StatsGrid
           loading={statsLoading}
           err={statsErr}
           data={statsData}
+          today={todayStr()}
           onOpenDetail={(it) => setStatsDetail(it)}
         />
       )}
@@ -617,12 +641,20 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
         />
       )}
 
-      {statsDetail && (
-        <StatsDetailModal
-          item={statsDetail}
-          onClose={() => setStatsDetail(null)}
-        />
-      )}
+      {statsDetail && (() => {
+        const prevItem = statsPrev
+          ? statsPrev.projects
+              .flatMap((p) => p.items)
+              .find((it) => it.id === statsDetail.id) ?? null
+          : null;
+        return (
+          <StatsDetailModal
+            item={statsDetail}
+            previousItem={prevItem}
+            onClose={() => { setStatsDetail(null); setStatsPrev(null); }}
+          />
+        );
+      })()}
 
       {fillWeekItem && (() => {
         const st2 = data.schedulingStatus[fillWeekItem.id];

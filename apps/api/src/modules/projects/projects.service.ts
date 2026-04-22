@@ -735,6 +735,14 @@ export class ProjectsService {
       : percentage >= 50 ? 'yellow'
       : 'red';
 
+    // Phase 5 streak: trailing consecutive completed days. If today is the
+    // last entry and not yet completed, we skip it so an in-flight day
+    // doesn't reset the streak.
+    let currentStreak = 0;
+    let si = perDay.length - 1;
+    if (si >= 0 && perDay[si].date === todayStr && !perDay[si].completed) si--;
+    while (si >= 0 && perDay[si].completed) { currentStreak++; si--; }
+
     return {
       id: item.id,
       title: item.title,
@@ -744,6 +752,7 @@ export class ProjectsService {
       expectedCount,
       percentage,
       colorBand,
+      currentStreak,
       perDay,
     };
   }
