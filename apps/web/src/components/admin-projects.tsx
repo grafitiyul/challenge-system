@@ -11,8 +11,10 @@ import type {
   ProjectLog,
   ProjectLogStatus,
   ProjectNote,
+  StatsItem,
+  StatsResponse,
 } from '@components/projects-board';
-import { EndDateSection, FillWeekModal, ScheduleSection } from '@components/projects-board';
+import { EndDateSection, FillWeekModal, ScheduleSection, StatsDetailModal, StatsView } from '@components/projects-board';
 
 // ─── Styles ──────────────────────────────────────────────────────────────────
 
@@ -116,6 +118,14 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
   const [noteProject, setNoteProject] = useState<Project | null>(null);
   // Phase 3: fill week modal state (admin side)
   const [fillWeekItem, setFillWeekItem] = useState<ProjectItem | null>(null);
+  // Phase 5: stats view state
+  const [statsView, setStatsView] = useState<'none' | 'week' | 'month' | 'custom'>('none');
+  const [statsFrom, setStatsFrom] = useState<string>('');
+  const [statsTo, setStatsTo] = useState<string>('');
+  const [statsData, setStatsData] = useState<StatsResponse | null>(null);
+  const [statsLoading, setStatsLoading] = useState(false);
+  const [statsErr, setStatsErr] = useState('');
+  const [statsDetail, setStatsDetail] = useState<StatsItem | null>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -131,6 +141,40 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
   }, [participantId]);
 
   useEffect(() => { void reload(); }, [reload]);
+
+  // Phase 5: derive + fetch stats when a range view is active.
+  useEffect(() => {
+    if (statsView === 'none') { setStatsData(null); return; }
+    const today = todayStr();
+    const [ty, tm, td] = today.split('-').map((n) => parseInt(n, 10));
+    let from = '', to = '';
+    if (statsView === 'week') {
+      const dow = new Date(Date.UTC(ty, tm - 1, td)).getUTCDay();
+      const start = new Date(Date.UTC(ty, tm - 1, td - dow));
+      const end = new Date(Date.UTC(ty, tm - 1, td - dow + 6));
+      from = `${start.getUTCFullYear()}-${String(start.getUTCMonth() + 1).padStart(2, '0')}-${String(start.getUTCDate()).padStart(2, '0')}`;
+      to = `${end.getUTCFullYear()}-${String(end.getUTCMonth() + 1).padStart(2, '0')}-${String(end.getUTCDate()).padStart(2, '0')}`;
+    } else if (statsView === 'month') {
+      const start = new Date(Date.UTC(ty, tm - 1, 1));
+      const end = new Date(Date.UTC(ty, tm, 0));
+      from = `${start.getUTCFullYear()}-${String(start.getUTCMonth() + 1).padStart(2, '0')}-01`;
+      to = `${end.getUTCFullYear()}-${String(end.getUTCMonth() + 1).padStart(2, '0')}-${String(end.getUTCDate()).padStart(2, '0')}`;
+    } else {
+      if (!statsFrom || !statsTo || statsFrom > statsTo) { setStatsData(null); return; }
+      from = statsFrom; to = statsTo;
+    }
+    setStatsLoading(true); setStatsErr('');
+    apiFetch<StatsResponse>(
+      `${BASE_URL}/projects/stats/by-participant/${participantId}?from=${from}&to=${to}`,
+      { cache: 'no-store' },
+    )
+      .then((r) => setStatsData(r))
+      .catch((e: unknown) => {
+        const msg = e && typeof e === 'object' && 'message' in e ? String((e as { message: string }).message) : 'טעינה נכשלה';
+        setStatsErr(msg);
+      })
+      .finally(() => setStatsLoading(false));
+  }, [statsView, statsFrom, statsTo, participantId]);
 
   async function togglePermission() {
     setPermBusy(true);
@@ -213,13 +257,54 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
         <button style={st.primaryBtn} onClick={() => setCreateProjectOpen(true)}>+ צור פרויקט חדש</button>
       </div>
 
-      {data.projects.length === 0 && (
+      {/* Phase 5: range selector + stats view. 'none' keeps the existing
+           admin editor view. week/month/custom switch to StatsView. */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' as const, alignItems: 'center' }}>
+        <span style={{ fontSize: 12, color: C.muted }}>סטטיסטיקה:</span>
+        {([
+          ['none', 'ניהול'],
+          ['week', 'שבוע'],
+          ['month', 'חודש'],
+          ['custom', 'מותאם'],
+        ] as const).map(([k, label]) => (
+          <button
+            key={k}
+            onClick={() => setStatsView(k)}
+            style={{
+              padding: '6px 10px', fontSize: 12, fontWeight: 600,
+              borderRadius: 6, cursor: 'pointer',
+              border: `1px solid ${statsView === k ? C.accent : C.border}`,
+              background: statsView === k ? C.accentSoft : '#fff',
+              color: statsView === k ? C.accent : C.text,
+            }}
+          >{label}</button>
+        ))}
+        {statsView === 'custom' && (
+          <>
+            <input type="date" value={statsFrom} onChange={(e) => setStatsFrom(e.target.value)}
+              style={{ ...st.input, width: 160 }} />
+            <input type="date" value={statsTo} onChange={(e) => setStatsTo(e.target.value)}
+              style={{ ...st.input, width: 160 }} />
+          </>
+        )}
+      </div>
+
+      {statsView !== 'none' && (
+        <StatsView
+          loading={statsLoading}
+          err={statsErr}
+          data={statsData}
+          onOpenDetail={(it) => setStatsDetail(it)}
+        />
+      )}
+
+      {statsView === 'none' && data.projects.length === 0 && (
         <div style={{ ...st.projectCard, textAlign: 'center', color: C.muted, padding: 40 }}>
           עדיין אין פרויקטים למשתתפת זו.
         </div>
       )}
 
-      {data.projects.map((p) => {
+      {statsView === 'none' && data.projects.map((p) => {
         const items = p.items.filter((it) => !it.isArchived);
         const archived = p.items.filter((it) => it.isArchived);
         const notes = notesByProject.get(p.id) ?? [];
@@ -527,6 +612,13 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
             setHardDeleteTarget(null);
             void reload();
           }}
+        />
+      )}
+
+      {statsDetail && (
+        <StatsDetailModal
+          item={statsDetail}
+          onClose={() => setStatsDetail(null)}
         />
       )}
 

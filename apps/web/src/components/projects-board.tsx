@@ -3,6 +3,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BASE_URL, apiFetch } from '@lib/api';
 
+// Phase 5: YYYY-MM-DD format for midnight-UTC Date values.
+function toIso(d: Date): string {
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+}
+
 // Phase 4: single media-query breakpoint shared by all project surfaces.
 // ≥ 768 px → desktop row-based layout; below → mobile card layout.
 const DESKTOP_MQ = '(min-width: 768px)';
@@ -73,6 +78,38 @@ export interface ProjectItem {
 }
 
 export interface LinkableTask { id: string; title: string; }
+
+// Phase 5: stats response shape (shared with admin-projects.tsx).
+export interface StatsPerDay {
+  date: string;              // YYYY-MM-DD
+  completed: boolean;
+  skipped: boolean;
+  noteText: string | null;
+}
+
+export interface StatsItem {
+  id: string;
+  title: string;
+  itemType: ProjectItemType;
+  frequencyType: 'none' | 'daily' | 'weekly';
+  completedCount: number;
+  expectedCount: number;
+  percentage: number | null; // null when expectedCount === 0
+  colorBand: 'green' | 'yellow' | 'red' | null;
+  perDay: StatsPerDay[];
+}
+
+export interface StatsProject {
+  id: string;
+  title: string;
+  colorHex: string | null;
+  items: StatsItem[];
+}
+
+export interface StatsResponse {
+  range: { from: string; to: string };
+  projects: StatsProject[];
+}
 
 // Phase 3: per-week scheduling status, keyed by item id in PortalBootstrap.
 export interface ItemSchedulingStatus {
@@ -292,7 +329,14 @@ export function PortalProjectsBoard({ token, onViewLinkedTask }: PortalBoardProp
   const [data, setData] = useState<PortalBootstrap | null>(null);
   const [loadErr, setLoadErr] = useState('');
   const [loading, setLoading] = useState(true);
-  const [selectedDay, setSelectedDay] = useState<'today' | 'yesterday'>('today');
+  // Phase 5: extended from day-only to include range-level stats views.
+  const [selectedView, setSelectedView] = useState<'today' | 'yesterday' | 'week' | 'month' | 'custom'>('today');
+  const [customFrom, setCustomFrom] = useState<string>('');
+  const [customTo, setCustomTo] = useState<string>('');
+  const [statsData, setStatsData] = useState<StatsResponse | null>(null);
+  const [statsLoading, setStatsLoading] = useState(false);
+  const [statsErr, setStatsErr] = useState('');
+  const [statsDetail, setStatsDetail] = useState<StatsItem | null>(null);
 
   // Modal state
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
@@ -343,7 +387,49 @@ export function PortalProjectsBoard({ token, onViewLinkedTask }: PortalBoardProp
     }
   }, [data]);
 
-  const dateStr = data ? (selectedDay === 'today' ? data.today : data.yesterday) : '';
+  const isStatsView = selectedView === 'week' || selectedView === 'month' || selectedView === 'custom';
+  const dateStr = data ? (selectedView === 'today' ? data.today : selectedView === 'yesterday' ? data.yesterday : '') : '';
+
+  // Phase 5: derive stats range from the selected view.
+  const statsRange = useMemo(() => {
+    if (!data || !isStatsView) return null;
+    const todayIso = data.today;
+    const [y, m, d] = todayIso.split('-').map((n) => parseInt(n, 10));
+    const todayUtc = new Date(Date.UTC(y, m - 1, d));
+    if (selectedView === 'week') {
+      const dow = todayUtc.getUTCDay();
+      const start = new Date(Date.UTC(y, m - 1, d - dow));
+      const end = new Date(Date.UTC(y, m - 1, d - dow + 6));
+      return { from: toIso(start), to: toIso(end) };
+    }
+    if (selectedView === 'month') {
+      const start = new Date(Date.UTC(y, m - 1, 1));
+      const end = new Date(Date.UTC(y, m, 0)); // last day of current month
+      return { from: toIso(start), to: toIso(end) };
+    }
+    // custom
+    if (customFrom && customTo && customFrom <= customTo) {
+      return { from: customFrom, to: customTo };
+    }
+    return null;
+  }, [data, selectedView, customFrom, customTo, isStatsView]);
+
+  // Phase 5: fetch stats when the selected view is range-based.
+  useEffect(() => {
+    if (!isStatsView || !statsRange) { setStatsData(null); return; }
+    setStatsLoading(true); setStatsErr('');
+    apiFetch<StatsResponse>(
+      `${BASE_URL}/public/projects/${token}/stats?from=${statsRange.from}&to=${statsRange.to}`,
+      { cache: 'no-store' },
+    )
+      .then((r) => setStatsData(r))
+      .catch((e: unknown) => {
+        const msg = e && typeof e === 'object' && 'message' in e ? String((e as { message: string }).message) : 'טעינת סטטיסטיקה נכשלה';
+        setStatsErr(msg);
+      })
+      .finally(() => setStatsLoading(false));
+  }, [token, statsRange, isStatsView]);
+
   const notesByProject = useMemo(() => {
     const m = new Map<string, ProjectNote[]>();
     if (!data) return m;
@@ -365,22 +451,56 @@ export function PortalProjectsBoard({ token, onViewLinkedTask }: PortalBoardProp
   return (
     <div style={{ padding: 12 }}>
       <div style={s.tabHeader}>
-        <div style={s.toggleGroup}>
-          <button style={s.toggleBtn(selectedDay === 'today')} onClick={() => setSelectedDay('today')}>
-            היום
-          </button>
-          <button style={s.toggleBtn(selectedDay === 'yesterday')} onClick={() => setSelectedDay('yesterday')}>
-            אתמול
-          </button>
+        {/* Phase 5: day views + range-level stats views in one selector. */}
+        <div style={{ ...s.toggleGroup, flexWrap: 'wrap' as const }}>
+          {([
+            ['today', 'היום'],
+            ['yesterday', 'אתמול'],
+            ['week', 'שבוע'],
+            ['month', 'חודש'],
+            ['custom', 'מותאם'],
+          ] as const).map(([k, label]) => (
+            <button
+              key={k}
+              style={s.toggleBtn(selectedView === k)}
+              onClick={() => setSelectedView(k)}
+            >{label}</button>
+          ))}
         </div>
-        {canManage && (
+        {canManage && !isStatsView && (
           <button style={{ ...s.primaryBtn, marginInlineStart: 'auto' }} onClick={() => setCreateProjectOpen(true)}>
             + צור פרויקט חדש
           </button>
         )}
       </div>
 
-      {visibleProjects.length === 0 && (
+      {/* Phase 5: custom date picker — only visible when 'custom' is selected. */}
+      {selectedView === 'custom' && (
+        <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' as const }}>
+          <label style={{ fontSize: 12, color: COLORS.muted, display: 'flex', alignItems: 'center', gap: 6 }}>
+            מ:
+            <input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)}
+              style={{ ...s.textInput, width: 160, minHeight: 40 }} />
+          </label>
+          <label style={{ fontSize: 12, color: COLORS.muted, display: 'flex', alignItems: 'center', gap: 6 }}>
+            עד:
+            <input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)}
+              style={{ ...s.textInput, width: 160, minHeight: 40 }} />
+          </label>
+        </div>
+      )}
+
+      {/* Phase 5: stats view takes over when a range view is selected. */}
+      {isStatsView && (
+        <StatsView
+          loading={statsLoading}
+          err={statsErr}
+          data={statsData}
+          onOpenDetail={(it) => setStatsDetail(it)}
+        />
+      )}
+
+      {!isStatsView && visibleProjects.length === 0 && (
         <div style={{ ...s.card, textAlign: 'center', color: COLORS.muted, padding: 32 }}>
           {canManage
             ? 'אין פרויקטים עדיין. לחצי "צור פרויקט חדש" כדי להתחיל.'
@@ -388,7 +508,7 @@ export function PortalProjectsBoard({ token, onViewLinkedTask }: PortalBoardProp
         </div>
       )}
 
-      {visibleProjects.map((p) => (
+      {!isStatsView && visibleProjects.map((p) => (
         <div key={p.id} style={{ ...s.card, borderInlineStartWidth: 4, borderInlineStartStyle: 'solid', borderInlineStartColor: p.colorHex ?? COLORS.accent }}>
           <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
             <div style={{ flex: 1, minWidth: 0 }}>
@@ -529,6 +649,14 @@ export function PortalProjectsBoard({ token, onViewLinkedTask }: PortalBoardProp
             setRemoveGoalByItem(null);
             void reload();
           }}
+        />
+      )}
+
+      {/* Phase 5: stats detail modal with day-strip chart. */}
+      {statsDetail && (
+        <StatsDetailModal
+          item={statsDetail}
+          onClose={() => setStatsDetail(null)}
         />
       )}
 
@@ -1498,6 +1626,221 @@ export function shouldShowPortalTab(b: PortalBootstrap | null): boolean {
 // frequency modes + optional preferred-weekdays pill row.
 
 const WEEKDAY_LABELS = ['א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ש'];
+
+// ─── Phase 5 Stats ──────────────────────────────────────────────────────────
+// Range-level roll-up rendered when the participant picks שבוע / חודש / מותאם.
+// Shows per-item: title · "X מתוך Y (N%)" · color band. Tapping a row opens
+// a detail modal with a day-strip chart.
+
+export function StatsView(props: {
+  loading: boolean;
+  err: string;
+  data: StatsResponse | null;
+  onOpenDetail: (item: StatsItem) => void;
+}) {
+  if (props.loading) return <div style={{ padding: 20, color: COLORS.muted, textAlign: 'center' }}>טוען סטטיסטיקה...</div>;
+  if (props.err) return <div style={{ padding: 20, color: COLORS.danger, textAlign: 'center' }}>{props.err}</div>;
+  if (!props.data) return <div style={{ padding: 20, color: COLORS.muted, textAlign: 'center' }}>בחרי טווח תאריכים</div>;
+  if (props.data.projects.length === 0) {
+    return <div style={{ padding: 20, color: COLORS.muted, textAlign: 'center' }}>אין פרויקטים בטווח זה.</div>;
+  }
+
+  const hasAnyItem = props.data.projects.some((p) => p.items.length > 0);
+  if (!hasAnyItem) {
+    return <div style={{ padding: 20, color: COLORS.muted, textAlign: 'center' }}>אין נתונים בטווח זה</div>;
+  }
+
+  const bandColor = (b: StatsItem['colorBand']) => {
+    if (b === 'green') return COLORS.success;
+    if (b === 'yellow') return COLORS.warn;
+    if (b === 'red') return COLORS.danger;
+    return COLORS.mutedLight;
+  };
+
+  return (
+    <div>
+      {props.data.projects.map((p) => (
+        <div
+          key={p.id}
+          style={{ ...s.card, borderInlineStartWidth: 4, borderInlineStartStyle: 'solid', borderInlineStartColor: p.colorHex ?? COLORS.accent }}
+        >
+          <div style={s.projectTitle}>{p.title}</div>
+          {p.items.length === 0 ? (
+            <div style={{ fontSize: 13, color: COLORS.muted, padding: '8px 0' }}>אין מטרות בטווח זה.</div>
+          ) : p.items.map((it) => {
+            const hasNotes = it.perDay.some((d) => d.noteText);
+            return (
+              <button
+                key={it.id}
+                onClick={() => props.onOpenDetail(it)}
+                style={{
+                  width: '100%',
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  gap: 8,
+                  padding: '12px 14px',
+                  background: COLORS.cardAlt,
+                  border: `1px solid ${COLORS.borderSoft}`,
+                  borderRadius: 10,
+                  marginBottom: 8,
+                  cursor: 'pointer',
+                  textAlign: 'start' as const,
+                }}
+              >
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.text }}>
+                    {it.title}
+                    {hasNotes && (
+                      <span title="יש הערות בטווח זה" style={{ marginInlineStart: 6, fontSize: 12 }}>📝</span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 12, color: COLORS.muted, marginTop: 2 }}>
+                    {it.percentage === null ? (
+                      `${it.completedCount} דיווחים`
+                    ) : (
+                      <>
+                        {it.completedCount} מתוך {it.expectedCount}
+                        <span style={{ marginInlineStart: 6, fontWeight: 700, color: bandColor(it.colorBand) }}>
+                          ({it.percentage}%)
+                        </span>
+                      </>
+                    )}
+                  </div>
+                </div>
+                {it.percentage !== null && (
+                  <div
+                    style={{
+                      width: 12, height: 12, borderRadius: 999,
+                      background: bandColor(it.colorBand),
+                      flexShrink: 0,
+                    }}
+                    aria-label={`${it.percentage}%`}
+                  />
+                )}
+              </button>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Day-strip chart. Renders one dot per day in the item's perDay[]. Grouped
+// into 7-column rows so ranges >1 week wrap nicely. Tapping a dot with a
+// note surfaces the note inline.
+
+export function StatsDetailModal(props: {
+  item: StatsItem;
+  onClose: () => void;
+}) {
+  const { item } = props;
+  const [expandedDate, setExpandedDate] = useState<string | null>(null);
+  const bandColor = item.colorBand === 'green' ? COLORS.success
+    : item.colorBand === 'yellow' ? COLORS.warn
+    : item.colorBand === 'red' ? COLORS.danger
+    : COLORS.mutedLight;
+
+  const expandedDay = expandedDate ? item.perDay.find((d) => d.date === expandedDate) : null;
+
+  return (
+    <LockedModalShell
+      title={item.title}
+      onClose={props.onClose}
+      footer={<button style={s.primaryBtn} onClick={props.onClose}>סגור</button>}
+    >
+      {item.percentage !== null ? (
+        <div style={{ fontSize: 14, color: COLORS.text, marginBottom: 12 }}>
+          {item.completedCount} מתוך {item.expectedCount}
+          <span style={{ marginInlineStart: 8, fontWeight: 700, color: bandColor }}>
+            ({item.percentage}%)
+          </span>
+        </div>
+      ) : (
+        <div style={{ fontSize: 14, color: COLORS.text, marginBottom: 12 }}>
+          {item.completedCount} דיווחים בטווח זה
+        </div>
+      )}
+
+      {item.perDay.length === 0 ? (
+        <div style={{ fontSize: 13, color: COLORS.mutedLight }}>אין ימים בטווח.</div>
+      ) : (
+        <>
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(7, 1fr)',
+            gap: 6,
+          }}>
+            {item.perDay.map((d) => {
+              const hasNote = !!d.noteText;
+              const filled = d.completed;
+              const skipped = d.skipped;
+              const selected = expandedDate === d.date;
+              return (
+                <button
+                  key={d.date}
+                  onClick={() => setExpandedDate(selected ? null : hasNote ? d.date : null)}
+                  title={d.date + (d.noteText ? ` — ${d.noteText}` : '')}
+                  style={{
+                    width: '100%', aspectRatio: '1 / 1',
+                    border: filled ? `none` : `1px solid ${skipped ? COLORS.warn : COLORS.border}`,
+                    background: filled ? COLORS.success : skipped ? COLORS.warnSoft : COLORS.card,
+                    borderRadius: 999,
+                    cursor: hasNote ? 'pointer' : 'default',
+                    position: 'relative' as const,
+                    padding: 0,
+                    boxShadow: selected ? `0 0 0 2px ${COLORS.accent}` : 'none',
+                  }}
+                  aria-label={`${d.date} ${filled ? 'הושלם' : skipped ? 'לא רלוונטי' : 'לא דווח'}`}
+                >
+                  {hasNote && (
+                    <span style={{
+                      position: 'absolute',
+                      top: -4, insetInlineEnd: -4,
+                      fontSize: 11, lineHeight: 1,
+                      background: '#fff', borderRadius: 999,
+                    }}>📝</span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Legend */}
+          <div style={{ display: 'flex', gap: 12, marginTop: 12, fontSize: 11, color: COLORS.mutedLight, flexWrap: 'wrap' as const }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <span style={{ width: 10, height: 10, borderRadius: 999, background: COLORS.success, display: 'inline-block' }} />
+              הושלם
+            </span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <span style={{ width: 10, height: 10, borderRadius: 999, background: COLORS.warnSoft, border: `1px solid ${COLORS.warn}`, display: 'inline-block' }} />
+              לא רלוונטי
+            </span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <span style={{ width: 10, height: 10, borderRadius: 999, background: COLORS.card, border: `1px solid ${COLORS.border}`, display: 'inline-block' }} />
+              לא דווח
+            </span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>📝 הערה</span>
+          </div>
+
+          {/* Note drawer */}
+          {expandedDay && expandedDay.noteText && (
+            <div style={{
+              marginTop: 12,
+              padding: '10px 12px',
+              background: COLORS.warnSoft,
+              border: `1px solid ${COLORS.warn}`,
+              borderRadius: 8,
+              fontSize: 13, color: COLORS.warn,
+            }}>
+              <div style={{ fontWeight: 700, marginBottom: 2 }}>{expandedDay.date}</div>
+              <div style={{ whiteSpace: 'pre-wrap' as const }}>{expandedDay.noteText}</div>
+            </div>
+          )}
+        </>
+      )}
+    </LockedModalShell>
+  );
+}
 
 // Phase 4: reusable end-date picker for goal create/edit modals.
 // Controls whether a goal has a bounded lifetime. Null/empty → indefinite.

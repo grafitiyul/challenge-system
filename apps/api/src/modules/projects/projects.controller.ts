@@ -136,6 +136,17 @@ export class ProjectsController {
     });
   }
 
+  // Phase 5: per-item stats roll-up for a date range.
+  // GET /api/projects/stats/by-participant/:participantId?from=&to=
+  @Get('stats/by-participant/:participantId')
+  stats(
+    @Param('participantId') participantId: string,
+    @Query('from') from: string,
+    @Query('to') to: string,
+  ) {
+    return this.svc.computeProjectStats(participantId, from, to);
+  }
+
   // POST /api/projects/:id/notes?participantId=
   @Post(':id/notes')
   addNote(

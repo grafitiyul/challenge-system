@@ -610,6 +610,150 @@ export class ProjectsService {
     return trimmed;
   }
 
+  // ── Phase 5 stats ──────────────────────────────────────────────────────────
+  //
+  // Per-item roll-up for a date range. Pure read, no mutations. Stats are
+  // scoped to boolean items with a schedule config — other types/items are
+  // returned with expected=0/percentage=null so the frontend can still show
+  // them (in a "no target" section if desired).
+  //
+  // completedCount counts ProjectItemLog rows with status='completed' in the
+  // effective range (clamped to item.createdAt..min(endDate, today, to)).
+  // expectedCount is derived from the frequency config:
+  //   'daily'  → effectiveDays
+  //   'weekly' → round(effectiveDays × timesPerWeek / 7)
+  //   'none'   → 0
+  //
+  // No analytics, no trends, no cycle/cravings — out of scope for Phase 5.
+  async computeProjectStats(
+    participantId: string,
+    fromStr: string,
+    toStr: string,
+  ) {
+    const fromDate = parseDayString(fromStr);
+    const toDate = parseDayString(toStr);
+    const todayStr = todayInIsrael();
+
+    const projects = await this.prisma.project.findMany({
+      where: { participantId, status: { not: 'cancelled' } },
+      orderBy: { createdAt: 'asc' },
+      include: {
+        items: {
+          where: { isArchived: false },
+          orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+          include: {
+            logs: {
+              where: { logDate: { gte: fromDate, lte: toDate } },
+              orderBy: { logDate: 'asc' },
+            },
+          },
+        },
+      },
+    });
+
+    return {
+      range: { from: fromStr, to: toStr },
+      projects: projects.map((p) => ({
+        id: p.id,
+        title: p.title,
+        colorHex: p.colorHex,
+        items: p.items.map((it) => this.buildItemStats(it, fromStr, toStr, todayStr)),
+      })),
+    };
+  }
+
+  private buildItemStats(
+    item: {
+      id: string;
+      title: string;
+      itemType: string;
+      scheduleFrequencyType: string;
+      scheduleTimesPerWeek: number | null;
+      endDate: Date | null;
+      createdAt: Date;
+      logs: { logDate: Date; status: string; skipNote: string | null }[];
+    },
+    fromStr: string,
+    toStr: string,
+    todayStr: string,
+  ) {
+    const endDateStr = item.endDate ? formatDayString(item.endDate) : null;
+    // Effective range end = min(to, today, endDate if set).
+    const candidates = [toStr, todayStr, ...(endDateStr ? [endDateStr] : [])];
+    const effectiveEndStr = candidates.reduce((a, b) => (a < b ? a : b));
+
+    // Effective range start = max(item.createdAt-day, from).
+    const itemCreatedDay = new Intl.DateTimeFormat('en-CA', {
+      timeZone: ISRAEL_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(item.createdAt);
+    const effectiveStartStr = itemCreatedDay > fromStr ? itemCreatedDay : fromStr;
+
+    const logMap = new Map<string, { status: string; skipNote: string | null }>();
+    for (const l of item.logs) {
+      logMap.set(formatDayString(l.logDate), { status: l.status, skipNote: l.skipNote });
+    }
+
+    const perDay: Array<{ date: string; completed: boolean; skipped: boolean; noteText: string | null }> = [];
+    let days = 0;
+    if (effectiveStartStr <= effectiveEndStr) {
+      const cursor = parseDayString(effectiveStartStr);
+      const end = parseDayString(effectiveEndStr);
+      while (cursor.getTime() <= end.getTime()) {
+        const iso = formatDayString(cursor);
+        const log = logMap.get(iso);
+        perDay.push({
+          date: iso,
+          completed: log?.status === 'completed',
+          skipped: log?.status === 'skipped_today',
+          noteText: log?.skipNote ?? null,
+        });
+        days++;
+        cursor.setUTCDate(cursor.getUTCDate() + 1);
+      }
+    }
+
+    const completedCount = perDay.filter((d) => d.completed).length;
+
+    let expectedCount = 0;
+    if (item.itemType === 'boolean' && item.scheduleFrequencyType === 'daily') {
+      expectedCount = days;
+    } else if (
+      item.itemType === 'boolean'
+      && item.scheduleFrequencyType === 'weekly'
+      && item.scheduleTimesPerWeek
+    ) {
+      expectedCount = Math.round((days * item.scheduleTimesPerWeek) / 7);
+    }
+
+    const percentage = expectedCount > 0
+      ? Math.round((100 * completedCount) / expectedCount)
+      : null;
+
+    const colorBand: 'green' | 'yellow' | 'red' | null =
+      percentage === null ? null
+      : percentage >= 80 ? 'green'
+      : percentage >= 50 ? 'yellow'
+      : 'red';
+
+    return {
+      id: item.id,
+      title: item.title,
+      itemType: item.itemType,
+      frequencyType: item.scheduleFrequencyType,
+      completedCount,
+      expectedCount,
+      percentage,
+      colorBand,
+      perDay,
+    };
+  }
+
+  // Portal-side stats wrapper: resolves token → participant → stats.
+  async portalStats(token: string, from: string, to: string) {
+    const me = await this.resolveToken(token);
+    return this.computeProjectStats(me.id, from, to);
+  }
+
   // Phase 4: normalize client-supplied endDate. Null/undefined/empty → null.
   // String is parsed as a civil day; returned as a Date at midnight UTC.
   private normalizeEndDate(raw: string | null | undefined): Date | null {

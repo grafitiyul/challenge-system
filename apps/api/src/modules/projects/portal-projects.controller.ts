@@ -110,6 +110,17 @@ export class PortalProjectsController {
     return this.svc.portalScheduleItemWeek(token, itemId, dto);
   }
 
+  // Phase 5: per-item stats roll-up for a date range (portal).
+  // GET /api/public/projects/:token/stats?from=&to=
+  @Get(':token/stats')
+  stats(
+    @Param('token') token: string,
+    @Query('from') from: string,
+    @Query('to') to: string,
+  ) {
+    return this.svc.portalStats(token, from, to);
+  }
+
   @Post(':token/projects/:projectId/notes')
   addNote(
     @Param('token') token: string,
