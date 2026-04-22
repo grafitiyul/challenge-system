@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { BASE_URL, apiFetch } from '@lib/api';
 import type {
+  LinkableTask,
   Project,
   ProjectItem,
   ProjectItemType,
@@ -83,6 +84,8 @@ const st = {
 interface AdminListResponse {
   projects: Project[];
   notes: ProjectNote[];
+  linkableTasks: LinkableTask[];
+  scheduledKeys: string[];
 }
 
 // ─── Props ───────────────────────────────────────────────────────────────────
@@ -269,6 +272,11 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
                       {it.targetValue !== null && it.targetValue !== undefined && (
                         <span style={{ color: C.muted, fontSize: 12, marginInlineStart: 6 }}>יעד {it.targetValue}</span>
                       )}
+                      {it.linkedPlanTaskId && (
+                        <span style={{ marginInlineStart: 6, ...st.chip(C.accentSoft, C.accent) }}>
+                          🔗 מקושר למשימה
+                        </span>
+                      )}
                     </div>
                     <div style={{ fontSize: 11, color: C.mutedLight, marginTop: 2 }}>
                       {it.logs.length} דיווחים בטווח
@@ -352,6 +360,7 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
       {addItemForProject && (
         <ItemFormModal
           projectId={addItemForProject.id}
+          linkableTasks={data.linkableTasks}
           onClose={() => setAddItemForProject(null)}
           onSaved={() => { setAddItemForProject(null); void reload(); }}
         />
@@ -360,6 +369,7 @@ export function AdminProjectsTab({ participantId, canManageProjects, onPermissio
         <ItemFormModal
           projectId={editItem.projectId}
           item={editItem}
+          linkableTasks={data.linkableTasks}
           onClose={() => setEditItem(null)}
           onSaved={() => { setEditItem(null); void reload(); }}
         />
@@ -712,6 +722,7 @@ function ProjectFormModal(props: {
 function ItemFormModal(props: {
   projectId: string;
   item?: ProjectItem;
+  linkableTasks: LinkableTask[];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -730,6 +741,8 @@ function ItemFormModal(props: {
     if (existing && existing.length > 0) return existing.map((o) => o.label);
     return [''];
   });
+  // Phase 2 link picker. Empty string = "no link" / "ללא קישור".
+  const [linkedTaskId, setLinkedTaskId] = useState<string>(props.item?.linkedPlanTaskId ?? '');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
@@ -751,6 +764,13 @@ function ItemFormModal(props: {
         .map((s) => ({ value: s, label: s }));
       if (clean.length === 0) { setErr('חובה לפחות אפשרות אחת'); return; }
       body.selectOptions = clean;
+    }
+    // Phase 2 link: send as explicit string or null so the server knows
+    // whether the admin touched the picker. For non-boolean items, do not
+    // send the field at all so the server-side validation error doesn't fire
+    // on an untouched edit of an old select/number goal.
+    if (itemType === 'boolean') {
+      body.linkedPlanTaskId = linkedTaskId || null;
     }
     setBusy(true); setErr('');
     try {
@@ -822,6 +842,26 @@ function ItemFormModal(props: {
             <input type="number" style={st.input} value={targetValue} onChange={(e) => setTargetValue(e.target.value)} />
           </div>
         </>
+      )}
+
+      {itemType === 'boolean' && (
+        <div style={{ marginBottom: 10 }}>
+          <label style={{ display: 'block', fontSize: 12, color: C.muted, marginBottom: 4 }}>קשר למשימה</label>
+          <select style={st.input} value={linkedTaskId} onChange={(e) => setLinkedTaskId(e.target.value)}>
+            <option value="">ללא קישור</option>
+            {/* Keep the currently-linked option visible during edit even if it
+                wouldn't normally appear in the "linkable" list */}
+            {props.item?.linkedPlanTaskId
+              && !props.linkableTasks.find((t) => t.id === props.item!.linkedPlanTaskId) && (
+                <option value={props.item.linkedPlanTaskId}>
+                  (הקישור הנוכחי)
+                </option>
+              )}
+            {props.linkableTasks.map((t) => (
+              <option key={t.id} value={t.id}>{t.title}</option>
+            ))}
+          </select>
+        </div>
       )}
 
       {itemType === 'select' && (

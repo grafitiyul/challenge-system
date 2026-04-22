@@ -31,6 +31,10 @@ export interface AssignmentShape {
   completedAt: string | null;
   status: string;
   carriedToId: string | null;
+  // Phase 2 audit-only. Set when this assignment's task is linked to a
+  // ProjectItem AND a completed log exists on scheduledDate. 'direct' means
+  // the user completed from the Projects surface → renders "סומן במעקב".
+  completedVia?: 'direct' | 'task' | null;
 }
 
 export interface TaskShape {
@@ -45,6 +49,9 @@ export interface TaskShape {
   recurrenceWeekdays?: string | null;
   recurrenceStartTime?: string | null;
   recurrenceEndTime?: string | null;
+  // Phase 2: populated when a ProjectItem has this task's id in
+  // linkedPlanTaskId. Drives the "🎯 חלק ממעקב" badge on the task row.
+  linkedProjectItem?: { id: string; projectId: string; projectTitle: string } | null;
   assignments: AssignmentShape[];
 }
 

@@ -1279,6 +1279,9 @@ model PlanTask {
   recurrenceEndTime   String?
   assignments      TaskAssignment[]
   deferralEvents   DeferralEvent[]
+  // Phase 2 reverse side of the 1:1 bidirectional link. Present when a
+  // ProjectItem has this task's id in linkedPlanTaskId.
+  linkedProjectItem ProjectItem?
   createdAt        DateTime         @default(now())
   updatedAt        DateTime         @updatedAt
 
@@ -1417,7 +1420,8 @@ model ProjectItem {
   project   Project @relation(fields: [projectId], references: [id])
   title     String
   // "boolean" | "number" | "select"
-  // Phase 1 only — "linked_task" is Phase 2, not accepted by validation yet.
+  // Phase 2 allows boolean items to optionally link to a PlanTask (1:1); number
+  // and select goals are explicitly blocked from linking in validation.
   itemType  String
   // Display unit for number items (e.g. "כוסות", "ק״מ"). Null for boolean/select.
   unit         String?
@@ -1427,6 +1431,13 @@ model ProjectItem {
   selectOptionsJson Json?
   sortOrder  Int     @default(0)
   isArchived Boolean @default(false)
+
+  // Phase 2 bidirectional link. Only valid for itemType='boolean'. 1:1 with
+  // PlanTask — @unique guarantees a given task is linked to at most one goal.
+  // Cleared on goal archive, on admin hard-delete (cascade), and on task
+  // delete (explicit update before the task row disappears).
+  linkedPlanTaskId String?   @unique
+  linkedPlanTask   PlanTask? @relation(fields: [linkedPlanTaskId], references: [id])
 
   logs ProjectItemLog[]
 
@@ -1458,8 +1469,14 @@ model ProjectItemLog {
   skipNote      String?
   commitNote    String?
   editedAt      DateTime?
-  // "participant" | "admin" — who last edited this row.
+  // "participant" | "admin" | "system" — who last edited this row.
+  // "system" is used when the sync service mirrors a task-side completion.
   editedByRole  String?
+  // Phase 2 audit/presentation only: how this log was produced.
+  //   "direct" — user action in the Projects surface.
+  //   "task"   — mirrored from a TaskAssignment completion via sync service.
+  // CORRECTNESS MUST NOT depend on this field. It only drives subtitle text.
+  syncSource    String      @default("direct")
   createdAt     DateTime    @default(now())
 
   // One log per (item, day). Upsert on conflict keeps the row immutable-at-key

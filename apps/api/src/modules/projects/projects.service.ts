@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { ProjectTaskSyncService } from './project-task-sync.service';
 import {
   CreateItemDto,
   CreateNoteDto,
@@ -62,7 +63,10 @@ function formatDayString(d: Date): string {
 
 @Injectable()
 export class ProjectsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly sync: ProjectTaskSyncService,
+  ) {}
 
   // ── Token resolution (portal mode) ─────────────────────────────────────────
   // Resolves a portal access token to a participant. Throws 404 if the token
@@ -173,6 +177,7 @@ export class ProjectsService {
         selectOptions: (it.selectOptionsJson as unknown as { value: string; label: string }[] | null) ?? null,
         sortOrder: it.sortOrder,
         isArchived: it.isArchived,
+        linkedPlanTaskId: it.linkedPlanTaskId,
         createdAt: it.createdAt.toISOString(),
         logs: it.logs.map((l) => ({
           id: l.id,
@@ -185,6 +190,7 @@ export class ProjectsService {
           commitNote: l.commitNote,
           editedAt: l.editedAt ? l.editedAt.toISOString() : null,
           editedByRole: l.editedByRole,
+          syncSource: l.syncSource,
           createdAt: l.createdAt.toISOString(),
         })),
       })),
@@ -289,7 +295,36 @@ export class ProjectsService {
       includeArchived: true,
     });
     const notes = await this.loadNotes(projects.map((p) => p.id));
-    return { projects, notes };
+    const linkableTasks = await this.sync.listLinkableTasks(participantId);
+    const scheduledKeys = await this.computeScheduledKeys(projects, fromDate, toDate);
+    return { projects, notes, linkableTasks, scheduledKeys };
+  }
+
+  // Returns a Set-like array of "itemId|YYYY-MM-DD" keys indicating that the
+  // linked task for that goal has an ACTIVE assignment on that date. The
+  // frontend uses this to drive the "לא נקבע להיום בלו״ז" hint: hint is shown
+  // iff the item is linked, a completed log exists on the date, and the key
+  // is NOT in this set.
+  private async computeScheduledKeys(
+    projects: Array<{ id: string; items: Array<{ id: string; linkedPlanTaskId: string | null }> }>,
+    fromDate: Date,
+    toDate: Date,
+  ): Promise<string[]> {
+    const linkedTaskIds: string[] = [];
+    for (const p of projects) {
+      for (const it of p.items) {
+        if (it.linkedPlanTaskId) linkedTaskIds.push(it.linkedPlanTaskId);
+      }
+    }
+    if (linkedTaskIds.length === 0) return [];
+    // Generate the inclusive date range as midnight-UTC Date instances so the
+    // `in` filter matches the stored values.
+    const dates: Date[] = [];
+    for (let d = new Date(fromDate); d <= toDate; d = new Date(d.getTime() + 86_400_000)) {
+      dates.push(new Date(d));
+    }
+    const pairs = await this.sync.findActiveAssignmentPairs({ linkedTaskIds, dates });
+    return [...pairs];
   }
 
   async adminCreateProject(participantId: string, dto: CreateProjectDto) {
@@ -328,6 +363,9 @@ export class ProjectsService {
   // preserves logs. Deletion cascade order respects the FK graph:
   //   logs → items → notes → project.
   // Wrapped in a transaction so a partial failure can't leave orphans.
+  // Linked PlanTasks survive — they live in a different domain; the FK
+  // from ProjectItem is `ON DELETE SET NULL`, so the task simply loses
+  // its reverse relation when the item row disappears.
   async adminHardDeleteProject(projectId: string) {
     const existing = await this.prisma.project.findUnique({
       where: { id: projectId },
@@ -335,6 +373,13 @@ export class ProjectsService {
     });
     if (!existing) throw new NotFoundException('Project not found');
     await this.prisma.$transaction(async (tx) => {
+      // Clear links first — Prisma can't cascade-null a self-referencing FK
+      // on delete automatically, so we explicitly break the link before the
+      // item rows go away.
+      await tx.projectItem.updateMany({
+        where: { projectId, linkedPlanTaskId: { not: null } },
+        data: { linkedPlanTaskId: null },
+      });
       await tx.projectItemLog.deleteMany({
         where: { item: { projectId } },
       });
@@ -352,6 +397,18 @@ export class ProjectsService {
       throw new BadRequestException(`Unsupported itemType ${dto.itemType}`);
     }
     this.validateItemShape(dto.itemType, dto);
+
+    // Phase 2 link validation — must happen BEFORE the create so we don't
+    // orphan a half-linked row on error.
+    const linkId = this.normalizeLinkId(dto.linkedPlanTaskId);
+    if (linkId) {
+      await this.sync.assertLinkable({
+        participantId: project.participantId,
+        taskId: linkId,
+        itemType: dto.itemType,
+      });
+    }
+
     const count = await this.prisma.projectItem.count({ where: { projectId } });
     return this.prisma.projectItem.create({
       data: {
@@ -362,18 +419,41 @@ export class ProjectsService {
         targetValue: dto.targetValue ?? null,
         selectOptionsJson: (dto.selectOptions ?? null) as unknown as Prisma.InputJsonValue,
         sortOrder: count,
+        linkedPlanTaskId: linkId,
       },
     });
   }
 
   async adminUpdateItem(itemId: string, dto: UpdateItemDto) {
-    const existing = await this.prisma.projectItem.findUnique({ where: { id: itemId } });
+    const existing = await this.prisma.projectItem.findUnique({
+      where: { id: itemId },
+      include: { project: { select: { participantId: true } } },
+    });
     if (!existing) throw new NotFoundException('Item not found');
     if (dto.selectOptions !== undefined && existing.itemType === 'select') {
       if (dto.selectOptions.length === 0) {
         throw new BadRequestException('select items require at least one option');
       }
     }
+
+    // Resolve the linkedPlanTaskId update:
+    //   undefined   → no change
+    //   null / ""   → unlink
+    //   "some-id"   → link to that task (validated)
+    let linkUpdate: { linkedPlanTaskId: string | null } | Record<string, never> = {};
+    if (dto.linkedPlanTaskId !== undefined) {
+      const normalized = this.normalizeLinkId(dto.linkedPlanTaskId);
+      if (normalized) {
+        await this.sync.assertLinkable({
+          participantId: existing.project.participantId,
+          taskId: normalized,
+          exceptItemId: itemId,
+          itemType: existing.itemType,
+        });
+      }
+      linkUpdate = { linkedPlanTaskId: normalized };
+    }
+
     return this.prisma.projectItem.update({
       where: { id: itemId },
       data: {
@@ -384,6 +464,7 @@ export class ProjectsService {
           ? { selectOptionsJson: dto.selectOptions as unknown as Prisma.InputJsonValue }
           : {}),
         ...(dto.isArchived !== undefined ? { isArchived: dto.isArchived } : {}),
+        ...linkUpdate,
       },
     });
   }
@@ -391,10 +472,23 @@ export class ProjectsService {
   async adminArchiveItem(itemId: string) {
     const existing = await this.prisma.projectItem.findUnique({ where: { id: itemId } });
     if (!existing) throw new NotFoundException('Item not found');
+    // Archive clears the link automatically (finalized design §9.C) so the
+    // participant sees a consistent state: archived goals don't mirror.
     return this.prisma.projectItem.update({
       where: { id: itemId },
-      data: { isArchived: true },
+      data: { isArchived: true, linkedPlanTaskId: null },
     });
+  }
+
+  // Normalizes a client-supplied linkedPlanTaskId into one of:
+  //   null         (explicit unlink)
+  //   "<cuid>"     (request to link)
+  // Empty string / whitespace / the literal string "null" all collapse to null.
+  private normalizeLinkId(raw: string | null | undefined): string | null {
+    if (raw === undefined || raw === null) return null;
+    const trimmed = raw.trim();
+    if (trimmed === '' || trimmed === 'null') return null;
+    return trimmed;
   }
 
   async adminReorderItems(projectId: string, items: ReorderItemDto[]) {
@@ -473,6 +567,8 @@ export class ProjectsService {
       includeArchived: false,
     });
     const notes = await this.loadNotes(projects.map((p) => p.id));
+    const linkableTasks = await this.sync.listLinkableTasks(me.id);
+    const scheduledKeys = await this.computeScheduledKeys(projects, fromDate, toDate);
     return {
       participant: {
         id: me.id,
@@ -484,6 +580,11 @@ export class ProjectsService {
       yesterday: fromStr,
       projects,
       notes,
+      // Phase 2: list of tasks the participant can link a boolean goal to.
+      linkableTasks,
+      // Phase 2: "itemId|YYYY-MM-DD" keys where a linked task has an ACTIVE
+      // assignment. Used to drive the "לא נקבע להיום בלו״ז" hint.
+      scheduledKeys,
     };
   }
 
@@ -637,38 +738,54 @@ export class ProjectsService {
 
     const resolved = this.validateLogForItem(item, dto);
 
-    const existing = await this.prisma.projectItemLog.findUnique({
-      where: { itemId_logDate: { itemId, logDate } },
-    });
-
-    if (existing) {
-      return this.prisma.projectItemLog.update({
-        where: { id: existing.id },
-        data: {
-          status: resolved.status,
-          numericValue: resolved.numericValue,
-          selectValue: resolved.selectValue,
-          skipNote: dto.status === 'skipped_today' ? dto.skipNote ?? null : null,
-          commitNote: dto.status === 'committed' ? dto.commitNote ?? null : null,
-          editedAt: new Date(),
-          editedByRole,
-        },
+    // Wrap the log write + cross-surface sync in a single transaction so the
+    // invariant `goal.completed ⟺ task.completed` can never be observed in a
+    // half-applied state by a concurrent reader.
+    const result = await this.prisma.$transaction(async (tx) => {
+      const existing = await tx.projectItemLog.findUnique({
+        where: { itemId_logDate: { itemId, logDate } },
       });
-    }
 
-    return this.prisma.projectItemLog.create({
-      data: {
-        itemId,
-        participantId,
-        logDate,
-        status: resolved.status,
-        numericValue: resolved.numericValue,
-        selectValue: resolved.selectValue,
-        skipNote: dto.status === 'skipped_today' ? dto.skipNote ?? null : null,
-        commitNote: dto.status === 'committed' ? dto.commitNote ?? null : null,
-        editedByRole,
-      },
+      const row = existing
+        ? await tx.projectItemLog.update({
+            where: { id: existing.id },
+            data: {
+              status: resolved.status,
+              numericValue: resolved.numericValue,
+              selectValue: resolved.selectValue,
+              skipNote: dto.status === 'skipped_today' ? dto.skipNote ?? null : null,
+              commitNote: dto.status === 'committed' ? dto.commitNote ?? null : null,
+              editedAt: new Date(),
+              editedByRole,
+              // syncSource stays 'direct' for user-facing writes — the sync
+              // service writes the 'task' value via its own direct path.
+              syncSource: 'direct',
+            },
+          })
+        : await tx.projectItemLog.create({
+            data: {
+              itemId,
+              participantId,
+              logDate,
+              status: resolved.status,
+              numericValue: resolved.numericValue,
+              selectValue: resolved.selectValue,
+              skipNote: dto.status === 'skipped_today' ? dto.skipNote ?? null : null,
+              commitNote: dto.status === 'committed' ? dto.commitNote ?? null : null,
+              editedByRole,
+              syncSource: 'direct',
+            },
+          });
+
+      // Mirror into the linked TaskAssignment (if any). "completed" drives the
+      // bool — other statuses (skipped/committed/value-below-target) leave the
+      // task in whatever state it's in.
+      const targetCompleted = row.status === 'completed';
+      await this.sync.syncFromProject(itemId, logDate, targetCompleted, tx);
+      return row;
     });
+
+    return result;
   }
 
   // Shared delete helper — clears a (item, logDate) log. Idempotent:
@@ -698,7 +815,12 @@ export class ProjectsService {
     }
 
     const logDate = parseDayString(logDateStr);
-    await this.prisma.projectItemLog.deleteMany({ where: { itemId, logDate } });
+    // Transactional: clear the log AND mirror-uncomplete the linked
+    // assignment, so the invariant holds for concurrent readers.
+    await this.prisma.$transaction(async (tx) => {
+      await tx.projectItemLog.deleteMany({ where: { itemId, logDate } });
+      await this.sync.syncFromProject(itemId, logDate, false, tx);
+    });
     return { ok: true };
   }
 }

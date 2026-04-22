@@ -25,6 +25,9 @@ export interface SharedAssignment {
   startTime: string | null;
   isCompleted: boolean;
   status: string;
+  // Phase 2 audit-only: which surface authored today's completion. Used to
+  // decide whether to render the "סומן במעקב" subtitle on the task row.
+  completedVia?: 'direct' | 'task' | null;
 }
 
 export interface SharedTask {
@@ -35,6 +38,9 @@ export interface SharedTask {
   isAbandoned: boolean;
   goalId: string | null;
   assignments: SharedAssignment[];
+  // Phase 2: populated when a ProjectItem has this task's id in
+  // linkedPlanTaskId. Drives the "🎯 חלק ממעקב" badge.
+  linkedProjectItem?: { id: string; projectId: string; projectTitle: string } | null;
 }
 
 export interface SharedGoal {
@@ -115,6 +121,19 @@ export function TaskPoolRow({
           overflowWrap: 'break-word',
         }}>
           {task.title}
+          {task.linkedProjectItem && (
+            <span
+              title={`חלק מהמעקב: ${task.linkedProjectItem.projectTitle}`}
+              style={{
+                marginInlineStart: 6,
+                display: 'inline-flex', alignItems: 'center',
+                padding: '1px 6px', borderRadius: 999,
+                fontSize: 10, fontWeight: 600,
+                background: '#eff6ff', color: '#2563eb',
+                verticalAlign: 'middle',
+              }}
+            >🎯 חלק ממעקב</span>
+          )}
         </div>
         {task.notes && (
           <div style={{
@@ -203,7 +222,12 @@ export function TaskPoolRow({
  */
 
 export interface DayTaskCardProps {
-  task: { id: string; title: string; notes: string | null };
+  task: {
+    id: string;
+    title: string;
+    notes: string | null;
+    linkedProjectItem?: { id: string; projectId: string; projectTitle: string } | null;
+  };
   assignment: SharedAssignment;
   goalTitle: string | null;
   onToggleComplete: () => void;
@@ -256,9 +280,25 @@ export function DayTaskCard({
             overflowWrap: 'break-word',
           }}>
             {task.title}
+            {task.linkedProjectItem && (
+              <span
+                title={`חלק מהמעקב: ${task.linkedProjectItem.projectTitle}`}
+                style={{
+                  marginInlineStart: 6,
+                  display: 'inline-flex', alignItems: 'center',
+                  padding: '1px 6px', borderRadius: 999,
+                  fontSize: 10, fontWeight: 600,
+                  background: '#eff6ff', color: '#2563eb',
+                  verticalAlign: 'middle',
+                }}
+              >🎯 חלק ממעקב</span>
+            )}
           </div>
           {goalTitle && (
             <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 2 }}>{goalTitle}</div>
+          )}
+          {assignment.isCompleted && assignment.completedVia === 'direct' && (
+            <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>סומן במעקב</div>
           )}
           {task.notes && !assignment.isCompleted && (
             <div style={{

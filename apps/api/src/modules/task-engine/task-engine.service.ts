@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { ProjectTaskSyncService } from '../projects/project-task-sync.service';
 import {
   CreateGoalDto,
   UpdateGoalDto,
@@ -81,6 +82,12 @@ export interface AssignmentShape {
   completedAt: string | null;
   status: string;
   carriedToId: string | null;
+  // Phase 2 audit-only surface for the "סומן במעקב" subtitle. Populated when
+  // the task is linked to a ProjectItem AND a log exists on scheduledDate.
+  //   'direct' → the completion originated on the Projects side
+  //   'task'   → originated on the task side
+  //   null     → no log / no link → no subtitle
+  completedVia?: 'direct' | 'task' | null;
 }
 
 export interface TaskShape {
@@ -92,6 +99,9 @@ export interface TaskShape {
   isAbandoned: boolean;
   goalId: string | null;
   assignments: AssignmentShape[];
+  // Phase 2: populated when a ProjectItem has this task's id in
+  // linkedPlanTaskId. Frontend renders the "🎯 חלק ממעקב" badge off this.
+  linkedProjectItem: { id: string; projectId: string; projectTitle: string } | null;
 }
 
 export interface GoalShape {
@@ -111,7 +121,10 @@ export interface WeekPlanResponse {
 
 @Injectable()
 export class TaskEngineService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly sync: ProjectTaskSyncService,
+  ) {}
 
   // ─── Plan ──────────────────────────────────────────────────────────────────
 
@@ -183,6 +196,10 @@ export class TaskEngineService {
       for (const wd of weekdays) {
         const target = addDays(weekSundayUtc, wd);
         if (existingDates.has(formatDate(target))) continue;
+        // Phase 2 adoption rule applies here too: if the linked goal already
+        // has a completed log for `target`, the newly-materialized assignment
+        // is born completed.
+        const initial = await this.sync.computeInitialAssignmentState(task.id, target);
         await this.prisma.taskAssignment.create({
           data: {
             taskId: task.id,
@@ -190,7 +207,9 @@ export class TaskEngineService {
             scheduledDate: target,
             startTime: task.recurrenceStartTime,
             endTime: task.recurrenceEndTime,
-            status: 'scheduled',
+            status: initial.status,
+            isCompleted: initial.isCompleted,
+            completedAt: initial.completedAt,
           },
         });
       }
@@ -208,23 +227,71 @@ export class TaskEngineService {
             tasks: {
               where: { isAbandoned: false },
               orderBy: { sortOrder: 'asc' },
-              include: { assignments: { orderBy: { scheduledDate: 'asc' } } },
+              include: {
+                assignments: { orderBy: { scheduledDate: 'asc' } },
+                linkedProjectItem: {
+                  select: {
+                    id: true,
+                    projectId: true,
+                    project: { select: { title: true } },
+                  },
+                },
+              },
             },
           },
         },
         tasks: {
           where: { goalId: null, isAbandoned: false },
           orderBy: { sortOrder: 'asc' },
-          include: { assignments: { orderBy: { scheduledDate: 'asc' } } },
+          include: {
+            assignments: { orderBy: { scheduledDate: 'asc' } },
+            linkedProjectItem: {
+              select: {
+                id: true,
+                projectId: true,
+                project: { select: { title: true } },
+              },
+            },
+          },
         },
       },
     });
     if (!plan) throw new NotFoundException('Plan not found');
 
-    const mapAssignment = (a: {
-      id: string; scheduledDate: Date; startTime: string | null; endTime: string | null;
-      isCompleted: boolean; completedAt: Date | null; status: string; carriedToId: string | null;
-    }): AssignmentShape => ({
+    // Phase 2: look up the syncSource of matching project logs in one batch
+    // so each assignment on a linked task can render the correct subtitle.
+    // Build a lookup map keyed by "itemId|YYYY-MM-DD".
+    const linkedItemIds: string[] = [];
+    const gatherFromTask = (t: {
+      linkedProjectItem: { id: string } | null;
+      assignments: { scheduledDate: Date }[];
+    }) => {
+      if (!t.linkedProjectItem) return;
+      linkedItemIds.push(t.linkedProjectItem.id);
+    };
+    for (const g of plan.goals) for (const t of g.tasks) gatherFromTask(t);
+    for (const t of plan.tasks) gatherFromTask(t);
+
+    const logMap = new Map<string, 'direct' | 'task'>();
+    if (linkedItemIds.length > 0) {
+      const logs = await this.prisma.projectItemLog.findMany({
+        where: { itemId: { in: linkedItemIds } },
+        select: { itemId: true, logDate: true, syncSource: true, status: true },
+      });
+      for (const l of logs) {
+        if (l.status !== 'completed') continue;
+        const iso = formatDate(l.logDate);
+        logMap.set(`${l.itemId}|${iso}`, (l.syncSource as 'direct' | 'task') ?? 'direct');
+      }
+    }
+
+    const mapAssignment = (
+      a: {
+        id: string; scheduledDate: Date; startTime: string | null; endTime: string | null;
+        isCompleted: boolean; completedAt: Date | null; status: string; carriedToId: string | null;
+      },
+      linkedItemId: string | null,
+    ): AssignmentShape => ({
       id: a.id,
       scheduledDate: formatDate(a.scheduledDate),
       startTime: a.startTime,
@@ -233,12 +300,16 @@ export class TaskEngineService {
       completedAt: a.completedAt ? a.completedAt.toISOString() : null,
       status: a.status,
       carriedToId: a.carriedToId,
+      completedVia: linkedItemId
+        ? (logMap.get(`${linkedItemId}|${formatDate(a.scheduledDate)}`) ?? null)
+        : null,
     });
 
     const mapTask = (t: {
       id: string; title: string; notes: string | null; estimatedMinutes: number | null;
       sortOrder: number; isAbandoned: boolean; goalId: string | null;
       assignments: Parameters<typeof mapAssignment>[0][];
+      linkedProjectItem: { id: string; projectId: string; project: { title: string } } | null;
     }): TaskShape => ({
       id: t.id,
       title: t.title,
@@ -247,7 +318,14 @@ export class TaskEngineService {
       sortOrder: t.sortOrder,
       isAbandoned: t.isAbandoned,
       goalId: t.goalId,
-      assignments: t.assignments.map(mapAssignment),
+      assignments: t.assignments.map((a) => mapAssignment(a, t.linkedProjectItem?.id ?? null)),
+      linkedProjectItem: t.linkedProjectItem
+        ? {
+            id: t.linkedProjectItem.id,
+            projectId: t.linkedProjectItem.projectId,
+            projectTitle: t.linkedProjectItem.project.title,
+          }
+        : null,
     });
 
     return {
@@ -542,7 +620,15 @@ export class TaskEngineService {
   async deleteTask(taskId: string) {
     const task = await this.prisma.planTask.findUnique({ where: { id: taskId } });
     if (!task) throw new NotFoundException('Task not found');
-    return this.prisma.planTask.update({ where: { id: taskId }, data: { isAbandoned: true } });
+    // Phase 2: if the task is linked to a project goal, clear the link in the
+    // same transaction as the abandon flip. Logs stay; the goal reverts to a
+    // standalone metric. (deleteTask is a soft abandon, not a hard row delete,
+    // but for the participant's purposes the task is gone — so we clear the
+    // link to match.)
+    return this.prisma.$transaction(async (tx) => {
+      await this.sync.onTaskDeleted(taskId, tx);
+      return tx.planTask.update({ where: { id: taskId }, data: { isAbandoned: true } });
+    });
   }
 
   async reorderTasks(planId: string, items: ReorderItemDto[]) {
@@ -562,35 +648,60 @@ export class TaskEngineService {
     const task = await this.prisma.planTask.findUnique({ where: { id: taskId } });
     if (!task) throw new NotFoundException('Task not found');
     const scheduledDate = toMidnightUTC(dto.scheduledDate);
-    return this.prisma.taskAssignment.create({
-      data: {
-        taskId,
-        participantId: task.participantId,
-        scheduledDate,
-        startTime: dto.startTime ?? null,
-        endTime: dto.endTime ?? null,
-      },
+    // Phase 2 HARD RULE: adopt an existing completed log on the linked goal
+    // for this date. Seeded into the create payload so the assignment is
+    // never committed in an unreconciled state.
+    return this.prisma.$transaction(async (tx) => {
+      const initial = await this.sync.computeInitialAssignmentState(taskId, scheduledDate, tx);
+      return tx.taskAssignment.create({
+        data: {
+          taskId,
+          participantId: task.participantId,
+          scheduledDate,
+          startTime: dto.startTime ?? null,
+          endTime: dto.endTime ?? null,
+          isCompleted: initial.isCompleted,
+          status: initial.status,
+          completedAt: initial.completedAt,
+        },
+      });
     });
   }
 
   async updateAssignment(assignmentId: string, dto: UpdateAssignmentDto) {
     const a = await this.prisma.taskAssignment.findUnique({ where: { id: assignmentId } });
     if (!a) throw new NotFoundException('Assignment not found');
-    return this.prisma.taskAssignment.update({
-      where: { id: assignmentId },
-      data: {
-        ...(dto.scheduledDate !== undefined ? { scheduledDate: toMidnightUTC(dto.scheduledDate) } : {}),
-        ...(dto.startTime !== undefined ? { startTime: dto.startTime } : {}),
-        ...(dto.endTime !== undefined ? { endTime: dto.endTime } : {}),
-        ...(dto.isCompleted !== undefined
-          ? {
-              isCompleted: dto.isCompleted,
-              status: dto.isCompleted ? 'completed' : 'scheduled',
-              completedAt: dto.isCompleted ? new Date() : null,
-            }
-          : {}),
-        ...(dto.status !== undefined ? { status: dto.status } : {}),
-      },
+    // Run the update AND the mirror sync in one transaction so a concurrent
+    // reader can never observe `goal.completed ≠ task.completed`.
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.taskAssignment.update({
+        where: { id: assignmentId },
+        data: {
+          ...(dto.scheduledDate !== undefined ? { scheduledDate: toMidnightUTC(dto.scheduledDate) } : {}),
+          ...(dto.startTime !== undefined ? { startTime: dto.startTime } : {}),
+          ...(dto.endTime !== undefined ? { endTime: dto.endTime } : {}),
+          ...(dto.isCompleted !== undefined
+            ? {
+                isCompleted: dto.isCompleted,
+                status: dto.isCompleted ? 'completed' : 'scheduled',
+                completedAt: dto.isCompleted ? new Date() : null,
+              }
+            : {}),
+          ...(dto.status !== undefined ? { status: dto.status } : {}),
+        },
+      });
+
+      // Only mirror when the completion boolean changed — scheduling-only
+      // edits (date/time/status labels) don't touch the linked goal.
+      if (dto.isCompleted !== undefined && dto.isCompleted !== a.isCompleted) {
+        await this.sync.syncFromTask(
+          updated.taskId,
+          updated.scheduledDate,
+          updated.isCompleted,
+          tx,
+        );
+      }
+      return updated;
     });
   }
 
@@ -673,7 +784,14 @@ export class TaskEngineService {
         throw new BadRequestException('Assignment is already carried forward or completed');
       }
 
-      // Create the new assignment on the target date
+      // Create the new assignment on the target date, applying the Phase 2
+      // adoption rule so a carry-forward into a day with an existing
+      // completed log is born in the correct state.
+      const initial = await this.sync.computeInitialAssignmentState(
+        assignment.taskId,
+        toDate,
+        tx,
+      );
       const created = await tx.taskAssignment.create({
         data: {
           taskId: assignment.taskId,
@@ -681,6 +799,9 @@ export class TaskEngineService {
           scheduledDate: toDate,
           startTime: assignment.startTime,
           endTime: assignment.endTime,
+          isCompleted: initial.isCompleted,
+          status: initial.status,
+          completedAt: initial.completedAt,
         },
       });
 

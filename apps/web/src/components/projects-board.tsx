@@ -24,6 +24,9 @@ export interface ProjectLog {
   commitNote: string | null;
   editedAt: string | null;
   editedByRole: string | null;
+  // Phase 2 audit/presentation only. Drives subtitle text on the goal row
+  // ("סומן במשימה"). NOT a correctness branch — server sync logic ignores it.
+  syncSource?: 'direct' | 'task';
   createdAt: string;
 }
 
@@ -37,9 +40,13 @@ export interface ProjectItem {
   selectOptions: SelectOption[] | null;
   sortOrder: number;
   isArchived: boolean;
+  // Phase 2: optional bidirectional link. Only meaningful for boolean items.
+  linkedPlanTaskId: string | null;
   createdAt: string;
   logs: ProjectLog[];
 }
+
+export interface LinkableTask { id: string; title: string; }
 
 export interface Project {
   id: string;
@@ -69,6 +76,13 @@ export interface PortalBootstrap {
   yesterday: string;
   projects: Project[];
   notes: ProjectNote[];
+  // Phase 2: tasks the participant can link a new/edited boolean goal to.
+  // Already filters out tasks that are currently linked to another goal.
+  linkableTasks: LinkableTask[];
+  // Phase 2: "itemId|YYYY-MM-DD" keys for (linked goal, date) pairs where
+  // the linked task has an ACTIVE assignment. Used to decide the
+  // "לא נקבע להיום בלו״ז" hint.
+  scheduledKeys: string[];
 }
 
 // ─── Styles ──────────────────────────────────────────────────────────────────
@@ -334,6 +348,7 @@ export function PortalProjectsBoard({ token }: PortalBoardProps) {
                 date={dateStr}
                 visible={itemExistsOn(item, dateStr)}
                 canManage={canManage}
+                scheduledKeys={data.scheduledKeys}
                 onChanged={reload}
                 onOpenSkip={() => setSkipForItem(item)}
                 onOpenRemove={() => setRemoveGoalByItem(item)}
@@ -367,6 +382,7 @@ export function PortalProjectsBoard({ token }: PortalBoardProps) {
         <AddGoalModal
           token={token}
           projectId={addItemForProject}
+          linkableTasks={data.linkableTasks}
           onClose={() => setAddItemForProject(null)}
           onCreated={() => { setAddItemForProject(null); void reload(); }}
         />
@@ -522,13 +538,18 @@ function GoalRow(props: {
   date: string;
   visible: boolean;
   canManage: boolean;
+  scheduledKeys: string[];
   onChanged: () => void;
   onOpenSkip: () => void;
   onOpenRemove: () => void;
 }) {
-  const { token, item, date, visible, canManage, onChanged, onOpenSkip, onOpenRemove } = props;
+  const { token, item, date, visible, canManage, scheduledKeys, onChanged, onOpenSkip, onOpenRemove } = props;
   const log = logForDate(item, date);
   const pill = statusPillFromLog(log);
+  const isLinked = !!item.linkedPlanTaskId;
+  const hasScheduledAssignment = isLinked && scheduledKeys.includes(`${item.id}|${date}`);
+  const completedViaTask = log?.syncSource === 'task';
+  const showNotScheduledHint = isLinked && log?.status === 'completed' && !hasScheduledAssignment;
 
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [err, setErr] = useState('');
@@ -633,7 +654,35 @@ function GoalRow(props: {
                 יעד {item.targetValue}
               </span>
             )}
+            {isLinked && (
+              <span
+                title="מטרה זו מקושרת למשימה ברשימת התכנון"
+                style={{
+                  marginInlineStart: 6,
+                  display: 'inline-flex', alignItems: 'center', gap: 4,
+                  padding: '2px 8px', borderRadius: 999,
+                  fontSize: 11, fontWeight: 600,
+                  background: COLORS.accentSoft, color: COLORS.accent,
+                }}
+              >🔗 מקושר למשימה</span>
+            )}
           </div>
+          {completedViaTask && (
+            <div style={{ fontSize: 12, color: COLORS.muted, marginTop: 2 }}>סומן במשימה</div>
+          )}
+          {showNotScheduledHint && !completedViaTask && (
+            <div style={{ fontSize: 12, color: COLORS.mutedLight, marginTop: 2 }}>
+              לא נקבע להיום בלו״ז
+            </div>
+          )}
+          {showNotScheduledHint && completedViaTask && (
+            // Extremely rare (completed via task BUT no active assignment —
+            // would require an assignment to have been deleted after sync).
+            // Still render the hint for consistency.
+            <div style={{ fontSize: 12, color: COLORS.mutedLight, marginTop: 2 }}>
+              לא נקבע להיום בלו״ז
+            </div>
+          )}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
           {pill && <span style={s.statusChip(pill.bg, pill.color)}>{pill.label}</span>}
@@ -824,7 +873,13 @@ function CreateProjectModal(props: { token: string; onClose: () => void; onCreat
   );
 }
 
-function AddGoalModal(props: { token: string; projectId: string; onClose: () => void; onCreated: () => void }) {
+function AddGoalModal(props: {
+  token: string;
+  projectId: string;
+  linkableTasks: LinkableTask[];
+  onClose: () => void;
+  onCreated: () => void;
+}) {
   const [title, setTitle] = useState('');
   const [itemType, setItemType] = useState<ProjectItemType>('boolean');
   const [unit, setUnit] = useState('');
@@ -833,6 +888,9 @@ function AddGoalModal(props: { token: string; projectId: string; onClose: () => 
   // The API still requires value + label; we use the label as both under the
   // hood so admins never deal with an internal "English value" field.
   const [options, setOptions] = useState<string[]>(['']);
+  // Phase 2 link picker. Only shown when itemType='boolean'. Empty string
+  // means "no link".
+  const [linkedTaskId, setLinkedTaskId] = useState<string>('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
@@ -850,6 +908,9 @@ function AddGoalModal(props: { token: string; projectId: string; onClose: () => 
         .map((s) => ({ value: s, label: s }));
       if (clean.length === 0) { setErr('חובה להגדיר לפחות אפשרות אחת'); return; }
       body.selectOptions = clean;
+    }
+    if (itemType === 'boolean' && linkedTaskId) {
+      body.linkedPlanTaskId = linkedTaskId;
     }
     setBusy(true); setErr('');
     try {
@@ -915,6 +976,22 @@ function AddGoalModal(props: { token: string; projectId: string; onClose: () => 
             <input type="number" style={s.textInput} value={targetValue} onChange={(e) => setTargetValue(e.target.value)} />
           </div>
         </>
+      )}
+
+      {itemType === 'boolean' && props.linkableTasks.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <label style={{ display: 'block', fontSize: 13, color: COLORS.muted, marginBottom: 4 }}>קשר למשימה</label>
+          <select
+            style={s.textInput}
+            value={linkedTaskId}
+            onChange={(e) => setLinkedTaskId(e.target.value)}
+          >
+            <option value="">ללא קישור</option>
+            {props.linkableTasks.map((t) => (
+              <option key={t.id} value={t.id}>{t.title}</option>
+            ))}
+          </select>
+        </div>
       )}
 
       {itemType === 'select' && (

@@ -88,6 +88,13 @@ export class CreateItemDto {
   @ValidateNested({ each: true })
   @Type(() => SelectOptionDto)
   selectOptions?: SelectOptionDto[];
+
+  // Phase 2: optional link to an existing PlanTask. Only valid when
+  // itemType='boolean'; service-level validation rejects other combos.
+  // Pass null to explicitly request "no link" (same semantic as omitting).
+  @IsOptional()
+  @IsString()
+  linkedPlanTaskId?: string | null;
 }
 
 export class UpdateItemDto {
@@ -112,6 +119,13 @@ export class UpdateItemDto {
   @IsOptional()
   @IsBoolean()
   isArchived?: boolean;
+
+  // Phase 2: pass a task id to link, null to unlink, omit to leave unchanged.
+  // The string `''` is treated the same as null (unlink) to tolerate simple
+  // frontend form serialization.
+  @IsOptional()
+  @IsString()
+  linkedPlanTaskId?: string | null;
 }
 
 export class ReorderItemDto {
