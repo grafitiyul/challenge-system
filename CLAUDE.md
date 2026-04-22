@@ -24,6 +24,27 @@
 - Do not skip steps
 - Be very precise and explicit
 
+## Execution Behavior — No Unnecessary Confirmations
+When executing tasks:
+- Do NOT stop for unnecessary confirmations.
+- Always prefer continuing execution rather than pausing for approval.
+- Assume "YES" by default for safe, non-destructive actions.
+
+Only stop and request confirmation if:
+1. The action is destructive and irreversible (e.g. deleting production data).
+2. There is real ambiguity about user intent.
+3. The environment strictly blocks execution without explicit approval.
+
+Otherwise:
+- Continue execution.
+- Complete the full task end-to-end.
+- Avoid partial progress caused by confirmation pauses.
+
+Additional clarification:
+- If a process was interrupted due to a declined confirmation, automatically resume and complete it.
+- Do not require the user to manually restart flows.
+- Always aim to deliver a fully working result in one execution.
+
 ## Goal
 Build a system for:
 - Programs (challenges, coaching, games)
