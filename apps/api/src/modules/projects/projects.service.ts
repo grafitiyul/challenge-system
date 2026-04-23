@@ -1038,7 +1038,12 @@ export class ProjectsService {
     const linkableTasks = await this.sync.listLinkableTasks(me.id);
     const scheduledKeys = await this.computeScheduledKeys(projects, fromDate, toDate);
     const schedulingStatus = await this.buildSchedulingStatusMap(projects);
-    const dailyContext = await this.loadDailyContext(me.id, toStr);
+    // Preload both day contexts so the UI can switch between היום/אתמול
+    // instantly without a re-fetch.
+    const dailyContextByDate: Record<string, Awaited<ReturnType<typeof this.loadDailyContext>>> = {
+      [toStr]: await this.loadDailyContext(me.id, toStr),
+      [fromStr]: await this.loadDailyContext(me.id, fromStr),
+    };
     return {
       participant: {
         id: me.id,
@@ -1058,9 +1063,10 @@ export class ProjectsService {
       // Phase 3: per-item scheduling status for the current week. Keyed by
       // item id. Missing entries = goal has no schedule config (frequencyType='none').
       schedulingStatus,
-      // Daily Context: today's self-report. Always present with sensible
-      // defaults so the UI can render chips without a second fetch.
-      dailyContext,
+      // Daily Context: one row per visible day (today + yesterday). Keyed
+      // by YYYY-MM-DD. Missing rows are materialized as zero-value defaults
+      // so the UI can toggle chips without a create-vs-update branch.
+      dailyContextByDate,
     };
   }
 

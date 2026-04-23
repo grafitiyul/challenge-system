@@ -167,9 +167,10 @@ export interface PortalBootstrap {
   // Phase 3: per-item scheduling status for the current week. Missing entries
   // = goal has no schedule config (no chip shown).
   schedulingStatus: Record<string, ItemSchedulingStatus>;
-  // Daily Context Layer: today's self-report. Always present — server sends
-  // zero-valued defaults when no row exists yet.
-  dailyContext: DailyContext;
+  // Daily Context Layer: one row per visible day (today + yesterday),
+  // keyed by YYYY-MM-DD. Missing rows are materialized server-side as
+  // zero-valued defaults so the UI can always render the panel.
+  dailyContextByDate: Record<string, DailyContext>;
 }
 
 // Daily Context Layer — participant self-report rendered above goals.
@@ -374,9 +375,10 @@ export function PortalProjectsBoard({ token, onViewLinkedTask }: PortalBoardProp
   // modal the first time the goal appears in state after reload.
   const autoOpenPendingIdRef = useRef<string | null>(null);
 
-  // Daily Context panel — optimistic local mirror of data.dailyContext so
-  // chip taps feel instant. Synced after every bootstrap reload.
-  const [dailyCtx, setDailyCtx] = useState<DailyContext | null>(null);
+  // Daily Context panel — optimistic local mirror keyed by YYYY-MM-DD so
+  // switching between היום/אתמול swaps selected chips instantly with no
+  // re-fetch flicker. Rehydrated on every bootstrap reload.
+  const [dailyCtxByDate, setDailyCtxByDate] = useState<Record<string, DailyContext>>({});
 
   const reload = useCallback(async () => {
     try {
@@ -385,7 +387,7 @@ export function PortalProjectsBoard({ token, onViewLinkedTask }: PortalBoardProp
         { cache: 'no-store' },
       );
       setData(d);
-      setDailyCtx(d.dailyContext);
+      setDailyCtxByDate(d.dailyContextByDate);
       setLoadErr('');
     } catch (e: unknown) {
       const msg = e && typeof e === 'object' && 'message' in e
@@ -399,25 +401,29 @@ export function PortalProjectsBoard({ token, onViewLinkedTask }: PortalBoardProp
   useEffect(() => { void reload(); }, [reload]);
 
   // Optimistic upsert — update local state immediately, fire POST in the
-  // background. On failure we silently roll back to the last server-known
-  // state so a bad network tap doesn't look like a fake success.
-  const upsertDailyCtx = useCallback(async (patch: Partial<Omit<DailyContext, 'logDate'>>) => {
-    if (!dailyCtx) return;
-    const prev = dailyCtx;
-    const next: DailyContext = { ...dailyCtx, ...patch };
-    setDailyCtx(next);
+  // background. Caller passes the target logDate so edits to yesterday
+  // stay bound to yesterday. On failure we silently roll back to the
+  // last server-known state for that specific date.
+  const upsertDailyCtx = useCallback(async (
+    logDate: string,
+    patch: Partial<Omit<DailyContext, 'logDate'>>,
+  ) => {
+    const prev = dailyCtxByDate[logDate];
+    if (!prev) return;
+    const next: DailyContext = { ...prev, ...patch };
+    setDailyCtxByDate((m) => ({ ...m, [logDate]: next }));
     try {
       await apiFetch<DailyContext>(
         `${BASE_URL}/public/projects/${token}/daily-context`,
         {
           method: 'POST',
-          body: JSON.stringify({ logDate: dailyCtx.logDate, ...patch }),
+          body: JSON.stringify({ logDate, ...patch }),
         },
       );
     } catch {
-      setDailyCtx(prev);
+      setDailyCtxByDate((m) => ({ ...m, [logDate]: prev }));
     }
-  }, [dailyCtx, token]);
+  }, [dailyCtxByDate, token]);
 
   // Phase 4: after goal creation reload, auto-open FillWeekModal once for
   // the freshly-created goal. Runs whenever data changes; short-circuits
@@ -571,14 +577,16 @@ export function PortalProjectsBoard({ token, onViewLinkedTask }: PortalBoardProp
         />
       )}
 
-      {/* Daily Context Layer — fixed panel above goals. Only shown on the
-          "today" day-view; the stats/fortnight/month views already have
-          their own dense layouts and an extra panel would compete for
-          primary attention. */}
-      {!isStatsView && selectedView === 'today' && dailyCtx && (
+      {/* Daily Context Layer — fixed panel above goals. Shown on both
+          היום and אתמול. The dateStr is already derived from selectedView
+          and is the single source of truth, so switching days swaps the
+          chip selection instantly via the date-keyed state map. Stats
+          views deliberately hide the panel — the grid has its own dense
+          layout and an extra panel would compete for primary attention. */}
+      {!isStatsView && dateStr && dailyCtxByDate[dateStr] && (
         <DailyContextPanel
-          value={dailyCtx}
-          onChange={(patch) => void upsertDailyCtx(patch)}
+          value={dailyCtxByDate[dateStr]}
+          onChange={(patch) => void upsertDailyCtx(dateStr, patch)}
         />
       )}
 
