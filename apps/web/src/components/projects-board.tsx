@@ -183,7 +183,7 @@ export interface DailyContext {
 
 // Vocabulary rendered as chips. Stored verbatim — no separate tag table.
 // Order is layout-significant; the UI renders exactly in this order.
-export const DAILY_CRAVING_OPTIONS = ['שוקולד', 'מתוק', 'פחמימות', 'מין'] as const;
+export const DAILY_CRAVING_OPTIONS = ['שוקולד', 'מתוק', 'פחמימות', 'סקס'] as const;
 export const DAILY_STATE_OPTIONS = ['עייפות', 'סטרס', 'התלהבות', 'פרודקטיביות', 'רוגע'] as const;
 
 // ─── Styles ──────────────────────────────────────────────────────────────────
