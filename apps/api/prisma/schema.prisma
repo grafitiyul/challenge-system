@@ -306,6 +306,7 @@ model Participant {
   projects          Project[]
   projectItemLogs   ProjectItemLog[]
   projectNotes      ProjectNote[]
+  dailyContextLogs  DailyContextLog[]
 
   createdAt                 DateTime                  @default(now())
   updatedAt                 DateTime                  @updatedAt
@@ -1522,4 +1523,26 @@ model ProjectNote {
 
   @@index([projectId])
   @@map("project_notes")
+}
+
+// Daily self-report panel rendered at the top of the portal's "המעקב שלי"
+// tab. One row per participant per civil day (Asia/Jerusalem). Arrays hold
+// short string tags from a fixed, UI-driven vocabulary (cravings/states).
+// Upserted on every chip toggle — the row is always the participant's
+// latest state for that day.
+model DailyContextLog {
+  id            String      @id @default(cuid())
+  participantId String
+  participant   Participant @relation(fields: [participantId], references: [id])
+  logDate       DateTime    @db.Date
+  hasPeriod     Boolean     @default(false)
+  cravings      String[]    @default([])
+  states        String[]    @default([])
+  note          String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  @@unique([participantId, logDate])
+  @@index([participantId, logDate])
+  @@map("daily_context_logs")
 }

@@ -18,6 +18,7 @@ import {
   ScheduleItemDto,
   UpdateItemDto,
   UpdateProjectDto,
+  UpsertDailyContextDto,
   UpsertLogDto,
 } from './dto/projects.dto';
 
@@ -1037,6 +1038,7 @@ export class ProjectsService {
     const linkableTasks = await this.sync.listLinkableTasks(me.id);
     const scheduledKeys = await this.computeScheduledKeys(projects, fromDate, toDate);
     const schedulingStatus = await this.buildSchedulingStatusMap(projects);
+    const dailyContext = await this.loadDailyContext(me.id, toStr);
     return {
       participant: {
         id: me.id,
@@ -1056,6 +1058,61 @@ export class ProjectsService {
       // Phase 3: per-item scheduling status for the current week. Keyed by
       // item id. Missing entries = goal has no schedule config (frequencyType='none').
       schedulingStatus,
+      // Daily Context: today's self-report. Always present with sensible
+      // defaults so the UI can render chips without a second fetch.
+      dailyContext,
+    };
+  }
+
+  // ── Daily Context ──────────────────────────────────────────────────────────
+  //
+  // One row per (participantId, logDate). Returns the row or a zero-value
+  // fallback — never null — so the portal can render the panel unconditionally.
+  private async loadDailyContext(participantId: string, logDateStr: string) {
+    const logDate = parseDayString(logDateStr);
+    const row = await this.prisma.dailyContextLog.findUnique({
+      where: { participantId_logDate: { participantId, logDate } },
+    });
+    return {
+      logDate: logDateStr,
+      hasPeriod: row?.hasPeriod ?? false,
+      cravings: row?.cravings ?? [],
+      states: row?.states ?? [],
+      note: row?.note ?? null,
+    };
+  }
+
+  async portalUpsertDailyContext(token: string, dto: UpsertDailyContextDto) {
+    const me = await this.resolveToken(token);
+    const logDate = parseDayString(dto.logDate);
+    // Only include fields the client actually sent so partial updates don't
+    // wipe other columns. Prisma requires the full set on CREATE, so the
+    // defaults in the create branch fill the gaps.
+    const createData: Prisma.DailyContextLogCreateInput = {
+      participant: { connect: { id: me.id } },
+      logDate,
+      hasPeriod: dto.hasPeriod ?? false,
+      cravings: dto.cravings ?? [],
+      states: dto.states ?? [],
+      note: dto.note ?? null,
+    };
+    const updateData: Prisma.DailyContextLogUpdateInput = {};
+    if (dto.hasPeriod !== undefined) updateData.hasPeriod = dto.hasPeriod;
+    if (dto.cravings !== undefined) updateData.cravings = { set: dto.cravings };
+    if (dto.states !== undefined) updateData.states = { set: dto.states };
+    if (dto.note !== undefined) updateData.note = dto.note;
+
+    const row = await this.prisma.dailyContextLog.upsert({
+      where: { participantId_logDate: { participantId: me.id, logDate } },
+      create: createData,
+      update: updateData,
+    });
+    return {
+      logDate: dto.logDate,
+      hasPeriod: row.hasPeriod,
+      cravings: row.cravings,
+      states: row.states,
+      note: row.note,
     };
   }
 

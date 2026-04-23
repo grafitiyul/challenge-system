@@ -8,6 +8,7 @@ import {
   ScheduleItemDto,
   UpdateItemDto,
   UpdateProjectDto,
+  UpsertDailyContextDto,
   UpsertLogDto,
 } from './dto/projects.dto';
 
@@ -128,5 +129,16 @@ export class PortalProjectsController {
     @Body() dto: CreateNoteDto,
   ) {
     return this.svc.portalCreateNote(token, projectId, dto);
+  }
+
+  // Daily Context Layer — upsert today's self-report (period/cravings/
+  // states/note). Idempotent; body fields are optional for partial updates.
+  // POST /api/public/projects/:token/daily-context
+  @Post(':token/daily-context')
+  upsertDailyContext(
+    @Param('token') token: string,
+    @Body() dto: UpsertDailyContextDto,
+  ) {
+    return this.svc.portalUpsertDailyContext(token, dto);
   }
 }

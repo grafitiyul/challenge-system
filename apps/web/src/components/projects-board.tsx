@@ -167,7 +167,24 @@ export interface PortalBootstrap {
   // Phase 3: per-item scheduling status for the current week. Missing entries
   // = goal has no schedule config (no chip shown).
   schedulingStatus: Record<string, ItemSchedulingStatus>;
+  // Daily Context Layer: today's self-report. Always present — server sends
+  // zero-valued defaults when no row exists yet.
+  dailyContext: DailyContext;
 }
+
+// Daily Context Layer — participant self-report rendered above goals.
+export interface DailyContext {
+  logDate: string;            // YYYY-MM-DD in Asia/Jerusalem
+  hasPeriod: boolean;
+  cravings: string[];         // free-form tags from the UI vocabulary
+  states: string[];
+  note: string | null;
+}
+
+// Vocabulary rendered as chips. Stored verbatim — no separate tag table.
+// Order is layout-significant; the UI renders exactly in this order.
+export const DAILY_CRAVING_OPTIONS = ['שוקולד', 'מתוק', 'פחמימות', 'מין'] as const;
+export const DAILY_STATE_OPTIONS = ['עייפות', 'סטרס', 'התלהבות', 'פרודקטיביות', 'רוגע'] as const;
 
 // ─── Styles ──────────────────────────────────────────────────────────────────
 
@@ -357,6 +374,10 @@ export function PortalProjectsBoard({ token, onViewLinkedTask }: PortalBoardProp
   // modal the first time the goal appears in state after reload.
   const autoOpenPendingIdRef = useRef<string | null>(null);
 
+  // Daily Context panel — optimistic local mirror of data.dailyContext so
+  // chip taps feel instant. Synced after every bootstrap reload.
+  const [dailyCtx, setDailyCtx] = useState<DailyContext | null>(null);
+
   const reload = useCallback(async () => {
     try {
       const d = await apiFetch<PortalBootstrap>(
@@ -364,6 +385,7 @@ export function PortalProjectsBoard({ token, onViewLinkedTask }: PortalBoardProp
         { cache: 'no-store' },
       );
       setData(d);
+      setDailyCtx(d.dailyContext);
       setLoadErr('');
     } catch (e: unknown) {
       const msg = e && typeof e === 'object' && 'message' in e
@@ -375,6 +397,27 @@ export function PortalProjectsBoard({ token, onViewLinkedTask }: PortalBoardProp
   }, [token]);
 
   useEffect(() => { void reload(); }, [reload]);
+
+  // Optimistic upsert — update local state immediately, fire POST in the
+  // background. On failure we silently roll back to the last server-known
+  // state so a bad network tap doesn't look like a fake success.
+  const upsertDailyCtx = useCallback(async (patch: Partial<Omit<DailyContext, 'logDate'>>) => {
+    if (!dailyCtx) return;
+    const prev = dailyCtx;
+    const next: DailyContext = { ...dailyCtx, ...patch };
+    setDailyCtx(next);
+    try {
+      await apiFetch<DailyContext>(
+        `${BASE_URL}/public/projects/${token}/daily-context`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ logDate: dailyCtx.logDate, ...patch }),
+        },
+      );
+    } catch {
+      setDailyCtx(prev);
+    }
+  }, [dailyCtx, token]);
 
   // Phase 4: after goal creation reload, auto-open FillWeekModal once for
   // the freshly-created goal. Runs whenever data changes; short-circuits
@@ -525,6 +568,17 @@ export function PortalProjectsBoard({ token, onViewLinkedTask }: PortalBoardProp
           data={statsData}
           today={data.today}
           onOpenDetail={(it) => setStatsDetail(it)}
+        />
+      )}
+
+      {/* Daily Context Layer — fixed panel above goals. Only shown on the
+          "today" day-view; the stats/fortnight/month views already have
+          their own dense layouts and an extra panel would compete for
+          primary attention. */}
+      {!isStatsView && selectedView === 'today' && dailyCtx && (
+        <DailyContextPanel
+          value={dailyCtx}
+          onChange={(patch) => void upsertDailyCtx(patch)}
         />
       )}
 
@@ -738,6 +792,94 @@ export function PortalProjectsBoard({ token, onViewLinkedTask }: PortalBoardProp
 // LockedModalShell: backdrop click does NOT close. Explicit × button and a
 // configurable footer. All destructive confirmations use this — no more
 // browser confirm()/prompt() anywhere in the UI.
+
+// ─── DailyContextPanel ─────────────────────────────────────────────────────
+//
+// Fixed panel above goals in the portal "today" view. Three sections:
+//   🩸 ווסת    — single yes-toggle chip (hasPeriod)
+//   🍫 חשקים   — multi-select chip row (cravings)
+//   😴 מצב     — multi-select chip row (states), balanced pos/neg
+// Taps optimistically mutate local state and fire an upsert; parent owns
+// the side-effect, so this component is presentational.
+function DailyContextPanel(props: {
+  value: DailyContext;
+  onChange: (patch: Partial<Omit<DailyContext, 'logDate'>>) => void;
+}) {
+  const { value, onChange } = props;
+  const selected = (list: string[], tag: string) => list.includes(tag);
+  const toggleInList = (list: string[], tag: string): string[] =>
+    list.includes(tag) ? list.filter((t) => t !== tag) : [...list, tag];
+
+  const chip = (isSelected: boolean): React.CSSProperties => ({
+    padding: '8px 14px',
+    fontSize: 13,
+    fontWeight: 600,
+    borderRadius: 999,
+    minHeight: 38,
+    cursor: 'pointer',
+    userSelect: 'none',
+    fontFamily: 'inherit',
+    border: `1px solid ${isSelected ? COLORS.accent : COLORS.border}`,
+    background: isSelected ? COLORS.accent : '#fff',
+    color: isSelected ? '#fff' : COLORS.text,
+    transition: 'background 120ms ease, border-color 120ms ease',
+  });
+
+  const sectionRow: React.CSSProperties = {
+    display: 'flex', alignItems: 'center', gap: 10,
+    flexWrap: 'wrap' as const, marginBottom: 10,
+  };
+  const sectionLabel: React.CSSProperties = {
+    fontSize: 13, fontWeight: 700, color: COLORS.text,
+    minWidth: 72, display: 'inline-flex', alignItems: 'center', gap: 6,
+  };
+
+  return (
+    <div style={{
+      ...s.card, marginBottom: 12, padding: 14,
+      background: COLORS.cardAlt, border: `1px solid ${COLORS.border}`,
+    }}>
+      {/* ווסת */}
+      <div style={sectionRow}>
+        <div style={sectionLabel}><span>🩸</span><span>ווסת</span></div>
+        <button
+          type="button"
+          onClick={() => onChange({ hasPeriod: !value.hasPeriod })}
+          style={chip(value.hasPeriod)}
+          aria-pressed={value.hasPeriod}
+        >כן</button>
+      </div>
+
+      {/* חשקים */}
+      <div style={sectionRow}>
+        <div style={sectionLabel}><span>🍫</span><span>חשקים</span></div>
+        {DAILY_CRAVING_OPTIONS.map((tag) => (
+          <button
+            key={tag}
+            type="button"
+            onClick={() => onChange({ cravings: toggleInList(value.cravings, tag) })}
+            style={chip(selected(value.cravings, tag))}
+            aria-pressed={selected(value.cravings, tag)}
+          >{tag}</button>
+        ))}
+      </div>
+
+      {/* מצב */}
+      <div style={{ ...sectionRow, marginBottom: 0 }}>
+        <div style={sectionLabel}><span>😴</span><span>מצב</span></div>
+        {DAILY_STATE_OPTIONS.map((tag) => (
+          <button
+            key={tag}
+            type="button"
+            onClick={() => onChange({ states: toggleInList(value.states, tag) })}
+            style={chip(selected(value.states, tag))}
+            aria-pressed={selected(value.states, tag)}
+          >{tag}</button>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function LockedModalShell(props: {
   title: string;

@@ -256,3 +256,31 @@ export class CreateNoteDto {
   @IsString()
   content: string;
 }
+
+// ─── Daily Context ──────────────────────────────────────────────────────────
+//
+// Participant-facing daily self-report panel. All fields optional on the
+// wire — only supplied fields are written; omitted fields leave the prior
+// value intact. No admin-side write surface in Phase 1.
+export class UpsertDailyContextDto {
+  @IsDateString()
+  logDate: string; // YYYY-MM-DD in Asia/Jerusalem
+
+  @IsOptional()
+  @IsBoolean()
+  hasPeriod?: boolean;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  cravings?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  states?: string[];
+
+  @IsOptional()
+  @IsString()
+  note?: string | null;
+}
