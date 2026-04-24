@@ -20,8 +20,14 @@ export class OffersController {
   constructor(private readonly svc: OffersService) {}
 
   @Get()
-  findAll(@Query('active') active?: string) {
-    return this.svc.findAll({ activeOnly: active === 'true' });
+  findAll(
+    @Query('active') active?: string,
+    @Query('productId') productId?: string,
+  ) {
+    return this.svc.findAll({
+      activeOnly: active === 'true',
+      productId: productId || undefined,
+    });
   }
 
   @Get(':id')

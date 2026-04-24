@@ -1,7 +1,9 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { WassengerService } from '../../wassenger.service';
 import { CreateParticipantDto } from './dto/create-participant.dto';
 import { UpdateParticipantDto } from './dto/update-participant.dto';
+import { renderTemplate } from '../products/template-render';
 
 function randomAlphanumeric(length: number): string {
   const chars = 'abcdefghijkmnpqrstuvwxyz23456789';
@@ -30,7 +32,74 @@ const DEFAULT_GENDERS = ['נקבה', 'זכר'];
 
 @Injectable()
 export class ParticipantsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly wassenger: WassengerService,
+  ) {}
+
+  // ─── Messaging ────────────────────────────────────────────────────────────
+
+  // Renders a template (if templateId given) or a raw body against the
+  // participant context. Used for the preview step of the compose modal.
+  async previewMessage(participantId: string, body: {
+    templateId?: string | null;
+    rawBody?: string | null;
+  }) {
+    const participant = await this.prisma.participant.findUnique({
+      where: { id: participantId },
+      select: {
+        id: true, firstName: true, lastName: true, phoneNumber: true, email: true,
+        accessToken: true,
+      },
+    });
+    if (!participant) throw new NotFoundException(`Participant ${participantId} not found`);
+
+    let templateSubject: string | null = null;
+    let templateBody = body.rawBody ?? '';
+    let productTitle: string | null = null;
+    let channel: 'email' | 'whatsapp' = 'whatsapp';
+    if (body.templateId) {
+      const tpl = await this.prisma.communicationTemplate.findUnique({
+        where: { id: body.templateId },
+        include: { product: { select: { title: true } } },
+      });
+      if (!tpl) throw new NotFoundException(`Template ${body.templateId} not found`);
+      templateSubject = tpl.subject;
+      templateBody = tpl.body;
+      productTitle = tpl.product.title;
+      channel = tpl.channel === 'email' ? 'email' : 'whatsapp';
+    }
+
+    const portalLink = participant.accessToken
+      ? `${process.env.WEB_BASE_URL ?? ''}/tg/${participant.accessToken}`
+      : null;
+    const rendered = renderTemplate(templateBody, {
+      participant,
+      product: productTitle ? { title: productTitle } : null,
+      portalLink,
+    });
+    const renderedSubject = templateSubject
+      ? renderTemplate(templateSubject, { participant, product: productTitle ? { title: productTitle } : null, portalLink })
+      : null;
+    return { channel, subject: renderedSubject, body: rendered };
+  }
+
+  // Sends a WhatsApp message via Wassenger. Accepts either a template id
+  // (which is rendered against the participant context) or a raw body.
+  async sendWhatsapp(participantId: string, body: {
+    templateId?: string | null;
+    rawBody?: string | null;
+  }) {
+    const preview = await this.previewMessage(participantId, body);
+    if (!preview.body.trim()) throw new BadRequestException('Message body is empty');
+    const participant = await this.prisma.participant.findUnique({
+      where: { id: participantId },
+      select: { phoneNumber: true },
+    });
+    if (!participant) throw new NotFoundException(`Participant ${participantId} not found`);
+    await this.wassenger.sendMessage(participant.phoneNumber, preview.body);
+    return { ok: true, preview };
+  }
 
   // Finds a gender by name, or creates it if missing — never throws due to missing config
   private async resolveGenderId(name: string): Promise<string> {
@@ -226,30 +295,38 @@ export class ParticipantsService {
 
   // ─── Participant portal token ───────────────────────────────────────────────
 
+  // Phase 3: the portal token is participant-scoped. This endpoint keeps
+  // the same URL shape for backward compat but always returns the
+  // participant's stable token — regardless of which group the admin is
+  // looking at. Moves between cohorts never regenerate the link.
   async generateAccessToken(participantId: string, groupId: string): Promise<{ token: string }> {
     const pg = await this.prisma.participantGroup.findUnique({
       where: { participantId_groupId: { participantId, groupId } },
     });
     if (!pg) throw new NotFoundException('Participant is not a member of this group');
 
-    // Return existing token if already generated
-    if (pg.accessToken) return { token: pg.accessToken };
+    const participant = await this.prisma.participant.findUnique({
+      where: { id: participantId },
+      select: { accessToken: true },
+    });
+    if (participant?.accessToken) return { token: participant.accessToken };
 
-    // Generate a new unique 12-char token
+    // First-time token for this participant.
     let token: string;
     let attempts = 0;
     do {
       token = randomAlphanumeric(12);
-      const existing = await this.prisma.participantGroup.findUnique({ where: { accessToken: token } });
+      const existing = await this.prisma.participant.findUnique({
+        where: { accessToken: token }, select: { id: true },
+      });
       if (!existing) break;
       attempts++;
     } while (attempts < 10);
 
-    await this.prisma.participantGroup.update({
-      where: { participantId_groupId: { participantId, groupId } },
+    await this.prisma.participant.update({
+      where: { id: participantId },
       data: { accessToken: token! },
     });
-
     return { token: token! };
   }
 }

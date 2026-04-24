@@ -69,6 +69,8 @@ interface Template {
   onSubmitSource: string | null;
   linkedChallengeId: string | null;
   linkedGroupId: string | null;
+  // Phase 3: product association for per-product waitlist and reporting.
+  productId: string | null;
   questions: Question[];
 }
 
@@ -251,6 +253,8 @@ function SettingsTab({ template, onSaved }: { template: Template; onSaved: (t: T
     onSubmitSource: template.onSubmitSource ?? '',
     linkedChallengeId: template.linkedChallengeId ?? '',
     linkedGroupId: template.linkedGroupId ?? '',
+    // Phase 3: product association
+    productId: template.productId ?? '',
   });
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -260,6 +264,7 @@ function SettingsTab({ template, onSaved }: { template: Template; onSaved: (t: T
   const [programs, setPrograms] = useState<Program[]>([]);
   const [challenges, setChallenges] = useState<Array<{ id: string; name: string }>>([]);
   const [groups, setGroups] = useState<Array<{ id: string; name: string }>>([]);
+  const [products, setProducts] = useState<Array<{ id: string; title: string }>>([]);
 
   useEffect(() => {
     apiFetch<Program[]>(`${BASE_URL}/programs`)
@@ -270,6 +275,9 @@ function SettingsTab({ template, onSaved }: { template: Template; onSaved: (t: T
       .catch(() => {});
     apiFetch<Array<{ id: string; name: string }>>(`${BASE_URL}/groups`)
       .then((data) => setGroups(Array.isArray(data) ? data : []))
+      .catch(() => {});
+    apiFetch<Array<{ id: string; title: string }>>(`${BASE_URL}/products?active=true`)
+      .then((data) => setProducts(Array.isArray(data) ? data : []))
       .catch(() => {});
   }, []);
 
@@ -307,6 +315,7 @@ function SettingsTab({ template, onSaved }: { template: Template; onSaved: (t: T
       const body = {
         ...form,
         programId: form.programId || null,
+        productId: form.productId || null,
         onSubmitParticipantStatus: form.onSubmitParticipantStatus || null,
         onSubmitSource: form.onSubmitSource || null,
         linkedChallengeId: form.linkedChallengeId || null,
@@ -358,6 +367,16 @@ function SettingsTab({ template, onSaved }: { template: Template; onSaved: (t: T
             ))}
           </select>
           <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>שיוך לתוכנית מציג שאלון זה בדף הקבוצות שמשתמשות בתוכנית</div>
+        </div>
+        <div>
+          <label style={labelStyle}>מוצר משויך</label>
+          <select style={inputStyle} value={form.productId} onChange={(e) => setField('productId', e.target.value)}>
+            <option value="">ללא מוצר</option>
+            {products.map((p) => (
+              <option key={p.id} value={p.id}>{p.title}</option>
+            ))}
+          </select>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>כשמטרת השאלון היא “רשימת המתנה” ויש מוצר משויך — מילוי יוסיף את המשתתפת לרשימת המתנה של המוצר.</div>
         </div>
       </div>
 

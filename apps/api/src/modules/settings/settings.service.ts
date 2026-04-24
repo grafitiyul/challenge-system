@@ -32,6 +32,11 @@ export class SettingsService {
   async seedDefaults() {
     const defaults: Record<string, string> = {
       mockParticipantsEnabled: 'false',
+      // Phase 3: email-sender identity for outbound system mail. The
+      // transport (SMTP host/port/user/pass) stays env-driven; these two
+      // are admin-editable metadata shown in the From header.
+      emailSenderName: '',
+      emailSenderAddress: '',
     };
     for (const [key, value] of Object.entries(defaults)) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

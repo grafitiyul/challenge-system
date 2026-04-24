@@ -210,6 +210,11 @@ export default function GroupDetailPage() {
   const [questionnaires, setQuestionnaires] = useState<QTemplate[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // Bulk move — selected participant IDs + destination picker visibility.
+  const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set());
+  const [bulkMoveOpen, setBulkMoveOpen] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+
   // Tab
   const [tab, setTab] = useState<Tab>('details');
 
@@ -1208,11 +1213,44 @@ export default function GroupDetailPage() {
               </p>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+                {/* Bulk selection toolbar */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0 10px', borderBottom: '1px solid #f1f5f9', flexWrap: 'wrap' as const }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#64748b', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={bulkSelected.size === participants.length && participants.length > 0}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setBulkSelected(new Set(participants.map((pg) => pg.participantId)));
+                        } else {
+                          setBulkSelected(new Set());
+                        }
+                      }}
+                    />
+                    בחרי הכל
+                  </label>
+                  <div style={{ fontSize: 12, color: '#64748b' }}>
+                    {bulkSelected.size > 0 ? `${bulkSelected.size} נבחרו` : ''}
+                  </div>
+                  {bulkSelected.size > 0 && (
+                    <div style={{ display: 'flex', gap: 6, marginInlineStart: 'auto' }}>
+                      <button
+                        onClick={() => setBulkMoveOpen(true)}
+                        style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600, background: '#0891b2', color: '#fff', border: 'none', borderRadius: 7, cursor: 'pointer' }}
+                      >📂 העבירי לקבוצה…</button>
+                      <button
+                        onClick={() => setBulkSelected(new Set())}
+                        style={{ padding: '6px 10px', fontSize: 12, background: 'transparent', color: '#64748b', border: '1px solid #e2e8f0', borderRadius: 7, cursor: 'pointer' }}
+                      >נקה בחירה</button>
+                    </div>
+                  )}
+                </div>
                 {participants.map((pg, idx) => {
                   const p = pg.participant;
                   const privateChat = privateChatByParticipant.get(p.id);
                   const hasToken = !!pg.accessToken;
                   const isRemoving = removingParticipantId === p.id;
+                  const isSelected = bulkSelected.has(pg.participantId);
 
                   return (
                     <div
@@ -1221,8 +1259,21 @@ export default function GroupDetailPage() {
                         display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0',
                         borderBottom: idx < participants.length - 1 ? '1px solid #f1f5f9' : 'none',
                         opacity: isRemoving ? 0.5 : 1,
+                        background: isSelected ? '#eff6ff' : 'transparent',
                       }}
                     >
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={(e) => {
+                          const next = new Set(bulkSelected);
+                          if (e.target.checked) next.add(pg.participantId);
+                          else next.delete(pg.participantId);
+                          setBulkSelected(next);
+                        }}
+                        style={{ flexShrink: 0 }}
+                      />
+
                       {/* Avatar */}
                       <div style={{
                         width: 36, height: 36, borderRadius: '50%', flexShrink: 0,
@@ -2074,6 +2125,34 @@ export default function GroupDetailPage() {
       {/* ══════════════════════════════════════════════════════════════════════
           MODAL — ADD PARTICIPANT
       ══════════════════════════════════════════════════════════════════════ */}
+      {bulkMoveOpen && (
+        <BulkMoveModal
+          fromGroupId={id}
+          currentGroupName={group?.name ?? ''}
+          selectedIds={Array.from(bulkSelected)}
+          busy={bulkBusy}
+          onClose={() => setBulkMoveOpen(false)}
+          onMove={async (toGroupId) => {
+            setBulkBusy(true);
+            try {
+              await apiFetch(`${BASE_URL}/groups/${toGroupId}/participants/bulk-move`, {
+                method: 'POST',
+                body: JSON.stringify({
+                  participantIds: Array.from(bulkSelected),
+                  fromGroupId: id,
+                }),
+              });
+              setBulkSelected(new Set());
+              setBulkMoveOpen(false);
+              // Simple refresh — rebuilds participants list + counts.
+              window.location.reload();
+            } catch (e) {
+              alert(e instanceof Error ? e.message : 'העברה נכשלה');
+            } finally { setBulkBusy(false); }
+          }}
+        />
+      )}
+
       {addParticipantOpen && (
         <Modal onClose={() => setAddParticipantOpen(false)}>
           <h3 style={S.modalTitle}>הוסף משתתפת לקבוצה</h3>
@@ -2236,6 +2315,58 @@ function Section({
       </div>
       <div style={{ padding: '16px 20px' }}>{children}</div>
     </div>
+  );
+}
+
+// ─── Bulk move modal ───────────────────────────────────────────────────────────
+
+interface GroupLite { id: string; name: string; isActive: boolean; }
+
+function BulkMoveModal(props: {
+  fromGroupId: string;
+  currentGroupName: string;
+  selectedIds: string[];
+  busy: boolean;
+  onClose: () => void;
+  onMove: (toGroupId: string) => void;
+}) {
+  const [groups, setGroups] = useState<GroupLite[] | null>(null);
+  const [picked, setPicked] = useState<string>('');
+  useEffect(() => {
+    apiFetch<GroupLite[]>(`${BASE_URL}/groups`, { cache: 'no-store' })
+      .then((rows) => setGroups(rows.filter((g) => g.isActive && g.id !== props.fromGroupId)))
+      .catch(() => setGroups([]));
+  }, [props.fromGroupId]);
+  return (
+    <Modal onClose={props.onClose}>
+      <h3 style={{ fontSize: 17, fontWeight: 700, margin: '0 0 8px' }}>העברת משתתפות לקבוצה אחרת</h3>
+      <p style={{ fontSize: 13, color: '#64748b', margin: '0 0 16px' }}>
+        מעבירי {props.selectedIds.length} משתתפות מ-{props.currentGroupName} לקבוצה אחרת.
+        הקישור האישי שלהן נשאר זהה.
+      </p>
+      {!groups && <div style={{ color: '#94a3b8', fontSize: 13 }}>טוען קבוצות...</div>}
+      {groups && groups.length === 0 && (
+        <div style={{ color: '#64748b', fontSize: 13 }}>אין קבוצות אחרות זמינות.</div>
+      )}
+      {groups && groups.length > 0 && (
+        <select
+          value={picked}
+          onChange={(e) => setPicked(e.target.value)}
+          style={{ width: '100%', padding: '10px 12px', fontSize: 14, border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff', marginBottom: 14, boxSizing: 'border-box' }}
+        >
+          <option value="">— בחרי קבוצת יעד —</option>
+          {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+        </select>
+      )}
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <button onClick={props.onClose} disabled={props.busy} style={{ padding: '8px 18px', background: '#f1f5f9', border: '1px solid #e2e8f0', color: '#374151', borderRadius: 8, fontSize: 13, cursor: 'pointer' }}>ביטול</button>
+        <button
+          onClick={() => picked && props.onMove(picked)}
+          disabled={!picked || props.busy}
+          style={{ padding: '8px 22px', background: picked && !props.busy ? '#0891b2' : '#93c5fd', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: picked && !props.busy ? 'pointer' : 'not-allowed' }}
+        >{props.busy ? 'מעביר...' : 'העברה'}</button>
+      </div>
+    </Modal>
   );
 }
 

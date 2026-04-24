@@ -4,8 +4,7 @@ import { ThrottlerModule } from '@nestjs/throttler';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { HealthController } from './health.controller';
-import { WassengerController } from './wassenger.controller';
-import { WassengerService } from './wassenger.service';
+import { WassengerModule } from './wassenger.module';
 import { SeederService } from './seeder.service';
 import { ChallengesModule } from './modules/challenges/challenges.module';
 import { ChallengeTypesModule } from './modules/challenge-types/challenge-types.module';
@@ -22,6 +21,7 @@ import { TaskEngineModule } from './modules/task-engine/task-engine.module';
 import { ProjectsModule } from './modules/projects/projects.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { OffersModule } from './modules/offers/offers.module';
+import { ProductsModule } from './modules/products/products.module';
 import { AdminUsersModule } from './modules/admin-users/admin-users.module';
 
 @Module({
@@ -29,6 +29,7 @@ import { AdminUsersModule } from './modules/admin-users/admin-users.module';
     ConfigModule.forRoot({ isGlobal: true }),
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }]),
     PrismaModule,
+    WassengerModule,
     AuthModule,
     ChallengesModule,
     ChallengeTypesModule,
@@ -45,9 +46,10 @@ import { AdminUsersModule } from './modules/admin-users/admin-users.module';
     ProjectsModule,
     PaymentsModule,
     OffersModule,
+    ProductsModule,
     AdminUsersModule,
   ],
-  controllers: [HealthController, WassengerController],
-  providers: [WassengerService, SeederService],
+  controllers: [HealthController],
+  providers: [SeederService],
 })
 export class AppModule {}

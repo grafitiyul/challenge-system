@@ -2212,11 +2212,18 @@ export class GameEngineService {
   // the opening-screen gate, without affecting any other participant or the group.
 
   async getBypassLink(accessToken: string): Promise<{ sig: string }> {
-    const pg = await this.prisma.participantGroup.findUnique({
+    // Phase 3: accept either participant-scoped or legacy per-group tokens.
+    const direct = await this.prisma.participant.findUnique({
       where: { accessToken },
       select: { id: true },
     });
-    if (!pg) throw new NotFoundException('Access token not found');
+    if (!direct) {
+      const pg = await this.prisma.participantGroup.findUnique({
+        where: { accessToken },
+        select: { id: true },
+      });
+      if (!pg) throw new NotFoundException('Access token not found');
+    }
     const secret = process.env.BYPASS_SECRET ?? 'challenge-bypass-dev-secret';
     const sig = createHmac('sha256', secret).update(accessToken).digest('hex').slice(0, 24);
     return { sig };

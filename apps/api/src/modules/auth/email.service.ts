@@ -1,12 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 import * as nodemailer from 'nodemailer';
+import { SettingsService } from '../settings/settings.service';
 
 @Injectable()
 export class EmailService {
   private readonly logger = new Logger(EmailService.name);
   private transporter: nodemailer.Transporter | null = null;
 
-  constructor() {
+  constructor(private readonly settings: SettingsService) {
     const host = process.env['SMTP_HOST'];
     const port = Number(process.env['SMTP_PORT'] ?? 587);
     const user = process.env['SMTP_USER'];
@@ -40,7 +41,18 @@ export class EmailService {
       );
     }
 
-    const from = process.env['SMTP_FROM'] ?? 'Challenge System <noreply@example.com>';
+    // Phase 3: prefer admin-editable sender identity from SystemSettings
+    // (emailSenderName / emailSenderAddress). SMTP_FROM env var is a
+    // legacy fallback kept for existing deployments.
+    const [senderName, senderAddress] = await Promise.all([
+      this.settings.get('emailSenderName'),
+      this.settings.get('emailSenderAddress'),
+    ]);
+    const from = senderName && senderAddress
+      ? `${senderName} <${senderAddress}>`
+      : senderAddress
+      ? senderAddress
+      : process.env['SMTP_FROM'] ?? 'Challenge System <noreply@example.com>';
 
     try {
       await this.transporter.sendMail({ from, to, subject, html });

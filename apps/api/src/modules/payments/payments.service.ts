@@ -111,13 +111,58 @@ export class PaymentsService {
   // Mark a payment as reconciled. Orthogonal to `status`: a row can be
   // status=paid but not yet verifiedAt (money landed, statement not yet
   // checked). Setting to null clears the flag ("unverify").
+  //
+  // Phase 3: when VERIFYING (not unverifying), auto-join the participant
+  // into the offer's defaultGroup if set — this operationalizes the rule
+  // "verified payment → cohort membership". If the payment has an explicit
+  // groupId, prefer that over offer.defaultGroup. Existing Participant.
+  // status is bumped to 'paid' so the lifecycle chip updates. Admin can
+  // still override group membership afterwards via the group picker.
   async setVerified(id: string, verified: boolean) {
     await this.requirePayment(id);
-    return this.prisma.payment.update({
+    const updated = await this.prisma.payment.update({
       where: { id },
       data: { verifiedAt: verified ? new Date() : null },
-      include: this.PAYMENT_INCLUDE,
+      include: {
+        ...this.PAYMENT_INCLUDE,
+        participant: { select: { id: true, status: true } },
+      },
     });
+
+    if (verified) {
+      // 1. Cohort assignment: prefer payment.groupId, fall back to
+      //    offer.defaultGroupId. No-op when neither is set.
+      const rawOffer = updated.offer as unknown as {
+        defaultGroup?: { id: string } | null;
+      } | null;
+      const targetGroupId = updated.groupId ?? rawOffer?.defaultGroup?.id ?? null;
+      if (targetGroupId) {
+        await this.prisma.participantGroup.upsert({
+          where: {
+            participantId_groupId: {
+              participantId: updated.participantId,
+              groupId: targetGroupId,
+            },
+          },
+          create: {
+            participantId: updated.participantId,
+            groupId: targetGroupId,
+          },
+          update: { isActive: true, leftAt: null },
+        });
+      }
+      // 2. Lifecycle bump — only if the participant is not already paid/active.
+      //    Don't overwrite a stronger status like 'active'.
+      const status = updated.participant?.status;
+      if (status !== 'paid' && status !== 'active') {
+        await this.prisma.participant.update({
+          where: { id: updated.participantId },
+          data: { status: 'paid' },
+        });
+      }
+    }
+
+    return updated;
   }
 
   private async requireParticipant(id: string) {

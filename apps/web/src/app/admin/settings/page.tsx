@@ -245,6 +245,10 @@ export default function SettingsPage() {
         </button>
       </div>
 
+      {/* Email sender — admin-editable identity for outbound mail. SMTP
+          transport (host/port/user/pass) remains env-driven for security. */}
+      <EmailSenderCard />
+
       {/* Placeholder sections */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 16 }}>
         {PLACEHOLDER_SECTIONS.map((s) => (
@@ -277,6 +281,87 @@ export default function SettingsPage() {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+// ─── Email sender card ─────────────────────────────────────────────────────
+
+function EmailSenderCard() {
+  const [name, setName] = useState('');
+  const [address, setAddress] = useState('');
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState<'name' | 'address' | null>(null);
+  const [saved, setSaved] = useState<'name' | 'address' | null>(null);
+
+  useEffect(() => {
+    apiFetch<Record<string, string>>(`${BASE_URL}/settings`)
+      .then((s) => {
+        setName(s.emailSenderName ?? '');
+        setAddress(s.emailSenderAddress ?? '');
+      })
+      .catch(() => {})
+      .finally(() => setLoaded(true));
+  }, []);
+
+  async function save(key: 'emailSenderName' | 'emailSenderAddress', value: string) {
+    const which = key === 'emailSenderName' ? 'name' : 'address';
+    setBusy(which);
+    try {
+      await apiFetch(`${BASE_URL}/settings/${key}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ value }),
+      });
+      setSaved(which);
+      setTimeout(() => setSaved(null), 1500);
+    } catch {
+      // ignore — UI stays at its current value
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: 20, marginBottom: 24 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+        <span style={{ fontSize: 22 }}>✉️</span>
+        <div>
+          <div style={{ fontWeight: 600, fontSize: 15, color: '#0f172a' }}>זהות שולח המייל</div>
+          <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
+            שם וכתובת שיופיעו בכותרת “מאת”. פרטי ה-SMTP (שרת, משתמש, סיסמה) מוגדרים כ-env ולא כאן.
+          </div>
+        </div>
+      </div>
+      {!loaded && <div style={{ fontSize: 13, color: '#94a3b8' }}>טוען...</div>}
+      {loaded && (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div>
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 4 }}>שם השולח</label>
+            <input
+              style={{ width: '100%', padding: '9px 12px', border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 14, boxSizing: 'border-box' }}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              onBlur={() => void save('emailSenderName', name)}
+              placeholder="Challenge System"
+            />
+            {saved === 'name' && <div style={{ fontSize: 11, color: '#15803d', marginTop: 4 }}>✓ נשמר</div>}
+            {busy === 'name' && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>שומר...</div>}
+          </div>
+          <div>
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 4 }}>כתובת השולח</label>
+            <input
+              dir="ltr"
+              style={{ width: '100%', padding: '9px 12px', border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 14, boxSizing: 'border-box' }}
+              value={address}
+              onChange={(e) => setAddress(e.target.value)}
+              onBlur={() => void save('emailSenderAddress', address)}
+              placeholder="noreply@example.com"
+            />
+            {saved === 'address' && <div style={{ fontSize: 11, color: '#15803d', marginTop: 4 }}>✓ נשמר</div>}
+            {busy === 'address' && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>שומר...</div>}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

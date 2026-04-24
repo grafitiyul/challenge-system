@@ -640,6 +640,7 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
   });
 
   const [editOpen, setEditOpen] = useState(false);
+  const [composeOpen, setComposeOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [form, setForm] = useState<EditForm>({ firstName: '', lastName: '', phoneNumber: '', email: '', birthDate: '', city: '', status: '', notes: '', nextAction: '', source: '' });
@@ -918,6 +919,12 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
           {/* Quick actions */}
           <div style={{ display: 'flex', gap: 8, flexShrink: 0, flexWrap: 'wrap', alignSelf: 'flex-start' }}>
             <button
+              onClick={() => setComposeOpen(true)}
+              style={{ background: '#16a34a', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 18px', fontSize: 14, cursor: 'pointer', fontWeight: 600, minHeight: 42 }}
+            >
+              💬 WhatsApp
+            </button>
+            <button
               onClick={openPickModal}
               style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 18px', fontSize: 14, cursor: 'pointer', fontWeight: 600, minHeight: 42 }}
             >
@@ -1052,6 +1059,15 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
           onClose={() => setEditOpen(false)}
           saving={saving}
           saveError={saveError}
+        />
+      )}
+
+      {/* WhatsApp compose modal */}
+      {composeOpen && (
+        <WhatsappComposeModal
+          participantId={participant.id}
+          phoneNumber={participant.phoneNumber}
+          onClose={() => setComposeOpen(false)}
         />
       )}
 
@@ -1194,6 +1210,157 @@ function CollectedInfoTab({ participant }: { participant: Participant }) {
           <div style={{ fontSize: 14, color: '#374151', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{participant.notes}</div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── WhatsApp compose modal ─────────────────────────────────────────────────
+
+interface ProductTemplateLite {
+  id: string;
+  title: string;
+  body: string;
+  product: { id: string; title: string };
+}
+
+function WhatsappComposeModal(props: {
+  participantId: string;
+  phoneNumber: string;
+  onClose: () => void;
+}) {
+  const [products, setProducts] = useState<Array<{ id: string; title: string }>>([]);
+  const [selectedProductId, setSelectedProductId] = useState<string>('');
+  const [templates, setTemplates] = useState<ProductTemplateLite[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
+  const [rawBody, setRawBody] = useState('');
+  const [preview, setPreview] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [sent, setSent] = useState(false);
+
+  // Products list on mount.
+  useEffect(() => {
+    apiFetch<Array<{ id: string; title: string }>>(`${BASE_URL}/products?active=true`)
+      .then(setProducts)
+      .catch(() => setProducts([]));
+  }, []);
+
+  // Templates list whenever product changes.
+  useEffect(() => {
+    if (!selectedProductId) { setTemplates([]); setSelectedTemplateId(''); return; }
+    apiFetch<ProductTemplateLite[]>(
+      `${BASE_URL}/products/${selectedProductId}/templates?channel=whatsapp`,
+    ).then((rows) => setTemplates(rows)).catch(() => setTemplates([]));
+  }, [selectedProductId]);
+
+  // Whenever template or raw body changes, fetch a rendered preview.
+  useEffect(() => {
+    const templateId = selectedTemplateId || null;
+    const body = templateId ? null : (rawBody || null);
+    if (!templateId && !body) { setPreview(''); return; }
+    let cancelled = false;
+    apiFetch<{ body: string }>(`${BASE_URL}/participants/${props.participantId}/messages/preview`, {
+      method: 'POST',
+      body: JSON.stringify({ templateId, rawBody: body }),
+    }).then((r) => { if (!cancelled) setPreview(r.body); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [selectedTemplateId, rawBody, props.participantId]);
+
+  async function send() {
+    setBusy(true); setErr('');
+    try {
+      await apiFetch(`${BASE_URL}/participants/${props.participantId}/messages/whatsapp`, {
+        method: 'POST',
+        body: JSON.stringify({
+          templateId: selectedTemplateId || null,
+          rawBody: selectedTemplateId ? null : rawBody,
+        }),
+      });
+      setSent(true);
+      setTimeout(props.onClose, 800);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'שליחה נכשלה');
+    } finally { setBusy(false); }
+  }
+
+  const input: React.CSSProperties = {
+    width: '100%', padding: '9px 12px', border: '1px solid #e2e8f0',
+    borderRadius: 8, fontSize: 14, background: '#fff', color: '#0f172a',
+    boxSizing: 'border-box', fontFamily: 'inherit',
+  };
+  const label: React.CSSProperties = {
+    display: 'block', fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 4,
+  };
+
+  return (
+    <div
+      onClick={(e) => { if (e.target === e.currentTarget && !busy) props.onClose(); }}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1200, padding: 16 }}
+    >
+      <div style={{ background: '#fff', borderRadius: 14, padding: 22, width: '100%', maxWidth: 560, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+          <div style={{ fontSize: 17, fontWeight: 700 }}>💬 שליחת WhatsApp</div>
+          <button aria-label="סגור" onClick={props.onClose} style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: 'pointer' }}>×</button>
+        </div>
+        <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>
+          נמען: <span dir="ltr" style={{ fontWeight: 600, color: '#0f172a' }}>{props.phoneNumber}</span>
+        </div>
+
+        <div style={{ display: 'grid', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div>
+              <label style={label}>מוצר</label>
+              <select style={input} value={selectedProductId} onChange={(e) => { setSelectedProductId(e.target.value); setSelectedTemplateId(''); }}>
+                <option value="">— ללא —</option>
+                {products.map((p) => <option key={p.id} value={p.id}>{p.title}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={label}>תבנית</label>
+              <select
+                style={input}
+                value={selectedTemplateId}
+                onChange={(e) => setSelectedTemplateId(e.target.value)}
+                disabled={!selectedProductId || templates.length === 0}
+              >
+                <option value="">— הודעה חופשית —</option>
+                {templates.map((t) => <option key={t.id} value={t.id}>{t.title}</option>)}
+              </select>
+            </div>
+          </div>
+
+          {!selectedTemplateId && (
+            <div>
+              <label style={label}>טקסט ההודעה</label>
+              <textarea
+                style={{ ...input, minHeight: 120, resize: 'vertical' as const }}
+                value={rawBody}
+                onChange={(e) => setRawBody(e.target.value)}
+                placeholder="כתבי הודעה... (משתנים נתמכים: {firstName}, {portalLink})"
+              />
+            </div>
+          )}
+
+          {preview && (
+            <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, padding: 12 }}>
+              <div style={{ fontSize: 11, color: '#16a34a', fontWeight: 700, marginBottom: 6 }}>תצוגה מקדימה</div>
+              <div style={{ fontSize: 14, whiteSpace: 'pre-wrap', color: '#0f172a' }}>{preview}</div>
+            </div>
+          )}
+
+          {err && <div style={{ color: '#b91c1c', fontSize: 13 }}>{err}</div>}
+          {sent && <div style={{ color: '#15803d', fontSize: 13 }}>✓ נשלח</div>}
+        </div>
+
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+          <button onClick={props.onClose} disabled={busy} style={{ padding: '8px 18px', background: '#f1f5f9', border: '1px solid #e2e8f0', color: '#374151', borderRadius: 8, fontSize: 13, cursor: 'pointer' }}>ביטול</button>
+          <button
+            onClick={send}
+            disabled={busy || sent || !preview.trim()}
+            style={{ padding: '8px 22px', background: busy || sent ? '#86efac' : '#16a34a', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: busy || sent || !preview.trim() ? 'not-allowed' : 'pointer' }}
+          >{busy ? 'שולח...' : sent ? 'נשלח ✓' : '💬 שלח עכשיו'}</button>
+        </div>
+      </div>
     </div>
   );
 }

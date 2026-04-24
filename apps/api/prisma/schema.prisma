@@ -323,6 +323,17 @@ model Participant {
   // Onboarding & payments (Phase 1 public registration)
   payments          Payment[]
 
+  // Phase 3: participant-scoped portal token. Stable across group moves —
+  // the old ParticipantGroup.accessToken stays for backward compat (read
+  // fallback) but new generations write here so the /tg/:token link is
+  // permanent per participant regardless of cohort changes.
+  accessToken       String?  @unique
+
+  // Phase 3: per-product waitlist / interest tracking. One row per
+  // (participant, product). Created when a waitlist questionnaire with
+  // a linked product is submitted.
+  productWaitlistEntries ProductWaitlistEntry[]
+
   createdAt                 DateTime                  @default(now())
   updatedAt                 DateTime                  @updatedAt
 
@@ -691,6 +702,11 @@ model QuestionnaireTemplate {
   // Optional program association — used to show related questionnaires on the group screen
   programId String?
   program   Program? @relation(fields: [programId], references: [id])
+
+  // Phase 3: product association — drives per-product waitlist creation on
+  // submit. When set + purpose='waitlist', a ProductWaitlistEntry is written.
+  productId String?
+  product   Product? @relation(fields: [productId], references: [id])
 
   questions     QuestionnaireQuestion[]
   submissions   QuestionnaireSubmission[]
@@ -1568,6 +1584,77 @@ model ProjectNote {
   @@map("project_notes")
 }
 
+// Phase 3: Product is the central business entity. Examples:
+//   משחק הרגלי אכילה · אתגר 30 יום · ליווי קבוצתי · ליווי אישי
+// Products own their own waitlist, offers, and communication templates.
+// Challenges/Programs/Groups stay in place (the task engine still runs off
+// them) — Product is a higher-level operational layer that wraps them.
+model Product {
+  id          String  @id @default(cuid())
+  title       String
+  description String?
+  // Short free-form classifier — "game" | "challenge" | "coaching" etc.
+  // Not an enum so new product types don't require a migration.
+  kind        String  @default("game")
+  isActive    Boolean @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  offers                  PaymentOffer[]
+  questionnaireTemplates  QuestionnaireTemplate[]
+  communicationTemplates  CommunicationTemplate[]
+  waitlistEntries         ProductWaitlistEntry[]
+
+  @@index([isActive])
+  @@map("products")
+}
+
+// Per-product waitlist. One row per (participant, product). Created on
+// submit of a waitlist questionnaire that has a productId. Supports
+// "show me everyone waiting for the next cycle of product X" directly
+// without conflating with the global Participant.status.
+model ProductWaitlistEntry {
+  id            String      @id @default(cuid())
+  productId     String
+  product       Product     @relation(fields: [productId], references: [id])
+  participantId String
+  participant   Participant @relation(fields: [participantId], references: [id])
+  // Free-form — mirrors PARTICIPANT_SOURCES. Copy of onSubmitSource
+  // from the template that created this entry.
+  source        String?
+  // Optional free-form notes (admin-only).
+  notes         String?
+  // Soft-delete: admin can remove a row (isActive=false) without losing history.
+  isActive      Boolean     @default(true)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  @@unique([productId, participantId])
+  @@index([productId, isActive])
+  @@map("product_waitlist_entries")
+}
+
+// Phase 3: product-scoped communication templates. Separate from the
+// existing ProgramMessageTemplate (which stays in place for game-level
+// content) — this model distinguishes email vs whatsapp and carries a
+// subject field for email.
+model CommunicationTemplate {
+  id        String   @id @default(cuid())
+  productId String
+  product   Product  @relation(fields: [productId], references: [id])
+  // "email" | "whatsapp"
+  channel   String
+  title     String   // admin-facing name, e.g. "ברוכה הבאה אחרי תשלום"
+  subject   String?  // email only; ignored for whatsapp
+  body      String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([productId, channel, isActive])
+  @@map("communication_templates")
+}
+
 // Reusable product / offer catalog. An "offer" is a buyable thing
 // (a cycle of a program, a single coaching call, a package) with a
 // public iCount payment page URL. Admin manages these from /admin/offers.
@@ -1582,6 +1669,10 @@ model PaymentOffer {
   // Full URL of the iCount (or other provider) checkout page. Copy-paste
   // target for the admin. NOT auto-generated.
   iCountPaymentUrl  String?
+  // Phase 3: each offer belongs to a product. Nullable for legacy rows;
+  // new offers created via /admin/products pre-fill this.
+  productId         String?
+  product           Product?    @relation(fields: [productId], references: [id])
   linkedChallengeId String?
   linkedChallenge   Challenge?  @relation(fields: [linkedChallengeId], references: [id])
   linkedProgramId   String?

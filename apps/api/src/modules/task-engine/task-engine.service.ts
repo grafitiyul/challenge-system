@@ -982,6 +982,44 @@ export class TaskEngineService {
   // Returns the participant + group info needed to bootstrap the portal.
 
   async resolvePortalToken(token: string) {
+    // Phase 3: participant-scoped token is the primary path. Pick the
+    // participant's most-recent ACTIVE group membership as the "current
+    // group" so the portal keeps working when a participant is moved
+    // between cohorts (token stays the same, cohort view follows their
+    // latest assignment). Fall back to the legacy per-group column for
+    // pre-migration rows.
+    const direct = await this.prisma.participant.findUnique({
+      where: { accessToken: token },
+      select: {
+        id: true, firstName: true, lastName: true,
+        participantGroups: {
+          where: { isActive: true },
+          orderBy: { joinedAt: 'desc' },
+          take: 1,
+          include: {
+            group: {
+              select: { id: true, name: true, taskEngineEnabled: true, portalCallTime: true, portalOpenTime: true },
+            },
+          },
+        },
+      },
+    });
+    if (direct) {
+      const pg = direct.participantGroups[0];
+      if (!pg) throw new NotFoundException('Participant is not in any active group');
+      return {
+        participantId: direct.id,
+        participantName: `${direct.firstName} ${direct.lastName ?? ''}`.trim(),
+        participantFirstName: direct.firstName,
+        groupId: pg.group.id,
+        groupName: pg.group.name,
+        taskEngineEnabled: pg.group.taskEngineEnabled,
+        memberIsActive: pg.isActive,
+        portalCallTime: pg.group.portalCallTime ? pg.group.portalCallTime.toISOString() : null,
+        portalOpenTime: pg.group.portalOpenTime ? pg.group.portalOpenTime.toISOString() : null,
+      };
+    }
+
     const pg = await this.prisma.participantGroup.findUnique({
       where: { accessToken: token },
       include: {

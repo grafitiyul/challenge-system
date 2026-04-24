@@ -66,6 +66,24 @@ export class ParticipantsController {
     return this.participantsService.listFormSubmissions(id);
   }
 
+  // Render a template / body against the participant's context.
+  @Post(':id/messages/preview')
+  previewMessage(
+    @Param('id') id: string,
+    @Body() body: { templateId?: string | null; rawBody?: string | null },
+  ) {
+    return this.participantsService.previewMessage(id, body);
+  }
+
+  // Send a WhatsApp message immediately via Wassenger.
+  @Post(':id/messages/whatsapp')
+  sendWhatsapp(
+    @Param('id') id: string,
+    @Body() body: { templateId?: string | null; rawBody?: string | null },
+  ) {
+    return this.participantsService.sendWhatsapp(id, body);
+  }
+
   // POST /api/participants/:participantId/groups/:groupId/token
   // Generates (idempotent) a personal access token for the participant portal link
   @Post(':participantId/groups/:groupId/token')

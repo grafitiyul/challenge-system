@@ -9,10 +9,14 @@ import { CreateOfferDto, UpdateOfferDto } from './dto/offer.dto';
 export class OffersService {
   constructor(private readonly prisma: PrismaService) {}
 
-  findAll(opts: { activeOnly?: boolean } = {}) {
+  findAll(opts: { activeOnly?: boolean; productId?: string } = {}) {
     return this.prisma.paymentOffer.findMany({
-      where: opts.activeOnly ? { isActive: true } : {},
+      where: {
+        ...(opts.activeOnly ? { isActive: true } : {}),
+        ...(opts.productId ? { productId: opts.productId } : {}),
+      },
       include: {
+        product: { select: { id: true, title: true } },
         linkedChallenge: { select: { id: true, name: true } },
         linkedProgram: { select: { id: true, name: true } },
         defaultGroup: { select: { id: true, name: true } },
@@ -26,6 +30,7 @@ export class OffersService {
     const offer = await this.prisma.paymentOffer.findUnique({
       where: { id },
       include: {
+        product: { select: { id: true, title: true } },
         linkedChallenge: { select: { id: true, name: true } },
         linkedProgram: { select: { id: true, name: true } },
         defaultGroup: { select: { id: true, name: true } },
@@ -44,6 +49,7 @@ export class OffersService {
         amount: new Prisma.Decimal(dto.amount),
         currency: (dto.currency ?? 'ILS').trim() || 'ILS',
         iCountPaymentUrl: dto.iCountPaymentUrl ?? null,
+        productId: dto.productId ?? null,
         linkedChallengeId: dto.linkedChallengeId ?? null,
         linkedProgramId: dto.linkedProgramId ?? null,
         defaultGroupId: dto.defaultGroupId ?? null,
@@ -60,6 +66,10 @@ export class OffersService {
     if (dto.amount !== undefined) data.amount = new Prisma.Decimal(dto.amount);
     if (dto.currency !== undefined) data.currency = dto.currency.trim() || 'ILS';
     if (dto.iCountPaymentUrl !== undefined) data.iCountPaymentUrl = dto.iCountPaymentUrl ?? null;
+    if (dto.productId !== undefined) {
+      data.product = dto.productId
+        ? { connect: { id: dto.productId } } : { disconnect: true };
+    }
     if (dto.linkedChallengeId !== undefined) {
       data.linkedChallenge = dto.linkedChallengeId
         ? { connect: { id: dto.linkedChallengeId } } : { disconnect: true };

@@ -140,6 +140,7 @@ export class QuestionnairesService {
         ...(dto.postIdentificationGreeting !== undefined ? { postIdentificationGreeting: dto.postIdentificationGreeting || null } : {}),
         ...(dto.postSubmitText !== undefined ? { postSubmitText: dto.postSubmitText || null } : {}),
         ...(dto.programId !== undefined ? { programId: dto.programId ?? null } : {}),
+        ...(dto.productId !== undefined ? { productId: dto.productId ?? null } : {}),
         ...(dto.submissionPurpose !== undefined ? { submissionPurpose: dto.submissionPurpose } : {}),
         ...(dto.participantMatchingMode !== undefined ? { participantMatchingMode: dto.participantMatchingMode } : {}),
         ...(dto.onSubmitParticipantStatus !== undefined
@@ -598,6 +599,34 @@ export class QuestionnairesService {
           groupId: template.linkedGroupId,
         },
         update: { isActive: true, leftAt: null },
+      });
+    }
+
+    // Phase 3: if the template is linked to a Product AND declares itself
+    // a waitlist-purpose form, record the participant in the product's
+    // waitlist. Idempotent — re-submitting the same form reactivates the
+    // row rather than creating a duplicate.
+    if (
+      resolvedParticipantId &&
+      template.productId &&
+      template.submissionPurpose === 'waitlist'
+    ) {
+      await this.prisma.productWaitlistEntry.upsert({
+        where: {
+          productId_participantId: {
+            productId: template.productId,
+            participantId: resolvedParticipantId,
+          },
+        },
+        create: {
+          productId: template.productId,
+          participantId: resolvedParticipantId,
+          source: template.onSubmitSource ?? null,
+        },
+        update: {
+          isActive: true,
+          ...(template.onSubmitSource ? { source: template.onSubmitSource } : {}),
+        },
       });
     }
     // Silence unused-var lint without changing semantics. `newlyCreated`

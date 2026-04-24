@@ -53,6 +53,18 @@ export class GroupsController {
     return this.groupsService.addParticipant(id, body.participantId);
   }
 
+  // Bulk move N participants INTO this group. When fromGroupId is set,
+  // they are also marked inactive in the source group. Tokens remain
+  // stable. Returns a per-participant result list so the caller can
+  // surface partial failures.
+  @Post(':id/participants/bulk-move')
+  bulkMove(
+    @Param('id') id: string,
+    @Body() body: { participantIds: string[]; fromGroupId?: string },
+  ) {
+    return this.groupsService.bulkMove(id, body.participantIds ?? [], body.fromGroupId);
+  }
+
   // ── Chat links ──────────────────────────────────────────────────────────────
 
   @Get(':id/chat-links')

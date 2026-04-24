@@ -11,6 +11,7 @@ import { BASE_URL, apiFetch } from '@lib/api';
 interface Challenge { id: string; name: string; }
 interface Program { id: string; name: string; }
 interface Group { id: string; name: string; }
+interface ProductLite { id: string; title: string; isActive: boolean; }
 
 interface Offer {
   id: string;
@@ -19,6 +20,7 @@ interface Offer {
   amount: string;           // Decimal serialized as string
   currency: string;
   iCountPaymentUrl: string | null;
+  product: { id: string; title: string } | null;
   linkedChallenge: Challenge | null;
   linkedProgram: Program | null;
   defaultGroup: Group | null;
@@ -109,6 +111,11 @@ export default function OffersPage() {
               </div>
               {o.description && <div style={{ fontSize: 13, color: '#475569', marginBottom: 6 }}>{o.description}</div>}
               <div style={{ display: 'flex', gap: 10, fontSize: 12, color: '#64748b', flexWrap: 'wrap' }}>
+                {o.product && (
+                  <span style={{ background: '#eef2ff', color: '#4338ca', padding: '2px 10px', borderRadius: 999, fontSize: 11, fontWeight: 700 }}>
+                    📦 {o.product.title}
+                  </span>
+                )}
                 {o.linkedChallenge && <span>אתגר: {o.linkedChallenge.name}</span>}
                 {o.linkedProgram && <span>תוכנית: {o.linkedProgram.name}</span>}
                 {o.defaultGroup && <span>קבוצת ברירת-מחדל: {o.defaultGroup.name}</span>}
@@ -148,17 +155,20 @@ function OfferModal(props: { initial: Offer | null; onClose: () => void; onSaved
   const [currency, setCurrency] = useState(props.initial?.currency ?? 'ILS');
   const [iCountPaymentUrl, setIcount] = useState(props.initial?.iCountPaymentUrl ?? '');
   const [isActive, setIsActive] = useState(props.initial?.isActive ?? true);
+  const [productId, setProductId] = useState(props.initial?.product?.id ?? '');
   const [linkedChallengeId, setChallengeId] = useState(props.initial?.linkedChallenge?.id ?? '');
   const [linkedProgramId, setProgramId] = useState(props.initial?.linkedProgram?.id ?? '');
   const [defaultGroupId, setGroupId] = useState(props.initial?.defaultGroup?.id ?? '');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
+  const [products, setProducts] = useState<ProductLite[]>([]);
   const [challenges, setChallenges] = useState<Challenge[]>([]);
   const [programs, setPrograms] = useState<Program[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   useEffect(() => {
     void Promise.all([
+      apiFetch<ProductLite[]>(`${BASE_URL}/products?active=true`).then(setProducts).catch(() => {}),
       apiFetch<Challenge[]>(`${BASE_URL}/challenges`).then(setChallenges).catch(() => {}),
       apiFetch<Program[]>(`${BASE_URL}/programs`).then(setPrograms).catch(() => {}),
       apiFetch<Group[]>(`${BASE_URL}/groups`).then(setGroups).catch(() => {}),
@@ -177,6 +187,7 @@ function OfferModal(props: { initial: Offer | null; onClose: () => void; onSaved
         amount: n,
         currency: currency.trim() || 'ILS',
         iCountPaymentUrl: iCountPaymentUrl.trim() || null,
+        productId: productId || null,
         linkedChallengeId: linkedChallengeId || null,
         linkedProgramId: linkedProgramId || null,
         defaultGroupId: defaultGroupId || null,
@@ -248,6 +259,15 @@ function OfferModal(props: { initial: Offer | null; onClose: () => void; onSaved
           <div>
             <label style={LABEL}>קישור iCount</label>
             <input style={INPUT} dir="ltr" value={iCountPaymentUrl} onChange={(e) => setIcount(e.target.value)} placeholder="https://..." />
+          </div>
+
+          <div>
+            <label style={LABEL}>מוצר *</label>
+            <select style={INPUT} value={productId} onChange={(e) => setProductId(e.target.value)}>
+              <option value="">— ללא מוצר —</option>
+              {products.map((p) => <option key={p.id} value={p.id}>{p.title}</option>)}
+            </select>
+            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>הצעה ללא מוצר תישאר זמינה, אך לא תופיע ברשימת המוצר.</div>
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>

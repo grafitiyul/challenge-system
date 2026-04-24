@@ -80,6 +80,13 @@ export class ProjectsService {
     lastName: string | null;
     canManageProjects: boolean;
   }> {
+    // Phase 3: prefer participant-scoped token. Fall back to the legacy
+    // per-group column for pre-migration rows that haven't been backfilled.
+    const direct = await this.prisma.participant.findUnique({
+      where: { accessToken: token },
+      select: { id: true, firstName: true, lastName: true, canManageProjects: true },
+    });
+    if (direct) return direct;
     const pg = await this.prisma.participantGroup.findUnique({
       where: { accessToken: token },
       include: {

@@ -430,21 +430,23 @@ export class ParticipantPortalService {
       const expected = createHmac('sha256', secret).update(token).digest('hex').slice(0, 24);
       bypass = bypassSig === expected;
     }
-    const pg = await this.prisma.participantGroup.findUnique({
-      where: { accessToken: token },
-      include: {
-        participant: {
-          select: { id: true, firstName: true, lastName: true },
-        },
-        group: {
+    const pair = await this.findPgByToken(token);
+    const pg = pair
+      ? await this.prisma.participantGroup.findUnique({
+          where: { participantId_groupId: pair },
           include: {
-            program: true,
-            challenge: { select: { startDate: true, endDate: true } },
+            participant: {
+              select: { id: true, firstName: true, lastName: true },
+            },
+            group: {
+              include: {
+                program: true,
+                challenge: { select: { startDate: true, endDate: true } },
+              },
+            },
           },
-          // portalCallTime + portalOpenTime are on Group — included via the relation above
-        },
-      },
-    });
+        })
+      : null;
 
     if (!pg || !pg.isActive) throw new NotFoundException('הקישור אינו בתוקף');
     if (!pg.group.programId || !pg.group.program) throw new NotFoundException('לא נמצאה תוכנית');
@@ -540,10 +542,13 @@ export class ParticipantPortalService {
     },
     idempotencyKey?: string,
   ): Promise<{ pointsEarned: number; todayScore: number; todayValue: number | null }> {
-    const pg = await this.prisma.participantGroup.findUnique({
-      where: { accessToken: token },
-      include: { group: { select: { programId: true, id: true } } },
-    });
+    const pair = await this.findPgByToken(token);
+    const pg = pair
+      ? await this.prisma.participantGroup.findUnique({
+          where: { participantId_groupId: pair },
+          include: { group: { select: { programId: true, id: true } } },
+        })
+      : null;
     if (!pg || !pg.isActive) throw new NotFoundException('הקישור אינו בתוקף');
     if (!pg.group.programId) throw new NotFoundException('לא נמצאה תוכנית');
 
@@ -2521,9 +2526,42 @@ export class ParticipantPortalService {
 
   // ─── Private helpers ───────────────────────────────────────────────────────
 
-  private async resolveToken(token: string) {
-    const pg = await this.prisma.participantGroup.findUnique({
+  // Phase 3: resolve a portal token to the active ParticipantGroup row.
+  // Tries the participant-scoped accessToken first (current + stable),
+  // falls back to the legacy per-group column for pre-migration rows.
+  // Returns the { participantId, groupId } composite key so each caller
+  // can then run its own findUnique with the include shape it needs.
+  private async findPgByToken(token: string): Promise<{ participantId: string; groupId: string } | null> {
+    const direct = await this.prisma.participant.findUnique({
       where: { accessToken: token },
+      select: {
+        id: true,
+        participantGroups: {
+          where: { isActive: true },
+          orderBy: { joinedAt: 'desc' },
+          take: 1,
+          select: { groupId: true },
+        },
+      },
+    });
+    if (direct?.participantGroups[0]) {
+      return { participantId: direct.id, groupId: direct.participantGroups[0].groupId };
+    }
+    const legacy = await this.prisma.participantGroup.findUnique({
+      where: { accessToken: token },
+      select: { participantId: true, groupId: true, isActive: true },
+    });
+    if (legacy && legacy.isActive) {
+      return { participantId: legacy.participantId, groupId: legacy.groupId };
+    }
+    return null;
+  }
+
+  private async resolveToken(token: string) {
+    const pair = await this.findPgByToken(token);
+    if (!pair) throw new NotFoundException('הקישור אינו בתוקף');
+    const pg = await this.prisma.participantGroup.findUnique({
+      where: { participantId_groupId: pair },
       select: { participantId: true, groupId: true, isActive: true, group: { select: { programId: true } } },
     });
     if (!pg || !pg.isActive) throw new NotFoundException('הקישור אינו בתוקף');
