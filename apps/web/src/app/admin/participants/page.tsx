@@ -4,6 +4,14 @@ import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { BASE_URL, apiFetch } from '@lib/api';
+import {
+  PARTICIPANT_LIFECYCLE_STATUSES,
+  PARTICIPANT_SOURCES,
+  PARTICIPANT_SOURCE_LABELS,
+  PARTICIPANT_STATUS_COLORS,
+  PARTICIPANT_STATUS_LABELS,
+  isKnownLifecycleStatus,
+} from '@lib/participant-lifecycle';
 
 // Fixed local options — no API dependency
 const GENDER_OPTIONS = ['נקבה', 'זכר'];
@@ -23,6 +31,9 @@ interface Participant {
   joinedAt: string;
   isActive: boolean;
   isMock: boolean;
+  status: string | null;
+  source: string | null;
+  paymentsCount: number;
 }
 
 function displayName(p: { firstName: string; lastName?: string | null }): string {
@@ -79,6 +90,11 @@ export default function ParticipantsPage() {
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  // Public registration Phase 1: server-side filters for lifecycle + source +
+  // payment presence. Empty string = no filter.
+  const [statusFilter, setStatusFilter] = useState<string>('');
+  const [sourceFilter, setSourceFilter] = useState<string>('');
+  const [paymentsFilter, setPaymentsFilter] = useState<'' | 'true' | 'false'>('');
   // Read-only: fetched from backend (GET /api/settings), never written here
   const [isMockEnabled, setIsMockEnabled] = useState(false);
 
@@ -119,9 +135,14 @@ export default function ParticipantsPage() {
     }
   }
 
-  const fetchParticipants = (includeMock: boolean) => {
+  const fetchParticipants = (includeMock: boolean, status: string, source: string, hasPayments: string) => {
     setLoading(true);
-    apiFetch(`${BASE_URL}/participants?includeMock=${includeMock}`)
+    const params = new URLSearchParams();
+    params.set('includeMock', String(includeMock));
+    if (status) params.set('status', status);
+    if (source) params.set('source', source);
+    if (hasPayments) params.set('hasPayments', hasPayments);
+    apiFetch(`${BASE_URL}/participants?${params.toString()}`)
       .then((data: unknown) => setParticipants(Array.isArray(data) ? (data as Participant[]) : []))
       .catch(() => setParticipants([]))
       .finally(() => setLoading(false));
@@ -134,14 +155,21 @@ export default function ParticipantsPage() {
         const settings = s as Record<string, string>;
         const mockOn = settings['mockParticipantsEnabled'] === 'true';
         setIsMockEnabled(mockOn);
-        fetchParticipants(mockOn);
+        fetchParticipants(mockOn, statusFilter, sourceFilter, paymentsFilter);
       })
       .catch(() => {
         // Fall back to disabled if fetch fails
         setIsMockEnabled(false);
-        fetchParticipants(false);
+        fetchParticipants(false, statusFilter, sourceFilter, paymentsFilter);
       });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Refetch whenever a server-side filter changes.
+  useEffect(() => {
+    fetchParticipants(isMockEnabled, statusFilter, sourceFilter, paymentsFilter);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statusFilter, sourceFilter, paymentsFilter]);
 
   useEffect(() => {
     if (modalOpen) {
@@ -195,7 +223,7 @@ export default function ParticipantsPage() {
         body: JSON.stringify(body),
       });
       closeModal();
-      fetchParticipants(isMockEnabled);
+      fetchParticipants(isMockEnabled, statusFilter, sourceFilter, paymentsFilter);
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : 'שגיאה לא ידועה');
     } finally {
@@ -210,7 +238,7 @@ export default function ParticipantsPage() {
     try {
       console.log('[API] POST', `${BASE_URL}/participants/mock?count=${count}`);
       const created = await apiFetch(`${BASE_URL}/participants/mock?count=${count}`, { method: 'POST' }) as unknown[];
-      fetchParticipants(true);
+      fetchParticipants(true, statusFilter, sourceFilter, paymentsFilter);
       setMockMessage({ type: 'success', text: `נוצרו ${Array.isArray(created) ? created.length : count} משתתפות פיקטיביות` });
     } catch (err) {
       setMockMessage({
@@ -328,14 +356,43 @@ export default function ParticipantsPage() {
         </div>
       )}
 
-      {/* ── Search ── */}
-      <div style={{ marginBottom: 20 }}>
+      {/* ── Search + filters ── */}
+      <div style={{ display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap', alignItems: 'center' }}>
         <input
-          style={{ width: '100%', maxWidth: 360, padding: '9px 14px', border: '1px solid #e2e8f0', borderRadius: 7, fontSize: 14, background: '#fff', color: '#0f172a' }}
+          style={{ flex: '1 1 220px', maxWidth: 360, padding: '9px 14px', border: '1px solid #e2e8f0', borderRadius: 7, fontSize: 14, background: '#fff', color: '#0f172a' }}
           placeholder="חיפוש לפי שם או טלפון..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
+        <select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+          style={{ padding: '9px 12px', border: '1px solid #e2e8f0', borderRadius: 7, fontSize: 13, background: '#fff', color: '#0f172a' }}
+        >
+          <option value="">כל הסטטוסים</option>
+          {PARTICIPANT_LIFECYCLE_STATUSES.map((s) => (
+            <option key={s} value={s}>{PARTICIPANT_STATUS_LABELS[s]}</option>
+          ))}
+        </select>
+        <select
+          value={sourceFilter}
+          onChange={(e) => setSourceFilter(e.target.value)}
+          style={{ padding: '9px 12px', border: '1px solid #e2e8f0', borderRadius: 7, fontSize: 13, background: '#fff', color: '#0f172a' }}
+        >
+          <option value="">כל המקורות</option>
+          {PARTICIPANT_SOURCES.map((s) => (
+            <option key={s} value={s}>{PARTICIPANT_SOURCE_LABELS[s]}</option>
+          ))}
+        </select>
+        <select
+          value={paymentsFilter}
+          onChange={(e) => setPaymentsFilter(e.target.value as '' | 'true' | 'false')}
+          style={{ padding: '9px 12px', border: '1px solid #e2e8f0', borderRadius: 7, fontSize: 13, background: '#fff', color: '#0f172a' }}
+        >
+          <option value="">כל התשלומים</option>
+          <option value="true">עם תשלומים</option>
+          <option value="false">ללא תשלומים</option>
+        </select>
       </div>
 
       {/* ── Participants table ── */}
@@ -343,7 +400,7 @@ export default function ParticipantsPage() {
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
           <thead>
             <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
-              {['שם מלא', 'טלפון', 'מגדר', 'תאריך הצטרפות', 'סטטוס', ''].map((h, i) => (
+              {['שם מלא', 'טלפון', 'סטטוס חיים', 'מקור', 'תשלומים', 'הצטרפות', ''].map((h) => (
                 <th key={h} style={{ padding: '12px 16px', textAlign: 'right', fontWeight: 600, color: '#374151', fontSize: 13 }}>
                   {h}
                 </th>
@@ -353,17 +410,28 @@ export default function ParticipantsPage() {
           <tbody>
             {loading && (
               <tr>
-                <td colSpan={6} style={{ padding: 28, textAlign: 'center', color: '#94a3b8' }}>טוען...</td>
+                <td colSpan={7} style={{ padding: 28, textAlign: 'center', color: '#94a3b8' }}>טוען...</td>
               </tr>
             )}
             {!loading && filtered.length === 0 && (
               <tr>
-                <td colSpan={6} style={{ padding: 28, textAlign: 'center', color: '#94a3b8' }}>
+                <td colSpan={7} style={{ padding: 28, textAlign: 'center', color: '#94a3b8' }}>
                   {search ? 'לא נמצאו תוצאות.' : 'אין משתתפות עדיין.'}
                 </td>
               </tr>
             )}
-            {filtered.map((p) => (
+            {filtered.map((p) => {
+              const knownStatus = isKnownLifecycleStatus(p.status);
+              const statusColors = knownStatus
+                ? PARTICIPANT_STATUS_COLORS[p.status as keyof typeof PARTICIPANT_STATUS_COLORS]
+                : { bg: '#f1f5f9', fg: '#64748b' };
+              const statusLabel = knownStatus
+                ? PARTICIPANT_STATUS_LABELS[p.status as keyof typeof PARTICIPANT_STATUS_LABELS]
+                : (p.status ?? '—');
+              const sourceLabel = p.source && (p.source in PARTICIPANT_SOURCE_LABELS)
+                ? PARTICIPANT_SOURCE_LABELS[p.source as keyof typeof PARTICIPANT_SOURCE_LABELS]
+                : (p.source ?? '—');
+              return (
               <tr
                 key={p.id}
                 onClick={() => router.push(`/admin/participants/${p.id}`)}
@@ -383,14 +451,17 @@ export default function ParticipantsPage() {
                   </div>
                 </td>
                 <td style={{ padding: '12px 16px', color: '#374151' }} dir="ltr">{p.phoneNumber}</td>
-                <td style={{ padding: '12px 16px', color: '#374151' }}>{p.gender?.name ?? '—'}</td>
-                <td style={{ padding: '12px 16px', color: '#374151' }}>
-                  {new Date(p.joinedAt).toLocaleDateString('he-IL')}
-                </td>
                 <td style={{ padding: '12px 16px' }}>
-                  <span style={{ background: p.isActive ? '#dcfce7' : '#f1f5f9', color: p.isActive ? '#16a34a' : '#64748b', padding: '3px 10px', borderRadius: 20, fontSize: 12, fontWeight: 500 }}>
-                    {p.isActive ? 'פעילה' : 'לא פעילה'}
+                  <span style={{ background: statusColors.bg, color: statusColors.fg, padding: '3px 10px', borderRadius: 20, fontSize: 12, fontWeight: 600 }}>
+                    {statusLabel}
                   </span>
+                </td>
+                <td style={{ padding: '12px 16px', color: '#475569', fontSize: 13 }}>{sourceLabel}</td>
+                <td style={{ padding: '12px 16px', color: p.paymentsCount > 0 ? '#15803d' : '#94a3b8', fontWeight: p.paymentsCount > 0 ? 600 : 400, fontSize: 13 }}>
+                  {p.paymentsCount > 0 ? `💳 ${p.paymentsCount}` : '—'}
+                </td>
+                <td style={{ padding: '12px 16px', color: '#374151', fontSize: 13 }}>
+                  {new Date(p.joinedAt).toLocaleDateString('he-IL')}
                 </td>
                 <td style={{ padding: '8px 16px' }} onClick={(e) => e.stopPropagation()}>
                   <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center' }}>
@@ -405,7 +476,8 @@ export default function ParticipantsPage() {
                   </div>
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>

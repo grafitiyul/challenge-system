@@ -308,6 +308,9 @@ model Participant {
   projectNotes      ProjectNote[]
   dailyContextLogs  DailyContextLog[]
 
+  // Onboarding & payments (Phase 1 public registration)
+  payments          Payment[]
+
   createdAt                 DateTime                  @default(now())
   updatedAt                 DateTime                  @updatedAt
 
@@ -1523,6 +1526,39 @@ model ProjectNote {
 
   @@index([projectId])
   @@map("project_notes")
+}
+
+// Payment records attached to a participant. Manual-entry only in Phase 1;
+// `provider` is free-form so a future iCount webhook can write its own
+// value ("icount") alongside the existing manual rows without a schema
+// change. `rawPayload` is reserved for future webhook/debug use.
+//
+// Money: amount is stored as Decimal with 2 fractional digits (ILS
+// agorot precision). currency is ISO 4217; defaults to ILS but the
+// column exists so a future USD/EUR row doesn't need a migration.
+model Payment {
+  id                 String       @id @default(cuid())
+  participantId      String
+  participant        Participant  @relation(fields: [participantId], references: [id])
+  // "icount" | "manual" | "other" — free-form.
+  provider           String       @default("manual")
+  externalPaymentId  String?
+  amount             Decimal      @db.Decimal(12, 2)
+  currency           String       @default("ILS")
+  paidAt             DateTime
+  // "paid" | "pending" | "refunded" | "failed" — free-form.
+  status             String       @default("paid")
+  itemName           String
+  invoiceNumber      String?
+  invoiceUrl         String?
+  rawPayload         Json?
+  notes              String?
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  @@index([participantId])
+  @@index([provider, externalPaymentId])
+  @@map("payments")
 }
 
 // Daily self-report panel rendered at the top of the portal's "המעקב שלי"

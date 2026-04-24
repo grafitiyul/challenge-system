@@ -13,12 +13,22 @@ export class ParticipantsController {
   findAll(
     @Query('groupId') groupId?: string,
     @Query('includeMock') includeMock?: string,
+    @Query('status') status?: string,
+    @Query('source') source?: string,
+    // "true" → has ≥1 payment, "false" → no payments, undefined → both.
+    @Query('hasPayments') hasPayments?: string,
   ) {
     const withMock = includeMock === 'true';
     if (groupId) {
       return this.participantsService.findByGroup(groupId, withMock);
     }
-    return this.participantsService.findAll(withMock);
+    const hp = hasPayments === 'true' ? true : hasPayments === 'false' ? false : undefined;
+    return this.participantsService.findAll({
+      includeMock: withMock,
+      status,
+      source,
+      hasPayments: hp,
+    });
   }
 
   // Declared before @Get(':id') to prevent NestJS treating "mock" as an :id param

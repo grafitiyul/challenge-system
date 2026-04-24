@@ -41,20 +41,39 @@ export class ParticipantsService {
     return gender.id;
   }
 
-  async findAll(includeMock = false) {
-    return this.prisma.participant.findMany({
+  async findAll(opts: {
+    includeMock?: boolean;
+    status?: string;
+    source?: string;
+    hasPayments?: boolean;
+  } = {}) {
+    const { includeMock = false, status, source, hasPayments } = opts;
+    const rows = await this.prisma.participant.findMany({
       where: {
         isActive: true,
         ...(includeMock ? {} : { isMock: false }),
+        ...(status ? { status } : {}),
+        ...(source ? { source } : {}),
+        ...(hasPayments === true ? { payments: { some: {} } } : {}),
+        ...(hasPayments === false ? { payments: { none: {} } } : {}),
       },
       relationLoadStrategy: 'join',
-      include: { gender: true },
+      include: {
+        gender: true,
+        _count: { select: { payments: true } },
+      },
       orderBy: { createdAt: 'desc' },
+    });
+    // Flatten _count.payments → paymentsCount so the admin list doesn't
+    // have to reach into a nested shape per row.
+    return rows.map((r) => {
+      const { _count, ...rest } = r;
+      return { ...rest, paymentsCount: _count?.payments ?? 0 };
     });
   }
 
   async findById(id: string) {
-    return this.prisma.participant.findUnique({
+    const row = await this.prisma.participant.findUnique({
       where: { id },
       relationLoadStrategy: 'join',
       include: {
@@ -68,8 +87,12 @@ export class ParticipantsService {
           },
           orderBy: { joinedAt: 'desc' },
         },
+        _count: { select: { payments: true } },
       },
     });
+    if (!row) return null;
+    const { _count, ...rest } = row;
+    return { ...rest, paymentsCount: _count?.payments ?? 0 };
   }
 
   async findByGroup(groupId: string, includeMock = false) {

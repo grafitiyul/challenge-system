@@ -498,6 +498,13 @@ export class QuestionnairesService {
           if (!gender) {
             gender = await this.prisma.gender.create({ data: { name: 'לא צוין' } });
           }
+          // Public registration Phase 1: external submissions represent
+          // waitlist signups. Stamp source + lifecycle status on creation
+          // so the admin pipeline (filters, payment matching, cohort
+          // assignment) has structured fields to work with. Internal
+          // submissions (admin filling on behalf of someone) aren't
+          // waitlist and stay unstamped.
+          const isExternal = dto.submittedByMode === 'external';
           const created = await this.prisma.participant.create({
             data: {
               firstName: identity.firstName,
@@ -505,6 +512,7 @@ export class QuestionnairesService {
               phoneNumber: identity.phoneNumber,
               email: identity.email ?? null,
               genderId: gender.id,
+              ...(isExternal ? { source: 'waitlist_form', status: 'lead_waitlist' } : {}),
             },
           });
           resolvedParticipantId = created.id;

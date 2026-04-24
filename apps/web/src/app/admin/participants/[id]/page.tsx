@@ -1,11 +1,20 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { use } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { BASE_URL, apiFetch } from '@lib/api';
 import { AdminProjectsTab } from '@components/admin-projects';
+import { PaymentsTab } from '@components/payments-tab';
+import {
+  PARTICIPANT_LIFECYCLE_STATUSES,
+  PARTICIPANT_SOURCES,
+  PARTICIPANT_SOURCE_LABELS,
+  PARTICIPANT_STATUS_COLORS,
+  PARTICIPANT_STATUS_LABELS,
+  isKnownLifecycleStatus,
+} from '@lib/participant-lifecycle';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -86,9 +95,11 @@ function fmt(iso: string, opts?: Intl.DateTimeFormatOptions): string {
   return new Date(iso).toLocaleDateString('he-IL', opts ?? { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
-const STATUS_OPTIONS = ['פעיל', 'זקוק למעקב', 'לא מגיב', 'סיים תוכנית', 'עצר'];
-
-const STATUS_COLORS: Record<string, { bg: string; color: string }> = {
+// Legacy freetext values kept for backwards compatibility — rows created
+// before the lifecycle refactor use these Hebrew strings. The edit modal
+// renders them as an extra "(ערך קודם)" option when the current value
+// doesn't match a canonical lifecycle key.
+const LEGACY_STATUS_COLORS: Record<string, { bg: string; color: string }> = {
   'פעיל':          { bg: '#dcfce7', color: '#15803d' },
   'זקוק למעקב':   { bg: '#fef9c3', color: '#854d0e' },
   'לא מגיב':      { bg: '#fef2f2', color: '#dc2626' },
@@ -97,8 +108,31 @@ const STATUS_COLORS: Record<string, { bg: string; color: string }> = {
 };
 
 function statusStyle(status?: string): React.CSSProperties {
-  const c = status ? (STATUS_COLORS[status] ?? { bg: '#f1f5f9', color: '#64748b' }) : { bg: '#f1f5f9', color: '#64748b' };
-  return { background: c.bg, color: c.color, padding: '3px 12px', borderRadius: 20, fontSize: 12, fontWeight: 600 };
+  const fallback = { bg: '#f1f5f9', fg: '#64748b' };
+  let c = fallback;
+  if (status) {
+    if (isKnownLifecycleStatus(status)) {
+      c = PARTICIPANT_STATUS_COLORS[status];
+    } else {
+      const legacy = LEGACY_STATUS_COLORS[status];
+      if (legacy) c = { bg: legacy.bg, fg: legacy.color };
+    }
+  }
+  return { background: c.bg, color: c.fg, padding: '3px 12px', borderRadius: 20, fontSize: 12, fontWeight: 600 };
+}
+
+function statusLabel(status?: string | null): string {
+  if (!status) return '—';
+  if (isKnownLifecycleStatus(status)) return PARTICIPANT_STATUS_LABELS[status];
+  return status;
+}
+
+function sourceLabel(source?: string | null): string {
+  if (!source) return '—';
+  if ((PARTICIPANT_SOURCES as readonly string[]).includes(source)) {
+    return PARTICIPANT_SOURCE_LABELS[source as keyof typeof PARTICIPANT_SOURCE_LABELS];
+  }
+  return source;
 }
 
 // Returns { years, months, label } or null if no birthDate
@@ -543,13 +577,28 @@ function EditModal({
           </div>
           <div>
             <label style={labelStyle}>מקור</label>
-            <input style={inputStyle} value={form.source} onChange={(e) => onChange('source', e.target.value)} placeholder="ממליצה, פייסבוק, אתר..." />
+            <select style={inputStyle} value={form.source} onChange={(e) => onChange('source', e.target.value)}>
+              <option value="">— ללא מקור —</option>
+              {PARTICIPANT_SOURCES.map((s) => (
+                <option key={s} value={s}>{PARTICIPANT_SOURCE_LABELS[s]}</option>
+              ))}
+              {/* Preserve any pre-lifecycle freetext value so it stays selected
+                  until the admin explicitly picks a canonical one. */}
+              {form.source && !(PARTICIPANT_SOURCES as readonly string[]).includes(form.source) && (
+                <option value={form.source}>{`(ערך קודם: ${form.source})`}</option>
+              )}
+            </select>
           </div>
           <div>
             <label style={labelStyle}>סטטוס</label>
             <select style={inputStyle} value={form.status} onChange={(e) => onChange('status', e.target.value)}>
               <option value="">— ללא סטטוס —</option>
-              {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
+              {PARTICIPANT_LIFECYCLE_STATUSES.map((s) => (
+                <option key={s} value={s}>{PARTICIPANT_STATUS_LABELS[s]}</option>
+              ))}
+              {form.status && !isKnownLifecycleStatus(form.status) && (
+                <option value={form.status}>{`(ערך קודם: ${form.status})`}</option>
+              )}
             </select>
           </div>
           <div style={{ gridColumn: '1 / -1' }}>
@@ -610,6 +659,20 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
   const [formSubmissionsLoading, setFormSubmissionsLoading] = useState(false);
 
   // Load participant
+  const reloadParticipant = useCallback(async () => {
+    try {
+      const data = await apiFetch(`${BASE_URL}/participants/${id}`);
+      const p = data as Participant;
+      setParticipant(p);
+    } catch (err: unknown) {
+      if (err && typeof err === 'object' && 'status' in err && (err as { status: number }).status === 404) {
+        setNotFound(true);
+      } else {
+        setNotFound(true);
+      }
+    }
+  }, [id]);
+
   useEffect(() => {
     apiFetch(`${BASE_URL}/participants/${id}`)
       .then((data: unknown) => {
@@ -819,7 +882,12 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
           <div style={{ flex: 1, minWidth: 200 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 6 }}>
               <h1 style={{ fontSize: 20, fontWeight: 700, color: '#0f172a', margin: 0 }}>{displayName(participant)}</h1>
-              {participant.status && <span style={statusStyle(participant.status)}>{participant.status}</span>}
+              {participant.status && <span style={statusStyle(participant.status)}>{statusLabel(participant.status)}</span>}
+              {participant.source && (
+                <span style={{ background: '#f1f5f9', color: '#475569', padding: '3px 10px', borderRadius: 20, fontSize: 11, fontWeight: 500 }}>
+                  מקור: {sourceLabel(participant.source)}
+                </span>
+              )}
               {!participant.isActive && <span style={{ background: '#f1f5f9', color: '#64748b', padding: '3px 10px', borderRadius: 20, fontSize: 12 }}>לא פעילה</span>}
             </div>
 
@@ -964,7 +1032,11 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
           <PlaceholderTab icon="📅" title="דיווחים שוטפים" subtitle="כאן יוצגו נתוני דיווח יומי, הרגלים ועמידה ביעדים — בקרוב" />
         )}
         {activeTab === 'payments' && (
-          <PlaceholderTab icon="💳" title="תשלומים וחשבונות" subtitle="מעקב תשלומים, חשבוניות וסטטוס פיננסי — בקרוב" />
+          <PaymentsTab
+            participantId={participant.id}
+            currentGroupIds={participant.participantGroups.map((pg) => pg.group.id)}
+            onParticipantChanged={() => void reloadParticipant()}
+          />
         )}
         {activeTab === 'history' && (
           <HistoryTimeline participant={participant} submissions={submissions} />
@@ -1101,8 +1173,8 @@ function CollectedInfoTab({ participant }: { participant: Participant }) {
     { label: 'מגדר', value: participant.gender?.name },
     { label: 'תאריך לידה', value: participant.birthDate ? `${fmt(participant.birthDate)}${age ? ` (גיל ${age.short})` : ''}` : undefined },
     { label: 'עיר', value: participant.city },
-    { label: 'מקור', value: participant.source },
-    { label: 'סטטוס', value: participant.status },
+    { label: 'מקור', value: sourceLabel(participant.source) },
+    { label: 'סטטוס', value: statusLabel(participant.status) },
     { label: 'הצטרפה', value: fmt(participant.joinedAt) },
   ].filter((f) => f.value);
 
