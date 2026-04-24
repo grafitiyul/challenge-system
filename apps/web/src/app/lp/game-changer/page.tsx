@@ -43,7 +43,11 @@ const landingContent = {
     // <br> lines in the source HTML are preserved as explicit breaks so
     // the visual rhythm matches the original pixel-for-pixel.
     tldrParagraphs: [
-      ['קבוצה קטנה ואינטימית של עד 10 נשים', 'מדרבנות אחת את השנייה לעמוד מול הפיתויים ולסגל אורח חיים קצת פחות פודי!', 'עם דגש על קצת - לא עוד דיאטת כסאח שגורמת לסבל.'],
+      [
+        'קבוצה קטנה ואינטימית של עד 10 נשים',
+        ['מדרבנות אחת את השנייה לעמוד מול הפיתויים ולסגל אורח חיים ', { em: 'קצת' }, ' פחות פודי!'],
+        ['עם דגש על ', { em: 'קצת' }, ' - לא עוד דיאטת כסאח שגורמת לסבל.'],
+      ],
       ['והכי חשוב - לעשות את זה בכיף! במשחק!'],
     ],
     points: [
@@ -73,16 +77,25 @@ const landingContent = {
       'הירידה במשקל זו רק תופעות לוואי כשאנחנו עושות את הפעולות הנכונות.',
       'למשחק קוראים Game Changer - כי זה מה שההרגלים הקטנים האלה היו בשבילי :)',
     ],
-    imageCaption: 'כאן תיכנס תמונה',
+    imageCaption: 'כאן תהיה התמונה',
   },
 
   // ── Highlights ───────────────────────────────────────────────────────
   highlights: {
+    title: 'דגשים',
     cards: [
       { emoji: '👀', text: 'זו לא קבוצה המונית שדחסו אליה מאות נשים ובתכל\'ס את לבד - אני רואה אותך, וכולן רואות אותך, כל יום!' },
       { emoji: '🔥', text: 'יש תחרות בריאה בין הבנות, עם מלא השראה ופרגונים בקבוצה כל הזמן.' },
-      { emoji: '🍕', text: 'אין דבר כזה אסור! אכלת משהו "מיותר"? תהני ממנו. הצלחת להתאפק? תהני מהנקודות והפרגונים!' },
-      { emoji: '✨', text: 'הדבר הכי חשוב - שיהיה קל! אם זה לא קל, זה לא יחזיק לאורך זמן.' },
+      // Pizza card — line break after "ממנו" only. Text preserved.
+      { emoji: '🍕', text: [
+        'אין דבר כזה אסור! אכלת משהו "מיותר"? תהני ממנו.',
+        'הצלחת להתאפק? תהני מהנקודות והפרגונים!',
+      ] },
+      // Sparkle card — line break after the first "קל!".
+      { emoji: '✨', text: [
+        'הדבר הכי חשוב - שיהיה קל!',
+        'אם זה לא קל, זה לא יחזיק לאורך זמן.',
+      ] },
     ],
     how: {
       question: 'איך זה מתבצע בפועל? מי מנצחת?',
@@ -106,10 +119,6 @@ const landingContent = {
   cta: {
     primary: 'אני בפנים - תרשמי אותי!',
     policy: 'אין החזר כספי (מלא או חלקי) לאחר ההרשמה.',
-    waitlistNote: {
-      line1: 'במידה וניסית להירשם ולא הצלחת- ההרשמה נסגרה והקבוצה התמלאה',
-      line2: 'מוזמנת להירשם כאן לרשימת המתנה:',
-    },
   },
 } as const;
 
@@ -128,13 +137,20 @@ export default function GameChangerLandingPage() {
           <h1 className="hero-title">{c.hero.title}</h1>
           <div className="hero-content-card">
             <div className="bkitzra">{c.hero.tldrLabel}</div>
-            {/* Each paragraph is an array of lines — rendered with <br/>
-                between them to match the <br> breaks in the source HTML. */}
+            {/* Each paragraph is an array of lines. A line is either a plain
+                string or an array of segments (string | { em }) so we can
+                emphasize specific words without breaking the sentence. */}
             {c.hero.tldrParagraphs.map((lines, i) => (
               <p key={i}>
-                {lines.map((line, j) => (
+                {(lines as ReadonlyArray<string | ReadonlyArray<string | { em: string }>>).map((line, j) => (
                   <span key={j}>
-                    {line}
+                    {typeof line === 'string'
+                      ? line
+                      : line.map((seg, k) =>
+                          typeof seg === 'string'
+                            ? <span key={k}>{seg}</span>
+                            : <span key={k} className="tldr-em">{seg.em}</span>,
+                        )}
                     {j < lines.length - 1 && <br />}
                   </span>
                 ))}
@@ -183,11 +199,26 @@ export default function GameChangerLandingPage() {
       {/* ── HIGHLIGHTS ── */}
       <section id="highlights">
         <div className="container">
+          <h2 className="highlights-title">{c.highlights.title}</h2>
           <div className="highlights-grid">
             {c.highlights.cards.map((card, i) => (
               <div key={i} className="highlight-card">
                 <div className="highlight-bullet">{card.emoji}</div>
-                <p>{card.text}</p>
+                {/* Card text is either a single string or an array of lines
+                    separated by <br/> — lets admins insert targeted breaks
+                    (like the pizza/sparkle cards) without rewriting copy. */}
+                {Array.isArray(card.text) ? (
+                  <p>
+                    {card.text.map((line, j) => (
+                      <span key={j}>
+                        {line}
+                        {j < card.text.length - 1 && <br />}
+                      </span>
+                    ))}
+                  </p>
+                ) : (
+                  <p>{card.text}</p>
+                )}
               </div>
             ))}
           </div>
@@ -229,15 +260,6 @@ export default function GameChangerLandingPage() {
               </Link>
             </div>
             <p className="policy-note">{c.cta.policy}</p>
-            <p className="waitlist-note">
-              {c.cta.waitlistNote.line1}
-              <br />
-              {c.cta.waitlistNote.line2}
-              <br />
-              <Link href={c.waitlistUrl} target="_blank" rel="noopener noreferrer">
-                {c.waitlistUrl}
-              </Link>
-            </p>
           </div>
         </div>
       </section>
@@ -383,6 +405,13 @@ function ScopedStyles() {
         margin: 0 0 16px;
       }
       #lp-game-changer .hero-content-card p:last-of-type { margin-bottom: 0; }
+      /* Inline emphasis inside the bkitzra paragraph (the two "קצת"
+         occurrences). Uses the gold accent to pop against white-70
+         body text without shifting the line height. */
+      #lp-game-changer .tldr-em {
+        color: var(--gold-light);
+        font-weight: 800;
+      }
       #lp-game-changer .points-list {
         list-style: none;
         margin: 16px 0 0;
@@ -436,6 +465,16 @@ function ScopedStyles() {
       #lp-game-changer #highlights {
         background: var(--bg-primary);
         padding: 60px 0;
+      }
+      /* Section title above the cards grid — sized and colored to match
+         the hero/bkitzra headings for consistency. */
+      #lp-game-changer .highlights-title {
+        font-size: clamp(24px, 5vw, 36px);
+        font-weight: 900;
+        color: var(--gold);
+        text-align: center;
+        margin: 0 0 28px;
+        letter-spacing: 1px;
       }
       #lp-game-changer .highlights-grid {
         display: grid;
