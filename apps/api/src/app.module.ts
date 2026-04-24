@@ -21,6 +21,7 @@ import { TaskEngineModule } from './modules/task-engine/task-engine.module';
 import { ProjectsModule } from './modules/projects/projects.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { OffersModule } from './modules/offers/offers.module';
+import { IcountWebhookModule } from './modules/icount-webhook/icount-webhook.module';
 import { AdminUsersModule } from './modules/admin-users/admin-users.module';
 
 @Module({
@@ -45,6 +46,7 @@ import { AdminUsersModule } from './modules/admin-users/admin-users.module';
     ProjectsModule,
     PaymentsModule,
     OffersModule,
+    IcountWebhookModule,
     AdminUsersModule,
   ],
   controllers: [HealthController],

@@ -336,6 +336,10 @@ model Participant {
   // Phase 4: per-program waitlist tracking. One row per (program, participant).
   programWaitlistEntries ProgramWaitlistEntry[]
 
+  // iCount webhook logs resolved to this participant. 0..N; useful for
+  // audit trails when verifying which invoice created the Payment row.
+  icountLogs             IcountWebhookLog[]
+
   createdAt                 DateTime                  @default(now())
   updatedAt                 DateTime                  @updatedAt
 
@@ -1646,6 +1650,18 @@ model PaymentOffer {
   // Full URL of the iCount (or other provider) checkout page. Copy-paste
   // target for the admin. NOT auto-generated.
   iCountPaymentUrl  String?
+  // Auto-match keys used by the iCount webhook ingester. Any one of
+  // these matching against the incoming payload's corresponding field
+  // resolves the payment to this offer. Tried in priority order:
+  //   iCountPageId          — payment-page identifier (most precise)
+  //   iCountExternalId      — any other provider-side identifier
+  //   iCountItemName        — line-item name on the invoice
+  //   iCountPaymentUrl      — fallback; substring match
+  //   amount + currency     — last resort, only if exactly one active
+  //                           offer matches.
+  iCountPageId      String?
+  iCountItemName    String?
+  iCountExternalId  String?
   linkedChallengeId String?
   linkedChallenge   Challenge?  @relation(fields: [linkedChallengeId], references: [id])
   linkedProgramId   String?
@@ -1659,7 +1675,11 @@ model PaymentOffer {
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
 
+  // iCount webhook audit rows that resolved to this offer (0..N).
+  webhookLogs       IcountWebhookLog[]
+
   @@index([isActive])
+  @@index([iCountPageId])
   @@map("payment_offers")
 }
 
@@ -1710,8 +1730,58 @@ model Payment {
   @@index([participantId])
   @@index([offerId])
   @@index([groupId])
+  // Reverse — each Payment has at most one iCount log that produced
+  // it (zero for manually-entered payments).
+  icountLogs         IcountWebhookLog[]
+
   @@index([provider, externalPaymentId])
   @@map("payments")
+}
+
+// Audit log for every POST from iCount's payment webhook. We write ONE
+// row per incoming request (successful or not) before attempting any
+// matching, so nothing is ever lost — even if the payload is malformed
+// or every matching rule fails, admins can review and recover from here.
+//
+// status values:
+//   "processed"    — fully matched, Payment row created/updated
+//   "needs_review" — stored, but offer or participant could not be
+//                    resolved automatically; admin attaches manually
+//   "duplicate"    — externalPaymentId matched an existing Payment row;
+//                    webhook acknowledged idempotently
+//   "error"        — exception during processing; errorMessage populated
+model IcountWebhookLog {
+  id              String   @id @default(cuid())
+  rawPayload      Json
+  status          String   @default("needs_review")
+  // Convenience projections of common iCount fields pulled out at
+  // ingestion time so admins can scan the list without unfolding JSON.
+  extDocNumber    String?
+  extTransactionId String?
+  extAmount       Decimal? @db.Decimal(12, 2)
+  extCurrency     String?
+  extCustomerName String?
+  extCustomerPhone String?
+  extCustomerEmail String?
+  extPageId       String?
+  extItemName     String?
+  // Outcome fields — populated when ingestion succeeds or on manual
+  // attach/reprocess.
+  matchedPaymentId    String?
+  matchedPayment      Payment?     @relation(fields: [matchedPaymentId], references: [id])
+  matchedOfferId      String?
+  matchedOffer        PaymentOffer? @relation(fields: [matchedOfferId], references: [id])
+  matchedParticipantId String?
+  matchedParticipant   Participant? @relation(fields: [matchedParticipantId], references: [id])
+  errorMessage        String?
+  adminNotes          String?
+  processedAt         DateTime?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([status, createdAt])
+  @@index([extTransactionId])
+  @@map("icount_webhook_logs")
 }
 
 // Daily self-report panel rendered at the top of the portal's "המעקב שלי"

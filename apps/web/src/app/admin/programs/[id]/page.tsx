@@ -4206,6 +4206,9 @@ interface OfferLite {
   amount: string;
   currency: string;
   iCountPaymentUrl: string | null;
+  iCountPageId: string | null;
+  iCountItemName: string | null;
+  iCountExternalId: string | null;
   isActive: boolean;
   defaultGroup: { id: string; name: string } | null;
   _count: { payments: number };
@@ -4305,6 +4308,9 @@ function OfferModalInline(props: {
   const [amount, setAmount] = useState(props.initial ? props.initial.amount : '');
   const [currency, setCurrency] = useState(props.initial?.currency ?? 'ILS');
   const [iCountPaymentUrl, setIcount] = useState(props.initial?.iCountPaymentUrl ?? '');
+  const [iCountPageId, setICountPageId] = useState(props.initial?.iCountPageId ?? '');
+  const [iCountItemName, setICountItemName] = useState(props.initial?.iCountItemName ?? '');
+  const [iCountExternalId, setICountExternalId] = useState(props.initial?.iCountExternalId ?? '');
   const [defaultGroupId, setDefaultGroupId] = useState(props.initial?.defaultGroup?.id ?? '');
   const [isActive, setIsActive] = useState(props.initial?.isActive ?? true);
   const [groups, setGroups] = useState<Array<{ id: string; name: string }>>([]);
@@ -4327,6 +4333,9 @@ function OfferModalInline(props: {
         amount: n,
         currency: currency.trim() || 'ILS',
         iCountPaymentUrl: iCountPaymentUrl.trim() || null,
+        iCountPageId: iCountPageId.trim() || null,
+        iCountItemName: iCountItemName.trim() || null,
+        iCountExternalId: iCountExternalId.trim() || null,
         linkedProgramId: props.programId,
         defaultGroupId: defaultGroupId || null,
         isActive,
@@ -4376,6 +4385,33 @@ function OfferModalInline(props: {
           <div>
             <label style={LABEL_P4}>קישור iCount</label>
             <input style={INPUT_P4} dir="ltr" value={iCountPaymentUrl} onChange={(e) => setIcount(e.target.value)} placeholder="https://..." />
+          </div>
+          {/* iCount matching fields — used by the webhook ingester to
+              resolve which offer an incoming payment belongs to. All
+              optional: fill any one of them and automatic matching
+              works. Leave blank and the webhook will create
+              "needs_review" logs that you attach manually. */}
+          <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: 12 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: '#475569', textTransform: 'uppercase' as const, letterSpacing: '0.05em', marginBottom: 8 }}>
+              התאמה אוטומטית ל-iCount
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <div>
+                <label style={{ ...LABEL_P4, fontSize: 11 }}>Page ID</label>
+                <input style={INPUT_P4} dir="ltr" value={iCountPageId} onChange={(e) => setICountPageId(e.target.value)} placeholder="לדוגמה: c68ea9ad..." />
+              </div>
+              <div>
+                <label style={{ ...LABEL_P4, fontSize: 11 }}>External ID</label>
+                <input style={INPUT_P4} dir="ltr" value={iCountExternalId} onChange={(e) => setICountExternalId(e.target.value)} placeholder="SKU או מזהה חיצוני" />
+              </div>
+              <div style={{ gridColumn: '1 / -1' }}>
+                <label style={{ ...LABEL_P4, fontSize: 11 }}>שם מוצר ב-iCount (Line item)</label>
+                <input style={INPUT_P4} value={iCountItemName} onChange={(e) => setICountItemName(e.target.value)} placeholder="השם המדויק כפי שמופיע בחשבונית" />
+              </div>
+            </div>
+            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>
+              המערכת תנסה סדר עדיפות: Page ID → External ID → שם מוצר → קישור → סכום+מטבע ייחודיים.
+            </div>
           </div>
           <div>
             <label style={LABEL_P4}>קבוצת ברירת-מחדל לשיוך אחרי תשלום</label>
