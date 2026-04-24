@@ -77,7 +77,12 @@ const landingContent = {
       'הירידה במשקל זו רק תופעות לוואי כשאנחנו עושות את הפעולות הנכונות.',
       'למשחק קוראים Game Changer - כי זה מה שההרגלים הקטנים האלה היו בשבילי :)',
     ],
-    imageCaption: 'כאן תהיה התמונה',
+    // Swap for a different file (same folder) to update the photo.
+    // Kept under /public/lp/game-changer/ so the URL stays stable.
+    image: {
+      src: '/lp/game-changer/transformation.jpg',
+      alt: 'תמונת לפני ואחרי — משתתפת במשחק',
+    },
   },
 
   // ── Highlights ───────────────────────────────────────────────────────
@@ -86,9 +91,11 @@ const landingContent = {
     cards: [
       { emoji: '👀', text: 'זו לא קבוצה המונית שדחסו אליה מאות נשים ובתכל\'ס את לבד - אני רואה אותך, וכולן רואות אותך, כל יום!' },
       { emoji: '🔥', text: 'יש תחרות בריאה בין הבנות, עם מלא השראה ופרגונים בקבוצה כל הזמן.' },
-      // Pizza card — line break after "ממנו" only. Text preserved.
+      // Pizza card — two line breaks: after "אסור!" and after "ממנו".
+      // Text preserved verbatim; only the break points change.
       { emoji: '🍕', text: [
-        'אין דבר כזה אסור! אכלת משהו "מיותר"? תהני ממנו.',
+        'אין דבר כזה אסור!',
+        'אכלת משהו "מיותר"? תהני ממנו.',
         'הצלחת להתאפק? תהני מהנקודות והפרגונים!',
       ] },
       // Sparkle card — line break after the first "קל!".
@@ -192,7 +199,18 @@ export default function GameChangerLandingPage() {
               );
             })}
           </div>
-          <div className="img-placeholder mid-img-placeholder">{c.story.imageCaption}</div>
+          {/* Image drop — same slot position as the old placeholder so
+              the layout rhythm is unchanged. next/image left out for now
+              because the photo is a straight asset; a plain <img> keeps
+              the scoped-CSS isolation simple. */}
+          <div className="story-image-wrap">
+            <img
+              src={c.story.image.src}
+              alt={c.story.image.alt}
+              className="story-image"
+              loading="lazy"
+            />
+          </div>
         </div>
       </section>
 
@@ -460,6 +478,20 @@ function ScopedStyles() {
         font-weight: 700;
       }
       #lp-game-changer .mid-img-placeholder { height: 280px; margin-top: 32px; }
+      /* Story image — same slot position as the legacy placeholder.
+         Keeps the 20px rounded frame + 32px top gutter, but lets the
+         image dictate its own height instead of the fixed 280px. */
+      #lp-game-changer .story-image-wrap {
+        margin-top: 32px;
+        border-radius: var(--radius-lg);
+        overflow: hidden;
+        border: 1px solid rgba(212,168,67,0.2);
+      }
+      #lp-game-changer .story-image {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
 
       /* HIGHLIGHTS */
       #lp-game-changer #highlights {
