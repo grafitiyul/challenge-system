@@ -140,6 +140,16 @@ export class QuestionnairesService {
         ...(dto.postIdentificationGreeting !== undefined ? { postIdentificationGreeting: dto.postIdentificationGreeting || null } : {}),
         ...(dto.postSubmitText !== undefined ? { postSubmitText: dto.postSubmitText || null } : {}),
         ...(dto.programId !== undefined ? { programId: dto.programId ?? null } : {}),
+        ...(dto.submissionPurpose !== undefined ? { submissionPurpose: dto.submissionPurpose } : {}),
+        ...(dto.participantMatchingMode !== undefined ? { participantMatchingMode: dto.participantMatchingMode } : {}),
+        ...(dto.onSubmitParticipantStatus !== undefined
+          ? { onSubmitParticipantStatus: dto.onSubmitParticipantStatus || null } : {}),
+        ...(dto.onSubmitSource !== undefined
+          ? { onSubmitSource: dto.onSubmitSource || null } : {}),
+        ...(dto.linkedChallengeId !== undefined
+          ? { linkedChallengeId: dto.linkedChallengeId ?? null } : {}),
+        ...(dto.linkedGroupId !== undefined
+          ? { linkedGroupId: dto.linkedGroupId ?? null } : {}),
       },
     });
   }
@@ -431,6 +441,31 @@ export class QuestionnairesService {
     return sub;
   }
 
+  // Manually wire an orphan submission (participantId=null, typically from
+  // `manual_review` matching mode) to a specific participant. Idempotent:
+  // re-attaching to the same participant is a no-op; admin can also re-attach
+  // to a different participant if a correction is needed.
+  async attachSubmissionToParticipant(submissionId: string, participantId: string) {
+    const sub = await this.prisma.questionnaireSubmission.findUnique({
+      where: { id: submissionId },
+      select: { id: true, participantId: true },
+    });
+    if (!sub) throw new NotFoundException(`Submission ${submissionId} not found`);
+    const p = await this.prisma.participant.findUnique({
+      where: { id: participantId },
+      select: { id: true },
+    });
+    if (!p) throw new NotFoundException(`Participant ${participantId} not found`);
+    return this.prisma.questionnaireSubmission.update({
+      where: { id: submissionId },
+      data: { participantId },
+      include: {
+        template: { select: { id: true, internalName: true, publicTitle: true } },
+        participant: { select: PARTICIPANT_SELECT },
+      },
+    });
+  }
+
   // Core submission creation — used by both internal and external flows
   async createSubmission(templateId: string, dto: CreateSubmissionDto) {
     const template = await this.prisma.questionnaireTemplate.findUnique({
@@ -465,14 +500,25 @@ export class QuestionnairesService {
       if (field) identityFromAnswers[field] = String(a.value).trim();
     }
 
-    // ── Participant resolution ────────────────────────────────────────────────
+    // ── Participant resolution — driven by template config ──────────────────
+    //
+    // matchingMode=manual_review  → never touch participants; submission
+    //                               lands orphan, admin attaches via /admin UI.
+    // matchingMode=always_create  → skip the phone lookup and try to create.
+    //                               If phone is already taken, fall back to
+    //                               reusing the existing row (uniqueness is
+    //                               still enforced; we just don't volunteer
+    //                               to match proactively).
+    // matchingMode=match_by_phone → default; phone-upsert.
+    //
+    // Status/source are stamped from the template's onSubmit* fields. Null
+    // means "leave alone" — applies only to freshly-created participants,
+    // never overwrites existing values.
     let resolvedParticipantId: string | null = dto.participantId ?? null;
+    let newlyCreated = false;
+    const matchingMode = template.participantMatchingMode ?? 'match_by_phone';
 
-    if (
-      !resolvedParticipantId &&
-      ['create_new_participant', 'attach_or_create'].includes(template.submitBehavior)
-    ) {
-      // Explicit newParticipant DTO takes priority; fall back to answers-extracted identity
+    if (!resolvedParticipantId && matchingMode !== 'manual_review') {
       const identity = dto.newParticipant ?? (
         identityFromAnswers.phoneNumber
           ? {
@@ -485,40 +531,79 @@ export class QuestionnairesService {
       );
 
       if (identity) {
-        // Upsert by phone number — never create a duplicate
-        const existing = await this.prisma.participant.findUnique({
-          where: { phoneNumber: identity.phoneNumber },
-        });
+        // Phone uniqueness is enforced at the schema level; both matching
+        // modes funnel through the same branch. `always_create` just skips
+        // the proactive lookup, but the DB constraint keeps us safe if the
+        // phone collides.
+        const existing = matchingMode === 'match_by_phone'
+          ? await this.prisma.participant.findUnique({ where: { phoneNumber: identity.phoneNumber } })
+          : null;
 
         if (existing) {
           resolvedParticipantId = existing.id;
         } else {
-          // Resolve or create a default gender for auto-created participants
           let gender = await this.prisma.gender.findFirst({ where: { name: 'לא צוין' } });
           if (!gender) {
             gender = await this.prisma.gender.create({ data: { name: 'לא צוין' } });
           }
-          // Public registration Phase 1: external submissions represent
-          // waitlist signups. Stamp source + lifecycle status on creation
-          // so the admin pipeline (filters, payment matching, cohort
-          // assignment) has structured fields to work with. Internal
-          // submissions (admin filling on behalf of someone) aren't
-          // waitlist and stay unstamped.
-          const isExternal = dto.submittedByMode === 'external';
-          const created = await this.prisma.participant.create({
-            data: {
-              firstName: identity.firstName,
-              lastName: identity.lastName ?? null,
-              phoneNumber: identity.phoneNumber,
-              email: identity.email ?? null,
-              genderId: gender.id,
-              ...(isExternal ? { source: 'waitlist_form', status: 'lead_waitlist' } : {}),
-            },
-          });
-          resolvedParticipantId = created.id;
+          try {
+            const created = await this.prisma.participant.create({
+              data: {
+                firstName: identity.firstName,
+                lastName: identity.lastName ?? null,
+                phoneNumber: identity.phoneNumber,
+                email: identity.email ?? null,
+                genderId: gender.id,
+                ...(template.onSubmitParticipantStatus
+                  ? { status: template.onSubmitParticipantStatus } : {}),
+                ...(template.onSubmitSource
+                  ? { source: template.onSubmitSource } : {}),
+              },
+            });
+            resolvedParticipantId = created.id;
+            newlyCreated = true;
+          } catch (err: unknown) {
+            // Phone unique conflict (race / always_create with pre-existing
+            // row). Attach to the existing row rather than failing the
+            // submission. Do NOT stamp status/source — we didn't create it.
+            if (
+              err instanceof Prisma.PrismaClientKnownRequestError &&
+              err.code === 'P2002'
+            ) {
+              const fallback = await this.prisma.participant.findUnique({
+                where: { phoneNumber: identity.phoneNumber },
+              });
+              if (fallback) resolvedParticipantId = fallback.id;
+            } else {
+              throw err;
+            }
+          }
         }
       }
     }
+
+    // Auto-assign to linkedGroupId when configured. Runs for EVERY matched
+    // participant (new or existing) — admin-configured behavior, not a
+    // Phase-1 hardcode. Idempotent via upsert.
+    if (resolvedParticipantId && template.linkedGroupId) {
+      await this.prisma.participantGroup.upsert({
+        where: {
+          participantId_groupId: {
+            participantId: resolvedParticipantId,
+            groupId: template.linkedGroupId,
+          },
+        },
+        create: {
+          participantId: resolvedParticipantId,
+          groupId: template.linkedGroupId,
+        },
+        update: { isActive: true, leftAt: null },
+      });
+    }
+    // Silence unused-var lint without changing semantics. `newlyCreated`
+    // stays as a near-term hook for follow-up (e.g. stamp source on
+    // existing participants too, guarded by a template flag).
+    void newlyCreated;
 
     // ── Create submission + answers in a transaction ──────────────────────────
     const now = new Date();

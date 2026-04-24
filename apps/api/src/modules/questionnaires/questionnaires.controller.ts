@@ -157,4 +157,14 @@ export class SubmissionsController {
   getSubmission(@Param('id') id: string) {
     return this.svc.getSubmission(id);
   }
+
+  // Attach an orphan (participantId=null) submission to a participant, or
+  // re-attach a mistakenly-linked one. Admin-only operational override.
+  @Post(':id/attach-participant')
+  attach(
+    @Param('id') id: string,
+    @Body() body: { participantId: string },
+  ) {
+    return this.svc.attachSubmissionToParticipant(id, body.participantId);
+  }
 }

@@ -49,6 +49,18 @@ export class CreatePaymentDto {
   @IsOptional()
   @IsString()
   notes?: string | null;
+
+  // Public registration Phase 2: business-context relations. Both optional
+  // — the service resolves missing fields from the offer (e.g. amount +
+  // currency + itemName can be inferred) but the client can also send
+  // explicit overrides.
+  @IsOptional()
+  @IsString()
+  offerId?: string | null;
+
+  @IsOptional()
+  @IsString()
+  groupId?: string | null;
 }
 
 export class UpdatePaymentDto {
@@ -91,4 +103,12 @@ export class UpdatePaymentDto {
   @IsOptional()
   @IsString()
   notes?: string | null;
+
+  @IsOptional()
+  @IsString()
+  offerId?: string | null;
+
+  @IsOptional()
+  @IsString()
+  groupId?: string | null;
 }

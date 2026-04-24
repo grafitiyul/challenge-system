@@ -17,8 +17,30 @@ export interface Payment {
   invoiceNumber: string | null;
   invoiceUrl: string | null;
   notes: string | null;
+  verifiedAt: string | null;
+  // Joined product/cohort context. Both optional — one-off manual payments
+  // won't have them.
+  offer: {
+    id: string;
+    title: string;
+    currency: string;
+    iCountPaymentUrl: string | null;
+    linkedChallenge: { id: string; name: string } | null;
+    linkedProgram: { id: string; name: string } | null;
+    defaultGroup: { id: string; name: string } | null;
+  } | null;
+  group: { id: string; name: string } | null;
   createdAt: string;
   updatedAt: string;
+}
+
+interface OfferLite {
+  id: string;
+  title: string;
+  amount: string;
+  currency: string;
+  iCountPaymentUrl: string | null;
+  defaultGroup: { id: string; name: string } | null;
 }
 
 interface GroupLite {
@@ -99,6 +121,18 @@ export function PaymentsTab({ participantId, currentGroupIds, onParticipantChang
       await reload();
     } catch (e) {
       alert(e instanceof Error ? e.message : 'מחיקה נכשלה');
+    }
+  }
+
+  async function toggleVerified(p: Payment) {
+    try {
+      await apiFetch(`${BASE_URL}/payments/${p.id}/verify`, {
+        method: 'POST',
+        body: JSON.stringify({ verified: !p.verifiedAt }),
+      });
+      await reload();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'עדכון נכשל');
     }
   }
 
@@ -205,6 +239,11 @@ export function PaymentsTab({ participantId, currentGroupIds, onParticipantChang
                   <span style={{ background: '#f1f5f9', color: '#475569', padding: '2px 10px', borderRadius: 999, fontSize: 11, fontWeight: 600 }}>
                     {PROVIDER_LABELS[p.provider] ?? p.provider}
                   </span>
+                  {p.verifiedAt && (
+                    <span title={`אומת ב-${new Date(p.verifiedAt).toLocaleDateString('he-IL')}`} style={{ background: '#dcfce7', color: '#15803d', padding: '2px 10px', borderRadius: 999, fontSize: 11, fontWeight: 700 }}>
+                      ✓ מאומת
+                    </span>
+                  )}
                 </div>
                 <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 13, color: '#475569' }}>
                   <span style={{ fontWeight: 700, color: '#0f172a' }}>
@@ -218,9 +257,44 @@ export function PaymentsTab({ participantId, currentGroupIds, onParticipantChang
                     </a>
                   )}
                 </div>
+                {(p.offer || p.group) && (
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+                    {p.offer && (
+                      <span style={{ background: '#eff6ff', color: '#1d4ed8', padding: '3px 10px', borderRadius: 999, fontSize: 11, fontWeight: 600 }}>
+                        🏷 {p.offer.title}
+                      </span>
+                    )}
+                    {p.offer?.linkedChallenge && (
+                      <span style={{ background: '#f1f5f9', color: '#475569', padding: '3px 10px', borderRadius: 999, fontSize: 11 }}>
+                        {p.offer.linkedChallenge.name}
+                      </span>
+                    )}
+                    {p.offer?.linkedProgram && (
+                      <span style={{ background: '#f1f5f9', color: '#475569', padding: '3px 10px', borderRadius: 999, fontSize: 11 }}>
+                        {p.offer.linkedProgram.name}
+                      </span>
+                    )}
+                    {p.group && (
+                      <span style={{ background: '#ecfeff', color: '#0e7490', padding: '3px 10px', borderRadius: 999, fontSize: 11, fontWeight: 600 }}>
+                        📂 {p.group.name}
+                      </span>
+                    )}
+                  </div>
+                )}
                 {p.notes && <div style={{ fontSize: 12, color: '#64748b', marginTop: 6, whiteSpace: 'pre-wrap' }}>{p.notes}</div>}
               </div>
-              <div style={{ display: 'flex', gap: 6 }}>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                <button
+                  onClick={() => toggleVerified(p)}
+                  style={{
+                    ...btnGhost,
+                    color: p.verifiedAt ? '#b45309' : '#15803d',
+                    borderColor: p.verifiedAt ? '#fde68a' : '#bbf7d0',
+                  }}
+                  title={p.verifiedAt ? 'בטל אימות' : 'סמני כמאומת (תואם לדף בנק / כספים)'}
+                >
+                  {p.verifiedAt ? 'בטל אימות' : '✓ אמת תשלום'}
+                </button>
                 <button onClick={() => removePayment(p.id)} style={{ ...btnGhost, color: '#b91c1c', borderColor: '#fecaca' }}>
                   מחק
                 </button>
@@ -275,6 +349,8 @@ function AddPaymentModal(props: {
   onCreated: (p: Payment) => void;
 }) {
   const today = new Date().toISOString().slice(0, 10);
+  const [offers, setOffers] = useState<OfferLite[]>([]);
+  const [offerId, setOfferId] = useState<string>('');
   const [itemName, setItemName] = useState('');
   const [amount, setAmount] = useState('');
   const [currency, setCurrency] = useState('ILS');
@@ -286,6 +362,26 @@ function AddPaymentModal(props: {
   const [notes, setNotes] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+
+  // Load active offers so admin can pick one instead of retyping amount +
+  // title every time.
+  useEffect(() => {
+    apiFetch<OfferLite[]>(`${BASE_URL}/offers?active=true`)
+      .then((rows) => setOffers(rows))
+      .catch(() => setOffers([]));
+  }, []);
+
+  // When an offer is chosen, prefill amount / currency / itemName. Admin
+  // can still edit afterwards before saving.
+  function selectOffer(id: string) {
+    setOfferId(id);
+    const o = offers.find((x) => x.id === id);
+    if (o) {
+      setItemName(o.title);
+      setAmount(String(o.amount));
+      setCurrency(o.currency);
+    }
+  }
 
   async function submit() {
     if (!itemName.trim()) { setErr('חובה לרשום שם מוצר/שירות'); return; }
@@ -301,6 +397,7 @@ function AddPaymentModal(props: {
         provider,
         status,
       };
+      if (offerId) body.offerId = offerId;
       if (invoiceNumber.trim()) body.invoiceNumber = invoiceNumber.trim();
       if (invoiceUrl.trim()) body.invoiceUrl = invoiceUrl.trim();
       if (notes.trim()) body.notes = notes.trim();
@@ -316,6 +413,8 @@ function AddPaymentModal(props: {
     }
   }
 
+  const pickedOffer = offers.find((o) => o.id === offerId);
+
   const label: React.CSSProperties = { display: 'block', fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 4 };
   const input: React.CSSProperties = {
     width: '100%', padding: '9px 12px', border: '1px solid #e2e8f0',
@@ -326,6 +425,25 @@ function AddPaymentModal(props: {
   return (
     <ModalShell title="הוספת תשלום" onClose={props.onClose} onSave={submit} saveLabel={busy ? 'שומר...' : 'שמור תשלום'} saving={busy}>
       <div style={{ display: 'grid', gap: 12 }}>
+        <div>
+          <label style={label}>הצעה / מוצר</label>
+          <select style={input} value={offerId} onChange={(e) => selectOffer(e.target.value)}>
+            <option value="">— ללא הצעה (תשלום ידני) —</option>
+            {offers.map((o) => (
+              <option key={o.id} value={o.id}>
+                {o.title} · {Number(o.amount).toLocaleString('he-IL')} {o.currency}
+              </option>
+            ))}
+          </select>
+          {pickedOffer?.iCountPaymentUrl && (
+            <div style={{ fontSize: 12, marginTop: 6 }}>
+              קישור iCount להצעה:{' '}
+              <a href={pickedOffer.iCountPaymentUrl} target="_blank" rel="noreferrer" style={{ color: '#2563eb' }}>
+                {pickedOffer.iCountPaymentUrl}
+              </a>
+            </div>
+          )}
+        </div>
         <div>
           <label style={label}>שם מוצר / שירות *</label>
           <input style={input} value={itemName} onChange={(e) => setItemName(e.target.value)} placeholder="לדוגמה: מחזור חדש — מרץ 2026" />

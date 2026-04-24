@@ -45,4 +45,11 @@ export class PaymentsController {
   remove(@Param('id') id: string) {
     return this.svc.remove(id);
   }
+
+  // Toggle reconciliation flag. `verified=true` stamps verifiedAt=now;
+  // `verified=false` clears it.
+  @Post('payments/:id/verify')
+  verify(@Param('id') id: string, @Body() body: { verified: boolean }) {
+    return this.svc.setVerified(id, body.verified);
+  }
 }

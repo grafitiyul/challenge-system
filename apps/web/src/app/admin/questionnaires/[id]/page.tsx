@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { use } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
@@ -62,6 +62,13 @@ interface Template {
   postIdentificationGreeting: string | null;
   postSubmitText: string | null;
   programId: string | null;
+  // Public registration Phase 2 — post-submit configuration
+  submissionPurpose: string;
+  participantMatchingMode: string;
+  onSubmitParticipantStatus: string | null;
+  onSubmitSource: string | null;
+  linkedChallengeId: string | null;
+  linkedGroupId: string | null;
   questions: Question[];
 }
 
@@ -237,6 +244,13 @@ function SettingsTab({ template, onSaved }: { template: Template; onSaved: (t: T
     postIdentificationGreeting: template.postIdentificationGreeting ?? '',
     postSubmitText: template.postSubmitText ?? '',
     programId: template.programId ?? '',
+    // Post-submit configuration (Phase 2)
+    submissionPurpose: template.submissionPurpose ?? 'internal',
+    participantMatchingMode: template.participantMatchingMode ?? 'match_by_phone',
+    onSubmitParticipantStatus: template.onSubmitParticipantStatus ?? '',
+    onSubmitSource: template.onSubmitSource ?? '',
+    linkedChallengeId: template.linkedChallengeId ?? '',
+    linkedGroupId: template.linkedGroupId ?? '',
   });
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -244,10 +258,18 @@ function SettingsTab({ template, onSaved }: { template: Template; onSaved: (t: T
   const [showEmoji, setShowEmoji] = useState(false);
   const greetingRef = useRef<HTMLTextAreaElement>(null);
   const [programs, setPrograms] = useState<Program[]>([]);
+  const [challenges, setChallenges] = useState<Array<{ id: string; name: string }>>([]);
+  const [groups, setGroups] = useState<Array<{ id: string; name: string }>>([]);
 
   useEffect(() => {
     apiFetch<Program[]>(`${BASE_URL}/programs`)
       .then((data) => setPrograms(Array.isArray(data) ? data : []))
+      .catch(() => {});
+    apiFetch<Array<{ id: string; name: string }>>(`${BASE_URL}/challenges`)
+      .then((data) => setChallenges(Array.isArray(data) ? data : []))
+      .catch(() => {});
+    apiFetch<Array<{ id: string; name: string }>>(`${BASE_URL}/groups`)
+      .then((data) => setGroups(Array.isArray(data) ? data : []))
       .catch(() => {});
   }, []);
 
@@ -282,7 +304,14 @@ function SettingsTab({ template, onSaved }: { template: Template; onSaved: (t: T
     setError('');
     setSaving(true);
     try {
-      const body = { ...form, programId: form.programId || null };
+      const body = {
+        ...form,
+        programId: form.programId || null,
+        onSubmitParticipantStatus: form.onSubmitParticipantStatus || null,
+        onSubmitSource: form.onSubmitSource || null,
+        linkedChallengeId: form.linkedChallengeId || null,
+        linkedGroupId: form.linkedGroupId || null,
+      };
       const updated = await apiFetch<Template>(`${BASE_URL}/questionnaires/${template.id}`, {
         method: 'PATCH',
         body: JSON.stringify(body),
@@ -314,14 +343,6 @@ function SettingsTab({ template, onSaved }: { template: Template; onSaved: (t: T
           </select>
         </div>
         <div>
-          <label style={labelStyle}>התנהגות בעת שליחה</label>
-          <select style={inputStyle} value={form.submitBehavior} onChange={(e) => setField('submitBehavior', e.target.value)}>
-            <option value="none">שמירת מענה בלבד</option>
-            <option value="create_new_participant">יצירת משתתפת חדשה</option>
-            <option value="attach_or_create">שיוך / יצירה</option>
-          </select>
-        </div>
-        <div>
           <label style={labelStyle}>תצוגת מילוי (חיצוני)</label>
           <select style={inputStyle} value={form.displayMode} onChange={(e) => setField('displayMode', e.target.value)}>
             <option value="step_by_step">שאלה אחת בכל פעם</option>
@@ -337,6 +358,75 @@ function SettingsTab({ template, onSaved }: { template: Template; onSaved: (t: T
             ))}
           </select>
           <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>שיוך לתוכנית מציג שאלון זה בדף הקבוצות שמשתמשות בתוכנית</div>
+        </div>
+      </div>
+
+      {/* Post-submit configuration — replaces the old hardcoded "external form = waitlist" assumption */}
+      <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10, padding: 16 }}>
+        <div style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', marginBottom: 4 }}>
+          התנהגות לאחר שליחה
+        </div>
+        <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>
+          קובע מה קורה עם השאלון הזה אחרי מילוי: איך מזהים את המשתתפת, ומה מסמנים אצלה.
+          לא כל שאלון חיצוני הוא רשימת המתנה — פה קובעים זאת מפורשות.
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div>
+            <label style={labelStyle}>מטרת השאלון</label>
+            <select style={inputStyle} value={form.submissionPurpose} onChange={(e) => setField('submissionPurpose', e.target.value)}>
+              <option value="internal">פנימי</option>
+              <option value="waitlist">רשימת המתנה</option>
+              <option value="onboarding">הצטרפות למחזור</option>
+              <option value="mid_program">באמצע תוכנית</option>
+              <option value="feedback">משוב</option>
+            </select>
+          </div>
+          <div>
+            <label style={labelStyle}>איתור משתתפת</label>
+            <select style={inputStyle} value={form.participantMatchingMode} onChange={(e) => setField('participantMatchingMode', e.target.value)}>
+              <option value="match_by_phone">איתור לפי טלפון (ברירת מחדל)</option>
+              <option value="always_create">יצירה חדשה תמיד</option>
+              <option value="manual_review">בקרה ידנית — שיוך מ-ADMIN</option>
+            </select>
+          </div>
+          <div>
+            <label style={labelStyle}>סטטוס חיים לחדשות</label>
+            <select style={inputStyle} value={form.onSubmitParticipantStatus} onChange={(e) => setField('onSubmitParticipantStatus', e.target.value)}>
+              <option value="">— ללא סימון —</option>
+              <option value="lead_waitlist">רשימת המתנה</option>
+              <option value="payment_pending">תשלום בתהליך</option>
+              <option value="paid">שילמה</option>
+              <option value="active">פעילה</option>
+              <option value="inactive">לא פעילה</option>
+            </select>
+            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>חל רק על משתתפות חדשות שנוצרות מהשאלון</div>
+          </div>
+          <div>
+            <label style={labelStyle}>מקור לחדשות</label>
+            <select style={inputStyle} value={form.onSubmitSource} onChange={(e) => setField('onSubmitSource', e.target.value)}>
+              <option value="">— ללא סימון —</option>
+              <option value="waitlist_form">טופס רשימת המתנה</option>
+              <option value="manual_admin">הוספה ידנית</option>
+              <option value="payment_import">ייבוא תשלומים</option>
+              <option value="campaign">קמפיין</option>
+            </select>
+          </div>
+          <div>
+            <label style={labelStyle}>אתגר משויך</label>
+            <select style={inputStyle} value={form.linkedChallengeId} onChange={(e) => setField('linkedChallengeId', e.target.value)}>
+              <option value="">— ללא —</option>
+              {challenges.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={labelStyle}>קבוצה לשיוך אוטומטי</label>
+            <select style={inputStyle} value={form.linkedGroupId} onChange={(e) => setField('linkedGroupId', e.target.value)}>
+              <option value="">— ללא שיוך אוטומטי —</option>
+              {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+            </select>
+            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>לדוגמה: קבוצת &quot;רשימת המתנה&quot; — שאלון ישייך אוטומטית אליה</div>
+          </div>
         </div>
       </div>
 
@@ -1584,13 +1674,18 @@ function SubmissionsTab({ template }: { template: Template }) {
   const [submissions, setSubmissions] = useState<TemplateSubmission[]>([]);
   const [loading, setLoading] = useState(true);
   const [detail, setDetail] = useState<TemplateSubmission | null>(null);
+  // Picker modal: set to a submission to open the attach flow for it.
+  const [attachTarget, setAttachTarget] = useState<TemplateSubmission | null>(null);
 
-  useEffect(() => {
+  const reload = useCallback(() => {
+    setLoading(true);
     apiFetch(`${BASE_URL}/questionnaires/${template.id}/submissions`, { cache: 'no-store' })
       .then((data: unknown) => setSubmissions(data as TemplateSubmission[]))
       .catch(() => setSubmissions([]))
       .finally(() => setLoading(false));
   }, [template.id]);
+
+  useEffect(() => { reload(); }, [reload]);
 
   function formatDate(iso: string) {
     return new Date(iso).toLocaleDateString('he-IL', {
@@ -1634,18 +1729,44 @@ function SubmissionsTab({ template }: { template: Template }) {
                 }}>
                   {sub.submittedByMode === 'internal' ? 'פנימי' : 'חיצוני'}
                 </span>
+                {!sub.participant && (
+                  <span style={{
+                    background: '#fef3c7', color: '#b45309',
+                    fontSize: 11, padding: '2px 8px', borderRadius: 20, fontWeight: 700,
+                  }}>
+                    ללא שיוך
+                  </span>
+                )}
                 <span style={{ fontSize: 12, color: '#94a3b8' }}>{sub.answers?.length ?? 0} תשובות</span>
               </div>
             </div>
-            <button
-              onClick={() => setDetail(sub)}
-              style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 7, padding: '6px 14px', fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap' }}
-            >
-              צפה
-            </button>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {!sub.participant && (
+                <button
+                  onClick={() => setAttachTarget(sub)}
+                  style={{ background: '#fef3c7', color: '#b45309', border: '1px solid #fde68a', borderRadius: 7, padding: '6px 12px', fontSize: 13, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}
+                >
+                  🔗 שיוך למשתתפת
+                </button>
+              )}
+              <button
+                onClick={() => setDetail(sub)}
+                style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 7, padding: '6px 14px', fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap' }}
+              >
+                צפה
+              </button>
+            </div>
           </div>
         ))}
       </div>
+
+      {attachTarget && (
+        <AttachSubmissionModal
+          submission={attachTarget}
+          onClose={() => setAttachTarget(null)}
+          onAttached={() => { setAttachTarget(null); reload(); }}
+        />
+      )}
 
       {detail && (
         <div
@@ -1687,6 +1808,85 @@ function SubmissionsTab({ template }: { template: Template }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── Attach-orphan-submission modal ─────────────────────────────────────────
+
+interface ParticipantPick { id: string; firstName: string; lastName: string | null; phoneNumber: string; }
+
+function AttachSubmissionModal(props: { submission: TemplateSubmission; onClose: () => void; onAttached: () => void }) {
+  const [participants, setParticipants] = useState<ParticipantPick[]>([]);
+  const [search, setSearch] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    apiFetch<ParticipantPick[]>(`${BASE_URL}/participants?includeMock=false`)
+      .then((rows) => setParticipants(rows))
+      .catch(() => setParticipants([]));
+  }, []);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return participants.slice(0, 30);
+    return participants.filter((p) => {
+      const name = `${p.firstName} ${p.lastName ?? ''}`.toLowerCase();
+      return name.includes(q) || p.phoneNumber.includes(search.trim());
+    }).slice(0, 30);
+  }, [participants, search]);
+
+  async function attach(p: ParticipantPick) {
+    setBusy(true); setErr('');
+    try {
+      await apiFetch(`${BASE_URL}/submissions/${props.submission.id}/attach-participant`, {
+        method: 'POST',
+        body: JSON.stringify({ participantId: p.id }),
+      });
+      props.onAttached();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'שיוך נכשל');
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      onClick={(e) => { if (e.target === e.currentTarget && !busy) props.onClose(); }}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1200, padding: 16 }}
+    >
+      <div style={{ background: '#fff', borderRadius: 14, padding: 22, width: '100%', maxWidth: 480, maxHeight: '85vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          <div style={{ fontSize: 17, fontWeight: 700 }}>שיוך המענה למשתתפת</div>
+          <button aria-label="סגור" onClick={props.onClose} style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: 'pointer' }}>×</button>
+        </div>
+        <div style={{ fontSize: 12, color: '#64748b', marginBottom: 10 }}>
+          חפשי לפי שם או טלפון ולחצי על השורה.
+        </div>
+        <input
+          autoFocus
+          placeholder="חיפוש..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          style={{ width: '100%', padding: '9px 12px', border: '1px solid #e2e8f0', borderRadius: 7, fontSize: 14, marginBottom: 10, boxSizing: 'border-box' }}
+        />
+        {err && <div style={{ color: '#b91c1c', fontSize: 13, marginBottom: 8 }}>{err}</div>}
+        {filtered.length === 0 && <div style={{ color: '#94a3b8', fontSize: 13, padding: 16, textAlign: 'center' }}>אין תוצאות</div>}
+        {filtered.map((p) => (
+          <button
+            key={p.id}
+            onClick={() => attach(p)}
+            disabled={busy}
+            style={{ width: '100%', textAlign: 'start' as const, padding: '10px 12px', background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, marginBottom: 6, cursor: busy ? 'not-allowed' : 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+          >
+            <span style={{ fontWeight: 600, color: '#0f172a' }}>
+              {[p.firstName, p.lastName].filter(Boolean).join(' ')}
+            </span>
+            <span dir="ltr" style={{ fontSize: 12, color: '#64748b' }}>{p.phoneNumber}</span>
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

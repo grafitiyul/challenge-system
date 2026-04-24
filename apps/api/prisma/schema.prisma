@@ -64,6 +64,8 @@ model Program {
 
   questionnaireTemplates  QuestionnaireTemplate[]
   messageTemplates        ProgramMessageTemplate[]
+  // Public registration — offers can be scoped to a program.
+  paymentOffers           PaymentOffer[]
 
   // Rich content shown in participant portal rules tab (HTML)
   rulesContent            String?
@@ -202,6 +204,9 @@ model Challenge {
   endDate         DateTime
   isActive        Boolean       @default(true)
   groups          Group[]
+  // Public registration — templates and offers can point at a challenge.
+  linkedQuestionnaireTemplates QuestionnaireTemplate[]
+  paymentOffers   PaymentOffer[]
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
 
@@ -243,6 +248,13 @@ model Group {
   // Stored as UTC. Frontend sends ISO UTC strings; comparison is always UTC vs UTC.
   portalCallTime DateTime?
   portalOpenTime DateTime?
+
+  // Public registration — reverse sides of the new relations. Named
+  // relations are required because PaymentOffer and QuestionnaireTemplate
+  // each reference Group as an OPTIONAL default/link.
+  linkedQuestionnaireTemplates QuestionnaireTemplate[] @relation("QuestionnaireTemplateLinkedGroup")
+  paymentOffersAsDefault       PaymentOffer[]          @relation("PaymentOfferDefaultGroup")
+  payments                     Payment[]               @relation("PaymentGroup")
 
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
@@ -638,6 +650,9 @@ model QuestionnaireTemplate {
   // "internal" | "external" | "both"
   usageType      String   @default("both")
   isActive       Boolean  @default(true)
+  // Legacy column, pre-refactor. Kept for data compatibility but the
+  // service no longer branches on it — `participantMatchingMode` drives
+  // participant creation behavior now.
   // "none" | "create_new_participant" | "attach_or_create"
   submitBehavior String   @default("none")
   // "step_by_step" | "full_list" — controls public fill page layout
@@ -647,6 +662,31 @@ model QuestionnaireTemplate {
   postIdentificationGreeting String?
   // Shown on the thank-you screen after external submission. Falls back to generic text when empty.
   postSubmitText String?
+
+  // ── Post-submit configuration (replaces hardcoded waitlist stamping) ──────
+  // "waitlist" | "onboarding" | "mid_program" | "feedback" | "internal"
+  // Semantic label only — doesn't drive behavior by itself. Drives analytics
+  // filtering + intent signalling to the admin.
+  submissionPurpose String @default("internal")
+  // "match_by_phone" | "always_create" | "manual_review"
+  //   match_by_phone — default; phone-upsert (existing behavior)
+  //   always_create  — skip lookup; still collides on the phoneNumber unique
+  //                    and reuses the existing row in that case
+  //   manual_review  — never touch participants; submission lands orphan and
+  //                    admin attaches via /admin UI
+  participantMatchingMode String @default("match_by_phone")
+  // Values to stamp on a FRESHLY-CREATED participant. Null = leave alone.
+  // Free-form strings so future lifecycle/source values don't require a
+  // schema change. Validation lives in the shared taxonomy constants.
+  onSubmitParticipantStatus String?
+  onSubmitSource            String?
+  // Optional links — used both for the post-submit auto-assign and for
+  // reporting ("which program does this form feed?"). linkedGroupId is
+  // the "auto-add participant to this group" hook; leave null to skip.
+  linkedChallengeId String?
+  linkedChallenge   Challenge? @relation(fields: [linkedChallengeId], references: [id])
+  linkedGroupId     String?
+  linkedGroup       Group? @relation("QuestionnaireTemplateLinkedGroup", fields: [linkedGroupId], references: [id])
 
   // Optional program association — used to show related questionnaires on the group screen
   programId String?
@@ -1528,6 +1568,37 @@ model ProjectNote {
   @@map("project_notes")
 }
 
+// Reusable product / offer catalog. An "offer" is a buyable thing
+// (a cycle of a program, a single coaching call, a package) with a
+// public iCount payment page URL. Admin manages these from /admin/offers.
+// Payments can optionally reference an offer — it gives every payment
+// a product context (challenge, program, default group) for reporting.
+model PaymentOffer {
+  id                String      @id @default(cuid())
+  title             String
+  description       String?
+  amount            Decimal     @db.Decimal(12, 2)
+  currency          String      @default("ILS")
+  // Full URL of the iCount (or other provider) checkout page. Copy-paste
+  // target for the admin. NOT auto-generated.
+  iCountPaymentUrl  String?
+  linkedChallengeId String?
+  linkedChallenge   Challenge?  @relation(fields: [linkedChallengeId], references: [id])
+  linkedProgramId   String?
+  linkedProgram     Program?    @relation(fields: [linkedProgramId], references: [id])
+  // When a payment is recorded with this offer, the admin is nudged to
+  // move the participant to this group by default. Overridable per row.
+  defaultGroupId    String?
+  defaultGroup      Group?      @relation("PaymentOfferDefaultGroup", fields: [defaultGroupId], references: [id])
+  isActive          Boolean     @default(true)
+  payments          Payment[]
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  @@index([isActive])
+  @@map("payment_offers")
+}
+
 // Payment records attached to a participant. Manual-entry only in Phase 1;
 // `provider` is free-form so a future iCount webhook can write its own
 // value ("icount") alongside the existing manual rows without a schema
@@ -1536,6 +1607,14 @@ model ProjectNote {
 // Money: amount is stored as Decimal with 2 fractional digits (ILS
 // agorot precision). currency is ISO 4217; defaults to ILS but the
 // column exists so a future USD/EUR row doesn't need a migration.
+//
+// Business-context relations:
+//   offerId — preferred; gives challenge/program/default-group context
+//             via the PaymentOffer join. Optional: manual one-off payments
+//             don't need an offer row.
+//   groupId — explicit cohort assignment for this payment. Set manually
+//             when admin moves participant to a cohort via the "Move to
+//             group" flow; may differ from offer.defaultGroupId.
 model Payment {
   id                 String       @id @default(cuid())
   participantId      String
@@ -1553,10 +1632,20 @@ model Payment {
   invoiceUrl         String?
   rawPayload         Json?
   notes              String?
+  offerId            String?
+  offer              PaymentOffer? @relation(fields: [offerId], references: [id])
+  groupId            String?
+  group              Group?       @relation("PaymentGroup", fields: [groupId], references: [id])
+  // Set by admin via "mark as verified" when the bank statement has been
+  // reconciled against the payment row. Orthogonal to `status` (which can
+  // be "paid" without being reconciled).
+  verifiedAt         DateTime?
   createdAt          DateTime     @default(now())
   updatedAt          DateTime     @updatedAt
 
   @@index([participantId])
+  @@index([offerId])
+  @@index([groupId])
   @@index([provider, externalPaymentId])
   @@map("payments")
 }

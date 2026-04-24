@@ -11,30 +11,69 @@ import { CreatePaymentDto, UpdatePaymentDto } from './dto/payment.dto';
 export class PaymentsService {
   constructor(private readonly prisma: PrismaService) {}
 
+  // Every read now joins the offer + group so the UI can render the
+  // "which product / cohort does this belong to?" context without a
+  // second round-trip.
+  private readonly PAYMENT_INCLUDE = {
+    offer: {
+      select: {
+        id: true,
+        title: true,
+        currency: true,
+        iCountPaymentUrl: true,
+        linkedChallenge: { select: { id: true, name: true } },
+        linkedProgram: { select: { id: true, name: true } },
+        defaultGroup: { select: { id: true, name: true } },
+      },
+    },
+    group: { select: { id: true, name: true } },
+  };
+
   async listForParticipant(participantId: string) {
     await this.requireParticipant(participantId);
     return this.prisma.payment.findMany({
       where: { participantId },
+      include: this.PAYMENT_INCLUDE,
       orderBy: [{ paidAt: 'desc' }, { createdAt: 'desc' }],
     });
   }
 
   async createForParticipant(participantId: string, dto: CreatePaymentDto) {
     await this.requireParticipant(participantId);
+    // Offer-driven defaults: if an offer is linked and the caller didn't
+    // provide overrides, fill amount / currency / itemName from the offer.
+    // That keeps the Add Payment modal fast — admin picks an offer and
+    // the form pre-fills.
+    let offerDefaults: { amount?: number; currency?: string; itemName?: string } = {};
+    if (dto.offerId) {
+      const offer = await this.prisma.paymentOffer.findUnique({
+        where: { id: dto.offerId },
+        select: { amount: true, currency: true, title: true, isActive: true },
+      });
+      if (!offer) throw new NotFoundException(`Offer ${dto.offerId} not found`);
+      offerDefaults = {
+        amount: Number(offer.amount),
+        currency: offer.currency,
+        itemName: offer.title,
+      };
+    }
     return this.prisma.payment.create({
       data: {
         participant: { connect: { id: participantId } },
         provider: dto.provider ?? 'manual',
         externalPaymentId: dto.externalPaymentId ?? null,
-        amount: new Prisma.Decimal(dto.amount),
-        currency: dto.currency?.trim() || 'ILS',
+        amount: new Prisma.Decimal(dto.amount ?? offerDefaults.amount ?? 0),
+        currency: dto.currency?.trim() || offerDefaults.currency || 'ILS',
         paidAt: new Date(dto.paidAt),
         status: dto.status ?? 'paid',
-        itemName: dto.itemName.trim(),
+        itemName: (dto.itemName ?? offerDefaults.itemName ?? '').trim(),
         invoiceNumber: dto.invoiceNumber ?? null,
         invoiceUrl: dto.invoiceUrl ?? null,
         notes: dto.notes ?? null,
+        ...(dto.offerId ? { offer: { connect: { id: dto.offerId } } } : {}),
+        ...(dto.groupId ? { group: { connect: { id: dto.groupId } } } : {}),
       },
+      include: this.PAYMENT_INCLUDE,
     });
   }
 
@@ -51,12 +90,34 @@ export class PaymentsService {
     if (dto.invoiceNumber !== undefined) data.invoiceNumber = dto.invoiceNumber;
     if (dto.invoiceUrl !== undefined) data.invoiceUrl = dto.invoiceUrl;
     if (dto.notes !== undefined) data.notes = dto.notes;
-    return this.prisma.payment.update({ where: { id }, data });
+    if (dto.offerId !== undefined) {
+      data.offer = dto.offerId ? { connect: { id: dto.offerId } } : { disconnect: true };
+    }
+    if (dto.groupId !== undefined) {
+      data.group = dto.groupId ? { connect: { id: dto.groupId } } : { disconnect: true };
+    }
+    return this.prisma.payment.update({
+      where: { id },
+      data,
+      include: this.PAYMENT_INCLUDE,
+    });
   }
 
   async remove(id: string) {
     await this.requirePayment(id);
     return this.prisma.payment.delete({ where: { id } });
+  }
+
+  // Mark a payment as reconciled. Orthogonal to `status`: a row can be
+  // status=paid but not yet verifiedAt (money landed, statement not yet
+  // checked). Setting to null clears the flag ("unverify").
+  async setVerified(id: string, verified: boolean) {
+    await this.requirePayment(id);
+    return this.prisma.payment.update({
+      where: { id },
+      data: { verifiedAt: verified ? new Date() : null },
+      include: this.PAYMENT_INCLUDE,
+    });
   }
 
   private async requireParticipant(id: string) {
