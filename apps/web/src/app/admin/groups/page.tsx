@@ -78,12 +78,15 @@ export default function GroupsPage() {
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
+  const [includeArchived, setIncludeArchived] = useState(false);
+
   useEffect(() => {
-    apiFetch(`${BASE_URL}/groups`, { cache: 'no-store' })
+    const qs = includeArchived ? '?includeArchived=true' : '';
+    apiFetch(`${BASE_URL}/groups${qs}`, { cache: 'no-store' })
       .then((data: unknown) => setGroups(Array.isArray(data) ? (data as Group[]) : []))
       .catch(() => setGroups([]))
       .finally(() => setLoading(false));
-  }, []);
+  }, [includeArchived]);
 
   async function handleDelete() {
     if (!deleteTarget) return;
@@ -122,13 +125,21 @@ export default function GroupsPage() {
         </div>
       </div>
 
-      <div style={{ marginBottom: 20 }}>
+      <div style={{ display: 'flex', gap: 12, marginBottom: 20, flexWrap: 'wrap' as const, alignItems: 'center' }}>
         <input
-          style={{ width: '100%', maxWidth: 360, padding: '9px 14px', border: '1px solid #e2e8f0', borderRadius: 7, fontSize: 14, background: '#ffffff', color: '#0f172a' }}
+          style={{ flex: '1 1 220px', maxWidth: 360, padding: '9px 14px', border: '1px solid #e2e8f0', borderRadius: 7, fontSize: 14, background: '#ffffff', color: '#0f172a' }}
           placeholder="חיפוש לפי שם קבוצה או תוכנית..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#475569', cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={includeArchived}
+            onChange={(e) => setIncludeArchived(e.target.checked)}
+          />
+          כלול ארכיון
+        </label>
       </div>
 
       <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>

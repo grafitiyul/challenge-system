@@ -92,6 +92,67 @@ export class ProductsService {
     });
   }
 
+  // Collect every Group referenced by this product: via offer.defaultGroup
+  // and via questionnaireTemplate.linkedGroup. Dedup by id. Includes
+  // archived groups so admin can restore them here. Each row carries
+  // "reason" labels so the admin understands why the group is listed.
+  async listRelatedGroups(productId: string) {
+    await this.requireProduct(productId);
+
+    const [offers, templates] = await Promise.all([
+      this.prisma.paymentOffer.findMany({
+        where: { productId },
+        select: {
+          id: true, title: true, isActive: true,
+          defaultGroup: {
+            include: {
+              challenge: { select: { id: true, name: true } },
+              _count: { select: { participantGroups: { where: { isActive: true } } } },
+            },
+          },
+        },
+      }),
+      this.prisma.questionnaireTemplate.findMany({
+        where: { productId },
+        select: {
+          id: true, internalName: true,
+          linkedGroup: {
+            include: {
+              challenge: { select: { id: true, name: true } },
+              _count: { select: { participantGroups: { where: { isActive: true } } } },
+            },
+          },
+        },
+      }),
+    ]);
+
+    type GroupRow = (typeof offers)[number]['defaultGroup'];
+    type NonNullGroup = NonNullable<GroupRow>;
+    const byId = new Map<string, { group: NonNullGroup; reasons: string[] }>();
+
+    for (const o of offers) {
+      if (!o.defaultGroup) continue;
+      const entry = byId.get(o.defaultGroup.id) ?? { group: o.defaultGroup, reasons: [] };
+      entry.reasons.push(`הצעה: ${o.title}`);
+      byId.set(o.defaultGroup.id, entry);
+    }
+    for (const t of templates) {
+      if (!t.linkedGroup) continue;
+      const entry = byId.get(t.linkedGroup.id) ?? { group: t.linkedGroup, reasons: [] };
+      entry.reasons.push(`שאלון: ${t.internalName}`);
+      byId.set(t.linkedGroup.id, entry);
+    }
+
+    return Array.from(byId.values()).map(({ group, reasons }) => ({
+      id: group.id,
+      name: group.name,
+      isActive: group.isActive,
+      challenge: group.challenge,
+      activeMembers: group._count.participantGroups,
+      reasons,
+    }));
+  }
+
   // ── Waitlist ──────────────────────────────────────────────────────────────
 
   async listWaitlist(productId: string) {

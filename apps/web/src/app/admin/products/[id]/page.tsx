@@ -44,7 +44,16 @@ interface WaitlistEntry {
   };
 }
 
-type Tab = 'settings' | 'offers' | 'waitlist' | 'templates';
+type Tab = 'settings' | 'offers' | 'groups' | 'waitlist' | 'templates';
+
+interface RelatedGroup {
+  id: string;
+  name: string;
+  isActive: boolean;
+  challenge: { id: string; name: string } | null;
+  activeMembers: number;
+  reasons: string[];
+}
 
 // ─── Shared styles ───────────────────────────────────────────────────────────
 
@@ -100,6 +109,7 @@ export default function ProductDetailPage({ params }: { params: Promise<{ id: st
         {([
           ['settings', 'הגדרות'],
           ['offers', 'הצעות מכר'],
+          ['groups', 'קבוצות'],
           ['waitlist', 'רשימת המתנה'],
           ['templates', 'תבניות הודעה'],
         ] as const).map(([k, label]) => (
@@ -118,6 +128,7 @@ export default function ProductDetailPage({ params }: { params: Promise<{ id: st
 
       {tab === 'settings' && <SettingsTab product={product} onSaved={() => void reload()} />}
       {tab === 'offers' && <OffersTab product={product} />}
+      {tab === 'groups' && <GroupsTab productId={product.id} />}
       {tab === 'waitlist' && <WaitlistTab productId={product.id} />}
       {tab === 'templates' && <TemplatesTab productId={product.id} initial={product.communicationTemplates} onChanged={() => void reload()} />}
     </div>
@@ -133,6 +144,7 @@ function SettingsTab(props: { product: ProductDetail; onSaved: () => void }) {
   const [isActive, setIsActive] = useState(props.product.isActive);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [deleteOpen, setDeleteOpen] = useState(false);
   async function save() {
     setBusy(true); setErr('');
     try {
@@ -186,6 +198,297 @@ function SettingsTab(props: { product: ProductDetail; onSaved: () => void }) {
             disabled={busy}
             style={{ padding: '9px 22px', background: busy ? '#93c5fd' : '#2563eb', color: '#fff', border: 'none', borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: busy ? 'not-allowed' : 'pointer' }}
           >{busy ? 'שומר...' : 'שמירה'}</button>
+        </div>
+      </div>
+
+      {/* Destructive zone — separated from save controls. Deactivates
+          the product (soft); hard-delete is blocked because offers and
+          payments must survive for reporting. */}
+      <div style={{ marginTop: 28, paddingTop: 20, borderTop: '1px solid #fee2e2' }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: '#b91c1c', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>
+          אזור מסוכן
+        </div>
+        <div style={{ fontSize: 13, color: '#64748b', marginBottom: 10 }}>
+          מחיקת מוצר אינה משחיתה היסטוריה. ההצעות, התשלומים והשאלונים הקשורים נשמרים;
+          המוצר פשוט יוסתר מבוחרים חדשים. לא ניתן למחוק מוצר לצמיתות כל עוד יש תשלומים
+          מקושרים דרך ההצעות.
+        </div>
+        <button
+          onClick={() => setDeleteOpen(true)}
+          style={{ padding: '9px 18px', background: '#fff', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
+        >🗑 מחק מוצר</button>
+      </div>
+
+      {deleteOpen && (
+        <DeleteProductModal
+          product={props.product}
+          onClose={() => setDeleteOpen(false)}
+          onDone={() => { setDeleteOpen(false); props.onSaved(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── Triple-confirm delete / deactivate modal ───────────────────────────────
+// Locked (no backdrop close, explicit × button). Three stages:
+//  1. explain impact
+//  2. type product title
+//  3. final explicit button
+// Performs soft-delete via PATCH isActive=false — never hard-delete, since
+// payments and questionnaire submissions must stay joinable to this product
+// for reporting.
+function DeleteProductModal(props: { product: ProductDetail; onClose: () => void; onDone: () => void }) {
+  const [stage, setStage] = useState<1 | 2 | 3>(1);
+  const [typed, setTyped] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const armed = typed.trim() === props.product.title.trim();
+
+  async function doDelete() {
+    setBusy(true); setErr('');
+    try {
+      await apiFetch(`${BASE_URL}/products/${props.product.id}`, { method: 'DELETE' });
+      props.onDone();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'השבתה נכשלה');
+    } finally { setBusy(false); }
+  }
+
+  const shell: React.CSSProperties = {
+    position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    zIndex: 1100, padding: 16,
+  };
+  const card: React.CSSProperties = {
+    background: '#fff', borderRadius: 14, padding: 24,
+    width: '100%', maxWidth: 520, maxHeight: '90vh', overflowY: 'auto' as const,
+    boxShadow: '0 20px 60px rgba(0,0,0,0.25)',
+  };
+  const header = (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+      <div style={{ fontSize: 17, fontWeight: 700, color: '#b91c1c' }}>
+        מחיקת מוצר — שלב {stage} / 3
+      </div>
+      <button
+        aria-label="סגור"
+        onClick={props.onClose}
+        disabled={busy}
+        style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: busy ? 'not-allowed' : 'pointer' }}
+      >×</button>
+    </div>
+  );
+
+  return (
+    <div
+      style={shell}
+      // Intentionally no onClick — locked modal, no outside-click close.
+    >
+      <div style={card}>
+        {header}
+
+        {stage === 1 && (
+          <>
+            <div style={{ fontSize: 14, color: '#374151', lineHeight: 1.65, marginBottom: 14 }}>
+              מוצר “<strong>{props.product.title}</strong>” יוסתר מהמערכת כמוצר פעיל.
+            </div>
+            <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 10, padding: 14, marginBottom: 14 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#9a3412', marginBottom: 8 }}>מה קורה:</div>
+              <ul style={{ margin: 0, paddingInlineStart: 20, fontSize: 13, color: '#7c2d12', lineHeight: 1.65 }}>
+                <li>המוצר יסומן כ-<strong>לא פעיל</strong> ויוסתר מבוחרים (בהצעות, בשאלונים).</li>
+                <li>הצעות מכר קיימות שמקושרות למוצר <strong>נשארות</strong> ומשויכות אליו.</li>
+                <li>תשלומים קיימים דרך ההצעות <strong>נשמרים</strong> במלואם.</li>
+                <li>שאלונים ורישומי המתנה קיימים <strong>נשמרים</strong> ונגישים לדוחות.</li>
+                <li>תבניות הודעה של המוצר נשמרות.</li>
+              </ul>
+            </div>
+            <div style={{ fontSize: 12, color: '#64748b', lineHeight: 1.5, marginBottom: 14 }}>
+              מחיקה מלאה לצמיתות <strong>חסומה</strong> — תשלומים ושאלונים היסטוריים חייבים להישאר
+              ברי-שליפה. אם את רוצה להחזיר את המוצר בעתיד, אפשר לסמן אותו כ-“פעיל” מחדש בהגדרות.
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button onClick={props.onClose} style={{ padding: '8px 18px', background: '#f1f5f9', border: '1px solid #e2e8f0', color: '#374151', borderRadius: 8, fontSize: 13, cursor: 'pointer' }}>ביטול</button>
+              <button
+                onClick={() => setStage(2)}
+                style={{ padding: '8px 22px', background: '#b91c1c', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
+              >הבנתי — המשך</button>
+            </div>
+          </>
+        )}
+
+        {stage === 2 && (
+          <>
+            <div style={{ fontSize: 14, color: '#374151', lineHeight: 1.65, marginBottom: 10 }}>
+              לאימות, הקלידי את שם המוצר במדויק:
+            </div>
+            <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 12px', marginBottom: 10, fontWeight: 700, color: '#0f172a' }}>
+              {props.product.title}
+            </div>
+            <input
+              autoFocus
+              style={INPUT}
+              value={typed}
+              onChange={(e) => setTyped(e.target.value)}
+              placeholder={props.product.title}
+            />
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 14 }}>
+              <button onClick={() => setStage(1)} style={{ padding: '8px 18px', background: '#f1f5f9', border: '1px solid #e2e8f0', color: '#374151', borderRadius: 8, fontSize: 13, cursor: 'pointer' }}>חזרה</button>
+              <button
+                onClick={() => armed && setStage(3)}
+                disabled={!armed}
+                style={{ padding: '8px 22px', background: armed ? '#b91c1c' : '#fca5a5', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: armed ? 'pointer' : 'not-allowed' }}
+              >המשך</button>
+            </div>
+          </>
+        )}
+
+        {stage === 3 && (
+          <>
+            <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 10, padding: 14, marginBottom: 14 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: '#b91c1c', marginBottom: 6 }}>
+                השלב האחרון.
+              </div>
+              <div style={{ fontSize: 13, color: '#991b1b', lineHeight: 1.55 }}>
+                לחיצה על הכפתור תשבית את המוצר “{props.product.title}” באופן מיידי.
+              </div>
+            </div>
+            {err && <div style={{ color: '#b91c1c', fontSize: 13, marginBottom: 10 }}>{err}</div>}
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button onClick={() => setStage(2)} disabled={busy} style={{ padding: '8px 18px', background: '#f1f5f9', border: '1px solid #e2e8f0', color: '#374151', borderRadius: 8, fontSize: 13, cursor: busy ? 'not-allowed' : 'pointer' }}>חזרה</button>
+              <button
+                onClick={doDelete}
+                disabled={busy}
+                style={{ padding: '8px 22px', background: busy ? '#fca5a5' : '#b91c1c', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: busy ? 'not-allowed' : 'pointer' }}
+              >{busy ? 'משבית...' : 'אני מבינה — מחק מוצר לצמיתות'}</button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Groups tab ─────────────────────────────────────────────────────────────
+// Unions every Group referenced by this product (via offer.defaultGroup
+// and questionnaire.linkedGroup). Shows isActive state so admin sees
+// archived cohorts here even when they're missing from pickers. Archive /
+// restore acts directly on Group.isActive.
+function GroupsTab({ productId }: { productId: string }) {
+  const [rows, setRows] = useState<RelatedGroup[] | null>(null);
+  const [err, setErr] = useState('');
+  const [confirmTarget, setConfirmTarget] = useState<RelatedGroup | null>(null);
+  const reload = useCallback(() => {
+    apiFetch<RelatedGroup[]>(`${BASE_URL}/products/${productId}/groups`, { cache: 'no-store' })
+      .then(setRows)
+      .catch((e) => setErr(e instanceof Error ? e.message : 'טעינה נכשלה'));
+  }, [productId]);
+  useEffect(() => { reload(); }, [reload]);
+
+  async function setArchived(g: RelatedGroup, archived: boolean) {
+    try {
+      await apiFetch(`${BASE_URL}/groups/${g.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ isActive: !archived }),
+      });
+      setConfirmTarget(null);
+      reload();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'פעולה נכשלה');
+    }
+  }
+
+  if (err) return <div style={{ color: '#b91c1c' }}>{err}</div>;
+  if (!rows) return <div style={{ padding: 20, textAlign: 'center', color: '#94a3b8' }}>טוען...</div>;
+  if (rows.length === 0) return (
+    <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: 20, color: '#64748b' }}>
+      אין קבוצות משויכות למוצר הזה. שיוך קורה דרך{' '}
+      <Link href="/admin/offers" style={{ color: '#2563eb' }}>הצעה עם קבוצת ברירת-מחדל</Link>
+      {' '}או דרך{' '}
+      <Link href="/admin/questionnaires" style={{ color: '#2563eb' }}>שאלון עם קבוצה לשיוך אוטומטי</Link>.
+    </div>
+  );
+
+  return (
+    <>
+      <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
+        {rows.map((g) => (
+          <div key={g.id} style={{ padding: 14, borderBottom: '1px solid #f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' as const, opacity: g.isActive ? 1 : 0.65 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' as const, marginBottom: 4 }}>
+                <Link href={`/admin/groups/${g.id}`} style={{ fontSize: 14, fontWeight: 700, color: '#0f172a', textDecoration: 'none' }}>
+                  {g.name}
+                </Link>
+                {!g.isActive && (
+                  <span style={{ background: '#f1f5f9', color: '#64748b', padding: '2px 10px', borderRadius: 999, fontSize: 11, fontWeight: 700 }}>
+                    בארכיון
+                  </span>
+                )}
+                <span style={{ background: '#eff6ff', color: '#1d4ed8', padding: '2px 10px', borderRadius: 999, fontSize: 11 }}>
+                  👥 {g.activeMembers}
+                </span>
+              </div>
+              <div style={{ fontSize: 12, color: '#64748b' }}>
+                {g.challenge && <>אתגר: {g.challenge.name} · </>}
+                {g.reasons.join(' · ')}
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {g.isActive ? (
+                <button
+                  onClick={() => setConfirmTarget(g)}
+                  style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600, background: 'transparent', color: '#b45309', border: '1px solid #fde68a', borderRadius: 7, cursor: 'pointer' }}
+                >העבר לארכיון</button>
+              ) : (
+                <button
+                  onClick={() => setArchived(g, false)}
+                  style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600, background: '#f0fdf4', color: '#15803d', border: '1px solid #bbf7d0', borderRadius: 7, cursor: 'pointer' }}
+                >שחזרי</button>
+              )}
+              <Link
+                href={`/admin/groups/${g.id}`}
+                style={{ padding: '6px 12px', fontSize: 12, background: 'transparent', color: '#475569', border: '1px solid #e2e8f0', borderRadius: 7, textDecoration: 'none' }}
+              >פתחי</Link>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {confirmTarget && (
+        <ArchiveGroupModal
+          group={confirmTarget}
+          onClose={() => setConfirmTarget(null)}
+          onConfirm={() => setArchived(confirmTarget, true)}
+        />
+      )}
+    </>
+  );
+}
+
+// Single-stage confirm for group archive — "prefer archive/deactivate if
+// group has participants/history" per product spec. No hard-delete here;
+// that's the domain of /admin/groups when truly safe.
+function ArchiveGroupModal(props: { group: RelatedGroup; onClose: () => void; onConfirm: () => void }) {
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100, padding: 16 }}>
+      <div style={{ background: '#fff', borderRadius: 14, padding: 22, width: '100%', maxWidth: 460, boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          <div style={{ fontSize: 17, fontWeight: 700 }}>העברת קבוצה לארכיון</div>
+          <button aria-label="סגור" onClick={props.onClose} style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: 'pointer' }}>×</button>
+        </div>
+        <div style={{ fontSize: 14, color: '#374151', lineHeight: 1.6, marginBottom: 14 }}>
+          קבוצה “<strong>{props.group.name}</strong>” תועבר לארכיון.
+          {props.group.activeMembers > 0 && (
+            <> יש לה <strong>{props.group.activeMembers}</strong> משתתפות פעילות — הן ישמרו במסד הנתונים ולא יאבדו, אך הקבוצה לא תופיע יותר בבוחרים שוטפים.</>
+          )}
+        </div>
+        <div style={{ fontSize: 12, color: '#64748b', marginBottom: 14 }}>
+          אפשר לשחזר מאוחר יותר ממסך הקבוצות (“כלול ארכיון”) או מטאב הקבוצות כאן במוצר.
+        </div>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button onClick={props.onClose} style={{ padding: '8px 18px', background: '#f1f5f9', border: '1px solid #e2e8f0', color: '#374151', borderRadius: 8, fontSize: 13, cursor: 'pointer' }}>ביטול</button>
+          <button onClick={props.onConfirm} style={{ padding: '8px 22px', background: '#b45309', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+            העבר לארכיון
+          </button>
         </div>
       </div>
     </div>

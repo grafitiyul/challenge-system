@@ -17,10 +17,14 @@ function randomAlphanumeric(length: number): string {
 export class GroupsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  findAll(challengeId?: string) {
+  // `includeArchived=false` (the default) preserves the historical filter so
+  // existing pickers don't suddenly surface archived cohorts. The admin
+  // groups list sets it to `true` — archived groups stay discoverable with
+  // an "archived" chip instead of disappearing.
+  findAll(challengeId?: string, includeArchived = false) {
     return this.prisma.group.findMany({
       where: {
-        isActive: true,
+        ...(includeArchived ? {} : { isActive: true }),
         ...(challengeId ? { challengeId } : {}),
       },
       include: {
@@ -28,7 +32,7 @@ export class GroupsService {
         program: { select: { id: true, name: true, type: true } },
         _count: { select: { participantGroups: { where: { isActive: true } } } },
       },
-      orderBy: { createdAt: 'asc' },
+      orderBy: [{ isActive: 'desc' }, { createdAt: 'asc' }],
     });
   }
 

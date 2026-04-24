@@ -11,8 +11,11 @@ export class GroupsController {
   constructor(private readonly groupsService: GroupsService) {}
 
   @Get()
-  findAll(@Query('challengeId') challengeId?: string) {
-    return this.groupsService.findAll(challengeId);
+  findAll(
+    @Query('challengeId') challengeId?: string,
+    @Query('includeArchived') includeArchived?: string,
+  ) {
+    return this.groupsService.findAll(challengeId, includeArchived === 'true');
   }
 
   @Post()

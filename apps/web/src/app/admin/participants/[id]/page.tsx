@@ -5,8 +5,14 @@ import Link from 'next/link';
 import { use } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { BASE_URL, apiFetch } from '@lib/api';
+import dynamic from 'next/dynamic';
 import { AdminProjectsTab } from '@components/admin-projects';
 import { PaymentsTab } from '@components/payments-tab';
+
+// Shared composer used by the group-side "send message" modal. Reused here
+// so the participant WhatsApp compose experience matches exactly — same
+// WhatsApp markdown formatting, same emoji picker, same preview.
+const WhatsAppEditor = dynamic(() => import('@components/whatsapp-editor'), { ssr: false });
 import {
   PARTICIPANT_LIFECYCLE_STATUSES,
   PARTICIPANT_SOURCES,
@@ -920,9 +926,20 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
           <div style={{ display: 'flex', gap: 8, flexShrink: 0, flexWrap: 'wrap', alignSelf: 'flex-start' }}>
             <button
               onClick={() => setComposeOpen(true)}
-              style={{ background: '#16a34a', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 18px', fontSize: 14, cursor: 'pointer', fontWeight: 600, minHeight: 42 }}
+              title="שליחת WhatsApp"
+              aria-label="שליחת WhatsApp"
+              style={{
+                background: '#16a34a', color: '#fff', border: 'none',
+                borderRadius: '50%', width: 36, height: 36,
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 16, cursor: 'pointer', flexShrink: 0,
+              }}
             >
-              💬 WhatsApp
+              {/* Brand-neutral chat-bubble glyph. Kept as SVG so it scales
+                  cleanly inside the circular button. */}
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+              </svg>
             </button>
             <button
               onClick={openPickModal}
@@ -1332,11 +1349,11 @@ function WhatsappComposeModal(props: {
           {!selectedTemplateId && (
             <div>
               <label style={label}>טקסט ההודעה</label>
-              <textarea
-                style={{ ...input, minHeight: 120, resize: 'vertical' as const }}
+              <WhatsAppEditor
                 value={rawBody}
-                onChange={(e) => setRawBody(e.target.value)}
+                onChange={setRawBody}
                 placeholder="כתבי הודעה... (משתנים נתמכים: {firstName}, {portalLink})"
+                minHeight={120}
               />
             </div>
           )}

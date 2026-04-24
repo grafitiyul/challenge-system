@@ -52,6 +52,12 @@ export class ProductsController {
     return this.svc.deactivate(id);
   }
 
+  // Related groups (via offer.defaultGroup + template.linkedGroup)
+  @Get('products/:id/groups')
+  listRelatedGroups(@Param('id') id: string) {
+    return this.svc.listRelatedGroups(id);
+  }
+
   // ── Waitlist ────────────────────────────────────────────────────────────
 
   @Get('products/:id/waitlist')
