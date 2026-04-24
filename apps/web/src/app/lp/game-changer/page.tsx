@@ -1,15 +1,16 @@
 // Landing page for the "Game Changer — הרגלי אכילה" product.
 //
-// Design carried over from game-changer-new.html (standalone file). All
-// styling lives inside a scoped <style> block keyed off a root id so we
-// don't leak CSS into the admin app. Sidebar chrome is opted out via
-// SidebarLayout's /lp/ prefix check.
+// Design carried over 1:1 from game-changer-new.html. All styling lives
+// inside a scoped <style> block keyed off the root id so we don't leak
+// CSS into the admin app. Sidebar chrome is opted out via SidebarLayout's
+// /lp/ prefix check.
 //
-// ⚠ Content note: the source HTML you shared arrived with corrupted
-// Hebrew encoding (mojibake). I reconstructed the structure faithfully
-// and seeded sensible Hebrew in `landingContent` — open your original
-// .html file and copy the real Hebrew strings into this object. Every
-// visible text lives here; no copy is buried in JSX.
+// ─────────────────────────────────────────────────────────────────────
+// FUTURE: Program → Landing Page tab
+// Admin will be able to edit landing pages in-app (slug / headline /
+// sections / CTA links / active-inactive) instead of editing this file.
+// Not implemented yet — edit `landingContent` below for now.
+// ─────────────────────────────────────────────────────────────────────
 
 import Link from 'next/link';
 import { Heebo } from 'next/font/google';
@@ -23,7 +24,9 @@ const heebo = Heebo({
   display: 'swap',
 });
 
-// ─── Content (edit here) ──────────────────────────────────────────────────
+// Edit landing page text and links here.
+// Structure is additive: new sections can be added by extending this
+// object and adding matching JSX blocks below.
 
 const landingContent = {
   // URLs are the source of truth for CTA behavior. Replace the payment
@@ -35,18 +38,19 @@ const landingContent = {
   // ── Hero ─────────────────────────────────────────────────────────────
   hero: {
     brand: 'Game Changer',
-    title: 'מה זה עוד משחק כזה של לשנות הרגלים?',
-    tldrLabel: 'בקיצור',
+    title: 'אז מה זה המשחק הזה של ירידה במשקל?',
+    tldrLabel: 'בקצרה',
+    // <br> lines in the source HTML are preserved as explicit breaks so
+    // the visual rhythm matches the original pixel-for-pixel.
     tldrParagraphs: [
-      'קבוצה קטנה וסגורה של עד 10 נשים, בוחרות את אחד משני העולמות של הרגלי אכילה ומתחייבות לבצע קצת פעולה פעיל!',
-      'אם בוחרים קצת — אם על הרגלי התזונה שבחרת בעצמך.',
-      'אחרי השבוע — מעבירות את זה הלאה, למשחק!',
+      ['קבוצה קטנה ואינטימית של עד 10 נשים', 'מדרבנות אחת את השנייה לעמוד מול הפיתויים ולסגל אורח חיים קצת פחות פודי!', 'עם דגש על קצת - לא עוד דיאטת כסאח שגורמת לסבל.'],
+      ['והכי חשוב - לעשות את זה בכיף! במשחק!'],
     ],
     points: [
-      'ההרגלים הישנים מסתדרים עליך? המקום הנכון הזה, את הולכת להרוויח הכי נקודות.',
-      'הצלחת להפעיל יום מסודר מבוקר ועד ערב? קבלת נקודות.',
-      'שתית מים? קבלת נקודות.',
-      'זהו פשוט.',
+      'המאפים בעבודה מסתכלים עלייך? במקום לסבול מזה, את יכולה להרוויח נקודות.',
+      'בחרת לעלות קומה במדרגות במקום במעלית? קיבלת נקודות.',
+      'שתית מים? קיבלת נקודות.',
+      'כזה פשוט.',
     ],
   },
 
@@ -54,50 +58,57 @@ const landingContent = {
   story: {
     paragraphs: [
       [
-        'אחרי 13 שנות ניסיון מקצועי ',
-        { text: 'וחקירת 25 הרגלים המשחזרים על חיי', highlight: true },
-        ' פיתחתי את המשחק הזה מדרגה שיאפשר לך לבחור הרגלים חדשים ולחזק אותם כדרך חיים.',
+        'אחרי 13 דיאטות כושלות',
+        '\n',
+        'לקחתי את כל ההרגלים שעזרו לי בסוף להצליח ',
+        { text: 'לרדת 25 קילו ולשמור על זה', highlight: true },
+        '\n',
+        'וריכזתי אותם במשחק אחד חוויתי שהופך את הירידה במשקל למשהו כיף במקום טרחה וסבל.',
       ],
-      'אין כאן ספירת קלוריות או שקילות ולא אפילו יומן אכילה פרטי, רק פעולות פשוטות שכל אחת מסוגלת.',
-      'ההרגלים שלנו הם לא תולדה של מזל — אנחנו מעצבות אותם יום אחרי יום.',
-      'המשחק הזה — Game Changer — הוא הכוח שיעזור לך לקבוע אילו הרגלים יבנו את היום שלך :)',
+      [
+        'אין נקודות על כמה קלוריות אכלת או על כמה קילוגרמים ירדת,',
+        '\n',
+        'אלא רק על פעולות קלות שהן 100% בשליטתך!',
+      ],
+      'הירידה במשקל זו רק תופעות לוואי כשאנחנו עושות את הפעולות הנכונות.',
+      'למשחק קוראים Game Changer - כי זה מה שההרגלים הקטנים האלה היו בשבילי :)',
     ],
-    imageCaption: 'מקום לתמונה',
+    imageCaption: 'כאן תיכנס תמונה',
   },
 
   // ── Highlights ───────────────────────────────────────────────────────
   highlights: {
     cards: [
-      { emoji: '🌟', text: 'זה לא רק בחירה של הרגל שאת מכירה כמה פעמים בשבוע — זה מעבר לסדר יום חדש, בחירה יומיומית חדשה, דרך חיים!' },
-      { emoji: '🔥', text: 'יש תחרות ידידותית ותמיכה, כל אחת בקצב שלה אבל יחד עם הקבוצה שלה!' },
-      { emoji: '🎯', text: 'אין מסלול אחד. בחרת לשתות יותר מים? תקבלי נקודות. החלטת להתאפק? תקבלי נקודות אם תצליחי!' },
-      { emoji: '✨', text: 'יש לי דבר חשוב — שקופות קלה! לא קל, לא משאיר מקום לבלבול.' },
+      { emoji: '👀', text: 'זו לא קבוצה המונית שדחסו אליה מאות נשים ובתכל\'ס את לבד - אני רואה אותך, וכולן רואות אותך, כל יום!' },
+      { emoji: '🔥', text: 'יש תחרות בריאה בין הבנות, עם מלא השראה ופרגונים בקבוצה כל הזמן.' },
+      { emoji: '🍕', text: 'אין דבר כזה אסור! אכלת משהו "מיותר"? תהני ממנו. הצלחת להתאפק? תהני מהנקודות והפרגונים!' },
+      { emoji: '✨', text: 'הדבר הכי חשוב - שיהיה קל! אם זה לא קל, זה לא יחזיק לאורך זמן.' },
     ],
     how: {
-      question: 'איך כל זה מבוצע בפועל? מה הקצב?',
-      answer: 'אני אתן את כל המידע המלא ברגע שתצטרפי :)',
+      question: 'איך זה מתבצע בפועל? מי מנצחת?',
+      answer: 'את תביני הכל בהמשך תוך כדי תנועה :)',
     },
   },
 
   // ── Details ──────────────────────────────────────────────────────────
   details: {
     rows: [
-      { icon: '🕗', label: 'שיחת פתיחה חיה', value: 'יום ראשון הקרוב, 26/04 בשעה 20:00' },
-      { icon: '📱', label: 'התקשורת בפועל', value: 'בווטסאפ, זום ועל המחשב' },
-      { icon: '💰', label: 'מתי זה?', value: '11 ימים, עד יום ראשון 07/05' },
-      { icon: '🔒', label: 'הרשמה נסגרת', value: 'לפני התחלת המחזור. אחרי זה אי אפשר להצטרף למחזור זה.' },
+      { icon: '💻', label: 'שיחת פתיחה בזום', value: 'יום ראשון הקרוב, 26/04 בשעה 20:00' },
+      { icon: '🚀', label: 'מתחילות בפועל', value: 'למחרת, יום שני על הבוקר' },
+      { icon: '📅', label: 'כמה זמן?', value: '11 ימים, עד יום חמישי 07/05' },
+      { icon: '📋', label: 'דרישות נוספות', value: 'לפני ובמהלך הדרך יהיו כמה שאלונים שחובה למלא כחלק מההשתתפות.' },
     ],
-    priceAmount: '197 ש״ח',
-    priceSub: 'סך הכל',
+    priceAmount: '197 ש"ח',
+    priceSub: 'עלות',
   },
 
   // ── CTA ──────────────────────────────────────────────────────────────
   cta: {
-    primary: 'אני נכנסת — תרשמי אותי!',
-    policy: 'לצפייה בהסכם (לא חיי דעת) באתר הרשמי.',
+    primary: 'אני בפנים - תרשמי אותי!',
+    policy: 'אין החזר כספי (מלא או חלקי) לאחר ההרשמה.',
     waitlistNote: {
-      line1: 'אם אתם אוהבות לעכשיו, אבל אוהבות להצטרף — הרשמה נסגרה בחזור זה הקרוב',
-      line2: 'אפשר תמיד להצטרף לכל רשימת ההמתנה:',
+      line1: 'במידה וניסית להירשם ולא הצלחת- ההרשמה נסגרה והקבוצה התמלאה',
+      line2: 'מוזמנת להירשם כאן לרשימת המתנה:',
     },
   },
 } as const;
@@ -117,8 +128,17 @@ export default function GameChangerLandingPage() {
           <h1 className="hero-title">{c.hero.title}</h1>
           <div className="hero-content-card">
             <div className="bkitzra">{c.hero.tldrLabel}</div>
-            {c.hero.tldrParagraphs.map((p, i) => (
-              <p key={i}>{p}</p>
+            {/* Each paragraph is an array of lines — rendered with <br/>
+                between them to match the <br> breaks in the source HTML. */}
+            {c.hero.tldrParagraphs.map((lines, i) => (
+              <p key={i}>
+                {lines.map((line, j) => (
+                  <span key={j}>
+                    {line}
+                    {j < lines.length - 1 && <br />}
+                  </span>
+                ))}
+              </p>
             ))}
             <ul className="points-list">
               {c.hero.points.map((pt, i) => (
@@ -137,16 +157,21 @@ export default function GameChangerLandingPage() {
               if (typeof para === 'string') {
                 return <p key={i}>{para}</p>;
               }
-              // Mixed paragraph — string segments rendered as-is, object
-              // segments wrapped with the highlight span.
+              // Mixed paragraph: each segment is either a plain string, a
+              // literal '\n' (rendered as <br/>), or a highlight object
+              // (rendered inside the gold highlight span). Mirrors the
+              // original <br> + <span class="story-highlight"> markup.
               const segs = para as ReadonlyArray<string | { text: string; highlight: true }>;
               return (
                 <p key={i}>
-                  {segs.map((seg, j) =>
-                    typeof seg === 'string'
-                      ? <span key={j}>{seg}</span>
-                      : <span key={j} className="story-highlight">{seg.text}</span>,
-                  )}
+                  {segs.map((seg, j) => {
+                    if (typeof seg === 'string') {
+                      return seg === '\n'
+                        ? <br key={j} />
+                        : <span key={j}>{seg}</span>;
+                    }
+                    return <span key={j} className="story-highlight">{seg.text}</span>;
+                  })}
                 </p>
               );
             })}
