@@ -1237,7 +1237,6 @@ interface ProductTemplateLite {
   id: string;
   title: string;
   body: string;
-  product: { id: string; title: string };
 }
 
 function WhatsappComposeModal(props: {
@@ -1245,6 +1244,9 @@ function WhatsappComposeModal(props: {
   phoneNumber: string;
   onClose: () => void;
 }) {
+  // Phase 4: programs ARE the products. We fetch the program list here
+  // and load program-scoped whatsapp communication templates when one is
+  // picked. Unchanged UI shape — just relabeled "תוכנית" from "מוצר".
   const [products, setProducts] = useState<Array<{ id: string; title: string }>>([]);
   const [selectedProductId, setSelectedProductId] = useState<string>('');
   const [templates, setTemplates] = useState<ProductTemplateLite[]>([]);
@@ -1255,18 +1257,16 @@ function WhatsappComposeModal(props: {
   const [err, setErr] = useState('');
   const [sent, setSent] = useState(false);
 
-  // Products list on mount.
   useEffect(() => {
-    apiFetch<Array<{ id: string; title: string }>>(`${BASE_URL}/products?active=true`)
-      .then(setProducts)
+    apiFetch<Array<{ id: string; name: string }>>(`${BASE_URL}/programs`)
+      .then((rows) => setProducts(rows.map((p) => ({ id: p.id, title: p.name }))))
       .catch(() => setProducts([]));
   }, []);
 
-  // Templates list whenever product changes.
   useEffect(() => {
     if (!selectedProductId) { setTemplates([]); setSelectedTemplateId(''); return; }
     apiFetch<ProductTemplateLite[]>(
-      `${BASE_URL}/products/${selectedProductId}/templates?channel=whatsapp`,
+      `${BASE_URL}/programs/${selectedProductId}/communication-templates?channel=whatsapp`,
     ).then((rows) => setTemplates(rows)).catch(() => setTemplates([]));
   }, [selectedProductId]);
 
@@ -1326,7 +1326,7 @@ function WhatsappComposeModal(props: {
         <div style={{ display: 'grid', gap: 12 }}>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <div>
-              <label style={label}>מוצר</label>
+              <label style={label}>תוכנית</label>
               <select style={input} value={selectedProductId} onChange={(e) => { setSelectedProductId(e.target.value); setSelectedTemplateId(''); }}>
                 <option value="">— ללא —</option>
                 {products.map((p) => <option key={p.id} value={p.id}>{p.title}</option>)}

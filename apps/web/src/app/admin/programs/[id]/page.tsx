@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, use, useEffect, useRef, useState } from 'react';
+import { Suspense, use, useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { BASE_URL, apiFetch } from '@lib/api';
@@ -11,7 +11,7 @@ import RichContentEditor from '@components/rich-content-editor';
 
 type ProgramType = 'challenge' | 'game' | 'group_coaching' | 'personal_coaching';
 type GroupStatus = 'active' | 'inactive';
-type TabKey = 'settings' | 'groups' | 'game' | 'rules' | 'templates';
+type TabKey = 'settings' | 'groups' | 'game' | 'rules' | 'templates' | 'waitlist' | 'offers' | 'communication';
 
 interface Group {
   id: string;
@@ -3980,6 +3980,9 @@ function ProgramPageInner({ params }: { params: Promise<{ id: string }> }) {
 
   const tabs: { key: TabKey; label: string }[] = [
     { key: 'groups', label: 'קבוצות' },
+    { key: 'offers', label: 'הצעות מכר' },
+    { key: 'waitlist', label: 'רשימת המתנה' },
+    { key: 'communication', label: 'תבניות תקשורת' },
     ...(program.type === 'game' ? [
       { key: 'game' as TabKey, label: 'מנוע משחק' },
       { key: 'rules' as TabKey, label: 'חוקים' },
@@ -4032,6 +4035,9 @@ function ProgramPageInner({ params }: { params: Promise<{ id: string }> }) {
         {activeTab === 'game' && <GameEngineTab programId={program.id} />}
         {activeTab === 'templates' && <TemplatesTab programId={program.id} />}
         {activeTab === 'rules' && <RulesTab program={program} onSaved={(updated) => setProgram(updated)} />}
+        {activeTab === 'offers' && <ProductOffersTab programId={program.id} />}
+        {activeTab === 'waitlist' && <ProductWaitlistTab programId={program.id} />}
+        {activeTab === 'communication' && <ProductCommunicationTab programId={program.id} />}
       </div>
     </div>
   );
@@ -4042,5 +4048,476 @@ export default function ProgramPage({ params }: { params: Promise<{ id: string }
     <Suspense>
       <ProgramPageInner params={params} />
     </Suspense>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Phase 4: product-shaped tabs — Program IS the product.
+// Offers / Waitlist / Communication templates live here instead of a
+// parallel /admin/products area.
+// ══════════════════════════════════════════════════════════════════════════════
+
+const CARD: React.CSSProperties = {
+  background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: 16,
+};
+const INPUT_P4: React.CSSProperties = {
+  width: '100%', padding: '9px 12px', border: '1px solid #e2e8f0',
+  borderRadius: 8, fontSize: 14, background: '#fff', color: '#0f172a',
+  boxSizing: 'border-box' as const, fontFamily: 'inherit',
+};
+const LABEL_P4: React.CSSProperties = {
+  display: 'block', fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 4,
+};
+
+// ─── Offers tab ─────────────────────────────────────────────────────────────
+interface OfferLite {
+  id: string;
+  title: string;
+  amount: string;
+  currency: string;
+  iCountPaymentUrl: string | null;
+  isActive: boolean;
+  defaultGroup: { id: string; name: string } | null;
+  _count: { payments: number };
+}
+
+function ProductOffersTab({ programId }: { programId: string }) {
+  const [offers, setOffers] = useState<OfferLite[] | null>(null);
+  const [err, setErr] = useState('');
+  const [editing, setEditing] = useState<OfferLite | 'new' | null>(null);
+  const reload = useCallback(() => {
+    apiFetch<OfferLite[]>(`${BASE_URL}/programs/${programId}/offers`, { cache: 'no-store' })
+      .then(setOffers)
+      .catch((e) => setErr(e instanceof Error ? e.message : 'טעינה נכשלה'));
+  }, [programId]);
+  useEffect(() => { reload(); }, [reload]);
+
+  if (err) return <div style={{ color: '#b91c1c' }}>{err}</div>;
+  if (!offers) return <div style={{ padding: 20, textAlign: 'center', color: '#94a3b8' }}>טוען...</div>;
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, flexWrap: 'wrap' as const, gap: 8 }}>
+        <div style={{ fontSize: 13, color: '#64748b' }}>
+          {offers.length} הצעות מכר משויכות לתוכנית זו
+        </div>
+        <button
+          onClick={() => setEditing('new')}
+          style={{ padding: '8px 16px', fontSize: 13, fontWeight: 700, background: '#2563eb', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer' }}
+        >+ הצעה חדשה</button>
+      </div>
+
+      {offers.length === 0 && (
+        <div style={{ ...CARD, color: '#64748b', textAlign: 'center' as const }}>
+          אין הצעות מכר. צרי הצעה חדשה כדי להתחיל.
+        </div>
+      )}
+
+      {offers.map((o) => (
+        <div
+          key={o.id}
+          onClick={() => setEditing(o)}
+          style={{ ...CARD, marginBottom: 8, cursor: 'pointer', opacity: o.isActive ? 1 : 0.6 }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' as const }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6, flexWrap: 'wrap' as const }}>
+                <div style={{ fontSize: 15, fontWeight: 700, color: '#0f172a' }}>{o.title}</div>
+                {!o.isActive && (
+                  <span style={{ background: '#f1f5f9', color: '#64748b', padding: '2px 10px', borderRadius: 999, fontSize: 11, fontWeight: 600 }}>לא פעיל</span>
+                )}
+                <span style={{ background: '#dbeafe', color: '#1d4ed8', padding: '2px 10px', borderRadius: 999, fontSize: 11, fontWeight: 700 }}>
+                  {Number(o.amount).toLocaleString('he-IL')} {o.currency}
+                </span>
+                {o._count.payments > 0 && (
+                  <span style={{ background: '#dcfce7', color: '#15803d', padding: '2px 10px', borderRadius: 999, fontSize: 11, fontWeight: 700 }}>
+                    💳 {o._count.payments} תשלומים
+                  </span>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: 10, fontSize: 12, color: '#64748b', flexWrap: 'wrap' as const }}>
+                {o.defaultGroup && <span>קבוצת ברירת-מחדל: {o.defaultGroup.name}</span>}
+                {o.iCountPaymentUrl && (
+                  <a
+                    href={o.iCountPaymentUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    style={{ color: '#2563eb' }}
+                  >🔗 iCount</a>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      ))}
+
+      {editing && (
+        <OfferModalInline
+          programId={programId}
+          initial={editing === 'new' ? null : editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => { setEditing(null); reload(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function OfferModalInline(props: {
+  programId: string;
+  initial: OfferLite | null;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const isEdit = !!props.initial;
+  const [title, setTitle] = useState(props.initial?.title ?? '');
+  const [amount, setAmount] = useState(props.initial ? props.initial.amount : '');
+  const [currency, setCurrency] = useState(props.initial?.currency ?? 'ILS');
+  const [iCountPaymentUrl, setIcount] = useState(props.initial?.iCountPaymentUrl ?? '');
+  const [defaultGroupId, setDefaultGroupId] = useState(props.initial?.defaultGroup?.id ?? '');
+  const [isActive, setIsActive] = useState(props.initial?.isActive ?? true);
+  const [groups, setGroups] = useState<Array<{ id: string; name: string }>>([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    apiFetch<Array<{ id: string; name: string }>>(`${BASE_URL}/groups`)
+      .then(setGroups).catch(() => setGroups([]));
+  }, []);
+
+  async function submit() {
+    if (!title.trim()) { setErr('כותרת חובה'); return; }
+    const n = parseFloat(String(amount).replace(',', '.'));
+    if (!isFinite(n) || n < 0) { setErr('סכום לא תקין'); return; }
+    setBusy(true); setErr('');
+    try {
+      const body = {
+        title: title.trim(),
+        amount: n,
+        currency: currency.trim() || 'ILS',
+        iCountPaymentUrl: iCountPaymentUrl.trim() || null,
+        linkedProgramId: props.programId,
+        defaultGroupId: defaultGroupId || null,
+        isActive,
+      };
+      if (isEdit) {
+        await apiFetch(`${BASE_URL}/offers/${props.initial!.id}`, { method: 'PATCH', body: JSON.stringify(body) });
+      } else {
+        await apiFetch(`${BASE_URL}/offers`, { method: 'POST', body: JSON.stringify(body) });
+      }
+      props.onSaved();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'שמירה נכשלה');
+    } finally { setBusy(false); }
+  }
+
+  async function deactivate() {
+    if (!props.initial || !confirm('להשבית את ההצעה? תשלומים קיימים יישמרו.')) return;
+    await apiFetch(`${BASE_URL}/offers/${props.initial.id}`, { method: 'DELETE' });
+    props.onSaved();
+  }
+
+  return (
+    <div
+      onClick={(e) => { if (e.target === e.currentTarget && !busy) props.onClose(); }}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 16 }}
+    >
+      <div style={{ background: '#fff', borderRadius: 14, padding: 22, width: '100%', maxWidth: 520, maxHeight: '90vh', overflowY: 'auto' as const, boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+          <div style={{ fontSize: 17, fontWeight: 700 }}>{isEdit ? 'עריכת הצעה' : 'הצעה חדשה'}</div>
+          <button aria-label="סגור" onClick={props.onClose} style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: 'pointer' }}>×</button>
+        </div>
+        <div style={{ display: 'grid', gap: 12 }}>
+          <div>
+            <label style={LABEL_P4}>כותרת *</label>
+            <input style={INPUT_P4} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="לדוגמה: מחזור מאי — 297₪" />
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12 }}>
+            <div>
+              <label style={LABEL_P4}>סכום *</label>
+              <input style={INPUT_P4} value={amount} onChange={(e) => setAmount(e.target.value)} inputMode="decimal" />
+            </div>
+            <div>
+              <label style={LABEL_P4}>מטבע</label>
+              <input style={INPUT_P4} value={currency} onChange={(e) => setCurrency(e.target.value.toUpperCase())} />
+            </div>
+          </div>
+          <div>
+            <label style={LABEL_P4}>קישור iCount</label>
+            <input style={INPUT_P4} dir="ltr" value={iCountPaymentUrl} onChange={(e) => setIcount(e.target.value)} placeholder="https://..." />
+          </div>
+          <div>
+            <label style={LABEL_P4}>קבוצת ברירת-מחדל לשיוך אחרי תשלום</label>
+            <select style={INPUT_P4} value={defaultGroupId} onChange={(e) => setDefaultGroupId(e.target.value)}>
+              <option value="">— ללא —</option>
+              {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+            </select>
+          </div>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14 }}>
+            <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} />
+            הצעה פעילה
+          </label>
+          {err && <div style={{ color: '#b91c1c', fontSize: 13 }}>{err}</div>}
+        </div>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between', marginTop: 18, alignItems: 'center' }}>
+          <div>
+            {isEdit && props.initial?.isActive && (
+              <button onClick={deactivate} style={{ padding: '8px 14px', fontSize: 13, fontWeight: 600, background: 'transparent', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: 8, cursor: 'pointer' }}>השבת</button>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={props.onClose} style={{ padding: '8px 18px', background: '#f1f5f9', border: '1px solid #e2e8f0', color: '#374151', borderRadius: 8, fontSize: 13, cursor: 'pointer' }}>ביטול</button>
+            <button
+              onClick={submit}
+              disabled={busy}
+              style={{ padding: '8px 22px', background: busy ? '#93c5fd' : '#2563eb', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: busy ? 'not-allowed' : 'pointer' }}
+            >{busy ? 'שומר...' : 'שמירה'}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Waitlist tab ───────────────────────────────────────────────────────────
+interface WaitlistRow {
+  id: string;
+  source: string | null;
+  notes: string | null;
+  isActive: boolean;
+  createdAt: string;
+  participant: { id: string; firstName: string; lastName: string | null; phoneNumber: string; email: string | null; status: string | null };
+}
+
+function ProductWaitlistTab({ programId }: { programId: string }) {
+  const [rows, setRows] = useState<WaitlistRow[] | null>(null);
+  const [err, setErr] = useState('');
+  const reload = useCallback(() => {
+    apiFetch<WaitlistRow[]>(`${BASE_URL}/programs/${programId}/waitlist`, { cache: 'no-store' })
+      .then(setRows)
+      .catch((e) => setErr(e instanceof Error ? e.message : 'טעינה נכשלה'));
+  }, [programId]);
+  useEffect(() => { reload(); }, [reload]);
+
+  async function remove(participantId: string) {
+    if (!confirm('להוריד את המשתתפת מרשימת ההמתנה?')) return;
+    await apiFetch(`${BASE_URL}/programs/${programId}/waitlist/${participantId}`, { method: 'DELETE' });
+    reload();
+  }
+
+  if (err) return <div style={{ color: '#b91c1c' }}>{err}</div>;
+  if (!rows) return <div style={{ padding: 20, textAlign: 'center', color: '#94a3b8' }}>טוען...</div>;
+  if (rows.length === 0) return (
+    <div style={{ ...CARD, color: '#64748b' }}>
+      אין משתתפות ברשימת ההמתנה. מילוי שאלון מסוג “רשימת המתנה” שמשויך לתוכנית זו יוסיף אוטומטית משתתפות.
+    </div>
+  );
+  return (
+    <div style={{ ...CARD, overflow: 'hidden' }}>
+      {rows.map((r) => (
+        <div key={r.id} style={{ padding: 14, borderBottom: '1px solid #f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' as const }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <Link href={`/admin/participants/${r.participant.id}`} style={{ color: '#0f172a', textDecoration: 'none', fontWeight: 600 }}>
+              {[r.participant.firstName, r.participant.lastName].filter(Boolean).join(' ')}
+            </Link>
+            <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
+              <span dir="ltr">{r.participant.phoneNumber}</span>
+              {r.source && <> · מקור: {r.source}</>}
+              {' · '}{new Date(r.createdAt).toLocaleDateString('he-IL')}
+            </div>
+          </div>
+          <button
+            onClick={() => remove(r.participant.id)}
+            style={{ padding: '6px 12px', fontSize: 12, background: 'transparent', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: 7, cursor: 'pointer' }}
+          >הסר</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── Communication templates tab ────────────────────────────────────────────
+interface CommTemplate {
+  id: string;
+  channel: 'email' | 'whatsapp';
+  title: string;
+  subject: string | null;
+  body: string;
+  isActive: boolean;
+}
+
+function ProductCommunicationTab({ programId }: { programId: string }) {
+  const [rows, setRows] = useState<CommTemplate[] | null>(null);
+  const [err, setErr] = useState('');
+  const [editing, setEditing] = useState<CommTemplate | 'new' | null>(null);
+  const reload = useCallback(() => {
+    apiFetch<CommTemplate[]>(`${BASE_URL}/programs/${programId}/communication-templates`, { cache: 'no-store' })
+      .then(setRows)
+      .catch((e) => setErr(e instanceof Error ? e.message : 'טעינה נכשלה'));
+  }, [programId]);
+  useEffect(() => { reload(); }, [reload]);
+
+  if (err) return <div style={{ color: '#b91c1c' }}>{err}</div>;
+  if (!rows) return <div style={{ padding: 20, textAlign: 'center', color: '#94a3b8' }}>טוען...</div>;
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' as const, gap: 8 }}>
+        <div style={{ fontSize: 13, color: '#64748b' }}>
+          משתנים: {'{firstName} {productTitle} {offerTitle} {groupName} {portalLink}'}
+        </div>
+        <button
+          onClick={() => setEditing('new')}
+          style={{ padding: '8px 16px', fontSize: 13, fontWeight: 700, background: '#2563eb', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer' }}
+        >+ תבנית</button>
+      </div>
+
+      {rows.length === 0 && <div style={{ ...CARD, color: '#64748b' }}>אין תבניות עדיין.</div>}
+
+      {rows.map((t) => (
+        <div key={t.id} onClick={() => setEditing(t)} style={{ ...CARD, marginBottom: 8, cursor: 'pointer' }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6, flexWrap: 'wrap' as const }}>
+            <span style={{
+              background: t.channel === 'email' ? '#eff6ff' : '#dcfce7',
+              color: t.channel === 'email' ? '#1d4ed8' : '#15803d',
+              padding: '2px 10px', borderRadius: 999, fontSize: 11, fontWeight: 700,
+            }}>
+              {t.channel === 'email' ? 'מייל' : 'וואטסאפ'}
+            </span>
+            <div style={{ fontSize: 14, fontWeight: 700 }}>{t.title}</div>
+          </div>
+          {t.subject && <div style={{ fontSize: 12, color: '#475569', marginBottom: 4 }}>נושא: {t.subject}</div>}
+          <div style={{ fontSize: 12, color: '#64748b', whiteSpace: 'pre-wrap' as const, maxHeight: 60, overflow: 'hidden' }}>
+            {t.body.slice(0, 200)}{t.body.length > 200 ? '...' : ''}
+          </div>
+        </div>
+      ))}
+
+      {editing && (
+        <CommTemplateModal
+          programId={programId}
+          initial={editing === 'new' ? null : editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => { setEditing(null); reload(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function CommTemplateModal(props: {
+  programId: string;
+  initial: CommTemplate | null;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const isEdit = !!props.initial;
+  const [channel, setChannel] = useState<'email' | 'whatsapp'>(props.initial?.channel ?? 'whatsapp');
+  const [title, setTitle] = useState(props.initial?.title ?? '');
+  const [subject, setSubject] = useState(props.initial?.subject ?? '');
+  const [body, setBody] = useState(props.initial?.body ?? '');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  async function save() {
+    if (!title.trim() || !body.trim()) { setErr('חובה למלא שם וגוף ההודעה'); return; }
+    setBusy(true); setErr('');
+    try {
+      const payload = {
+        channel,
+        title: title.trim(),
+        subject: channel === 'email' ? (subject.trim() || null) : null,
+        body,
+      };
+      if (isEdit) {
+        await apiFetch(`${BASE_URL}/communication-templates/${props.initial!.id}`, {
+          method: 'PATCH', body: JSON.stringify(payload),
+        });
+      } else {
+        await apiFetch(`${BASE_URL}/programs/${props.programId}/communication-templates`, {
+          method: 'POST', body: JSON.stringify(payload),
+        });
+      }
+      props.onSaved();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'שמירה נכשלה');
+    } finally { setBusy(false); }
+  }
+
+  async function deactivate() {
+    if (!props.initial || !confirm('להשבית את התבנית?')) return;
+    await apiFetch(`${BASE_URL}/communication-templates/${props.initial.id}`, { method: 'DELETE' });
+    props.onSaved();
+  }
+
+  return (
+    <div
+      onClick={(e) => { if (e.target === e.currentTarget && !busy) props.onClose(); }}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 16 }}
+    >
+      <div style={{ background: '#fff', borderRadius: 14, padding: 22, width: '100%', maxWidth: 560, maxHeight: '90vh', overflowY: 'auto' as const, boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+          <div style={{ fontSize: 17, fontWeight: 700 }}>{isEdit ? 'עריכת תבנית' : 'תבנית חדשה'}</div>
+          <button aria-label="סגור" onClick={props.onClose} style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: 'pointer' }}>×</button>
+        </div>
+        <div style={{ display: 'grid', gap: 12 }}>
+          <div>
+            <label style={LABEL_P4}>ערוץ</label>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {(['whatsapp', 'email'] as const).map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => setChannel(c)}
+                  style={{
+                    flex: 1, padding: '9px 12px', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                    border: `2px solid ${channel === c ? '#2563eb' : '#e2e8f0'}`,
+                    background: channel === c ? '#eff6ff' : '#fff',
+                    color: channel === c ? '#2563eb' : '#374151',
+                    borderRadius: 7,
+                  }}
+                >{c === 'whatsapp' ? 'וואטסאפ' : 'מייל'}</button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <label style={LABEL_P4}>שם התבנית *</label>
+            <input style={INPUT_P4} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="ברוכה הבאה אחרי תשלום" />
+          </div>
+          {channel === 'email' && (
+            <div>
+              <label style={LABEL_P4}>נושא</label>
+              <input style={INPUT_P4} value={subject} onChange={(e) => setSubject(e.target.value)} />
+            </div>
+          )}
+          <div>
+            <label style={LABEL_P4}>גוף ההודעה *</label>
+            <textarea
+              style={{ ...INPUT_P4, minHeight: 180, resize: 'vertical' as const }}
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              placeholder="שלום {firstName}!&#10;ברוכה הבאה ל-{productTitle}.&#10;הקישור לפורטל: {portalLink}"
+            />
+          </div>
+          {err && <div style={{ color: '#b91c1c', fontSize: 13 }}>{err}</div>}
+        </div>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between', marginTop: 18 }}>
+          <div>
+            {isEdit && (
+              <button onClick={deactivate} style={{ padding: '8px 14px', fontSize: 13, fontWeight: 600, background: 'transparent', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: 8, cursor: 'pointer' }}>השבת</button>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={props.onClose} style={{ padding: '8px 18px', background: '#f1f5f9', border: '1px solid #e2e8f0', color: '#374151', borderRadius: 8, fontSize: 13, cursor: 'pointer' }}>ביטול</button>
+            <button
+              onClick={save}
+              disabled={busy}
+              style={{ padding: '8px 22px', background: busy ? '#93c5fd' : '#2563eb', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: busy ? 'not-allowed' : 'pointer' }}
+            >{busy ? 'שומר...' : 'שמירה'}</button>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }

@@ -3,7 +3,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { WassengerService } from '../../wassenger.service';
 import { CreateParticipantDto } from './dto/create-participant.dto';
 import { UpdateParticipantDto } from './dto/update-participant.dto';
-import { renderTemplate } from '../products/template-render';
+import { renderTemplate } from '../programs/template-render';
 
 function randomAlphanumeric(length: number): string {
   const chars = 'abcdefghijkmnpqrstuvwxyz23456789';
@@ -59,14 +59,17 @@ export class ParticipantsService {
     let productTitle: string | null = null;
     let channel: 'email' | 'whatsapp' = 'whatsapp';
     if (body.templateId) {
+      // Phase 4: template belongs to a Program now (Program = product).
+      // Program.name is surfaced as {productTitle} so existing templates
+      // keep rendering without needing a migration of variable names.
       const tpl = await this.prisma.communicationTemplate.findUnique({
         where: { id: body.templateId },
-        include: { product: { select: { title: true } } },
+        include: { program: { select: { name: true } } },
       });
       if (!tpl) throw new NotFoundException(`Template ${body.templateId} not found`);
       templateSubject = tpl.subject;
       templateBody = tpl.body;
-      productTitle = tpl.product.title;
+      productTitle = tpl.program.name;
       channel = tpl.channel === 'email' ? 'email' : 'whatsapp';
     }
 

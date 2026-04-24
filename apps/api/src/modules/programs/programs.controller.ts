@@ -67,4 +67,75 @@ export class ProgramsController {
   deleteTemplate(@Param('id') id: string, @Param('templateId') templateId: string) {
     return this.svc.deleteTemplate(id, templateId);
   }
+
+  // ── Phase 4: product-shaped surfaces (Program = Product) ─────────────────
+
+  @Get(':id/waitlist')
+  listWaitlist(@Param('id') id: string) {
+    return this.svc.listWaitlist(id);
+  }
+
+  @Post(':id/waitlist')
+  addWaitlist(
+    @Param('id') id: string,
+    @Body() body: { participantId: string; source?: string | null; notes?: string | null },
+  ) {
+    return this.svc.addWaitlist(id, body);
+  }
+
+  @Delete(':id/waitlist/:participantId')
+  removeWaitlist(
+    @Param('id') id: string,
+    @Param('participantId') participantId: string,
+  ) {
+    return this.svc.removeWaitlist(id, participantId);
+  }
+
+  @Get(':id/offers')
+  listOffers(@Param('id') id: string) {
+    return this.svc.listOffers(id);
+  }
+
+  @Get(':id/communication-templates')
+  listCommunicationTemplates(
+    @Param('id') id: string,
+    @Query('channel') channel?: string,
+  ) {
+    return this.svc.listCommunicationTemplates(id, channel);
+  }
+
+  @Post(':id/communication-templates')
+  createCommunicationTemplate(
+    @Param('id') id: string,
+    @Body() body: { channel: 'email' | 'whatsapp'; title: string; subject?: string | null; body: string; isActive?: boolean },
+  ) {
+    return this.svc.createCommunicationTemplate(id, body);
+  }
+
+  @Get(':id/groups')
+  listRelatedGroups(@Param('id') id: string) {
+    return this.svc.listRelatedGroups(id);
+  }
+}
+
+// Standalone CRUD endpoints for individual communication templates.
+// Mirrors the pre-Phase-4 shape so the template editor can PATCH/DELETE
+// without knowing the program id.
+@UseGuards(AdminSessionGuard)
+@Controller('communication-templates')
+export class CommunicationTemplatesController {
+  constructor(private readonly svc: ProgramsService) {}
+
+  @Patch(':id')
+  update(
+    @Param('id') id: string,
+    @Body() body: { channel?: 'email' | 'whatsapp'; title?: string; subject?: string | null; body?: string; isActive?: boolean },
+  ) {
+    return this.svc.updateCommunicationTemplate(id, body);
+  }
+
+  @Delete(':id')
+  deactivate(@Param('id') id: string) {
+    return this.svc.deactivateCommunicationTemplate(id);
+  }
 }

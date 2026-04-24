@@ -22,11 +22,11 @@ export class OffersController {
   @Get()
   findAll(
     @Query('active') active?: string,
-    @Query('productId') productId?: string,
+    @Query('linkedProgramId') linkedProgramId?: string,
   ) {
     return this.svc.findAll({
       activeOnly: active === 'true',
-      productId: productId || undefined,
+      linkedProgramId: linkedProgramId || undefined,
     });
   }
 

@@ -1,9 +1,10 @@
 import { Module } from '@nestjs/common';
-import { ProgramsController } from './programs.controller';
+import { CommunicationTemplatesController, ProgramsController } from './programs.controller';
 import { ProgramsService } from './programs.service';
 
 @Module({
-  controllers: [ProgramsController],
+  controllers: [ProgramsController, CommunicationTemplatesController],
   providers: [ProgramsService],
+  exports: [ProgramsService],
 })
 export class ProgramsModule {}

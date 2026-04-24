@@ -27,10 +27,6 @@ export class CreateOfferDto {
 
   @IsOptional()
   @IsString()
-  productId?: string | null;
-
-  @IsOptional()
-  @IsString()
   linkedChallengeId?: string | null;
 
   @IsOptional()
@@ -66,10 +62,6 @@ export class UpdateOfferDto {
   @IsOptional()
   @IsUrl({ require_protocol: true })
   iCountPaymentUrl?: string | null;
-
-  @IsOptional()
-  @IsString()
-  productId?: string | null;
 
   @IsOptional()
   @IsString()

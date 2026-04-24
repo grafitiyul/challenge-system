@@ -1,6 +1,6 @@
-// Shared template variable substitution. Used by both admin-compose
-// (preview) and any future auto-send flow. Unknown vars are left as-is so
-// admin sees them and can fix the source template.
+// Shared template variable substitution. Used by the admin compose
+// (preview) flow and any future auto-send. Unknown vars are left as-is
+// so admin sees them and can fix the source template.
 //
 // Supported vars:
 //   {firstName} {lastName} {fullName} {phoneNumber} {email}

@@ -126,6 +126,206 @@ export class ProgramsService {
     return { ok: true };
   }
 
+  // ─── Program = Product: waitlist / offers / communication templates ────────
+  //
+  // Phase 4 collapsed the standalone Product entity onto Program. These
+  // methods expose the product-side surfaces (what's on the waitlist,
+  // which offers are selling this product, which email/WhatsApp
+  // templates belong to this product) so the admin UI can live inside
+  // /admin/programs/:id instead of a parallel /admin/products screen.
+
+  async listWaitlist(programId: string) {
+    await this.findById(programId);
+    return this.prisma.programWaitlistEntry.findMany({
+      where: { programId, isActive: true },
+      include: {
+        participant: {
+          select: {
+            id: true, firstName: true, lastName: true,
+            phoneNumber: true, email: true, status: true,
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  async addWaitlist(programId: string, dto: { participantId: string; source?: string | null; notes?: string | null }) {
+    await this.findById(programId);
+    return this.prisma.programWaitlistEntry.upsert({
+      where: { programId_participantId: { programId, participantId: dto.participantId } },
+      create: {
+        programId,
+        participantId: dto.participantId,
+        source: dto.source ?? null,
+        notes: dto.notes ?? null,
+      },
+      update: {
+        isActive: true,
+        ...(dto.source !== undefined ? { source: dto.source ?? null } : {}),
+        ...(dto.notes !== undefined ? { notes: dto.notes ?? null } : {}),
+      },
+    });
+  }
+
+  async removeWaitlist(programId: string, participantId: string) {
+    await this.findById(programId);
+    return this.prisma.programWaitlistEntry.update({
+      where: { programId_participantId: { programId, participantId } },
+      data: { isActive: false },
+    });
+  }
+
+  async listOffers(programId: string) {
+    await this.findById(programId);
+    return this.prisma.paymentOffer.findMany({
+      where: { linkedProgramId: programId },
+      include: {
+        defaultGroup: { select: { id: true, name: true } },
+        _count: { select: { payments: true } },
+      },
+      orderBy: [{ isActive: 'desc' }, { createdAt: 'desc' }],
+    });
+  }
+
+  // ── Communication templates (email / whatsapp, with variables) ────────────
+
+  async listCommunicationTemplates(programId: string, channel?: string) {
+    await this.findById(programId);
+    return this.prisma.communicationTemplate.findMany({
+      where: {
+        programId,
+        isActive: true,
+        ...(channel ? { channel } : {}),
+      },
+      orderBy: [{ channel: 'asc' }, { title: 'asc' }],
+    });
+  }
+
+  async createCommunicationTemplate(
+    programId: string,
+    dto: { channel: 'email' | 'whatsapp'; title: string; subject?: string | null; body: string; isActive?: boolean },
+  ) {
+    await this.findById(programId);
+    return this.prisma.communicationTemplate.create({
+      data: {
+        programId,
+        channel: dto.channel,
+        title: dto.title.trim(),
+        subject: dto.channel === 'email' ? (dto.subject ?? null) : null,
+        body: dto.body,
+        isActive: dto.isActive ?? true,
+      },
+    });
+  }
+
+  async updateCommunicationTemplate(
+    templateId: string,
+    dto: { channel?: 'email' | 'whatsapp'; title?: string; subject?: string | null; body?: string; isActive?: boolean },
+  ) {
+    const existing = await this.prisma.communicationTemplate.findUnique({
+      where: { id: templateId },
+      select: { id: true, channel: true },
+    });
+    if (!existing) throw new NotFoundException(`Template ${templateId} not found`);
+    const finalChannel = dto.channel ?? existing.channel;
+    return this.prisma.communicationTemplate.update({
+      where: { id: templateId },
+      data: {
+        ...(dto.channel !== undefined ? { channel: dto.channel } : {}),
+        ...(dto.title !== undefined ? { title: dto.title.trim() } : {}),
+        ...(dto.subject !== undefined
+          ? { subject: finalChannel === 'email' ? (dto.subject ?? null) : null }
+          : {}),
+        ...(dto.body !== undefined ? { body: dto.body } : {}),
+        ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
+      },
+    });
+  }
+
+  async deactivateCommunicationTemplate(templateId: string) {
+    const existing = await this.prisma.communicationTemplate.findUnique({
+      where: { id: templateId },
+      select: { id: true },
+    });
+    if (!existing) throw new NotFoundException(`Template ${templateId} not found`);
+    return this.prisma.communicationTemplate.update({
+      where: { id: templateId },
+      data: { isActive: false },
+    });
+  }
+
+  // ── Groups (active + archived) referenced by the program ─────────────────
+  // Unifies groups linked through offers/questionnaires/program.groups so
+  // the admin sees a single list inside the program page.
+  async listRelatedGroups(programId: string) {
+    await this.findById(programId);
+    const [direct, offers, templates] = await Promise.all([
+      this.prisma.group.findMany({
+        where: { programId },
+        include: {
+          challenge: { select: { id: true, name: true } },
+          _count: { select: { participantGroups: { where: { isActive: true } } } },
+        },
+      }),
+      this.prisma.paymentOffer.findMany({
+        where: { linkedProgramId: programId },
+        select: {
+          id: true, title: true, isActive: true,
+          defaultGroup: {
+            include: {
+              challenge: { select: { id: true, name: true } },
+              _count: { select: { participantGroups: { where: { isActive: true } } } },
+            },
+          },
+        },
+      }),
+      this.prisma.questionnaireTemplate.findMany({
+        where: { programId },
+        select: {
+          id: true, internalName: true,
+          linkedGroup: {
+            include: {
+              challenge: { select: { id: true, name: true } },
+              _count: { select: { participantGroups: { where: { isActive: true } } } },
+            },
+          },
+        },
+      }),
+    ]);
+
+    type Row = { id: string; name: string; isActive: boolean;
+      challenge: { id: string; name: string } | null;
+      _count: { participantGroups: number };
+    };
+    const byId = new Map<string, { group: Row; reasons: string[] }>();
+    for (const g of direct) {
+      const entry = byId.get(g.id) ?? { group: g as unknown as Row, reasons: [] };
+      entry.reasons.push('קבוצה של התוכנית');
+      byId.set(g.id, entry);
+    }
+    for (const o of offers) {
+      if (!o.defaultGroup) continue;
+      const entry = byId.get(o.defaultGroup.id) ?? { group: o.defaultGroup as unknown as Row, reasons: [] };
+      entry.reasons.push(`הצעה: ${o.title}`);
+      byId.set(o.defaultGroup.id, entry);
+    }
+    for (const t of templates) {
+      if (!t.linkedGroup) continue;
+      const entry = byId.get(t.linkedGroup.id) ?? { group: t.linkedGroup as unknown as Row, reasons: [] };
+      entry.reasons.push(`שאלון: ${t.internalName}`);
+      byId.set(t.linkedGroup.id, entry);
+    }
+    return Array.from(byId.values()).map(({ group, reasons }) => ({
+      id: group.id,
+      name: group.name,
+      isActive: group.isActive,
+      challenge: group.challenge,
+      activeMembers: group._count.participantGroups,
+      reasons,
+    }));
+  }
+
   // Returns a stable sentinel challengeId for program-owned groups.
   // Creates a legacy "Programs" challenge entry once if it doesn't exist.
   private async getLegacyChallengeId(): Promise<string> {

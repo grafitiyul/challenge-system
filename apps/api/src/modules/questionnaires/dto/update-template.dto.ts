@@ -42,10 +42,6 @@ export class UpdateTemplateDto {
   @IsString()
   programId?: string | null;
 
-  @IsOptional()
-  @IsString()
-  productId?: string | null;
-
   // ── Post-submit configuration ────────────────────────────────────────────
   @IsOptional()
   @IsIn(SUBMISSION_PURPOSES as unknown as string[])
