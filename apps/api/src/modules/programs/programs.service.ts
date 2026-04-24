@@ -1,9 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateProgramDto } from './dto/create-program.dto';
 import { UpdateProgramDto } from './dto/update-program.dto';
 import { CreateProgramGroupDto } from './dto/create-program-group.dto';
-import { CreateMessageTemplateDto, UpdateMessageTemplateDto } from './dto/create-message-template.dto';
 import { ProgramType } from '@prisma/client';
 
 @Injectable()
@@ -90,39 +89,49 @@ export class ProgramsService {
     });
   }
 
-  // ─── Message templates ─────────────────────────────────────────────────────
-
-  listTemplates(programId: string) {
-    return this.prisma.programMessageTemplate.findMany({
-      where: { programId },
-      orderBy: { createdAt: 'asc' },
-      select: { id: true, name: true, content: true, createdAt: true },
-    });
-  }
-
-  async createTemplate(programId: string, dto: CreateMessageTemplateDto) {
-    await this.findById(programId);
-    return this.prisma.programMessageTemplate.create({
-      data: { programId, name: dto.name.trim(), content: dto.content.trim() },
-    });
-  }
-
-  async updateTemplate(programId: string, templateId: string, dto: UpdateMessageTemplateDto) {
-    const tmpl = await this.prisma.programMessageTemplate.findUnique({ where: { id: templateId } });
-    if (!tmpl || tmpl.programId !== programId) throw new NotFoundException('Template not found');
-    return this.prisma.programMessageTemplate.update({
-      where: { id: templateId },
-      data: {
-        ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
-        ...(dto.content !== undefined ? { content: dto.content.trim() } : {}),
+  // Hard delete — only safe when the program has no dependents. Returns a
+  // first blocking reason when anything non-empty is attached, so the
+  // admin UI can display exactly why and fall back to archive.
+  async hardDelete(id: string) {
+    const program = await this.prisma.program.findUnique({
+      where: { id },
+      include: {
+        _count: {
+          select: {
+            groups: true,
+            paymentOffers: true,
+            waitlistEntries: true,
+            questionnaireTemplates: true,
+            communicationTemplates: true,
+            gameActions: true,
+            gameRules: true,
+            scoreEvents: true,
+            userActionLogs: true,
+            participantGameStates: true,
+            feedEvents: true,
+          },
+        },
       },
     });
-  }
-
-  async deleteTemplate(programId: string, templateId: string) {
-    const tmpl = await this.prisma.programMessageTemplate.findUnique({ where: { id: templateId } });
-    if (!tmpl || tmpl.programId !== programId) throw new NotFoundException('Template not found');
-    await this.prisma.programMessageTemplate.delete({ where: { id: templateId } });
+    if (!program) throw new NotFoundException(`Program ${id} not found`);
+    const c = program._count;
+    const blockers: string[] = [];
+    if (c.groups) blockers.push(`${c.groups} קבוצות משויכות`);
+    if (c.paymentOffers) blockers.push(`${c.paymentOffers} הצעות מכר`);
+    if (c.waitlistEntries) blockers.push(`${c.waitlistEntries} רשומות ברשימת המתנה`);
+    if (c.questionnaireTemplates) blockers.push(`${c.questionnaireTemplates} שאלונים משויכים`);
+    if (c.communicationTemplates) blockers.push(`${c.communicationTemplates} נוסחי הודעה`);
+    if (c.gameActions) blockers.push(`${c.gameActions} פעולות משחק`);
+    if (c.gameRules) blockers.push(`${c.gameRules} חוקי משחק`);
+    if (c.scoreEvents || c.userActionLogs || c.participantGameStates || c.feedEvents) {
+      blockers.push('היסטוריית משחק/ניקוד');
+    }
+    if (blockers.length > 0) {
+      throw new BadRequestException(
+        `לא ניתן למחוק לצמיתות: ${blockers.join(' · ')}. ניתן להעביר לארכיון במקום.`,
+      );
+    }
+    await this.prisma.program.delete({ where: { id } });
     return { ok: true };
   }
 

@@ -39,6 +39,13 @@ export class GroupsController {
     return this.groupsService.softDelete(id);
   }
 
+  // Hard delete — blocked when any participant / payment / history exists.
+  // Response is 400 with a human-readable blocking reason on failure.
+  @Delete(':id/hard')
+  hardDelete(@Param('id') id: string) {
+    return this.groupsService.hardDelete(id);
+  }
+
   // ── Questionnaires ──────────────────────────────────────────────────────────
 
   @Get(':id/questionnaires')

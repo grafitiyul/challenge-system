@@ -63,13 +63,15 @@ model Program {
   showOtherGroupsMemberDetails Boolean @default(false)
 
   questionnaireTemplates  QuestionnaireTemplate[]
-  messageTemplates        ProgramMessageTemplate[]
   // Public registration — offers, waitlist, and communication templates
   // all hang off Program. Program IS the product: its `type` column is the
   // productType discriminator (game / challenge / group_coaching /
   // personal_coaching) and its `id` is the productRefId.
   paymentOffers           PaymentOffer[]
   waitlistEntries         ProgramWaitlistEntry[]
+  // Unified email + whatsapp templates. Replaces the old
+  // ProgramMessageTemplate (whatsapp-only, plain content) — rows were
+  // migrated into communication_templates with channel='whatsapp'.
   communicationTemplates  CommunicationTemplate[]
 
   // Rich content shown in participant portal rules tab (HTML)
@@ -111,18 +113,6 @@ model ProgramInsightTypeUsage {
   @@unique([programId, insightType])
   @@index([programId])
   @@map("program_insight_type_usages")
-}
-
-model ProgramMessageTemplate {
-  id        String   @id @default(cuid())
-  programId String
-  program   Program  @relation(fields: [programId], references: [id])
-  name      String
-  content   String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@map("program_message_templates")
 }
 
 // =============================================================================
@@ -1615,8 +1605,7 @@ model ProgramWaitlistEntry {
 }
 
 // Program-scoped email/whatsapp templates with product-level variables.
-// Distinct from ProgramMessageTemplate (which stays for per-game message
-// content without an email/whatsapp type distinction).
+// Single unified model for all admin → participant messaging templates.
 model CommunicationTemplate {
   id        String   @id @default(cuid())
   programId String

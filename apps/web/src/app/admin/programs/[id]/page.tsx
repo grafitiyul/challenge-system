@@ -11,7 +11,7 @@ import RichContentEditor from '@components/rich-content-editor';
 
 type ProgramType = 'challenge' | 'game' | 'group_coaching' | 'personal_coaching';
 type GroupStatus = 'active' | 'inactive';
-type TabKey = 'settings' | 'groups' | 'game' | 'rules' | 'templates' | 'waitlist' | 'offers' | 'communication';
+type TabKey = 'settings' | 'groups' | 'game' | 'rules' | 'waitlist' | 'offers' | 'communication';
 
 interface Group {
   id: string;
@@ -79,7 +79,7 @@ const labelStyle: React.CSSProperties = {
   fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 6, display: 'block',
 };
 
-const VALID_TABS: TabKey[] = ['settings', 'groups', 'game', 'rules', 'templates'];
+const VALID_TABS: TabKey[] = ['settings', 'groups', 'game', 'rules', 'offers', 'waitlist', 'communication'];
 
 function formatDate(iso: string | null) {
   if (!iso) return '—';
@@ -93,6 +93,8 @@ function SettingsTab({ program, onSaved }: { program: Program; onSaved: (p: Prog
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const router = useRouter();
 
   const [vis, setVis] = useState({
     showIndividualLeaderboard: program.showIndividualLeaderboard,
@@ -204,6 +206,164 @@ function SettingsTab({ program, onSaved }: { program: Program; onSaved: (p: Prog
           {visSaved && <span style={{ color: '#16a34a', fontSize: 13 }}>✓ נשמר</span>}
         </div>
       </div>
+
+      {/* ── Destructive zone ── Archive OR hard-delete. Hard-delete is
+           gated server-side on zero dependents; the modal falls back to
+           showing the reason + offers archive when blocked. */}
+      <div style={{ borderTop: '1px solid #fee2e2', paddingTop: 24, display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 520 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: '#b91c1c', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+          🗑 ניהול מחיקה
+        </div>
+        <div style={{ fontSize: 13, color: '#64748b', lineHeight: 1.55 }}>
+          ארכוב הופך את המוצר לבלתי פעיל מבלי לאבד היסטוריה — הדרך הבטוחה והמומלצת.
+          מחיקה לצמיתות זמינה רק כאשר אין כלל קבוצות, הצעות, שאלונים, תבניות או רשומות
+          ברשימת המתנה מקושרות (לרוב מתאים לתוכניות-בדיקה).
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' as const }}>
+          {program.isActive ? (
+            <button
+              onClick={async () => {
+                if (!confirm('להעביר את המוצר לארכיון? המוצר יוסתר מרשימות פעילות. ניתן לשחזר.')) return;
+                const updated = await apiFetch(`${BASE_URL}/programs/${program.id}`, {
+                  method: 'PATCH', body: JSON.stringify({ isActive: false }),
+                }) as Program;
+                onSaved({ ...program, ...updated });
+              }}
+              style={{ padding: '8px 16px', fontSize: 13, fontWeight: 600, background: '#fff', color: '#b45309', border: '1px solid #fde68a', borderRadius: 8, cursor: 'pointer' }}
+            >העבר לארכיון</button>
+          ) : (
+            <button
+              onClick={async () => {
+                const updated = await apiFetch(`${BASE_URL}/programs/${program.id}`, {
+                  method: 'PATCH', body: JSON.stringify({ isActive: true }),
+                }) as Program;
+                onSaved({ ...program, ...updated });
+              }}
+              style={{ padding: '8px 16px', fontSize: 13, fontWeight: 600, background: '#f0fdf4', color: '#15803d', border: '1px solid #bbf7d0', borderRadius: 8, cursor: 'pointer' }}
+            >שחזר מהארכיון</button>
+          )}
+          <button
+            onClick={() => setDeleteOpen(true)}
+            style={{ padding: '8px 16px', fontSize: 13, fontWeight: 700, background: '#fff', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: 8, cursor: 'pointer' }}
+          >🗑 מחק מוצר לצמיתות…</button>
+        </div>
+      </div>
+
+      {deleteOpen && (
+        <DeleteProgramModal
+          program={program}
+          onClose={() => setDeleteOpen(false)}
+          onDeleted={() => router.push('/admin/programs')}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── Triple-confirm program hard-delete modal ──────────────────────────────
+// Stage 1: impact + safety check (attempts a dry delete via the server,
+//          which returns 400 with a blocking reason if unsafe).
+// Stage 2: type program name.
+// Stage 3: final explicit button.
+// Locked modal: no backdrop close, explicit × button, always soft-fallback.
+function DeleteProgramModal(props: { program: Program; onClose: () => void; onDeleted: () => void }) {
+  const [stage, setStage] = useState<1 | 2 | 3>(1);
+  const [typed, setTyped] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [blocked, setBlocked] = useState<string | null>(null);
+  const armed = typed.trim() === props.program.name.trim();
+
+  async function attempt() {
+    setBusy(true); setErr('');
+    try {
+      await apiFetch(`${BASE_URL}/programs/${props.program.id}/hard`, { method: 'DELETE' });
+      props.onDeleted();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'מחיקה נכשלה';
+      // When blocked by dependents the backend returns a human-readable
+      // reason; surface it and drop back to stage 1 so admin can archive.
+      setBlocked(msg);
+      setStage(1);
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100, padding: 16 }}>
+      <div style={{ background: '#fff', borderRadius: 14, padding: 24, width: '100%', maxWidth: 520, maxHeight: '90vh', overflowY: 'auto' as const, boxShadow: '0 20px 60px rgba(0,0,0,0.25)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+          <div style={{ fontSize: 17, fontWeight: 700, color: '#b91c1c' }}>מחיקת מוצר — שלב {stage} / 3</div>
+          <button aria-label="סגור" onClick={props.onClose} disabled={busy} style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: busy ? 'not-allowed' : 'pointer' }}>×</button>
+        </div>
+
+        {stage === 1 && (
+          <>
+            {blocked && (
+              <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 10, padding: 12, marginBottom: 14, fontSize: 13, color: '#991b1b' }}>
+                לא ניתן למחוק לצמיתות: {blocked}
+              </div>
+            )}
+            <div style={{ fontSize: 14, color: '#374151', lineHeight: 1.65, marginBottom: 14 }}>
+              מוצר “<strong>{props.program.name}</strong>” ימחק לצמיתות (כולל הגדרותיו).
+            </div>
+            <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 10, padding: 14, marginBottom: 14, fontSize: 13, color: '#7c2d12', lineHeight: 1.65 }}>
+              השרת חוסם מחיקה כאשר קיימות: קבוצות, הצעות מכר, שאלונים, נוסחי הודעה,
+              רשומות ברשימת המתנה, או היסטוריית משחק/ניקוד. אם כך — ארכוב הוא הפעולה הבטוחה.
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button onClick={props.onClose} style={{ padding: '8px 18px', background: '#f1f5f9', border: '1px solid #e2e8f0', color: '#374151', borderRadius: 8, fontSize: 13, cursor: 'pointer' }}>ביטול</button>
+              <button
+                onClick={() => setStage(2)}
+                style={{ padding: '8px 22px', background: '#b91c1c', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
+              >הבנתי — המשך</button>
+            </div>
+          </>
+        )}
+
+        {stage === 2 && (
+          <>
+            <div style={{ fontSize: 14, color: '#374151', lineHeight: 1.65, marginBottom: 10 }}>
+              לאימות, הקלידי את שם המוצר במדויק:
+            </div>
+            <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 12px', marginBottom: 10, fontWeight: 700, color: '#0f172a' }}>
+              {props.program.name}
+            </div>
+            <input
+              autoFocus
+              style={{ width: '100%', padding: '9px 12px', border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 14, boxSizing: 'border-box' }}
+              value={typed}
+              onChange={(e) => setTyped(e.target.value)}
+              placeholder={props.program.name}
+            />
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 14 }}>
+              <button onClick={() => setStage(1)} style={{ padding: '8px 18px', background: '#f1f5f9', border: '1px solid #e2e8f0', color: '#374151', borderRadius: 8, fontSize: 13, cursor: 'pointer' }}>חזרה</button>
+              <button
+                onClick={() => armed && setStage(3)}
+                disabled={!armed}
+                style={{ padding: '8px 22px', background: armed ? '#b91c1c' : '#fca5a5', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: armed ? 'pointer' : 'not-allowed' }}
+              >המשך</button>
+            </div>
+          </>
+        )}
+
+        {stage === 3 && (
+          <>
+            <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 10, padding: 14, marginBottom: 14, fontSize: 13, color: '#991b1b', lineHeight: 1.55 }}>
+              פעולה זו לא ניתנת לשחזור. במידה וקיימים נתונים מקושרים, השרת יחסום אוטומטית
+              וידחוף אותך לחזור לאפשרות הארכיון.
+            </div>
+            {err && <div style={{ color: '#b91c1c', fontSize: 13, marginBottom: 10 }}>{err}</div>}
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button onClick={() => setStage(2)} disabled={busy} style={{ padding: '8px 18px', background: '#f1f5f9', border: '1px solid #e2e8f0', color: '#374151', borderRadius: 8, fontSize: 13, cursor: busy ? 'not-allowed' : 'pointer' }}>חזרה</button>
+              <button
+                onClick={attempt}
+                disabled={busy}
+                style={{ padding: '8px 22px', background: busy ? '#fca5a5' : '#b91c1c', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: busy ? 'not-allowed' : 'pointer' }}
+              >{busy ? 'מוחק...' : 'אני מבינה — מחק לצמיתות'}</button>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -283,65 +443,214 @@ function CreateGroupModal({ programId, onCreated, onClose }: {
 
 // ─── Groups Tab ───────────────────────────────────────────────────────────────
 
+interface RelatedGroupRow {
+  id: string;
+  name: string;
+  isActive: boolean;
+  challenge: { id: string; name: string } | null;
+  activeMembers: number;
+  reasons: string[];
+}
+
 function GroupsTab({ program }: { program: Program }) {
-  const [groups, setGroups] = useState<Group[]>(program.groups ?? []);
+  // Phase 4 cleanup: fetch the unified list from the API so archived
+  // cohorts stay discoverable here (the initial payload was active-only).
+  // The endpoint also tells us WHY each group is listed (direct, via
+  // offer, via template) so the admin can trace relationships.
+  const [rows, setRows] = useState<RelatedGroupRow[] | null>(null);
+  const [err, setErr] = useState('');
   const [createModal, setCreateModal] = useState(false);
+  const [archiveTarget, setArchiveTarget] = useState<RelatedGroupRow | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<RelatedGroupRow | null>(null);
+
+  const reload = useCallback(() => {
+    apiFetch<RelatedGroupRow[]>(`${BASE_URL}/programs/${program.id}/groups`, { cache: 'no-store' })
+      .then(setRows)
+      .catch((e) => setErr(e instanceof Error ? e.message : 'טעינה נכשלה'));
+  }, [program.id]);
+  useEffect(() => { reload(); }, [reload]);
+
+  async function setActive(g: RelatedGroupRow, isActive: boolean) {
+    try {
+      await apiFetch(`${BASE_URL}/groups/${g.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ isActive }),
+      });
+      setArchiveTarget(null);
+      reload();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'פעולה נכשלה');
+    }
+  }
+
+  async function hardDelete(g: RelatedGroupRow) {
+    try {
+      await apiFetch(`${BASE_URL}/groups/${g.id}/hard`, { method: 'DELETE' });
+      setDeleteTarget(null);
+      reload();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'מחיקה נכשלה');
+    }
+  }
+
+  if (err) return <div style={{ color: '#b91c1c' }}>{err}</div>;
+  if (!rows) return <div style={{ padding: 20, textAlign: 'center', color: '#94a3b8' }}>טוען...</div>;
 
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <span style={{ fontSize: 13, color: '#64748b' }}>{groups.length} קבוצות</span>
+        <span style={{ fontSize: 13, color: '#64748b' }}>{rows.length} קבוצות</span>
         <button
           onClick={() => setCreateModal(true)}
           style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
-        >
-          + צור קבוצה
-        </button>
+        >+ צור קבוצה</button>
       </div>
 
-      {groups.length === 0 && (
+      {rows.length === 0 && (
         <div style={{ padding: '40px 24px', textAlign: 'center', border: '2px dashed #e2e8f0', borderRadius: 10, color: '#94a3b8', fontSize: 14 }}>
           אין קבוצות עדיין — צרי קבוצה ראשונה
         </div>
       )}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {groups.map((g) => (
-          <Link key={g.id} href={`/admin/groups/${g.id}`} style={{ textDecoration: 'none' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 10, padding: '14px 18px' }}>
-              <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                  <span style={{ fontSize: 14, fontWeight: 600, color: '#0f172a' }}>{g.name}</span>
-                  <span style={{
-                    background: g.status === 'active' ? '#f0fdf4' : '#f1f5f9',
-                    color: g.status === 'active' ? '#15803d' : '#64748b',
-                    fontSize: 11, padding: '2px 8px', borderRadius: 20,
-                  }}>
-                    {STATUS_LABEL[g.status]}
+        {rows.map((g) => {
+          const empty = g.activeMembers === 0;
+          return (
+            <div
+              key={g.id}
+              style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                gap: 12, background: '#ffffff', border: '1px solid #e2e8f0',
+                borderRadius: 10, padding: '14px 18px', flexWrap: 'wrap' as const,
+                opacity: g.isActive ? 1 : 0.65,
+              }}
+            >
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' as const }}>
+                  <Link href={`/admin/groups/${g.id}`} style={{ fontSize: 14, fontWeight: 700, color: '#0f172a', textDecoration: 'none' }}>
+                    {g.name}
+                  </Link>
+                  {!g.isActive && (
+                    <span style={{ background: '#f1f5f9', color: '#64748b', fontSize: 11, padding: '2px 10px', borderRadius: 999, fontWeight: 700 }}>
+                      בארכיון
+                    </span>
+                  )}
+                  <span style={{ background: '#eff6ff', color: '#1d4ed8', fontSize: 11, padding: '2px 10px', borderRadius: 999 }}>
+                    👥 {g.activeMembers}
                   </span>
                 </div>
-                <div style={{ fontSize: 12, color: '#94a3b8' }}>
-                  {formatDate(g.startDate)} — {formatDate(g.endDate)}
-                  {' · '}
-                  {g._count?.participantGroups ?? 0} משתתפות
+                <div style={{ fontSize: 12, color: '#64748b' }}>
+                  {g.challenge && <>אתגר: {g.challenge.name} · </>}
+                  {g.reasons.join(' · ')}
                 </div>
               </div>
-              <span style={{ color: '#94a3b8', fontSize: 18, flexShrink: 0 }}>›</span>
+              <div style={{ display: 'flex', gap: 6, flexShrink: 0, flexWrap: 'wrap' as const }}>
+                {g.isActive ? (
+                  <button
+                    onClick={() => setArchiveTarget(g)}
+                    style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600, background: 'transparent', color: '#b45309', border: '1px solid #fde68a', borderRadius: 7, cursor: 'pointer' }}
+                  >העבר לארכיון</button>
+                ) : (
+                  <button
+                    onClick={() => setActive(g, true)}
+                    style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600, background: '#f0fdf4', color: '#15803d', border: '1px solid #bbf7d0', borderRadius: 7, cursor: 'pointer' }}
+                  >שחזר</button>
+                )}
+                {/* Hard delete is only offered when safe (zero active
+                    members). The backend still re-validates before
+                    deleting — this is just the UX guardrail. */}
+                {empty && (
+                  <button
+                    onClick={() => setDeleteTarget(g)}
+                    style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600, background: 'transparent', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: 7, cursor: 'pointer' }}
+                  >מחק</button>
+                )}
+                <Link
+                  href={`/admin/groups/${g.id}`}
+                  style={{ padding: '6px 12px', fontSize: 12, background: 'transparent', color: '#475569', border: '1px solid #e2e8f0', borderRadius: 7, textDecoration: 'none' }}
+                >פתחי</Link>
+              </div>
             </div>
-          </Link>
-        ))}
+          );
+        })}
       </div>
 
       {createModal && (
         <CreateGroupModal
           programId={program.id}
-          onCreated={(g) => {
-            setGroups((prev) => [{ ...g, _count: { participantGroups: 0 } }, ...prev]);
-            setCreateModal(false);
-          }}
+          onCreated={() => { setCreateModal(false); reload(); }}
           onClose={() => setCreateModal(false)}
         />
       )}
+
+      {archiveTarget && (
+        <GroupArchiveModal
+          group={archiveTarget}
+          onClose={() => setArchiveTarget(null)}
+          onConfirm={() => setActive(archiveTarget, false)}
+        />
+      )}
+
+      {deleteTarget && (
+        <GroupHardDeleteModal
+          group={deleteTarget}
+          onClose={() => setDeleteTarget(null)}
+          onConfirm={() => hardDelete(deleteTarget)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── Group archive + hard-delete modals (locked, in-app only) ──────────────
+
+function GroupArchiveModal(props: { group: RelatedGroupRow; onClose: () => void; onConfirm: () => void }) {
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100, padding: 16 }}>
+      <div style={{ background: '#fff', borderRadius: 14, padding: 22, width: '100%', maxWidth: 460, boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          <div style={{ fontSize: 17, fontWeight: 700 }}>העברת קבוצה לארכיון</div>
+          <button aria-label="סגור" onClick={props.onClose} style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: 'pointer' }}>×</button>
+        </div>
+        <div style={{ fontSize: 14, color: '#374151', lineHeight: 1.65, marginBottom: 14 }}>
+          קבוצה “<strong>{props.group.name}</strong>” תוסתר מרשימות פעילות.{' '}
+          {props.group.activeMembers > 0 && (
+            <><strong>{props.group.activeMembers}</strong> משתתפות נשארות מקושרות במסד הנתונים ולא יאבדו.</>
+          )}
+        </div>
+        <div style={{ fontSize: 12, color: '#64748b', marginBottom: 14 }}>
+          אפשר לשחזר בכל עת מכאן או ממסך הקבוצות (“כלול ארכיון”).
+        </div>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button onClick={props.onClose} style={{ padding: '8px 18px', background: '#f1f5f9', border: '1px solid #e2e8f0', color: '#374151', borderRadius: 8, fontSize: 13, cursor: 'pointer' }}>ביטול</button>
+          <button onClick={props.onConfirm} style={{ padding: '8px 22px', background: '#b45309', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+            העבר לארכיון
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GroupHardDeleteModal(props: { group: RelatedGroupRow; onClose: () => void; onConfirm: () => void }) {
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100, padding: 16 }}>
+      <div style={{ background: '#fff', borderRadius: 14, padding: 22, width: '100%', maxWidth: 460, boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          <div style={{ fontSize: 17, fontWeight: 700, color: '#b91c1c' }}>מחיקת קבוצה לצמיתות</div>
+          <button aria-label="סגור" onClick={props.onClose} style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: 'pointer' }}>×</button>
+        </div>
+        <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 10, padding: 12, marginBottom: 14, fontSize: 13, color: '#991b1b', lineHeight: 1.5 }}>
+          קבוצה “<strong>{props.group.name}</strong>” תימחק לצמיתות. הפעולה לא ניתנת לשחזור.
+          השרת יחסום את המחיקה אוטומטית אם תתגלה היסטוריה (משתתפות, תשלומים, הודעות).
+        </div>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button onClick={props.onClose} style={{ padding: '8px 18px', background: '#f1f5f9', border: '1px solid #e2e8f0', color: '#374151', borderRadius: 8, fontSize: 13, cursor: 'pointer' }}>ביטול</button>
+          <button onClick={props.onConfirm} style={{ padding: '8px 22px', background: '#b91c1c', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+            מחק לצמיתות
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -2090,254 +2399,6 @@ function RuleModal({
   );
 }
 
-// ─── Templates Tab ───────────────────────────────────────────────────────────
-
-interface MessageTemplate {
-  id: string;
-  name: string;
-  content: string;
-  createdAt: string;
-}
-
-type TemplateModalMode = 'create' | 'edit';
-
-function TemplatesTab({ programId }: { programId: string }) {
-  const [templates, setTemplates] = useState<MessageTemplate[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [modal, setModal] = useState<{ open: boolean; mode: TemplateModalMode; tmpl: MessageTemplate | null }>({ open: false, mode: 'create', tmpl: null });
-  const [deleteTarget, setDeleteTarget] = useState<MessageTemplate | null>(null);
-  const [deleting, setDeleting] = useState(false);
-
-  useEffect(() => {
-    apiFetch(`${BASE_URL}/programs/${programId}/templates`, { cache: 'no-store' })
-      .then((d) => setTemplates(d as MessageTemplate[]))
-      .finally(() => setLoading(false));
-  }, [programId]);
-
-  async function handleDelete(tmpl: MessageTemplate) {
-    setDeleting(true);
-    try {
-      await apiFetch(`${BASE_URL}/programs/${programId}/templates/${tmpl.id}`, { method: 'DELETE', cache: 'no-store' });
-      setTemplates((prev) => prev.filter((t) => t.id !== tmpl.id));
-      setDeleteTarget(null);
-    } finally { setDeleting(false); }
-  }
-
-  if (loading) return <div style={{ color: '#94a3b8', textAlign: 'center', padding: 48 }}>טוען...</div>;
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div>
-          <h3 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', margin: '0 0 2px' }}>נוסחי הודעות</h3>
-          <p style={{ fontSize: 12, color: '#94a3b8', margin: 0 }}>תבניות הודעה לשימוש חוזר בשליחת הודעות לקבוצות</p>
-        </div>
-        <button
-          onClick={() => setModal({ open: true, mode: 'create', tmpl: null })}
-          style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
-        >
-          + נוסח חדש
-        </button>
-      </div>
-
-      {templates.length === 0 ? (
-        <div style={{ padding: '36px 24px', textAlign: 'center', border: '2px dashed #e2e8f0', borderRadius: 10 }}>
-          <div style={{ fontSize: 32, marginBottom: 10 }}>📝</div>
-          <div style={{ fontSize: 15, fontWeight: 600, color: '#374151', marginBottom: 6 }}>אין נוסחים עדיין</div>
-          <div style={{ fontSize: 13, color: '#94a3b8', maxWidth: 280, margin: '0 auto' }}>
-            צרי נוסחים לשימוש חוזר — ברכות, תזכורות, הנחיות שגרתיות ועוד.
-          </div>
-        </div>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {templates.map((tmpl) => (
-            <div key={tmpl.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 14, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: '14px 18px' }}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 14, fontWeight: 600, color: '#0f172a', marginBottom: 4 }}>{tmpl.name}</div>
-                <div style={{ fontSize: 13, color: '#64748b', whiteSpace: 'pre-wrap', overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' as const }}>
-                  {tmpl.content}
-                </div>
-              </div>
-              <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-                <button
-                  onClick={() => setModal({ open: true, mode: 'edit', tmpl })}
-                  style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, padding: '6px 14px', fontSize: 12, color: '#374151', cursor: 'pointer', fontWeight: 500 }}
-                >
-                  ערוך
-                </button>
-                <button
-                  onClick={() => setDeleteTarget(tmpl)}
-                  style={{ background: 'none', border: '1px solid #fecaca', borderRadius: 6, padding: '6px 10px', fontSize: 12, color: '#dc2626', cursor: 'pointer' }}
-                  title="מחק נוסח"
-                >
-                  ✕
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* ── Create / Edit modal ── */}
-      {modal.open && (
-        <TemplateEditorModal
-          programId={programId}
-          mode={modal.mode}
-          tmpl={modal.tmpl}
-          onSaved={(saved) => {
-            setTemplates((prev) =>
-              modal.mode === 'edit'
-                ? prev.map((t) => t.id === saved.id ? saved : t)
-                : [...prev, saved],
-            );
-            setModal({ open: false, mode: 'create', tmpl: null });
-          }}
-          onClose={() => setModal({ open: false, mode: 'create', tmpl: null })}
-        />
-      )}
-
-      {/* ── Delete confirm ── */}
-      {deleteTarget && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 20 }}>
-          <div style={{ background: '#fff', borderRadius: 12, padding: 24, maxWidth: 360, width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
-            <h3 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', margin: '0 0 10px' }}>מחיקת נוסח</h3>
-            <p style={{ fontSize: 14, color: '#64748b', margin: '0 0 20px' }}>
-              למחוק את הנוסח <strong>&ldquo;{deleteTarget.name}&rdquo;</strong>? לא ניתן לשחזר.
-            </p>
-            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-              <button onClick={() => setDeleteTarget(null)} style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 7, padding: '8px 16px', fontSize: 13, cursor: 'pointer' }}>ביטול</button>
-              <button
-                onClick={() => handleDelete(deleteTarget)}
-                disabled={deleting}
-                style={{ background: deleting ? '#fca5a5' : '#dc2626', color: '#fff', border: 'none', borderRadius: 7, padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: deleting ? 'not-allowed' : 'pointer' }}
-              >
-                {deleting ? 'מוחק...' : 'מחק'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function TemplateEditorModal({
-  programId, mode, tmpl, onSaved, onClose,
-}: {
-  programId: string;
-  mode: TemplateModalMode;
-  tmpl: MessageTemplate | null;
-  onSaved: (t: MessageTemplate) => void;
-  onClose: () => void;
-}) {
-  const initialName = tmpl?.name ?? '';
-  const initialContent = tmpl?.content ?? '';
-  const [name, setName] = useState(initialName);
-  const [content, setContent] = useState(initialContent);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
-  const [showUnsaved, setShowUnsaved] = useState(false);
-
-  function isDirty() {
-    return name !== initialName || content !== initialContent;
-  }
-
-  function handleClose() {
-    if (isDirty()) setShowUnsaved(true);
-    else onClose();
-  }
-
-  async function submitForm(): Promise<boolean> {
-    if (!name.trim()) { setError('שם הוא שדה חובה'); return false; }
-    if (!content.trim()) { setError('תוכן הוא שדה חובה'); return false; }
-    setSaving(true); setError('');
-    try {
-      const url = mode === 'edit' && tmpl
-        ? `${BASE_URL}/programs/${programId}/templates/${tmpl.id}`
-        : `${BASE_URL}/programs/${programId}/templates`;
-      onSaved(await apiFetch(url, {
-        method: mode === 'edit' ? 'PATCH' : 'POST',
-        cache: 'no-store',
-        body: JSON.stringify({ name: name.trim(), content: content.trim() }),
-      }) as MessageTemplate);
-      return true;
-    } catch {
-      setError('שגיאה בשמירה. נסי שוב.');
-      return false;
-    } finally { setSaving(false); }
-  }
-
-  return (
-    <>
-      <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 20, overflowY: 'auto' }}>
-        <div style={{ background: '#fff', borderRadius: 14, padding: 28, width: '100%', maxWidth: 540, boxShadow: '0 20px 60px rgba(0,0,0,0.2)', maxHeight: '92vh', overflowY: 'auto' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-            <h2 style={{ fontSize: 17, fontWeight: 700, color: '#0f172a', margin: 0 }}>
-              {mode === 'edit' ? 'עריכת נוסח' : 'נוסח חדש'}
-            </h2>
-            <button onClick={handleClose} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: '#94a3b8', lineHeight: 1 }}>×</button>
-          </div>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            <div>
-              <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 6 }}>שם הנוסח *</label>
-              <input
-                autoFocus
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="לדוגמה: ברכת בוקר, תזכורת יומית..."
-                style={{ width: '100%', border: '1px solid #d1d5db', borderRadius: 7, padding: '9px 12px', fontSize: 14, boxSizing: 'border-box' as const, outline: 'none' }}
-              />
-            </div>
-
-            <div>
-              <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 6 }}>תוכן ההודעה *</label>
-              <WhatsAppEditor
-                value={content}
-                onChange={setContent}
-                placeholder="כתבי את תוכן הנוסח כאן..."
-                minHeight={160}
-              />
-            </div>
-
-            {error && <div style={{ color: '#dc2626', fontSize: 13, background: '#fef2f2', padding: '8px 12px', borderRadius: 7 }}>{error}</div>}
-
-            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-              <button type="button" onClick={handleClose} style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 7, padding: '9px 18px', fontSize: 13, cursor: 'pointer' }}>ביטול</button>
-              <button
-                onClick={() => submitForm()}
-                disabled={saving}
-                style={{ background: saving ? '#93c5fd' : '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '9px 20px', fontSize: 13, fontWeight: 600, cursor: saving ? 'not-allowed' : 'pointer' }}
-              >
-                {saving ? 'שומר...' : 'שמירה'}
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {showUnsaved && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-          <div style={{ background: '#fff', borderRadius: 12, padding: 24, maxWidth: 320, width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
-            <h3 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', margin: '0 0 8px' }}>שינויים לא שמורים</h3>
-            <p style={{ fontSize: 14, color: '#64748b', margin: '0 0 20px', lineHeight: 1.5 }}>יש שינויים שעדיין לא נשמרו. מה לעשות?</p>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <button disabled={saving} onClick={async () => { const ok = await submitForm(); if (ok) setShowUnsaved(false); }} style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '10px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer', textAlign: 'center' as const }}>
-                {saving ? 'שומר...' : 'שמור ויצא'}
-              </button>
-              <button onClick={() => { setShowUnsaved(false); onClose(); }} style={{ background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca', borderRadius: 7, padding: '10px 16px', fontSize: 13, cursor: 'pointer', textAlign: 'center' as const }}>
-                בטל שינויים
-              </button>
-              <button onClick={() => setShowUnsaved(false)} style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 7, padding: '10px 16px', fontSize: 13, cursor: 'pointer', textAlign: 'center' as const }}>
-                המשך עריכה
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </>
-  );
-}
 
 // ─── Game Engine Tab ──────────────────────────────────────────────────────────
 
@@ -3982,12 +4043,11 @@ function ProgramPageInner({ params }: { params: Promise<{ id: string }> }) {
     { key: 'groups', label: 'קבוצות' },
     { key: 'offers', label: 'הצעות מכר' },
     { key: 'waitlist', label: 'רשימת המתנה' },
-    { key: 'communication', label: 'תבניות תקשורת' },
+    { key: 'communication', label: 'נוסחים להודעות' },
     ...(program.type === 'game' ? [
       { key: 'game' as TabKey, label: 'מנוע משחק' },
       { key: 'rules' as TabKey, label: 'חוקים' },
     ] : []),
-    { key: 'templates', label: 'נוסחים' },
     { key: 'settings', label: 'הגדרות' },
   ];
 
@@ -4033,7 +4093,6 @@ function ProgramPageInner({ params }: { params: Promise<{ id: string }> }) {
         {activeTab === 'settings' && <SettingsTab program={program} onSaved={(updated) => setProgram(updated)} />}
         {activeTab === 'groups' && <GroupsTab program={program} />}
         {activeTab === 'game' && <GameEngineTab programId={program.id} />}
-        {activeTab === 'templates' && <TemplatesTab programId={program.id} />}
         {activeTab === 'rules' && <RulesTab program={program} onSaved={(updated) => setProgram(updated)} />}
         {activeTab === 'offers' && <ProductOffersTab programId={program.id} />}
         {activeTab === 'waitlist' && <ProductWaitlistTab programId={program.id} />}
@@ -4493,12 +4552,28 @@ function CommTemplateModal(props: {
           )}
           <div>
             <label style={LABEL_P4}>גוף ההודעה *</label>
-            <textarea
-              style={{ ...INPUT_P4, minHeight: 180, resize: 'vertical' as const }}
-              value={body}
-              onChange={(e) => setBody(e.target.value)}
-              placeholder="שלום {firstName}!&#10;ברוכה הבאה ל-{productTitle}.&#10;הקישור לפורטל: {portalLink}"
-            />
+            {/* Reuse the same editors as the rest of the app: WhatsAppEditor
+                (bold/italic/strike/bullets/emoji) for the whatsapp channel,
+                RichContentEditor (the same one used on the "חוקים" tab) for
+                email. Keeps formatting UX consistent across surfaces. */}
+            {channel === 'whatsapp' ? (
+              <WhatsAppEditor
+                value={body}
+                onChange={setBody}
+                placeholder="שלום {firstName}!&#10;ברוכה הבאה ל-{productTitle}.&#10;הקישור לפורטל: {portalLink}"
+                minHeight={180}
+              />
+            ) : (
+              <RichContentEditor
+                value={body}
+                onChange={setBody}
+                placeholder="שלום {firstName}!&#10;ברוכה הבאה ל-{productTitle}."
+                minHeight={220}
+              />
+            )}
+          </div>
+          <div style={{ fontSize: 11, color: '#94a3b8' }}>
+            משתנים: {'{firstName} {lastName} {fullName} {phoneNumber} {email} {productTitle} {offerTitle} {offerAmount} {offerCurrency} {groupName} {portalLink}'}
           </div>
           {err && <div style={{ color: '#b91c1c', fontSize: 13 }}>{err}</div>}
         </div>

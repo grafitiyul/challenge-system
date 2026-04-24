@@ -4,7 +4,6 @@ import { ProgramsService } from './programs.service';
 import { CreateProgramDto } from './dto/create-program.dto';
 import { UpdateProgramDto } from './dto/update-program.dto';
 import { CreateProgramGroupDto } from './dto/create-program-group.dto';
-import { CreateMessageTemplateDto, UpdateMessageTemplateDto } from './dto/create-message-template.dto';
 import { ProgramType } from '@prisma/client';
 
 @UseGuards(AdminSessionGuard)
@@ -37,35 +36,17 @@ export class ProgramsController {
     return this.svc.deactivate(id);
   }
 
+  // Hard delete — blocked when the program has any dependents. Returns
+  // 400 with a human-readable blocking reason so the admin UI can fall
+  // back to archive + display why.
+  @Delete(':id/hard')
+  hardDelete(@Param('id') id: string) {
+    return this.svc.hardDelete(id);
+  }
+
   @Post(':id/groups')
   createGroup(@Param('id') id: string, @Body() dto: CreateProgramGroupDto) {
     return this.svc.createGroup(id, dto);
-  }
-
-  // ── Message templates ──────────────────────────────────────────────────────
-
-  @Get(':id/templates')
-  listTemplates(@Param('id') id: string) {
-    return this.svc.listTemplates(id);
-  }
-
-  @Post(':id/templates')
-  createTemplate(@Param('id') id: string, @Body() dto: CreateMessageTemplateDto) {
-    return this.svc.createTemplate(id, dto);
-  }
-
-  @Patch(':id/templates/:templateId')
-  updateTemplate(
-    @Param('id') id: string,
-    @Param('templateId') templateId: string,
-    @Body() dto: UpdateMessageTemplateDto,
-  ) {
-    return this.svc.updateTemplate(id, templateId, dto);
-  }
-
-  @Delete(':id/templates/:templateId')
-  deleteTemplate(@Param('id') id: string, @Param('templateId') templateId: string) {
-    return this.svc.deleteTemplate(id, templateId);
   }
 
   // ── Phase 4: product-shaped surfaces (Program = Product) ─────────────────

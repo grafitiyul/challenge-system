@@ -335,13 +335,20 @@ export default function GroupDetailPage() {
 
   // ─── Templates: fetch once when message modal first opens ────────────────
 
+  // Phase 4 cleanup: templates now live in the unified CommunicationTemplate
+  // model. The composer only cares about whatsapp templates, so filter
+  // server-side. We adapt the response shape back to { name, content } so
+  // the existing picker UI doesn't need changes.
   const templatesFetched = useRef(false);
   useEffect(() => {
     if (!msgModalOpen || templatesFetched.current || !group?.programId) return;
     templatesFetched.current = true;
-    apiFetch<{ id: string; name: string; content: string }[]>(
-      `${BASE_URL}/programs/${group.programId}/templates`, { cache: 'no-store' },
-    ).then(setTemplates).catch(() => {});
+    apiFetch<{ id: string; title: string; body: string }[]>(
+      `${BASE_URL}/programs/${group.programId}/communication-templates?channel=whatsapp`,
+      { cache: 'no-store' },
+    )
+      .then((rows) => setTemplates(rows.map((r) => ({ id: r.id, name: r.title, content: r.body }))))
+      .catch(() => {});
   }, [msgModalOpen, group?.programId]);
 
   // ─── Chat tab: load when switching to chat tab ────────────────────────────

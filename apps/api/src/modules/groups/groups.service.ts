@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateGroupDto } from './dto/create-group.dto';
 import { UpdateGroupDto } from './dto/update-group.dto';
@@ -78,6 +78,64 @@ export class GroupsService {
       where: { id },
       data: { isActive: false },
     });
+  }
+
+  // Hard delete — only safe for groups with no participant history and
+  // no references from elsewhere. Returns 400 with the first blocking
+  // reason when unsafe so the admin UI can redirect to archive.
+  async hardDelete(id: string) {
+    const group = await this.prisma.group.findUnique({
+      where: { id },
+      include: {
+        _count: {
+          select: {
+            // Count ALL memberships — not just active — because a once-
+            // active member carries history even after soft-leave.
+            participantGroups: true,
+            messages: true,
+            dailyActivities: true,
+            // Game engine attachments
+            scoreEvents: true,
+            feedEvents: true,
+            groupRuleUnlocks: true,
+            // Task engine + registrations
+            registrations: true,
+            // Payments explicitly landed in this group
+            payments: true,
+          },
+        },
+      },
+    });
+    if (!group) throw new NotFoundException(`Group ${id} not found`);
+    const c = group._count;
+    const blockers: string[] = [];
+    if (c.participantGroups) blockers.push(`${c.participantGroups} משתתפות (כולל היסטוריה)`);
+    if (c.payments) blockers.push(`${c.payments} תשלומים`);
+    if (c.messages) blockers.push(`${c.messages} הודעות`);
+    if (c.registrations) blockers.push(`${c.registrations} רישומים`);
+    if (c.scoreEvents || c.feedEvents || c.groupRuleUnlocks) {
+      blockers.push('היסטוריית משחק');
+    }
+    if (c.dailyActivities) blockers.push(`${c.dailyActivities} פעילויות יומיות`);
+    if (blockers.length > 0) {
+      throw new BadRequestException(
+        `לא ניתן למחוק לצמיתות: ${blockers.join(' · ')}. ניתן להעביר לארכיון במקום.`,
+      );
+    }
+    // Also manually clear references from offers / templates that point
+    // at this group — they're SET NULL in the schema, but Prisma delete
+    // doesn't null them implicitly. Update to null first.
+    await this.prisma.paymentOffer.updateMany({
+      where: { defaultGroupId: id },
+      data: { defaultGroupId: null },
+    });
+    await this.prisma.questionnaireTemplate.updateMany({
+      where: { linkedGroupId: id },
+      data: { linkedGroupId: null },
+    });
+    await this.prisma.groupChatLink.deleteMany({ where: { groupId: id } });
+    await this.prisma.group.delete({ where: { id } });
+    return { ok: true };
   }
 
   // Returns active questionnaire templates that are linked to the same program as this group.
