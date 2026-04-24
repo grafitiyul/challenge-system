@@ -11,7 +11,16 @@
  * Variables support removed (recruitment-specific, not needed here).
  */
 
-import { useRef, useState, useEffect } from 'react';
+import { forwardRef, useImperativeHandle, useRef, useState, useEffect } from 'react';
+
+// Imperative handle exposed via ref — lets callers programmatically
+// insert a variable at the cursor position without re-implementing the
+// editor. Kept minimal on purpose; add methods here only when a feature
+// genuinely needs direct editor control.
+export interface WhatsAppEditorHandle {
+  insertAtCursor: (text: string) => void;
+  focus: () => void;
+}
 
 // ─── Emoji categories ─────────────────────────────────────────────────────────
 
@@ -114,12 +123,12 @@ interface WhatsAppEditorProps {
   minHeight?: number;
 }
 
-export default function WhatsAppEditor({
+const WhatsAppEditor = forwardRef<WhatsAppEditorHandle, WhatsAppEditorProps>(function WhatsAppEditor({
   value,
   onChange,
   placeholder = 'הקלידי הודעה...',
   minHeight = 120,
-}: WhatsAppEditorProps) {
+}, ref) {
   const editorRef = useRef<HTMLDivElement>(null);
   const [showPreview, setShowPreview] = useState(false);
   const [showEmoji, setShowEmoji] = useState(false);
@@ -167,16 +176,33 @@ export default function WhatsAppEditor({
     if (!el) return;
     el.focus();
     const sel = window.getSelection();
-    if (sel && sel.rangeCount > 0) {
+    // If the selection isn't inside the editor (e.g. the user clicked a
+    // variable button which stole focus), fall back to appending.
+    const inside = sel && sel.rangeCount > 0 && el.contains(sel.anchorNode);
+    if (inside) {
       const range = sel.getRangeAt(0);
       range.deleteContents();
       range.insertNode(document.createTextNode(text));
       range.collapse(false);
       sel.removeAllRanges();
       sel.addRange(range);
+    } else {
+      el.appendChild(document.createTextNode(text));
+      // Move caret to end so a subsequent insert chains naturally.
+      const newRange = document.createRange();
+      newRange.selectNodeContents(el);
+      newRange.collapse(false);
+      const s = window.getSelection();
+      s?.removeAllRanges();
+      s?.addRange(newRange);
     }
     syncValue();
   }
+
+  useImperativeHandle(ref, () => ({
+    insertAtCursor,
+    focus: () => editorRef.current?.focus(),
+  }));
 
   function handlePaste(e: React.ClipboardEvent<HTMLDivElement>) {
     e.preventDefault();
@@ -346,4 +372,6 @@ export default function WhatsAppEditor({
       </p>
     </>
   );
-}
+});
+
+export default WhatsAppEditor;

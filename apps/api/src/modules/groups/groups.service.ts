@@ -21,10 +21,11 @@ export class GroupsService {
   // existing pickers don't suddenly surface archived cohorts. The admin
   // groups list sets it to `true` — archived groups stay discoverable with
   // an "archived" chip instead of disappearing.
-  findAll(challengeId?: string, includeArchived = false) {
+  findAll(challengeId?: string, includeArchived = false, includeHidden = false) {
     return this.prisma.group.findMany({
       where: {
         ...(includeArchived ? {} : { isActive: true }),
+        ...(includeHidden ? {} : { isHidden: false }),
         ...(challengeId ? { challengeId } : {}),
       },
       include: {
@@ -64,6 +65,7 @@ export class GroupsService {
         ...(dto.startDate !== undefined ? { startDate: dto.startDate ? new Date(dto.startDate) : null } : {}),
         ...(dto.endDate !== undefined ? { endDate: dto.endDate ? new Date(dto.endDate) : null } : {}),
         ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
+        ...(dto.isHidden !== undefined ? { isHidden: dto.isHidden } : {}),
         ...(dto.taskEngineEnabled !== undefined ? { taskEngineEnabled: dto.taskEngineEnabled } : {}),
         ...(dto.portalCallTime !== undefined ? { portalCallTime: dto.portalCallTime ? new Date(dto.portalCallTime) : null } : {}),
         ...(dto.portalOpenTime !== undefined ? { portalOpenTime: dto.portalOpenTime ? new Date(dto.portalOpenTime) : null } : {}),

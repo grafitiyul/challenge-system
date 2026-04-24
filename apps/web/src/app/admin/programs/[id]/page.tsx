@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { BASE_URL, apiFetch } from '@lib/api';
 import WhatsAppEditor from '@components/whatsapp-editor';
 import RichContentEditor from '@components/rich-content-editor';
+import { VariableButtonBar, type VariableEditorHandle } from '@components/variable-button-bar';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -28,6 +29,7 @@ interface Program {
   type: ProgramType;
   description: string | null;
   isActive: boolean;
+  isHidden: boolean;
   groups: Group[];
   showIndividualLeaderboard: boolean;
   showGroupComparison: boolean;
@@ -242,6 +244,31 @@ function SettingsTab({ program, onSaved }: { program: Program; onSaved: (p: Prog
               style={{ padding: '8px 16px', fontSize: 13, fontWeight: 600, background: '#f0fdf4', color: '#15803d', border: '1px solid #bbf7d0', borderRadius: 8, cursor: 'pointer' }}
             >שחזר מהארכיון</button>
           )}
+          {/* Clutter control — independent of archive. Hidden programs
+              stay fully intact but disappear from daily-use surfaces
+              until "הצג פריטים מוסתרים" is toggled on the list page. */}
+          {program.isHidden ? (
+            <button
+              onClick={async () => {
+                const updated = await apiFetch(`${BASE_URL}/programs/${program.id}`, {
+                  method: 'PATCH', body: JSON.stringify({ isHidden: false }),
+                }) as Program;
+                onSaved({ ...program, ...updated });
+              }}
+              style={{ padding: '8px 16px', fontSize: 13, fontWeight: 600, background: '#fff7ed', color: '#92400e', border: '1px solid #fed7aa', borderRadius: 8, cursor: 'pointer' }}
+            >🙉 הצג מחדש</button>
+          ) : (
+            <button
+              onClick={async () => {
+                if (!confirm('להסתיר את המוצר מהמערכת? יישמר במלואו; יוסתר מרשימות ובוחרים. ניתן להציג מחדש בכל עת.')) return;
+                const updated = await apiFetch(`${BASE_URL}/programs/${program.id}`, {
+                  method: 'PATCH', body: JSON.stringify({ isHidden: true }),
+                }) as Program;
+                onSaved({ ...program, ...updated });
+              }}
+              style={{ padding: '8px 16px', fontSize: 13, fontWeight: 600, background: '#fff', color: '#92400e', border: '1px solid #fed7aa', borderRadius: 8, cursor: 'pointer' }}
+            >🙈 הסתר מהמערכת</button>
+          )}
           <button
             onClick={() => setDeleteOpen(true)}
             style={{ padding: '8px 16px', fontSize: 13, fontWeight: 700, background: '#fff', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: 8, cursor: 'pointer' }}
@@ -447,6 +474,7 @@ interface RelatedGroupRow {
   id: string;
   name: string;
   isActive: boolean;
+  isHidden: boolean;
   challenge: { id: string; name: string } | null;
   activeMembers: number;
   reasons: string[];
@@ -462,13 +490,27 @@ function GroupsTab({ program }: { program: Program }) {
   const [createModal, setCreateModal] = useState(false);
   const [archiveTarget, setArchiveTarget] = useState<RelatedGroupRow | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<RelatedGroupRow | null>(null);
+  const [includeHidden, setIncludeHidden] = useState(false);
 
   const reload = useCallback(() => {
-    apiFetch<RelatedGroupRow[]>(`${BASE_URL}/programs/${program.id}/groups`, { cache: 'no-store' })
+    const qs = includeHidden ? '?includeHidden=true' : '';
+    apiFetch<RelatedGroupRow[]>(`${BASE_URL}/programs/${program.id}/groups${qs}`, { cache: 'no-store' })
       .then(setRows)
       .catch((e) => setErr(e instanceof Error ? e.message : 'טעינה נכשלה'));
-  }, [program.id]);
+  }, [program.id, includeHidden]);
   useEffect(() => { reload(); }, [reload]);
+
+  async function setHidden(g: RelatedGroupRow, isHidden: boolean) {
+    try {
+      await apiFetch(`${BASE_URL}/groups/${g.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ isHidden }),
+      });
+      reload();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'פעולה נכשלה');
+    }
+  }
 
   async function setActive(g: RelatedGroupRow, isActive: boolean) {
     try {
@@ -498,12 +540,22 @@ function GroupsTab({ program }: { program: Program }) {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, gap: 12, flexWrap: 'wrap' as const }}>
         <span style={{ fontSize: 13, color: '#64748b' }}>{rows.length} קבוצות</span>
-        <button
-          onClick={() => setCreateModal(true)}
-          style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
-        >+ צור קבוצה</button>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' as const }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#475569', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={includeHidden}
+              onChange={(e) => setIncludeHidden(e.target.checked)}
+            />
+            הצג פריטים מוסתרים
+          </label>
+          <button
+            onClick={() => setCreateModal(true)}
+            style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
+          >+ צור קבוצה</button>
+        </div>
       </div>
 
       {rows.length === 0 && (
@@ -522,7 +574,7 @@ function GroupsTab({ program }: { program: Program }) {
                 display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                 gap: 12, background: '#ffffff', border: '1px solid #e2e8f0',
                 borderRadius: 10, padding: '14px 18px', flexWrap: 'wrap' as const,
-                opacity: g.isActive ? 1 : 0.65,
+                opacity: g.isActive && !g.isHidden ? 1 : 0.65,
               }}
             >
               <div style={{ flex: 1, minWidth: 0 }}>
@@ -533,6 +585,11 @@ function GroupsTab({ program }: { program: Program }) {
                   {!g.isActive && (
                     <span style={{ background: '#f1f5f9', color: '#64748b', fontSize: 11, padding: '2px 10px', borderRadius: 999, fontWeight: 700 }}>
                       בארכיון
+                    </span>
+                  )}
+                  {g.isHidden && (
+                    <span style={{ background: '#fef3c7', color: '#92400e', fontSize: 11, padding: '2px 10px', borderRadius: 999, fontWeight: 700 }}>
+                      🙈 מוסתר
                     </span>
                   )}
                   <span style={{ background: '#eff6ff', color: '#1d4ed8', fontSize: 11, padding: '2px 10px', borderRadius: 999 }}>
@@ -555,6 +612,20 @@ function GroupsTab({ program }: { program: Program }) {
                     onClick={() => setActive(g, true)}
                     style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600, background: '#f0fdf4', color: '#15803d', border: '1px solid #bbf7d0', borderRadius: 7, cursor: 'pointer' }}
                   >שחזר</button>
+                )}
+                {/* Clutter control — independent of archive. Hidden rows
+                    never show up on the admin page without the
+                    "הצג פריטים מוסתרים" toggle. */}
+                {g.isHidden ? (
+                  <button
+                    onClick={() => setHidden(g, false)}
+                    style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600, background: '#fff7ed', color: '#92400e', border: '1px solid #fed7aa', borderRadius: 7, cursor: 'pointer' }}
+                  >🙉 הצג</button>
+                ) : (
+                  <button
+                    onClick={() => setHidden(g, true)}
+                    style={{ padding: '6px 12px', fontSize: 12, fontWeight: 600, background: 'transparent', color: '#92400e', border: '1px solid #fed7aa', borderRadius: 7, cursor: 'pointer' }}
+                  >🙈 הסתר</button>
                 )}
                 {/* Hard delete is only offered when safe (zero active
                     members). The backend still re-validates before
@@ -4478,6 +4549,10 @@ function CommTemplateModal(props: {
   const [body, setBody] = useState(props.initial?.body ?? '');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  // Shared imperative ref — both WhatsAppEditor and RichContentEditor
+  // expose the same { insertAtCursor, focus } surface, so the variable
+  // bar doesn't need to know which editor is mounted.
+  const editorHandleRef = useRef<VariableEditorHandle | null>(null);
 
   async function save() {
     if (!title.trim() || !body.trim()) { setErr('חובה למלא שם וגוף ההודעה'); return; }
@@ -4552,12 +4627,14 @@ function CommTemplateModal(props: {
           )}
           <div>
             <label style={LABEL_P4}>גוף ההודעה *</label>
-            {/* Reuse the same editors as the rest of the app: WhatsAppEditor
-                (bold/italic/strike/bullets/emoji) for the whatsapp channel,
-                RichContentEditor (the same one used on the "חוקים" tab) for
-                email. Keeps formatting UX consistent across surfaces. */}
+            {/* Variable bar sits directly above the editor and calls the
+                shared imperative handle on click. The two editors have
+                different internals but the same { insertAtCursor, focus }
+                surface, so the bar doesn't need channel awareness. */}
+            <VariableButtonBar editorRef={editorHandleRef} />
             {channel === 'whatsapp' ? (
               <WhatsAppEditor
+                ref={editorHandleRef}
                 value={body}
                 onChange={setBody}
                 placeholder="שלום {firstName}!&#10;ברוכה הבאה ל-{productTitle}.&#10;הקישור לפורטל: {portalLink}"
@@ -4565,15 +4642,13 @@ function CommTemplateModal(props: {
               />
             ) : (
               <RichContentEditor
+                ref={editorHandleRef}
                 value={body}
                 onChange={setBody}
                 placeholder="שלום {firstName}!&#10;ברוכה הבאה ל-{productTitle}."
                 minHeight={220}
               />
             )}
-          </div>
-          <div style={{ fontSize: 11, color: '#94a3b8' }}>
-            משתנים: {'{firstName} {lastName} {fullName} {phoneNumber} {email} {productTitle} {offerTitle} {offerAmount} {offerCurrency} {groupName} {portalLink}'}
           </div>
           {err && <div style={{ color: '#b91c1c', fontSize: 13 }}>{err}</div>}
         </div>

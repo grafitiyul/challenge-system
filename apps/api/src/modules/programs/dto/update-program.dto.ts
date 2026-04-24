@@ -15,6 +15,10 @@ export class UpdateProgramDto {
 
   @IsOptional()
   @IsBoolean()
+  isHidden?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
   showIndividualLeaderboard?: boolean;
 
   @IsOptional()

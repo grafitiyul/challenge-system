@@ -15,6 +15,7 @@ interface Program {
   type: ProgramType;
   description: string | null;
   isActive: boolean;
+  isHidden: boolean;
   _count: { groups: number };
 }
 
@@ -169,15 +170,18 @@ function ProgramsPageInner() {
   const [programs, setPrograms] = useState<Program[]>([]);
   const [loading, setLoading] = useState(false);
   const [createModal, setCreateModal] = useState(false);
+  const [includeHidden, setIncludeHidden] = useState(false);
 
   useEffect(() => {
     if (!selectedType) return;
     setLoading(true);
-    apiFetch(`${BASE_URL}/programs?type=${selectedType}`, { cache: 'no-store' })
+    const qs = new URLSearchParams({ type: selectedType });
+    if (includeHidden) qs.set('includeHidden', 'true');
+    apiFetch(`${BASE_URL}/programs?${qs.toString()}`, { cache: 'no-store' })
       .then((data: unknown) => setPrograms(Array.isArray(data) ? data as Program[] : []))
       .catch(() => setPrograms([]))
       .finally(() => setLoading(false));
-  }, [selectedType]);
+  }, [selectedType, includeHidden]);
 
   // ── Type picker (step 1) ───────────────────────────────────────────────────
   if (!selectedType) {
@@ -236,12 +240,22 @@ function ProgramsPageInner() {
           <span style={{ color: '#cbd5e1' }}>/</span>
           <span style={{ fontSize: 16, fontWeight: 700, color: '#0f172a' }}>{typeOption.emoji} {typeOption.label}</span>
         </div>
-        <button
-          onClick={() => setCreateModal(true)}
-          style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '9px 18px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
-        >
-          + {singular} חדש
-        </button>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' as const }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#475569', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={includeHidden}
+              onChange={(e) => setIncludeHidden(e.target.checked)}
+            />
+            הצג פריטים מוסתרים
+          </label>
+          <button
+            onClick={() => setCreateModal(true)}
+            style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '9px 18px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
+          >
+            + {singular} חדש
+          </button>
+        </div>
       </div>
 
       {loading && <div style={{ color: '#94a3b8', textAlign: 'center', paddingTop: 40 }}>טוען...</div>}
@@ -270,10 +284,13 @@ function ProgramsPageInner() {
                 padding: '16px 20px', cursor: 'pointer',
               }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4, flexWrap: 'wrap' as const }}>
                     <span style={{ fontSize: 15, fontWeight: 600, color: '#0f172a' }}>{p.name}</span>
                     {!p.isActive && (
                       <span style={{ background: '#f1f5f9', color: '#64748b', fontSize: 11, padding: '2px 8px', borderRadius: 20 }}>לא פעיל</span>
+                    )}
+                    {p.isHidden && (
+                      <span style={{ background: '#fef3c7', color: '#92400e', fontSize: 11, padding: '2px 8px', borderRadius: 20, fontWeight: 600 }}>🙈 מוסתר</span>
                     )}
                   </div>
                   {p.description && (

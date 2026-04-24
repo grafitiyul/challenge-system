@@ -14,8 +14,13 @@ export class GroupsController {
   findAll(
     @Query('challengeId') challengeId?: string,
     @Query('includeArchived') includeArchived?: string,
+    @Query('includeHidden') includeHidden?: string,
   ) {
-    return this.groupsService.findAll(challengeId, includeArchived === 'true');
+    return this.groupsService.findAll(
+      challengeId,
+      includeArchived === 'true',
+      includeHidden === 'true',
+    );
   }
 
   @Post()

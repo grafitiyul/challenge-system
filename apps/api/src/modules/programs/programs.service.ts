@@ -9,10 +9,14 @@ import { ProgramType } from '@prisma/client';
 export class ProgramsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  listAll(type?: ProgramType) {
+  // `includeHidden=false` (the default) removes clutter rows from the
+  // main admin list. Admin flips a toggle to bring them back into view
+  // without losing them.
+  listAll(type?: ProgramType, includeHidden = false) {
     return this.prisma.program.findMany({
       where: {
         isActive: true,
+        ...(includeHidden ? {} : { isHidden: false }),
         ...(type ? { type } : {}),
       },
       include: {
@@ -56,6 +60,7 @@ export class ProgramsService {
         ...(dto.name !== undefined ? { name: dto.name } : {}),
         ...(dto.description !== undefined ? { description: dto.description || null } : {}),
         ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
+        ...(dto.isHidden !== undefined ? { isHidden: dto.isHidden } : {}),
         ...(dto.showIndividualLeaderboard !== undefined ? { showIndividualLeaderboard: dto.showIndividualLeaderboard } : {}),
         ...(dto.showGroupComparison !== undefined ? { showGroupComparison: dto.showGroupComparison } : {}),
         ...(dto.showOtherGroupsCharts !== undefined ? { showOtherGroupsCharts: dto.showOtherGroupsCharts } : {}),
@@ -267,11 +272,18 @@ export class ProgramsService {
   // ── Groups (active + archived) referenced by the program ─────────────────
   // Unifies groups linked through offers/questionnaires/program.groups so
   // the admin sees a single list inside the program page.
-  async listRelatedGroups(programId: string) {
+  //
+  // `includeHidden=false` (default) excludes groups with isHidden=true —
+  // same clutter-filter semantics as /admin/groups. Admin flips a toggle
+  // on the Groups tab to include them.
+  async listRelatedGroups(programId: string, includeHidden = false) {
     await this.findById(programId);
     const [direct, offers, templates] = await Promise.all([
       this.prisma.group.findMany({
-        where: { programId },
+        where: {
+          programId,
+          ...(includeHidden ? {} : { isHidden: false }),
+        },
         include: {
           challenge: { select: { id: true, name: true } },
           _count: { select: { participantGroups: { where: { isActive: true } } } },
@@ -303,24 +315,27 @@ export class ProgramsService {
       }),
     ]);
 
-    type Row = { id: string; name: string; isActive: boolean;
+    type Row = { id: string; name: string; isActive: boolean; isHidden: boolean;
       challenge: { id: string; name: string } | null;
       _count: { participantGroups: number };
     };
     const byId = new Map<string, { group: Row; reasons: string[] }>();
+    const skipHidden = (g: { isHidden: boolean } | null | undefined) =>
+      !includeHidden && !!g?.isHidden;
     for (const g of direct) {
+      if (skipHidden(g)) continue;
       const entry = byId.get(g.id) ?? { group: g as unknown as Row, reasons: [] };
       entry.reasons.push('קבוצה של התוכנית');
       byId.set(g.id, entry);
     }
     for (const o of offers) {
-      if (!o.defaultGroup) continue;
+      if (!o.defaultGroup || skipHidden(o.defaultGroup)) continue;
       const entry = byId.get(o.defaultGroup.id) ?? { group: o.defaultGroup as unknown as Row, reasons: [] };
       entry.reasons.push(`הצעה: ${o.title}`);
       byId.set(o.defaultGroup.id, entry);
     }
     for (const t of templates) {
-      if (!t.linkedGroup) continue;
+      if (!t.linkedGroup || skipHidden(t.linkedGroup)) continue;
       const entry = byId.get(t.linkedGroup.id) ?? { group: t.linkedGroup as unknown as Row, reasons: [] };
       entry.reasons.push(`שאלון: ${t.internalName}`);
       byId.set(t.linkedGroup.id, entry);
@@ -329,6 +344,7 @@ export class ProgramsService {
       id: group.id,
       name: group.name,
       isActive: group.isActive,
+      isHidden: group.isHidden,
       challenge: group.challenge,
       activeMembers: group._count.participantGroups,
       reasons,

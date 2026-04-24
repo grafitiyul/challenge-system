@@ -12,8 +12,11 @@ export class ProgramsController {
   constructor(private readonly svc: ProgramsService) {}
 
   @Get()
-  listAll(@Query('type') type?: ProgramType) {
-    return this.svc.listAll(type);
+  listAll(
+    @Query('type') type?: ProgramType,
+    @Query('includeHidden') includeHidden?: string,
+  ) {
+    return this.svc.listAll(type, includeHidden === 'true');
   }
 
   @Post()
@@ -94,8 +97,11 @@ export class ProgramsController {
   }
 
   @Get(':id/groups')
-  listRelatedGroups(@Param('id') id: string) {
-    return this.svc.listRelatedGroups(id);
+  listRelatedGroups(
+    @Param('id') id: string,
+    @Query('includeHidden') includeHidden?: string,
+  ) {
+    return this.svc.listRelatedGroups(id, includeHidden === 'true');
   }
 }
 

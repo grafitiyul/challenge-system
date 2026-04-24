@@ -40,6 +40,11 @@ model Program {
   type        ProgramType
   description String?
   isActive    Boolean     @default(true)
+  // Separate from isActive: hides the row from daily-use lists and
+  // pickers entirely. Admin can toggle "הצג פריטים מוסתרים" to bring
+  // hidden rows back into view. Intended for test/retired items the
+  // admin wants to clear from clutter without losing history.
+  isHidden    Boolean     @default(false)
   groups      Group[]
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
@@ -220,6 +225,10 @@ model Group {
   startDate           DateTime?
   endDate             DateTime?
   isActive            Boolean              @default(true)
+  // See Program.isHidden — separate clutter-control flag. Hidden groups
+  // never appear in /admin/groups or Program → קבוצות without the
+  // "הצג פריטים מוסתרים" toggle.
+  isHidden            Boolean              @default(false)
   registrations       Registration[]
   participantGroups   ParticipantGroup[]
   messages            Message[]

@@ -9,7 +9,14 @@
  *            text color, highlight, emoji, clear formatting.
  */
 
-import { useRef, useState, useEffect } from 'react';
+import { forwardRef, useImperativeHandle, useRef, useState, useEffect } from 'react';
+
+// Imperative handle exposed via ref — mirrors WhatsAppEditorHandle so
+// callers can plug the same variable-button bar into either editor.
+export interface RichContentEditorHandle {
+  insertAtCursor: (text: string) => void;
+  focus: () => void;
+}
 
 // ── Emoji categories ──────────────────────────────────────────────────────────
 const EMOJI_CATS: { label: string; emojis: string[] }[] = [
@@ -111,7 +118,10 @@ interface RichContentEditorProps {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export default function RichContentEditor({ value, onChange, placeholder, minHeight = 160 }: RichContentEditorProps) {
+const RichContentEditor = forwardRef<RichContentEditorHandle, RichContentEditorProps>(function RichContentEditor(
+  { value, onChange, placeholder, minHeight = 160 },
+  ref,
+) {
   const editorRef = useRef<HTMLDivElement>(null);
   const linkInputRef = useRef<HTMLInputElement>(null);
   const savedRangeRef = useRef<Range | null>(null);
@@ -161,6 +171,35 @@ export default function RichContentEditor({ value, onChange, placeholder, minHei
     if (sel && savedRangeRef.current) { sel.removeAllRanges(); sel.addRange(savedRangeRef.current); }
   }
 
+  // Imperative insertion. If the saved selection isn't inside the editor
+  // (user clicked an external button that took focus away), append to
+  // the end so the variable still lands in the body.
+  function insertAtCursor(text: string) {
+    const el = editorRef.current;
+    if (!el) return;
+    el.focus();
+    if (savedRangeRef.current && el.contains(savedRangeRef.current.startContainer)) {
+      restoreSelection();
+      document.execCommand('insertText', false, text);
+    } else {
+      // Move caret to end, then insert
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      range.collapse(false);
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+      document.execCommand('insertText', false, text);
+    }
+    savedRangeRef.current = null;
+    syncValue();
+  }
+
+  useImperativeHandle(ref, () => ({
+    insertAtCursor,
+    focus: () => editorRef.current?.focus(),
+  }));
+
   function getAnchorAtCursor(): HTMLAnchorElement | null {
     const sel = window.getSelection();
     if (!sel || sel.rangeCount === 0) return null;
@@ -172,21 +211,6 @@ export default function RichContentEditor({ value, onChange, placeholder, minHei
     return null;
   }
 
-  function insertAtCursor(text: string) {
-    const el = editorRef.current;
-    if (!el) return;
-    el.focus();
-    const sel = window.getSelection();
-    if (sel && sel.rangeCount > 0) {
-      const range = sel.getRangeAt(0);
-      range.deleteContents();
-      range.insertNode(document.createTextNode(text));
-      range.collapse(false);
-      sel.removeAllRanges();
-      sel.addRange(range);
-    }
-    syncValue();
-  }
 
   function handleLinkInsert(e: React.FormEvent) {
     e.preventDefault();
@@ -611,4 +635,6 @@ export default function RichContentEditor({ value, onChange, placeholder, minHei
       `}</style>
     </div>
   );
-}
+});
+
+export default RichContentEditor;

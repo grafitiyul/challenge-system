@@ -12,6 +12,7 @@ interface Group {
   name: string;
   status: GroupStatus;
   isActive: boolean;
+  isHidden: boolean;
   startDate: string | null;
   endDate: string | null;
   challenge: { id: string; name: string } | null;
@@ -79,14 +80,18 @@ export default function GroupsPage() {
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const [includeArchived, setIncludeArchived] = useState(false);
+  const [includeHidden, setIncludeHidden] = useState(false);
 
   useEffect(() => {
-    const qs = includeArchived ? '?includeArchived=true' : '';
+    const params = new URLSearchParams();
+    if (includeArchived) params.set('includeArchived', 'true');
+    if (includeHidden) params.set('includeHidden', 'true');
+    const qs = params.toString() ? `?${params.toString()}` : '';
     apiFetch(`${BASE_URL}/groups${qs}`, { cache: 'no-store' })
       .then((data: unknown) => setGroups(Array.isArray(data) ? (data as Group[]) : []))
       .catch(() => setGroups([]))
       .finally(() => setLoading(false));
-  }, [includeArchived]);
+  }, [includeArchived, includeHidden]);
 
   async function handleDelete() {
     if (!deleteTarget) return;
@@ -140,6 +145,14 @@ export default function GroupsPage() {
           />
           כלול ארכיון
         </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#475569', cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={includeHidden}
+            onChange={(e) => setIncludeHidden(e.target.checked)}
+          />
+          הצג פריטים מוסתרים
+        </label>
       </div>
 
       <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
@@ -168,7 +181,14 @@ export default function GroupsPage() {
                   style={{ borderBottom: '1px solid #f1f5f9', cursor: 'pointer' }}
                   onClick={() => router.push(`/admin/groups/${g.id}`)}
                 >
-                  <td style={{ padding: '12px 16px', fontWeight: 500, color: '#2563eb' }}>{g.name}</td>
+                  <td style={{ padding: '12px 16px', fontWeight: 500, color: '#2563eb' }}>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                      {g.name}
+                      {g.isHidden && (
+                        <span style={{ background: '#fef3c7', color: '#92400e', fontSize: 10, padding: '1px 6px', borderRadius: 10, fontWeight: 700 }}>🙈 מוסתר</span>
+                      )}
+                    </span>
+                  </td>
                   <td style={{ padding: '12px 16px', color: '#374151' }}>{programName}</td>
                   <td style={{ padding: '12px 16px' }}>
                     {programType ? (

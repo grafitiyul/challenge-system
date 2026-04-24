@@ -19,6 +19,10 @@ export class UpdateGroupDto {
 
   @IsOptional()
   @IsBoolean()
+  isHidden?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
   taskEngineEnabled?: boolean;
 
   // Portal opening flow — UTC ISO strings; null clears the field
