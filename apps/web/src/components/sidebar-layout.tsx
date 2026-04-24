@@ -154,14 +154,17 @@ export function SidebarLayout({ children }: { children: React.ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const pathname = usePathname();
 
-  // Public pages (fill flow, game portal, task portal) must render without admin chrome
+  // Public pages (fill flow, game portal, task portal, landing pages) must
+  // render without admin chrome. Add new public prefixes here rather than
+  // fragmenting the router with route groups.
   if (
     pathname === '/login' ||
     pathname === '/reset-password' ||
     pathname === '/setup' ||
     pathname.startsWith('/fill/') ||
     pathname.startsWith('/t/') ||
-    pathname.startsWith('/tg/')
+    pathname.startsWith('/tg/') ||
+    pathname.startsWith('/lp/')
   ) {
     return <>{children}</>;
   }
