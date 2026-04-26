@@ -216,7 +216,7 @@ export default function GroupDetailPage() {
   const [bulkBusy, setBulkBusy] = useState(false);
 
   // Tab
-  const [tab, setTab] = useState<Tab>('overview');
+  const [tab, setTab] = useState<Tab>('participants');
 
   // Chat tab
   const [chatDetail, setChatDetail] = useState<ChatDetail | null>(null);
@@ -371,7 +371,7 @@ export default function GroupDetailPage() {
     }
   }, [tab, chatDetail]);
 
-  // ─── Leaderboard: lazy-load when user opens the סקירה tab ─────────────────
+  // ─── Leaderboard: lazy-load when user opens the ביצועים ודירוגים tab ──────
 
   useEffect(() => {
     if (tab !== 'overview' || !id) return;
@@ -1002,8 +1002,8 @@ export default function GroupDetailPage() {
         }}
       >
         {([
-          ['overview', 'סקירה'],
           ['participants', 'משתתפות'],
+          ['overview', 'ביצועים ודירוגים'],
           ['questionnaires', 'שאלונים'],
           ['tasks', 'משימות'],
           ['communication', 'תקשורת'],
@@ -1028,34 +1028,10 @@ export default function GroupDetailPage() {
         ))}
       </div>
 
-      {/* ══════════════════════════════════════════════════════════════════════
-          TAB: OVERVIEW (#1) — linked program section
-          The leaderboard block (further down) also renders under this tab.
-      ══════════════════════════════════════════════════════════════════════ */}
-      {tab === 'overview' && (
-        <>
-          {/* ── Section: linked program ── */}
-          <Section title="תוכנית משויכת" icon="⚡">
-            {group.program ? (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 600, fontSize: 15, color: '#0f172a' }}>{group.program.name}</div>
-                  <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>
-                    {group.program.isActive ? 'פעילה' : 'לא פעילה'}
-                  </div>
-                </div>
-                <Link href={`/admin/programs/${group.program.id}`}
-                  style={{ padding: '6px 14px', borderRadius: 7, border: '1px solid #bfdbfe', color: '#1d4ed8', fontSize: 13, fontWeight: 500, textDecoration: 'none', background: '#eff6ff' }}>
-                  פתח תוכנית ↗
-                </Link>
-              </div>
-            ) : (
-              <p style={{ color: '#94a3b8', fontSize: 14, margin: 0 }}>לא שויכה תוכנית לקבוצה זו.</p>
-            )}
-          </Section>
-
-        </>
-      )}
+      {/* The "תוכנית משויכת" section that used to live here was moved
+          into the משתתפות tab so it sits directly above the roster.
+          The remaining content for the ביצועים ודירוגים tab — leaderboard
+          + admin inspect panel — is rendered further down. */}
 
       {/* ══════════════════════════════════════════════════════════════════════
           TAB: QUESTIONNAIRES
@@ -1239,6 +1215,26 @@ export default function GroupDetailPage() {
       ══════════════════════════════════════════════════════════════════════ */}
       {tab === 'participants' && (
         <>
+          {/* ── Section: linked program (moved here from former 'overview' tab) ── */}
+          <Section title="תוכנית משויכת" icon="⚡">
+            {group.program ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 600, fontSize: 15, color: '#0f172a' }}>{group.program.name}</div>
+                  <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>
+                    {group.program.isActive ? 'פעילה' : 'לא פעילה'}
+                  </div>
+                </div>
+                <Link href={`/admin/programs/${group.program.id}`}
+                  style={{ padding: '6px 14px', borderRadius: 7, border: '1px solid #bfdbfe', color: '#1d4ed8', fontSize: 13, fontWeight: 500, textDecoration: 'none', background: '#eff6ff' }}>
+                  פתח תוכנית ↗
+                </Link>
+              </div>
+            ) : (
+              <p style={{ color: '#94a3b8', fontSize: 14, margin: 0 }}>לא שויכה תוכנית לקבוצה זו.</p>
+            )}
+          </Section>
+
           {/* ── Section: participants ── */}
           <Section
             title="משתתפות"
@@ -1526,7 +1522,7 @@ export default function GroupDetailPage() {
       )}
 
       {/* ══════════════════════════════════════════════════════════════════════
-          TAB: OVERVIEW (#2) — leaderboard / key stats
+          TAB: ביצועים ודירוגים — leaderboard / key stats
       ══════════════════════════════════════════════════════════════════════ */}
       {tab === 'overview' && (
         <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: 24 }}>
