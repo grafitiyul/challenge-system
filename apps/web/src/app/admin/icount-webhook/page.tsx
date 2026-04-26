@@ -10,7 +10,7 @@ import { BASE_URL, apiFetch } from '@lib/api';
 
 interface LogRow {
   id: string;
-  status: 'processed' | 'needs_review' | 'duplicate' | 'error';
+  status: 'processed' | 'needs_review' | 'duplicate' | 'ignored' | 'error';
   extDocNumber: string | null;
   extTransactionId: string | null;
   extAmount: string | null;
@@ -37,12 +37,14 @@ const STATUS_LABEL: Record<LogRow['status'], string> = {
   processed: 'עובד',
   needs_review: 'דורש בדיקה',
   duplicate: 'כפילות',
+  ignored: 'לא רלוונטי',
   error: 'שגיאה',
 };
 const STATUS_COLOR: Record<LogRow['status'], { bg: string; fg: string }> = {
   processed: { bg: '#dcfce7', fg: '#15803d' },
   needs_review: { bg: '#fef3c7', fg: '#b45309' },
   duplicate: { bg: '#f1f5f9', fg: '#64748b' },
+  ignored: { bg: '#e2e8f0', fg: '#475569' },
   error: { bg: '#fef2f2', fg: '#b91c1c' },
 };
 
@@ -70,12 +72,13 @@ export default function IcountWebhookPage() {
         <p style={{ color: '#64748b', fontSize: 14, margin: '4px 0 0' }}>
           כל POST שמגיע ל-<code style={{ background: '#f1f5f9', padding: '2px 6px', borderRadius: 4 }}>/api/webhooks/icount/:secret</code>
           נשמר כאן. רשומות ש&quot;דורשות בדיקה&quot; לא התאימו אוטומטית לאף הצעה או משתתפת — שייכי ידנית.
+          רשומות &quot;לא רלוונטי&quot; הן תשלומי iCount של עסקים אחרים — מוסתרות בתצוגת &quot;הכל&quot;, ניתן לראותן דרך הסינון הייעודי.
         </p>
       </div>
 
       <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' as const, alignItems: 'center' }}>
         <span style={{ fontSize: 13, color: '#64748b' }}>סינון לפי סטטוס:</span>
-        {(['', 'needs_review', 'processed', 'duplicate', 'error'] as const).map((s) => (
+        {(['', 'needs_review', 'processed', 'duplicate', 'ignored', 'error'] as const).map((s) => (
           <button
             key={s || 'all'}
             onClick={() => setStatusFilter(s as typeof statusFilter)}

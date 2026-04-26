@@ -10,9 +10,18 @@ import {
 
 // Shape returned after every webhook call so the public controller can
 // log outcomes without leaking internals.
+//
+// Status meanings:
+//   processed     — matched an active PaymentOffer + participant; Payment created
+//   needs_review  — matched an offer but the participant could not be matched/created
+//   duplicate     — saw this externalPaymentId before (iCount retry); existing payment reused
+//   ignored       — payload is unrelated to any active offer (e.g. other business
+//                   transactions iCount sends through the same webhook). NO participant,
+//                   NO payment, NO group join, NO token. Hidden from default admin view.
+//   error         — unexpected failure during ingestion
 export interface IngestionOutcome {
   logId: string;
-  status: 'processed' | 'needs_review' | 'duplicate' | 'error';
+  status: 'processed' | 'needs_review' | 'duplicate' | 'ignored' | 'error';
   paymentId?: string;
   reason?: string;
 }
@@ -53,16 +62,28 @@ export class IcountWebhookService {
     });
 
     try {
-      // Dedup
+      // Dedup by (provider='icount', externalPaymentId). iCount retries
+      // the same webhook on transient failures, so we must never create
+      // a second Payment for the same transaction. If a Payment row
+      // already exists we ALSO backfill any missing fields on it — some
+      // historical payments were created before automation extracted the
+      // invoice URL / invoice number / offer link correctly.
       if (fields.transactionId) {
         const existing = await this.prisma.payment.findFirst({
           where: { provider: 'icount', externalPaymentId: fields.transactionId },
-          select: { id: true },
         });
         if (existing) {
+          await this.backfillExistingPayment(existing, fields);
           await this.prisma.icountWebhookLog.update({
             where: { id: log.id },
-            data: { status: 'duplicate', matchedPaymentId: existing.id, processedAt: new Date() },
+            data: {
+              status: 'duplicate',
+              matchedPaymentId: existing.id,
+              matchedOfferId: existing.offerId,
+              matchedParticipantId: existing.participantId,
+              errorMessage: null,
+              processedAt: new Date(),
+            },
           });
           return { logId: log.id, status: 'duplicate', paymentId: existing.id };
         }
@@ -85,26 +106,38 @@ export class IcountWebhookService {
   // re-run the exact same logic against a log that previously failed.
   private async resolveAndRecord(logId: string, fields: ExtractedFields): Promise<IngestionOutcome> {
     const offer = await this.matchOffer(fields);
-    const participant = await this.matchOrCreateParticipant(fields);
 
-    if (!offer || !participant) {
+    // Unrelated payload — no active offer matches by pageId / externalId /
+    // itemName. We deliberately do NOT touch participants, payments, groups
+    // or tokens. The raw log stays for audit but is hidden from default views.
+    if (!offer) {
+      await this.prisma.icountWebhookLog.update({
+        where: { id: logId },
+        data: {
+          status: 'ignored',
+          matchedOfferId: null,
+          matchedParticipantId: null,
+          errorMessage:
+            'התשלום לא משויך להצעה פעילה (אין התאמה לפי iCountPageId / iCountItemName / iCountExternalId). הרשומה נשמרה לתיעוד בלבד.',
+          processedAt: new Date(),
+        },
+      });
+      return { logId, status: 'ignored', reason: 'no offer match' };
+    }
+
+    const participant = await this.matchOrCreateParticipant(fields);
+    if (!participant) {
       await this.prisma.icountWebhookLog.update({
         where: { id: logId },
         data: {
           status: 'needs_review',
-          matchedOfferId: offer?.id ?? null,
-          matchedParticipantId: participant?.id ?? null,
-          errorMessage: !offer
-            ? 'לא נמצאה הצעה תואמת (אין iCountPageId/itemName מוגדרים, או סכום לא ייחודי).'
-            : 'לא נמצאה משתתפת (חסר טלפון ואימייל, או הנתונים לא מאפשרים יצירה בטוחה).',
+          matchedOfferId: offer.id,
+          matchedParticipantId: null,
+          errorMessage: 'נמצאה הצעה אך לא נמצאה משתתפת (חסר טלפון ואימייל, או הנתונים לא מאפשרים יצירה בטוחה).',
           processedAt: new Date(),
         },
       });
-      return {
-        logId,
-        status: 'needs_review',
-        reason: offer ? 'participant' : 'offer',
-      };
+      return { logId, status: 'needs_review', reason: 'participant' };
     }
 
     const payment = await this.createPaymentFromLog(participant.id, offer.id, fields);
@@ -118,6 +151,7 @@ export class IcountWebhookService {
         matchedOfferId: offer.id,
         matchedParticipantId: participant.id,
         matchedPaymentId: payment.id,
+        errorMessage: null,
         processedAt: new Date(),
       },
     });
@@ -125,54 +159,33 @@ export class IcountWebhookService {
   }
 
   // ── Offer matching ───────────────────────────────────────────────────────
+  //
+  // Strict whitelist matching: only iCountPageId, iCountExternalId, or
+  // iCountItemName count as a valid match. Amount-only matching is
+  // deliberately disabled — iCount sends ALL business transactions
+  // through the same webhook, including unrelated ones (e.g. "Webbing",
+  // "אנקורי ת״א"). Auto-creating a Payment + Participant just because
+  // an unrelated invoice happened to share an amount with one of our
+  // offers would pollute the CRM and assign random people to groups.
 
   private async matchOffer(fields: ExtractedFields) {
-    // Priority 1: explicit page id on the payload matches
-    //             PaymentOffer.iCountPageId.
     if (fields.pageId) {
       const byPage = await this.prisma.paymentOffer.findFirst({
         where: { isActive: true, iCountPageId: fields.pageId },
       });
       if (byPage) return byPage;
     }
-    // Priority 2: external id (future-proofing for providers that send
-    //             a SKU or product code).
     if (fields.itemName) {
       const byExt = await this.prisma.paymentOffer.findFirst({
         where: { isActive: true, iCountExternalId: fields.itemName },
       });
       if (byExt) return byExt;
     }
-    // Priority 3: item name exact match.
     if (fields.itemName) {
       const byItem = await this.prisma.paymentOffer.findFirst({
         where: { isActive: true, iCountItemName: fields.itemName },
       });
       if (byItem) return byItem;
-    }
-    // Priority 4: payment URL substring — admin stores the page URL on
-    //             the offer; if iCount echoes it on the payload we can
-    //             match that way too.
-    const urlCandidate =
-      (fields as unknown as { paymentUrl?: string }).paymentUrl ??
-      null;
-    if (urlCandidate) {
-      const byUrl = await this.prisma.paymentOffer.findFirst({
-        where: { isActive: true, iCountPaymentUrl: { contains: urlCandidate } },
-      });
-      if (byUrl) return byUrl;
-    }
-    // Priority 5 (last resort): amount + currency uniquely identify an
-    //             active offer. Refuses to guess if multiple match.
-    if (fields.amount != null) {
-      const candidates = await this.prisma.paymentOffer.findMany({
-        where: {
-          isActive: true,
-          amount: new Prisma.Decimal(fields.amount),
-          ...(fields.currency ? { currency: fields.currency } : {}),
-        },
-      });
-      if (candidates.length === 1) return candidates[0];
     }
     return null;
   }
@@ -273,6 +286,56 @@ export class IcountWebhookService {
     });
   }
 
+  // Backfill ONLY missing fields on a pre-existing Payment row — never
+  // overwrite a non-empty field. Used when we receive a duplicate
+  // webhook (same externalPaymentId) for a payment that was created
+  // before the extractor pulled invoice URL / number reliably, or that
+  // was attached manually by an admin without those fields.
+  //
+  // Also re-runs the auto-join + ensure-token side effects so the
+  // participant ends up in the right group with a usable token even if
+  // the original creation path skipped them.
+  private async backfillExistingPayment(
+    existing: { id: string; participantId: string; offerId: string | null;
+      invoiceNumber: string | null; invoiceUrl: string | null;
+      verifiedAt: Date | null; status: string; itemName: string | null;
+      paidAt: Date | null; },
+    fields: ExtractedFields,
+  ) {
+    const patch: Prisma.PaymentUpdateInput = {};
+    if (!existing.invoiceNumber && fields.docNumber) patch.invoiceNumber = fields.docNumber;
+    if (!existing.invoiceUrl && fields.invoiceUrl) patch.invoiceUrl = fields.invoiceUrl;
+    if (!existing.itemName && fields.itemName) patch.itemName = fields.itemName;
+    if (!existing.paidAt && fields.paidAt) patch.paidAt = fields.paidAt;
+    if (!existing.verifiedAt) patch.verifiedAt = new Date();
+    if (existing.status !== 'paid') patch.status = 'paid';
+
+    // If the payment row predates the offer-matching logic and is missing
+    // an offer link, attach it now (only when matchOffer finds one).
+    let offerForJoin: { id: string; defaultGroupId: string | null } | null = null;
+    if (!existing.offerId) {
+      const offer = await this.matchOffer(fields);
+      if (offer) {
+        patch.offer = { connect: { id: offer.id } };
+        offerForJoin = { id: offer.id, defaultGroupId: offer.defaultGroupId };
+      }
+    } else {
+      const off = await this.prisma.paymentOffer.findUnique({
+        where: { id: existing.offerId },
+        select: { id: true, defaultGroupId: true },
+      });
+      offerForJoin = off;
+    }
+
+    if (Object.keys(patch).length) {
+      await this.prisma.payment.update({ where: { id: existing.id }, data: patch });
+    }
+    if (offerForJoin?.defaultGroupId) {
+      await this.autoJoinGroup(existing.participantId, offerForJoin.defaultGroupId);
+    }
+    await this.ensureParticipantToken(existing.participantId);
+  }
+
   private async autoJoinGroup(participantId: string, groupId: string | null) {
     if (!groupId) return;
     await this.prisma.participantGroup.upsert({
@@ -309,8 +372,14 @@ export class IcountWebhookService {
   // ── Admin review surface ───────────────────────────────────────────────
 
   async listLogs(opts: { status?: string; take?: number } = {}) {
+    // Default ("all") view hides `ignored` rows so unrelated business
+    // transactions iCount sends don't drown the operator's inbox. Caller
+    // can opt in by passing `status: 'ignored'`.
+    const where: Prisma.IcountWebhookLogWhereInput = opts.status
+      ? { status: opts.status }
+      : { status: { not: 'ignored' } };
     return this.prisma.icountWebhookLog.findMany({
-      where: { ...(opts.status ? { status: opts.status } : {}) },
+      where,
       include: {
         matchedOffer: { select: { id: true, title: true, amount: true, currency: true } },
         matchedParticipant: {
