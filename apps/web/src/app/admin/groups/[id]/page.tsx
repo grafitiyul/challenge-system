@@ -162,7 +162,7 @@ const HDR_ICON_BTN_DANGER_HOVER: React.CSSProperties = { ...HDR_ICON_BTN_DANGER,
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
-type Tab = 'details' | 'chat' | 'leaderboard';
+type Tab = 'overview' | 'participants' | 'questionnaires' | 'tasks' | 'communication';
 
 interface ParticipantRankRow {
   participantId: string;
@@ -216,7 +216,7 @@ export default function GroupDetailPage() {
   const [bulkBusy, setBulkBusy] = useState(false);
 
   // Tab
-  const [tab, setTab] = useState<Tab>('details');
+  const [tab, setTab] = useState<Tab>('overview');
 
   // Chat tab
   const [chatDetail, setChatDetail] = useState<ChatDetail | null>(null);
@@ -351,10 +351,10 @@ export default function GroupDetailPage() {
       .catch(() => {});
   }, [msgModalOpen, group?.programId]);
 
-  // ─── Chat tab: load when switching to chat tab ────────────────────────────
+  // ─── Chat thread: lazy-load when user opens the תקשורת tab ────────────────
 
   useEffect(() => {
-    if (tab !== 'chat') return;
+    if (tab !== 'communication') return;
     const groupChatLink = links.find((l) => l.linkType === 'group_chat');
     if (!groupChatLink) return;
     setChatLoading(true);
@@ -366,15 +366,15 @@ export default function GroupDetailPage() {
   }, [tab, links]);
 
   useEffect(() => {
-    if (tab === 'chat' && chatDetail && chatBottomRef.current) {
+    if (tab === 'communication' && chatDetail && chatBottomRef.current) {
       chatBottomRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [tab, chatDetail]);
 
-  // ─── Leaderboard tab: load when switching ─────────────────────────────────
+  // ─── Leaderboard: lazy-load when user opens the סקירה tab ─────────────────
 
   useEffect(() => {
-    if (tab !== 'leaderboard' || !id) return;
+    if (tab !== 'overview' || !id) return;
     setRanksLoading(true);
     setRanksError(false);
     apiFetch<ParticipantRankRow[]>(`${BASE_URL}/game/leaderboard/group/${id}`, { cache: 'no-store' })
@@ -990,24 +990,38 @@ export default function GroupDetailPage() {
       {/* ══════════════════════════════════════════════════════════════════════
           TABS
       ══════════════════════════════════════════════════════════════════════ */}
-      <div style={{ display: 'flex', gap: 4, marginBottom: 20, borderBottom: '2px solid #e2e8f0', paddingBottom: 0 }}>
+      <div
+        style={{
+          display: 'flex',
+          gap: 4,
+          marginBottom: 20,
+          borderBottom: '2px solid #e2e8f0',
+          paddingBottom: 0,
+          overflowX: 'auto',          // mobile: tabs scroll horizontally if too many
+          WebkitOverflowScrolling: 'touch',
+        }}
+      >
         {([
-          ['details', 'הגדרות ופרטים'],
-          ['chat', 'צ׳אט קבוצתי'],
-          ['leaderboard', 'דירוגים'],
+          ['overview', 'סקירה'],
+          ['participants', 'משתתפות'],
+          ['questionnaires', 'שאלונים'],
+          ['tasks', 'משימות'],
+          ['communication', 'תקשורת'],
         ] as const).map(([key, label]) => (
           <button
             key={key}
             onClick={() => setTab(key)}
             style={{
-              padding: '10px 20px', border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 600,
+              padding: '10px 18px', border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 600,
               background: 'none', borderBottom: tab === key ? '2px solid #2563eb' : '2px solid transparent',
               color: tab === key ? '#2563eb' : '#64748b',
               marginBottom: -2,
+              whiteSpace: 'nowrap',     // keep each tab on one line
+              flexShrink: 0,
             }}
           >
             {label}
-            {key === 'chat' && !groupChatLink && (
+            {key === 'communication' && !groupChatLink && (
               <span style={{ marginRight: 6, fontSize: 11, color: '#94a3b8', fontWeight: 400 }}>(אין קישור)</span>
             )}
           </button>
@@ -1015,9 +1029,10 @@ export default function GroupDetailPage() {
       </div>
 
       {/* ══════════════════════════════════════════════════════════════════════
-          TAB: DETAILS
+          TAB: OVERVIEW (#1) — linked program section
+          The leaderboard block (further down) also renders under this tab.
       ══════════════════════════════════════════════════════════════════════ */}
-      {tab === 'details' && (
+      {tab === 'overview' && (
         <>
           {/* ── Section: linked program ── */}
           <Section title="תוכנית משויכת" icon="⚡">
@@ -1039,6 +1054,14 @@ export default function GroupDetailPage() {
             )}
           </Section>
 
+        </>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════════════
+          TAB: QUESTIONNAIRES
+      ══════════════════════════════════════════════════════════════════════ */}
+      {tab === 'questionnaires' && (
+        <>
           {/* ── Section: questionnaires ── */}
           <Section title="שאלונים רלוונטיים" icon="📋" count={questionnaires.length}>
             {!group.programId ? (
@@ -1092,6 +1115,14 @@ export default function GroupDetailPage() {
             )}
           </Section>
 
+        </>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════════════
+          TAB: TASKS
+      ══════════════════════════════════════════════════════════════════════ */}
+      {tab === 'tasks' && (
+        <>
           {/* ── Section: task engine ── */}
           <Section
             title="מנוע משימות"
@@ -1200,6 +1231,14 @@ export default function GroupDetailPage() {
             )}
           </Section>
 
+        </>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════════════
+          TAB: PARTICIPANTS
+      ══════════════════════════════════════════════════════════════════════ */}
+      {tab === 'participants' && (
+        <>
           {/* ── Section: participants ── */}
           <Section
             title="משתתפות"
@@ -1377,6 +1416,15 @@ export default function GroupDetailPage() {
             )}
           </Section>
 
+        </>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════════════
+          TAB: COMMUNICATION (#1) — WhatsApp links section
+          The chat thread block (further down) also renders under this tab.
+      ══════════════════════════════════════════════════════════════════════ */}
+      {tab === 'communication' && (
+        <>
           {/* ── Section: WhatsApp / chat links ── */}
           <Section title="קישורי WhatsApp" icon="💬" count={links.length}>
             {links.length === 0 ? (
@@ -1423,9 +1471,9 @@ export default function GroupDetailPage() {
       )}
 
       {/* ══════════════════════════════════════════════════════════════════════
-          TAB: CHAT
+          TAB: COMMUNICATION (#2) — WhatsApp chat thread
       ══════════════════════════════════════════════════════════════════════ */}
-      {tab === 'chat' && (
+      {tab === 'communication' && (
         <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, overflow: 'hidden' }}>
           {!groupChatLink ? (
             <div style={{ padding: 32, textAlign: 'center', color: '#94a3b8' }}>
@@ -1478,9 +1526,9 @@ export default function GroupDetailPage() {
       )}
 
       {/* ══════════════════════════════════════════════════════════════════════
-          TAB: LEADERBOARD
+          TAB: OVERVIEW (#2) — leaderboard / key stats
       ══════════════════════════════════════════════════════════════════════ */}
-      {tab === 'leaderboard' && (
+      {tab === 'overview' && (
         <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: 24 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
             <h3 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', margin: 0 }}>דירוג משתתפות בקבוצה</h3>
