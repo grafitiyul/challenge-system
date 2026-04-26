@@ -26,7 +26,7 @@ import {
 
 interface Gender { id: string; name: string; }
 interface Challenge { id: string; name: string; }
-interface Group { id: string; name: string; startDate: string; endDate: string; challenge: Challenge; }
+interface Group { id: string; name: string; startDate: string; endDate: string; challenge: Challenge; program?: { id: string; name: string } | null; programId?: string | null; }
 interface ParticipantGroup { id: string; joinedAt: string; accessToken: string | null; group: Group & { taskEngineEnabled: boolean }; }
 
 interface Participant {
@@ -905,21 +905,55 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
               {age && <AgeTooltip age={age} />}
             </div>
 
-            {/* Active program/group assignments */}
-            {activeGroups.length > 0 && (
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
-                {activeGroups.map((pg) => (
-                  <div key={pg.id} style={{ display: 'flex', alignItems: 'center', gap: 0, background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, overflow: 'hidden', fontSize: 12 }}>
-                    <span style={{ padding: '5px 10px', color: '#64748b', background: '#f8fafc', borderLeft: '1px solid #bbf7d0', fontWeight: 500 }}>
-                      תוכנית: <strong style={{ color: '#0f172a' }}>{pg.group.challenge.name}</strong>
-                    </span>
-                    <span style={{ padding: '5px 10px', color: '#15803d', fontWeight: 600 }}>
-                      קבוצה: {pg.group.name}
-                    </span>
+            {/* Active program/group assignments. We surface a warning chip
+                for every group that shares its program (or challenge, when
+                no program link exists) with another active group — duplicates
+                shouldn't normally happen, and when they do, the admin needs
+                to see them clearly so they can deactivate the wrong row. */}
+            {activeGroups.length > 0 && (() => {
+              // Bucket groups by program id (fall back to challenge id) so
+              // we know which entries are part of a duplicate set.
+              const ctxCount = new Map<string, number>();
+              for (const pg of activeGroups) {
+                const ctx = pg.group.program?.id ?? pg.group.programId ?? `challenge:${pg.group.challenge.id}`;
+                ctxCount.set(ctx, (ctxCount.get(ctx) ?? 0) + 1);
+              }
+              return (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 12 }}>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    {activeGroups.map((pg) => {
+                      const ctx = pg.group.program?.id ?? pg.group.programId ?? `challenge:${pg.group.challenge.id}`;
+                      const isDup = (ctxCount.get(ctx) ?? 0) > 1;
+                      return (
+                        <div
+                          key={pg.id}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: 0,
+                            background: isDup ? '#fef3c7' : '#f0fdf4',
+                            border: `1px solid ${isDup ? '#fcd34d' : '#bbf7d0'}`,
+                            borderRadius: 8, overflow: 'hidden', fontSize: 12,
+                          }}
+                          title={isDup ? 'משתתפת זו רשומה ליותר מקבוצה אחת בתוכנית הזו — בדקי אם נדרש לכבות אחת מהן.' : undefined}
+                        >
+                          <span style={{ padding: '5px 10px', color: '#64748b', background: '#f8fafc', borderLeft: `1px solid ${isDup ? '#fcd34d' : '#bbf7d0'}`, fontWeight: 500 }}>
+                            {isDup && <span style={{ marginInlineEnd: 4 }}>⚠</span>}
+                            תוכנית: <strong style={{ color: '#0f172a' }}>{pg.group.challenge.name}</strong>
+                          </span>
+                          <span style={{ padding: '5px 10px', color: isDup ? '#92400e' : '#15803d', fontWeight: 600 }}>
+                            קבוצה: {pg.group.name}
+                          </span>
+                        </div>
+                      );
+                    })}
                   </div>
-                ))}
-              </div>
-            )}
+                  {[...ctxCount.values()].some((n) => n > 1) && (
+                    <div style={{ fontSize: 12, color: '#92400e', background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 6, padding: '6px 10px' }}>
+                      ⚠ נמצאה השתייכות פעילה לכמה קבוצות בתוכנית זהה. בדקי בלשונית הקבוצות אם יש לכבות חברות כפולה.
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </div>
 
           {/* Quick actions */}

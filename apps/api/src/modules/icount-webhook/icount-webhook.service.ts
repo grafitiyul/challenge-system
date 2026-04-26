@@ -336,13 +336,67 @@ export class IcountWebhookService {
     await this.ensureParticipantToken(existing.participantId);
   }
 
+  // Auto-join the offer's default group, BUT respect manual admin moves.
+  //
+  // Rule: if the participant already has an active ParticipantGroup in
+  // the same program/challenge context, do NOT add them to the default
+  // group again. Admin overrides take precedence over the offer's
+  // default cohort assignment. This prevents duplicate active group
+  // memberships when:
+  //   - admin pre-assigns a participant to group B, then iCount payment
+  //     arrives for an offer whose default is group A
+  //   - admin moves a participant from default group A to group B after
+  //     the original auto-join, then a webhook retry / reprocess fires
+  //
+  // Same-program detection: prefers Group.programId; falls back to
+  // Group.challengeId for groups that predate the program model.
   private async autoJoinGroup(participantId: string, groupId: string | null) {
-    if (!groupId) return;
+    if (!groupId) return { joined: false, reason: 'no default group' };
+
+    const defaultGroup = await this.prisma.group.findUnique({
+      where: { id: groupId },
+      select: { id: true, programId: true, challengeId: true },
+    });
+    if (!defaultGroup) return { joined: false, reason: 'default group missing' };
+
+    // If the participant is ALREADY in this exact group and active, no-op.
+    const existing = await this.prisma.participantGroup.findUnique({
+      where: { participantId_groupId: { participantId, groupId } },
+    });
+    if (existing?.isActive) return { joined: true, reason: 'already active in default' };
+
+    // Look for an active membership in another group within the same
+    // program (or same challenge as a fallback). Manual moves win.
+    const sameContextWhere: Prisma.ParticipantGroupWhereInput = {
+      participantId,
+      isActive: true,
+      groupId: { not: groupId },
+      group: defaultGroup.programId
+        ? { programId: defaultGroup.programId }
+        : { challengeId: defaultGroup.challengeId },
+    };
+    const otherActive = await this.prisma.participantGroup.findFirst({
+      where: sameContextWhere,
+      include: { group: { select: { name: true } } },
+    });
+    if (otherActive) {
+      this.logger.log(
+        `Auto-join skipped for participant ${participantId}: already active in ` +
+          `group "${otherActive.group.name}" (${otherActive.groupId}) for the same ` +
+          `${defaultGroup.programId ? 'program' : 'challenge'}.`,
+      );
+      return {
+        joined: false,
+        reason: 'participant already in another active group in same program/challenge',
+      };
+    }
+
     await this.prisma.participantGroup.upsert({
       where: { participantId_groupId: { participantId, groupId } },
       create: { participantId, groupId },
       update: { isActive: true, leftAt: null },
     });
+    return { joined: true, reason: 'joined' };
   }
 
   private async ensureParticipantToken(participantId: string) {

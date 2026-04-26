@@ -154,7 +154,10 @@ export class ParticipantsService {
           where: { isActive: true },
           include: {
             group: {
-              include: { challenge: true },
+              include: {
+                challenge: true,
+                program: { select: { id: true, name: true } },
+              },
             },
           },
           orderBy: { joinedAt: 'desc' },
