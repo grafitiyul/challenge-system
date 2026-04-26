@@ -134,6 +134,12 @@ export default function IcountWebhookPage() {
               {r.extDocNumber && <span>חשבונית #{r.extDocNumber}</span>}
               <span>{new Date(r.createdAt).toLocaleString('he-IL')}</span>
             </div>
+            {(r.extItemName || r.extPageId) && (
+              <div style={{ fontSize: 12, color: '#475569', display: 'flex', gap: 14, flexWrap: 'wrap' as const, marginTop: 4 }}>
+                {r.extItemName && <span>📦 {r.extItemName}</span>}
+                {r.extPageId && <span dir="ltr" style={{ fontFamily: 'monospace' }}>page_id: {r.extPageId}</span>}
+              </div>
+            )}
             {r.errorMessage && (
               <div style={{ fontSize: 12, color: '#b91c1c', marginTop: 6 }}>
                 ⚠ {r.errorMessage}
@@ -202,7 +208,21 @@ function LogDetailModal(props: { log: LogRow; onClose: () => void; onChanged: ()
           <div style={{ display: 'flex', flexDirection: 'column' as const, gap: 10 }}>
             <Field label="סטטוס" value={STATUS_LABEL[props.log.status]} />
             <Field label="תאריך קבלה" value={new Date(props.log.createdAt).toLocaleString('he-IL')} />
-            <Field label="שם לקוח" value={props.log.extCustomerName} />
+            <Field label="שם מלא" value={props.log.extCustomerName} />
+            {(() => {
+              // Split for visibility — same logic as backend splitName().
+              const full = props.log.extCustomerName?.trim() ?? '';
+              if (!full) return null;
+              const parts = full.split(/\s+/);
+              const first = parts[0];
+              const last = parts.slice(1).join(' ');
+              return (
+                <>
+                  <Field label="שם פרטי (לאחר פיצול)" value={first || null} />
+                  <Field label="שם משפחה (לאחר פיצול)" value={last || null} />
+                </>
+              );
+            })()}
             <Field label="טלפון" value={props.log.extCustomerPhone} dir="ltr" />
             <Field label="אימייל" value={props.log.extCustomerEmail} dir="ltr" />
             <Field label="סכום" value={props.log.extAmount ? `${Number(props.log.extAmount).toLocaleString('he-IL')} ${props.log.extCurrency ?? ''}` : null} />
