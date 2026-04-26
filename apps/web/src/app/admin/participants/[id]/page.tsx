@@ -1284,14 +1284,27 @@ function WhatsappComposeModal(props: {
   const [products, setProducts] = useState<Array<{ id: string; title: string }>>([]);
   const [selectedProductId, setSelectedProductId] = useState<string>('');
   const [templates, setTemplates] = useState<ProductTemplateLite[]>([]);
-  // Picking a template seeds the editor; we don't keep a "selected
-  // template id" in send-time state because the message is whatever
-  // the user has in the editor at click time, full stop.
+  // The editor is the single source of truth for what gets sent. We
+  // also remember which template was last loaded into it (and the
+  // body it produced) so שחזר can re-render and the dirty-check can
+  // tell whether the admin's manual edits would be discarded.
   const [rawBody, setRawBody] = useState('');
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
+  const [lastRenderedBody, setLastRenderedBody] = useState<string>('');
   const [seedingTemplate, setSeedingTemplate] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [sent, setSent] = useState(false);
+  const [copiedFlash, setCopiedFlash] = useState(false);
+  // In-app confirmation modal — replaces window.confirm so the flow
+  // can't be killed by a browser-level dismissal and we can lock
+  // background interaction (no outside-click close, explicit X).
+  type PendingAction =
+    | { kind: 'restore' }                       // user clicked שחזר תבנית טקסט
+    | { kind: 'pickTemplate'; templateId: string } // user picked a different template while edited
+    | null;
+  const [pending, setPending] = useState<PendingAction>(null);
+  const editorIsDirty = rawBody.trim() !== '' && rawBody !== lastRenderedBody;
 
   useEffect(() => {
     apiFetch<Array<{ id: string; name: string }>>(`${BASE_URL}/programs`)
@@ -1306,13 +1319,10 @@ function WhatsappComposeModal(props: {
     ).then((rows) => setTemplates(rows)).catch(() => setTemplates([]));
   }, [selectedProductId]);
 
-  // When the admin picks a template we render it server-side once
-  // (variables filled in for this participant) and drop the result
-  // into the editor. From that moment on the editor is the source of
-  // truth — the admin can edit, delete, add, format freely.
-  async function seedFromTemplate(templateId: string) {
-    if (!templateId) return;
-    if (rawBody.trim() && !window.confirm('יש טקסט קיים — להחליף בתבנית?')) return;
+  // Render the chosen template via the server (variables substituted
+  // for this participant) and drop the result into the editor. Side
+  // effect: marks lastRenderedBody so the dirty check works.
+  async function renderTemplateBody(templateId: string): Promise<string | null> {
     setSeedingTemplate(true);
     setErr('');
     try {
@@ -1320,11 +1330,54 @@ function WhatsappComposeModal(props: {
         `${BASE_URL}/participants/${props.participantId}/messages/preview`,
         { method: 'POST', body: JSON.stringify({ templateId, rawBody: null }) },
       );
-      setRawBody(r.body);
+      return r.body;
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'טעינת התבנית נכשלה');
+      return null;
     } finally {
       setSeedingTemplate(false);
+    }
+  }
+  async function applyTemplate(templateId: string) {
+    const body = await renderTemplateBody(templateId);
+    if (body == null) return;
+    setSelectedTemplateId(templateId);
+    setLastRenderedBody(body);
+    setRawBody(body);
+  }
+  async function onPickTemplateFromDropdown(templateId: string) {
+    if (!templateId) return;
+    if (editorIsDirty) {
+      setPending({ kind: 'pickTemplate', templateId });
+      return;
+    }
+    await applyTemplate(templateId);
+  }
+  async function onRestoreTemplate() {
+    if (!selectedTemplateId) return;
+    if (editorIsDirty) {
+      setPending({ kind: 'restore' });
+      return;
+    }
+    await applyTemplate(selectedTemplateId);
+  }
+  function onClear() {
+    setRawBody('');
+    // Clearing leaves selectedTemplateId intact so שחזר still works,
+    // but resets lastRenderedBody so the dirty check doesn't immediately
+    // re-flag the empty state as edited.
+    setLastRenderedBody('');
+  }
+  async function onCopy() {
+    if (!rawBody.trim()) return;
+    try {
+      await navigator.clipboard.writeText(rawBody);
+      setCopiedFlash(true);
+      setTimeout(() => setCopiedFlash(false), 1500);
+    } catch {
+      // Browser blocked clipboard access — surface a fallback so the
+      // admin can still grab the text manually.
+      setErr('העתקה אוטומטית נחסמה ע״י הדפדפן — סמני ידנית את הטקסט בעורך.');
     }
   }
 
@@ -1381,8 +1434,8 @@ function WhatsappComposeModal(props: {
               <label style={label}>תבנית (טוען לעורך)</label>
               <select
                 style={input}
-                value=""
-                onChange={(e) => { void seedFromTemplate(e.target.value); }}
+                value={selectedTemplateId}
+                onChange={(e) => { void onPickTemplateFromDropdown(e.target.value); }}
                 disabled={!selectedProductId || templates.length === 0 || seedingTemplate}
               >
                 <option value="">— בחרי תבנית לטעינה —</option>
@@ -1392,11 +1445,44 @@ function WhatsappComposeModal(props: {
           </div>
 
           <div>
-            <label style={label}>טקסט ההודעה {seedingTemplate && <span style={{ color: '#64748b', fontWeight: 400 }}>(טוען תבנית...)</span>}</label>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 4 }}>
+              <label style={{ ...label, marginBottom: 0 }}>
+                טקסט ההודעה {seedingTemplate && <span style={{ color: '#64748b', fontWeight: 400 }}>(טוען תבנית...)</span>}
+              </label>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button
+                  type="button"
+                  onClick={onClear}
+                  disabled={!rawBody.trim() || seedingTemplate}
+                  style={{
+                    padding: '4px 10px', fontSize: 12, fontWeight: 600,
+                    background: '#fff', color: !rawBody.trim() ? '#cbd5e1' : '#475569',
+                    border: '1px solid #e2e8f0', borderRadius: 6,
+                    cursor: !rawBody.trim() ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  נקה
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { void onRestoreTemplate(); }}
+                  disabled={!selectedTemplateId || seedingTemplate}
+                  title={selectedTemplateId ? 'טוען מחדש את התבנית הנבחרת' : 'יש לבחור תבנית קודם'}
+                  style={{
+                    padding: '4px 10px', fontSize: 12, fontWeight: 600,
+                    background: '#fff', color: !selectedTemplateId ? '#cbd5e1' : '#1d4ed8',
+                    border: `1px solid ${!selectedTemplateId ? '#e2e8f0' : '#bfdbfe'}`, borderRadius: 6,
+                    cursor: !selectedTemplateId ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  שחזר תבנית טקסט
+                </button>
+              </div>
+            </div>
             <WhatsAppEditor
               value={rawBody}
               onChange={setRawBody}
-              placeholder="כתבי הודעה... (משתנים נתמכים: {firstName}, {portalLink})"
+              placeholder="כתבי הודעה... (משתנים נתמכים: {firstName}, {gameLink}, {tasksLink})"
               minHeight={120}
             />
             <p style={{ fontSize: 11, color: '#64748b', margin: '6px 2px 0' }}>
@@ -1408,14 +1494,72 @@ function WhatsappComposeModal(props: {
           {sent && <div style={{ color: '#15803d', fontSize: 13 }}>✓ נשלח</div>}
         </div>
 
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center', marginTop: 16, flexWrap: 'wrap' }}>
+          {copiedFlash && <span style={{ fontSize: 12, color: '#15803d', fontWeight: 600 }}>הועתק ✓</span>}
           <button onClick={props.onClose} disabled={busy} style={{ padding: '8px 18px', background: '#f1f5f9', border: '1px solid #e2e8f0', color: '#374151', borderRadius: 8, fontSize: 13, cursor: 'pointer' }}>ביטול</button>
+          <button
+            type="button"
+            onClick={() => { void onCopy(); }}
+            disabled={!rawBody.trim()}
+            title="העתק את הטקסט בשמירת עיצוב WhatsApp"
+            style={{
+              padding: '8px 18px',
+              background: !rawBody.trim() ? '#f1f5f9' : '#fff',
+              color: !rawBody.trim() ? '#cbd5e1' : '#0f172a',
+              border: `1px solid ${!rawBody.trim() ? '#e2e8f0' : '#cbd5e1'}`,
+              borderRadius: 8, fontSize: 13, fontWeight: 600,
+              cursor: !rawBody.trim() ? 'not-allowed' : 'pointer',
+            }}
+          >
+            העתק
+          </button>
           <button
             onClick={send}
             disabled={busy || sent || !rawBody.trim()}
             style={{ padding: '8px 22px', background: busy || sent ? '#86efac' : '#16a34a', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: busy || sent || !rawBody.trim() ? 'not-allowed' : 'pointer' }}
           >{busy ? 'שולח...' : sent ? 'נשלח ✓' : '💬 שלח עכשיו'}</button>
         </div>
+
+        {/* In-app confirmation for actions that would discard manual edits.
+            Locked: no backdrop close, explicit X, no browser confirm. */}
+        {pending && (
+          <div
+            style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)', zIndex: 1300, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}
+          >
+            <div style={{ background: '#fff', borderRadius: 12, padding: 22, width: '100%', maxWidth: 380, boxShadow: '0 20px 60px rgba(0,0,0,0.25)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                <div style={{ fontSize: 15, fontWeight: 700, color: '#0f172a' }}>
+                  {pending.kind === 'restore' ? 'לשחזר את הטקסט מהתבנית?' : 'להחליף את הטקסט הקיים בתבנית חדשה?'}
+                </div>
+                <button
+                  aria-label="סגור"
+                  onClick={() => setPending(null)}
+                  style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: 'pointer', lineHeight: 1 }}
+                >×</button>
+              </div>
+              <p style={{ fontSize: 13, color: '#475569', margin: '0 0 16px', lineHeight: 1.5 }}>
+                העריכות הידניות שלך בעורך יוחלפו בטקסט שהתבנית מפיקה. הפעולה אינה הפיכה דרך כפתור &ldquo;ביטול&rdquo;.
+              </p>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <button
+                  type="button"
+                  onClick={() => setPending(null)}
+                  style={{ padding: '8px 16px', background: '#f1f5f9', border: '1px solid #e2e8f0', color: '#374151', borderRadius: 8, fontSize: 13, cursor: 'pointer' }}
+                >בטל</button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const action = pending;
+                    setPending(null);
+                    if (action?.kind === 'restore') void applyTemplate(selectedTemplateId);
+                    if (action?.kind === 'pickTemplate') void applyTemplate(action.templateId);
+                  }}
+                  style={{ padding: '8px 16px', background: '#dc2626', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
+                >החלף</button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

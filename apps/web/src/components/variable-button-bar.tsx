@@ -54,8 +54,12 @@ const GROUPS: Group[] = [
   },
   {
     title: 'מערכת',
+    // {portalLink} is intentionally NOT shown here — it's a legacy alias
+    // of {tasksLink} kept server-side for old templates only. New templates
+    // should pick the explicit {gameLink} / {tasksLink} above.
     items: [
-      { label: 'לינק למשחק', token: '{portalLink}' },
+      { label: 'לינק למשחק', token: '{gameLink}' },
+      { label: 'לינק למשימות', token: '{tasksLink}' },
     ],
   },
 ];

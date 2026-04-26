@@ -5,7 +5,13 @@
 // Supported vars:
 //   {firstName} {lastName} {fullName} {phoneNumber} {email}
 //   {productTitle} {offerTitle} {offerAmount} {offerCurrency}
-//   {groupName} {portalLink}
+//   {groupName} {gameLink} {tasksLink} {portalLink}
+//
+// Link variables:
+//   {gameLink}   — full URL to the game portal  (/t/:token)
+//   {tasksLink}  — full URL to the tasks portal (/tg/:token)
+//   {portalLink} — legacy alias of {tasksLink}, kept so old templates
+//                  keep rendering. Hidden from the variable bar.
 
 export interface TemplateContext {
   participant?: {
@@ -17,6 +23,8 @@ export interface TemplateContext {
   product?: { title: string } | null;
   offer?: { title: string; amount: string | number; currency: string } | null;
   group?: { name: string } | null;
+  gameLink?: string | null;
+  tasksLink?: string | null;
   portalLink?: string | null;
 }
 
@@ -36,6 +44,8 @@ export function renderTemplate(body: string, ctx: TemplateContext): string {
     vars.offerCurrency = ctx.offer.currency;
   }
   if (ctx.group) vars.groupName = ctx.group.name;
+  if (ctx.gameLink) vars.gameLink = ctx.gameLink;
+  if (ctx.tasksLink) vars.tasksLink = ctx.tasksLink;
   if (ctx.portalLink) vars.portalLink = ctx.portalLink;
 
   return body.replace(/\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g, (match, key: string) => {
@@ -46,5 +56,5 @@ export function renderTemplate(body: string, ctx: TemplateContext): string {
 export const TEMPLATE_VARIABLE_KEYS = [
   'firstName', 'lastName', 'fullName', 'phoneNumber', 'email',
   'productTitle', 'offerTitle', 'offerAmount', 'offerCurrency',
-  'groupName', 'portalLink',
+  'groupName', 'gameLink', 'tasksLink', 'portalLink',
 ] as const;
