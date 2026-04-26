@@ -1284,9 +1284,11 @@ function WhatsappComposeModal(props: {
   const [products, setProducts] = useState<Array<{ id: string; title: string }>>([]);
   const [selectedProductId, setSelectedProductId] = useState<string>('');
   const [templates, setTemplates] = useState<ProductTemplateLite[]>([]);
-  const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
+  // Picking a template seeds the editor; we don't keep a "selected
+  // template id" in send-time state because the message is whatever
+  // the user has in the editor at click time, full stop.
   const [rawBody, setRawBody] = useState('');
-  const [preview, setPreview] = useState('');
+  const [seedingTemplate, setSeedingTemplate] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [sent, setSent] = useState(false);
@@ -1298,34 +1300,43 @@ function WhatsappComposeModal(props: {
   }, []);
 
   useEffect(() => {
-    if (!selectedProductId) { setTemplates([]); setSelectedTemplateId(''); return; }
+    if (!selectedProductId) { setTemplates([]); return; }
     apiFetch<ProductTemplateLite[]>(
       `${BASE_URL}/programs/${selectedProductId}/communication-templates?channel=whatsapp`,
     ).then((rows) => setTemplates(rows)).catch(() => setTemplates([]));
   }, [selectedProductId]);
 
-  // Whenever template or raw body changes, fetch a rendered preview.
-  useEffect(() => {
-    const templateId = selectedTemplateId || null;
-    const body = templateId ? null : (rawBody || null);
-    if (!templateId && !body) { setPreview(''); return; }
-    let cancelled = false;
-    apiFetch<{ body: string }>(`${BASE_URL}/participants/${props.participantId}/messages/preview`, {
-      method: 'POST',
-      body: JSON.stringify({ templateId, rawBody: body }),
-    }).then((r) => { if (!cancelled) setPreview(r.body); }).catch(() => {});
-    return () => { cancelled = true; };
-  }, [selectedTemplateId, rawBody, props.participantId]);
+  // When the admin picks a template we render it server-side once
+  // (variables filled in for this participant) and drop the result
+  // into the editor. From that moment on the editor is the source of
+  // truth — the admin can edit, delete, add, format freely.
+  async function seedFromTemplate(templateId: string) {
+    if (!templateId) return;
+    if (rawBody.trim() && !window.confirm('יש טקסט קיים — להחליף בתבנית?')) return;
+    setSeedingTemplate(true);
+    setErr('');
+    try {
+      const r = await apiFetch<{ body: string }>(
+        `${BASE_URL}/participants/${props.participantId}/messages/preview`,
+        { method: 'POST', body: JSON.stringify({ templateId, rawBody: null }) },
+      );
+      setRawBody(r.body);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'טעינת התבנית נכשלה');
+    } finally {
+      setSeedingTemplate(false);
+    }
+  }
 
   async function send() {
     setBusy(true); setErr('');
     try {
+      // Always send the current editor content — never re-render from
+      // the template id, even if a template was used to seed it. This
+      // is what makes "edit before sending" actually work.
       await apiFetch(`${BASE_URL}/participants/${props.participantId}/messages/whatsapp`, {
         method: 'POST',
-        body: JSON.stringify({
-          templateId: selectedTemplateId || null,
-          rawBody: selectedTemplateId ? null : rawBody,
-        }),
+        body: JSON.stringify({ templateId: null, rawBody }),
       });
       setSent(true);
       setTimeout(props.onClose, 800);
@@ -1361,43 +1372,37 @@ function WhatsappComposeModal(props: {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <div>
               <label style={label}>תוכנית</label>
-              <select style={input} value={selectedProductId} onChange={(e) => { setSelectedProductId(e.target.value); setSelectedTemplateId(''); }}>
+              <select style={input} value={selectedProductId} onChange={(e) => setSelectedProductId(e.target.value)}>
                 <option value="">— ללא —</option>
                 {products.map((p) => <option key={p.id} value={p.id}>{p.title}</option>)}
               </select>
             </div>
             <div>
-              <label style={label}>תבנית</label>
+              <label style={label}>תבנית (טוען לעורך)</label>
               <select
                 style={input}
-                value={selectedTemplateId}
-                onChange={(e) => setSelectedTemplateId(e.target.value)}
-                disabled={!selectedProductId || templates.length === 0}
+                value=""
+                onChange={(e) => { void seedFromTemplate(e.target.value); }}
+                disabled={!selectedProductId || templates.length === 0 || seedingTemplate}
               >
-                <option value="">— הודעה חופשית —</option>
+                <option value="">— בחרי תבנית לטעינה —</option>
                 {templates.map((t) => <option key={t.id} value={t.id}>{t.title}</option>)}
               </select>
             </div>
           </div>
 
-          {!selectedTemplateId && (
-            <div>
-              <label style={label}>טקסט ההודעה</label>
-              <WhatsAppEditor
-                value={rawBody}
-                onChange={setRawBody}
-                placeholder="כתבי הודעה... (משתנים נתמכים: {firstName}, {portalLink})"
-                minHeight={120}
-              />
-            </div>
-          )}
-
-          {preview && (
-            <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, padding: 12 }}>
-              <div style={{ fontSize: 11, color: '#16a34a', fontWeight: 700, marginBottom: 6 }}>תצוגה מקדימה</div>
-              <div style={{ fontSize: 14, whiteSpace: 'pre-wrap', color: '#0f172a' }}>{preview}</div>
-            </div>
-          )}
+          <div>
+            <label style={label}>טקסט ההודעה {seedingTemplate && <span style={{ color: '#64748b', fontWeight: 400 }}>(טוען תבנית...)</span>}</label>
+            <WhatsAppEditor
+              value={rawBody}
+              onChange={setRawBody}
+              placeholder="כתבי הודעה... (משתנים נתמכים: {firstName}, {portalLink})"
+              minHeight={120}
+            />
+            <p style={{ fontSize: 11, color: '#64748b', margin: '6px 2px 0' }}>
+              ניתן לערוך את הטקסט גם אחרי בחירת תבנית — מה שכתוב בעורך הוא מה שנשלח.
+            </p>
+          </div>
 
           {err && <div style={{ color: '#b91c1c', fontSize: 13 }}>{err}</div>}
           {sent && <div style={{ color: '#15803d', fontSize: 13 }}>✓ נשלח</div>}
@@ -1407,8 +1412,8 @@ function WhatsappComposeModal(props: {
           <button onClick={props.onClose} disabled={busy} style={{ padding: '8px 18px', background: '#f1f5f9', border: '1px solid #e2e8f0', color: '#374151', borderRadius: 8, fontSize: 13, cursor: 'pointer' }}>ביטול</button>
           <button
             onClick={send}
-            disabled={busy || sent || !preview.trim()}
-            style={{ padding: '8px 22px', background: busy || sent ? '#86efac' : '#16a34a', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: busy || sent || !preview.trim() ? 'not-allowed' : 'pointer' }}
+            disabled={busy || sent || !rawBody.trim()}
+            style={{ padding: '8px 22px', background: busy || sent ? '#86efac' : '#16a34a', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: busy || sent || !rawBody.trim() ? 'not-allowed' : 'pointer' }}
           >{busy ? 'שולח...' : sent ? 'נשלח ✓' : '💬 שלח עכשיו'}</button>
         </div>
       </div>

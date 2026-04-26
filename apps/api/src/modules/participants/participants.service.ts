@@ -73,8 +73,14 @@ export class ParticipantsService {
       channel = tpl.channel === 'email' ? 'email' : 'whatsapp';
     }
 
+    // The participant portal URL must be a fully-qualified link in
+    // outgoing messages — WhatsApp won't auto-link a bare path. Prefer
+    // NEXT_PUBLIC_APP_URL (the canonical web base on Railway), fall back
+    // to the legacy WEB_BASE_URL var so existing deployments keep
+    // working through the next deploy.
+    const webBase = process.env['NEXT_PUBLIC_APP_URL'] || process.env['WEB_BASE_URL'] || '';
     const portalLink = participant.accessToken
-      ? `${process.env.WEB_BASE_URL ?? ''}/tg/${participant.accessToken}`
+      ? `${webBase.replace(/\/+$/, '')}/tg/${participant.accessToken}`
       : null;
     const rendered = renderTemplate(templateBody, {
       participant,
