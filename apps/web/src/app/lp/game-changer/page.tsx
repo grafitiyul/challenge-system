@@ -28,11 +28,41 @@ const heebo = Heebo({
 // Structure is additive: new sections can be added by extending this
 // object and adding matching JSX blocks below.
 
+// Hoisted so both `paymentUrl` (canonical) and `openCta.url` resolve to
+// the same string without duplication. Update once when iCount issues
+// a new link.
+const ICOUNT_PAYMENT_URL = 'https://app.icount.co.il/m/5e143/c68ea9adp36u69eb5d6?utm_source=iCount&utm_medium=paypage&utm_campaign=54';
+
+// Waitlist signup form for "ping me when the next cycle opens". Used by
+// the `closedCta` below; kept separate from `waitlistUrl` (which still
+// points at the original /fill/2j08wfox form referenced elsewhere).
+const NEXT_CYCLE_WAITLIST_URL = 'https://challenge-systemweb-production.up.railway.app/fill/g1kojq0o';
+
 const landingContent = {
+  // ── Registration switch ──────────────────────────────────────────────
+  // Single source of truth for "is the current cycle taking signups?".
+  // Flip to 'open' when a new cycle opens — both CTAs and the stamp
+  // change automatically. No other text needs to be touched.
+  registrationState: 'closed' as 'open' | 'closed',
+
+  // Two CTA shapes preserved side-by-side so flipping the state is the
+  // only edit needed. Original iCount label/URL kept verbatim under
+  // openCta — nothing got lost.
+  openCta: {
+    label: 'אני בפנים - תרשמי אותי!',
+    url: ICOUNT_PAYMENT_URL,
+  },
+  closedCta: {
+    label: 'עדכני אותי כשנפתחת עוד קבוצה',
+    url: NEXT_CYCLE_WAITLIST_URL,
+  },
+  // Stamp shown on the details card when registrationState === 'closed'.
+  closedStampText: 'ההרשמה נסגרה',
+
   // URLs are the source of truth for CTA behavior. Replace the payment
   // link if iCount issues a new one; the waitlist link points at the
   // public questionnaire fill route we already ship.
-  paymentUrl: 'https://app.icount.co.il/m/5e143/c68ea9adp36u69eb5d6?utm_source=iCount&utm_medium=paypage&utm_campaign=54',
+  paymentUrl: ICOUNT_PAYMENT_URL,
   waitlistUrl: 'https://challenge-systemweb-production.up.railway.app/fill/2j08wfox',
 
   // ── Hero ─────────────────────────────────────────────────────────────
@@ -133,6 +163,10 @@ const landingContent = {
 
 export default function GameChangerLandingPage() {
   const c = landingContent;
+  // Single switch drives both CTAs (bottom + sticky) and the stamp.
+  // Flip `registrationState` in the config to swap everything atomically.
+  const isClosed = c.registrationState === 'closed';
+  const activeCta = isClosed ? c.closedCta : c.openCta;
   return (
     <div id="lp-game-changer" dir="rtl" lang="he" className={heebo.className}>
       <ScopedStyles />
@@ -250,19 +284,31 @@ export default function GameChangerLandingPage() {
       {/* ── DETAILS ── */}
       <section id="details">
         <div className="container">
-          <div className="details-card">
-            {c.details.rows.map((row, i) => (
-              <div key={i} className="details-row">
-                <div className="details-icon">{row.icon}</div>
-                <div>
-                  <div className="details-label">{row.label}</div>
-                  <div className="details-value">{row.value}</div>
-                </div>
+          {/* The stamp anchors absolutely off this wrapper, so it can
+              spill slightly outside the card without changing the
+              card's own padding. Aria-hidden because it's purely
+              decorative — the registration state is also reflected
+              in the CTA below. */}
+          <div className="details-card-wrap">
+            {isClosed && (
+              <div className="closed-stamp" aria-hidden="true">
+                {c.closedStampText}
               </div>
-            ))}
-            <div className="price-block">
-              <div className="price-big">{c.details.priceAmount}</div>
-              <div className="price-sub">{c.details.priceSub}</div>
+            )}
+            <div className="details-card">
+              {c.details.rows.map((row, i) => (
+                <div key={i} className="details-row">
+                  <div className="details-icon">{row.icon}</div>
+                  <div>
+                    <div className="details-label">{row.label}</div>
+                    <div className="details-value">{row.value}</div>
+                  </div>
+                </div>
+              ))}
+              <div className="price-block">
+                <div className="price-big">{c.details.priceAmount}</div>
+                <div className="price-sub">{c.details.priceSub}</div>
+              </div>
             </div>
           </div>
         </div>
@@ -273,8 +319,8 @@ export default function GameChangerLandingPage() {
         <div className="container">
           <div className="cta-card">
             <div className="cta-wrap">
-              <Link href={c.paymentUrl} className="cta-btn" target="_blank" rel="noopener noreferrer">
-                {c.cta.primary}
+              <Link href={activeCta.url} className="cta-btn" target="_blank" rel="noopener noreferrer">
+                {activeCta.label}
               </Link>
             </div>
             <p className="policy-note">{c.cta.policy}</p>
@@ -284,8 +330,8 @@ export default function GameChangerLandingPage() {
 
       {/* ── Sticky mobile CTA ── */}
       <div className="sticky-cta">
-        <Link href={c.paymentUrl} className="cta-btn" target="_blank" rel="noopener noreferrer">
-          {c.cta.primary}
+        <Link href={activeCta.url} className="cta-btn" target="_blank" rel="noopener noreferrer">
+          {activeCta.label}
         </Link>
       </div>
     </div>
@@ -545,6 +591,40 @@ function ScopedStyles() {
       #lp-game-changer #details {
         background: var(--bg-secondary);
         padding: 60px 0;
+      }
+      /* Wraps the card so the stamp can anchor absolutely without
+         affecting card padding. */
+      #lp-game-changer .details-card-wrap { position: relative; }
+      /* Tilted "ההרשמה נסגרה" stamp — desktop sits in the top-left
+         corner overlapping the card edge; mobile drops to a smaller
+         floating chip pinned inside the corner so it never covers
+         the row text below. */
+      #lp-game-changer .closed-stamp {
+        position: absolute;
+        top: -18px;
+        left: -8px;
+        transform: rotate(-12deg);
+        background: rgba(185, 28, 28, 0.12);
+        color: #fecaca;
+        border: 2px solid #b91c1c;
+        border-radius: 8px;
+        padding: 10px 18px;
+        font-size: clamp(13px, 2.6vw, 18px);
+        font-weight: 900;
+        letter-spacing: 1px;
+        text-transform: none;
+        white-space: nowrap;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+        z-index: 2;
+        pointer-events: none;
+      }
+      @media (max-width: 600px) {
+        #lp-game-changer .closed-stamp {
+          top: -12px;
+          left: 8px;
+          padding: 7px 12px;
+          letter-spacing: 0.5px;
+        }
       }
       #lp-game-changer .details-card {
         background: linear-gradient(135deg, var(--card-grad-start), var(--card-grad-end));
