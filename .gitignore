@@ -37,3 +37,7 @@ Thumbs.db
 
 # Testing
 coverage/
+
+# Local data drops (one-shot imports — contain customer PII)
+apps/api/icount-import.csv
+apps/api/icount-import.*.csv
