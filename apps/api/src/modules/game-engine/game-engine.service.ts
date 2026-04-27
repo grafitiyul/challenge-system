@@ -2581,14 +2581,26 @@ export class GameEngineService {
       );
     }
 
-    const oldScoreEvent = await this.prisma.scoreEvent.findFirst({
+    // Phase 8 multi-group fan-out — a single submission can produce
+    // multiple `action` ScoreEvents (one per group the participant
+    // selected, all sharing this logId). Void must compensate every
+    // one of them, not just the first; otherwise other groups' totals
+    // keep the points after a delete. Single-group submissions hit
+    // this same code path with a 1-element array — no behavior change
+    // for them.
+    const oldScoreEvents = await this.prisma.scoreEvent.findMany({
       where: { logId: oldLog.id, sourceType: 'action' },
+      orderBy: { createdAt: 'asc' },
     });
-    if (!oldScoreEvent) {
+    if (oldScoreEvents.length === 0) {
       throw new BadRequestException(
         `Internal inconsistency: active log ${oldLog.id} has no action ScoreEvent.`,
       );
     }
+    // The first action event remains the "primary" — used downstream
+    // for cascade hints (units-delta + threshold rules) so that side
+    // doesn't fork yet. Rule firings still attach to the primary.
+    const oldScoreEvent = oldScoreEvents[0];
 
     return await this.prisma.$transaction(
       async (tx) => {
@@ -2597,39 +2609,46 @@ export class GameEngineService {
           data: { status: 'voided', editedAt: new Date(), editedByRole: dto.actorRole },
         });
 
-        // Phase 6.10: compensate the full net, not just the action event —
-        // see correctLog for the same pattern.
-        const priorAdjustments = await tx.scoreEvent.findMany({
-          where: {
-            parentEventId: oldScoreEvent.id,
-            sourceType: 'correction',
-          },
-          select: { points: true },
-        });
-        const priorAdjustmentsSum = priorAdjustments.reduce(
-          (s, a) => s + a.points,
-          0,
-        );
-        const oldLogNetPoints = oldScoreEvent.points + priorAdjustmentsSum;
-        const compensation = await tx.scoreEvent.create({
-          data: {
-            participantId: oldLog.participantId,
-            programId: oldLog.programId,
-            groupId: oldScoreEvent.groupId,
-            sourceType: 'correction',
-            sourceId: oldLog.actionId,
-            points: -oldLogNetPoints,
-            parentEventId: oldScoreEvent.id,
-            metadata: {
-              reason: 'void',
-              supersededScoreEventId: oldScoreEvent.id,
-              supersededLogId: oldLog.id,
-              supersededLogNetPoints: oldLogNetPoints,
-              actorRole: dto.actorRole,
+        // Compensate every per-group action event linked to this log.
+        // Each compensation is parented to its own action event so a
+        // future per-group correction cascade still has a clean chain
+        // to walk. priorAdjustments are also computed per event so the
+        // net is correct group-by-group.
+        const compensations = [];
+        for (const ev of oldScoreEvents) {
+          const priorAdjustments = await tx.scoreEvent.findMany({
+            where: { parentEventId: ev.id, sourceType: 'correction' },
+            select: { points: true },
+          });
+          const priorAdjustmentsSum = priorAdjustments.reduce((s, a) => s + a.points, 0);
+          const netPoints = ev.points + priorAdjustmentsSum;
+          const c = await tx.scoreEvent.create({
+            data: {
+              participantId: oldLog.participantId,
+              programId: oldLog.programId,
+              groupId: ev.groupId,
+              sourceType: 'correction',
+              sourceId: oldLog.actionId,
+              points: -netPoints,
+              parentEventId: ev.id,
+              metadata: {
+                reason: 'void',
+                supersededScoreEventId: ev.id,
+                supersededLogId: oldLog.id,
+                supersededLogNetPoints: netPoints,
+                actorRole: dto.actorRole,
+              },
             },
-          },
-        });
+          });
+          compensations.push(c);
+        }
+        // Keep the legacy single return shape — first compensation is
+        // the "primary" one, matching the old contract.
+        const compensation = compensations[0];
 
+        // Hide the social-feed entry from every group at once. updateMany
+        // already keys on logId, so all fanned-out feed rows go private
+        // in a single statement — no per-group loop needed.
         await tx.feedEvent.updateMany({
           where: { logId: oldLog.id, type: 'action' },
           data: { isPublic: false },
