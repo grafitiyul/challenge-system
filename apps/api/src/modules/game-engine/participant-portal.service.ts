@@ -486,13 +486,16 @@ export class ParticipantPortalService {
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
 
-    // Phase 8 (corrected) — personal score is program-scoped. One log
-    // gives the participant points that show up regardless of which
-    // group context she's currently viewing. Group selection only
-    // affects the leaderboard / feed member set on later screens.
+    // Phase 8 (fan-out model) — score is per-group. Each report fans
+    // out to one ScoreEvent per selected group, so summing by groupId
+    // gives the participant's score within that specific group context.
     const scoreAgg = await this.prisma.scoreEvent.aggregate({
       _sum: { points: true },
-      where: { participantId: pg.participantId, programId, createdAt: { gte: todayStart } },
+      where: {
+        participantId: pg.participantId,
+        groupId: multi.activeGroupId,
+        createdAt: { gte: todayStart },
+      },
     });
 
     const todayValues: Record<string, number> = {};
@@ -563,22 +566,48 @@ export class ParticipantPortalService {
       value?: string;
       contextJson?: Record<string, unknown>;
       extraText?: string;
-      // Phase 8 — the group the participant is currently viewing. The
-      // resulting ScoreEvent + FeedEvent are stamped with this id so
-      // her score in that group goes up. Validated against her active
-      // memberships; ignored / falls back to primary when invalid OR
-      // when multiGroupEnabled is false.
+      // Legacy single-group hint. New clients send `groupIds` instead.
+      // Used as the only entry of the fan-out set when groupIds is omitted.
       groupId?: string;
+      // Phase 8 fan-out — all active groups the participant chose to
+      // credit. One UserActionLog row, one direct ScoreEvent per group,
+      // one FeedEvent per group. Validated against her active
+      // memberships; falls back silently to the primary when omitted.
+      groupIds?: string[];
     },
     idempotencyKey?: string,
   ): Promise<{ pointsEarned: number; todayScore: number; todayValue: number | null }> {
     const multi = await this.resolveMultiGroup(token, dto.groupId);
     const { participantId, programId, activeGroupId } = multi;
 
+    // Resolve fan-out target set:
+    //   - explicit `groupIds` → use those (validated below)
+    //   - else explicit `groupId` → single-group submission
+    //   - else default to ALL the participant's active groups
+    const requestedSet = (dto.groupIds && dto.groupIds.length > 0)
+      ? dto.groupIds
+      : (dto.groupId ? [dto.groupId] : multi.groups.map((g) => g.id));
+
+    // Strict membership validation — every fan-out target must be one of
+    // the participant's currently active memberships in this program.
+    // resolveMultiGroup already enforces multiGroupEnabled and same-program;
+    // we just intersect the request with that set.
+    const validIds = new Set(multi.groups.map((g) => g.id));
+    const fanOutGroupIds = Array.from(new Set(requestedSet.filter((id) => validIds.has(id))));
+    if (fanOutGroupIds.length === 0) fanOutGroupIds.push(activeGroupId);
+
+    // Primary group: write through gameEngine.logAction (UserActionLog +
+    // primary ScoreEvent + primary FeedEvent + rule firings + streak
+    // update). Rule firings stay attached to the primary group only —
+    // fanning rules out would clash with the partial unique index on
+    // (participantId, sourceId, bucketKey). Direct action points + the
+    // social-feed entry are the things participants notice; rule
+    // bonuses are inherited program-wide via the personal score paths.
+    const primaryGroupId = fanOutGroupIds[0];
     const result = await this.gameEngine.logAction({
       participantId,
       programId,
-      groupId: activeGroupId,
+      groupId: primaryGroupId,
       actionId: dto.actionId,
       value: dto.value,
       contextJson: dto.contextJson,
@@ -586,16 +615,55 @@ export class ParticipantPortalService {
       clientSubmissionId: idempotencyKey,
     });
 
+    // Fan-out: one ScoreEvent + one FeedEvent per additional group, all
+    // pointing at the same UserActionLog.id. Skipped on idempotent
+    // replays (the original call already wrote the fan-out rows).
+    const replayed = (result as { replayed?: boolean }).replayed === true;
+    if (!replayed && result.scoreEvent && fanOutGroupIds.length > 1) {
+      const primaryFeed = await this.prisma.feedEvent.findFirst({
+        where: { logId: result.log.id, groupId: primaryGroupId, type: 'action' },
+        select: { message: true },
+      });
+      const extraGroupIds = fanOutGroupIds.slice(1);
+      for (const gid of extraGroupIds) {
+        await this.prisma.scoreEvent.create({
+          data: {
+            participantId,
+            programId,
+            groupId: gid,
+            sourceType: 'action',
+            sourceId: dto.actionId,
+            logId: result.log.id,
+            points: result.scoreEvent.points,
+          },
+        });
+        if (primaryFeed?.message) {
+          await this.prisma.feedEvent.create({
+            data: {
+              participantId,
+              programId,
+              groupId: gid,
+              type: 'action',
+              message: primaryFeed.message,
+              points: result.scoreEvent.points,
+              isPublic: true,
+              logId: result.log.id,
+            },
+          });
+        }
+      }
+    }
+
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
 
-    // Phase 8 (corrected) — return the participant's program-scoped
-    // total for today. One log gives points across ALL groups she
-    // belongs to via the member-set leaderboard query; group context
-    // only affects ranking / feed member set, never the personal sum.
+    // Phase 8 (fan-out model) — today's score within the selected group.
+    // The fan-out write above made sure the report landed on every
+    // selected group, so this same query returns the right number for
+    // any group the participant is currently viewing.
     const scoreAgg = await this.prisma.scoreEvent.aggregate({
       _sum: { points: true },
-      where: { participantId, programId, createdAt: { gte: todayStart } },
+      where: { participantId, groupId: primaryGroupId, createdAt: { gte: todayStart } },
     });
 
     const action = await this.prisma.gameAction.findUnique({ where: { id: dto.actionId } });
@@ -643,14 +711,13 @@ export class ParticipantPortalService {
   // ─── Stats tab ─────────────────────────────────────────────────────────────
 
   async getPortalStats(token: string, requestedGroupId?: string): Promise<PortalStats> {
-    // Phase 8 (corrected) — score is program-wide per participant.
-    // The active group only determines the COMPARISON window:
-    //   - personal totals: same number regardless of group
-    //   - leaderboard: members of the selected group, ranked by their
-    //     program-wide totals
-    //   - feed: events authored by members of the selected group
-    // Streak stays (participant, program)-scoped (single ParticipantGameState
-    // row by schema unique).
+    // Phase 8 (fan-out model) — score is per-group. The participant
+    // chose at log time which groups to credit; this query reads back
+    // the events stamped with the currently-selected group.
+    //   - personal totals: SUM by (participant, groupId)
+    //   - leaderboard: members of the selected group + their per-group totals
+    //   - feed: events stamped with the selected group's id
+    // Streak stays (participant, program)-scoped (one row by schema).
     const multi = await this.resolveMultiGroup(token, requestedGroupId);
     const { participantId, programId, activeGroupId: groupId } = multi;
 
@@ -658,38 +725,35 @@ export class ParticipantPortalService {
     const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
     const weekStart = new Date(now); weekStart.setDate(now.getDate() - now.getDay()); weekStart.setHours(0, 0, 0, 0);
 
-    // Personal scores remain program-wide. One log = one set of points
-    // reflected in every group the participant belongs to.
+    // Personal scores per group: only events stamped with this groupId.
     const [todayAgg, weekAgg, totalAgg, streak] = await Promise.all([
-      this.prisma.scoreEvent.aggregate({ _sum: { points: true }, where: { participantId, programId, createdAt: { gte: todayStart } } }),
-      this.prisma.scoreEvent.aggregate({ _sum: { points: true }, where: { participantId, programId, createdAt: { gte: weekStart } } }),
-      this.prisma.scoreEvent.aggregate({ _sum: { points: true }, where: { participantId, programId } }),
+      this.prisma.scoreEvent.aggregate({ _sum: { points: true }, where: { participantId, groupId, createdAt: { gte: todayStart } } }),
+      this.prisma.scoreEvent.aggregate({ _sum: { points: true }, where: { participantId, groupId, createdAt: { gte: weekStart } } }),
+      this.prisma.scoreEvent.aggregate({ _sum: { points: true }, where: { participantId, groupId } }),
       this.gameEngine.getStreakLive(participantId, programId),
     ]);
 
-    // 14-day daily trend — program-wide; same shape regardless of
-    // which group the participant is currently viewing.
-    const dailyTrend = await this.buildDailyTrend(participantId, programId, 14);
+    // 14-day daily trend — also per-group.
+    const dailyTrend = await this.buildDailyTrend(participantId, groupId, 14);
 
-    // Group leaderboard. Members come from the active ParticipantGroup
-    // rows of the SELECTED group; totals are each member's program-wide
-    // sum. This way a participant's score is identical across her
-    // groups, but every group ranks her against a different set of
-    // peers — exactly the requested behavior.
+    // Group leaderboard. Members of the selected group; totals come
+    // from ScoreEvents stamped with that groupId. Member-set + groupId
+    // double filter protects against members who have since left
+    // pulling old events into the wrong leaderboard.
     const members = await this.prisma.participantGroup.findMany({
-      where: { groupId, isActive: true },
+      where: { groupId, isActive: true, group: { isActive: true } },
       include: { participant: { select: { id: true, firstName: true, lastName: true, profileImageUrl: true } } },
     });
 
     const participantIds = members.map((m) => m.participantId);
     const memberTotals = await this.prisma.scoreEvent.groupBy({
       by: ['participantId'],
-      where: { programId, participantId: { in: participantIds } },
+      where: { groupId, participantId: { in: participantIds } },
       _sum: { points: true },
     });
     const memberTodayTotals = await this.prisma.scoreEvent.groupBy({
       by: ['participantId'],
-      where: { programId, participantId: { in: participantIds }, createdAt: { gte: todayStart } },
+      where: { groupId, participantId: { in: participantIds }, createdAt: { gte: todayStart } },
       _sum: { points: true },
     });
 
@@ -723,32 +787,23 @@ export class ParticipantPortalService {
   // ─── Feed tab ──────────────────────────────────────────────────────────────
 
   async getPortalFeed(token: string, requestedGroupId?: string): Promise<PortalFeedItem[]> {
-    // Phase 8: feed scopes to the selected group's MEMBERS, not to
-    // events stamped with that groupId. A multi-group participant logs
-    // an action once → one FeedEvent is written tagged with her primary
-    // group id, but every group she's a member of can see it because we
-    // query by participantId IN (group members) AND programId. No event
-    // duplication; no per-group log copies.
+    // Phase 8 (fan-out model) — feed scopes by FeedEvent.groupId. The
+    // log endpoint writes one FeedEvent per group the participant
+    // selected, so each group only sees events the participant
+    // explicitly credited to it. No member-set duplicates; no leakage
+    // from groups she opted out of.
     const multi = await this.resolveMultiGroup(token, requestedGroupId);
-    const memberRows = await this.prisma.participantGroup.findMany({
-      where: { groupId: multi.activeGroupId, isActive: true },
-      select: { participantId: true },
+    const events = await this.prisma.feedEvent.findMany({
+      where: {
+        groupId: multi.activeGroupId,
+        isPublic: true,
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 30,
+      include: {
+        participant: { select: { id: true, firstName: true, lastName: true, profileImageUrl: true } },
+      },
     });
-    const memberIds = memberRows.map((m) => m.participantId);
-    const events = memberIds.length === 0
-      ? []
-      : await this.prisma.feedEvent.findMany({
-          where: {
-            programId: multi.programId,
-            participantId: { in: memberIds },
-            isPublic: true,
-          },
-          orderBy: { createdAt: 'desc' },
-          take: 30,
-          include: {
-            participant: { select: { id: true, firstName: true, lastName: true, profileImageUrl: true } },
-          },
-        });
     return events.map((e) => ({
       id: e.id,
       message: e.message,
@@ -2600,12 +2655,17 @@ export class ParticipantPortalService {
   // Returns the { participantId, groupId } composite key so each caller
   // can then run its own findUnique with the include shape it needs.
   private async findPgByToken(token: string): Promise<{ participantId: string; groupId: string } | null> {
+    // Phase 8 (bug fix) — both ParticipantGroup.isActive AND Group.isActive
+    // must be true. Without the second clause, a token would still resolve
+    // when admin archived a Group, leaving the participant on a portal that
+    // points at a "dead" group. The game-ended path can only fire when
+    // resolution actually returns null.
     const direct = await this.prisma.participant.findUnique({
       where: { accessToken: token },
       select: {
         id: true,
         participantGroups: {
-          where: { isActive: true },
+          where: { isActive: true, group: { isActive: true } },
           orderBy: { joinedAt: 'desc' },
           take: 1,
           select: { groupId: true },
@@ -2617,9 +2677,12 @@ export class ParticipantPortalService {
     }
     const legacy = await this.prisma.participantGroup.findUnique({
       where: { accessToken: token },
-      select: { participantId: true, groupId: true, isActive: true },
+      select: {
+        participantId: true, groupId: true, isActive: true,
+        group: { select: { isActive: true } },
+      },
     });
-    if (legacy && legacy.isActive) {
+    if (legacy && legacy.isActive && legacy.group.isActive) {
       return { participantId: legacy.participantId, groupId: legacy.groupId };
     }
     return null;
@@ -2680,10 +2743,16 @@ export class ParticipantPortalService {
 
     const primary = await this.prisma.participantGroup.findUnique({
       where: { participantId_groupId: pair },
-      select: { participantId: true, isActive: true, group: { select: { programId: true } } },
+      select: {
+        participantId: true,
+        isActive: true,
+        group: { select: { programId: true, isActive: true } },
+      },
     });
-    if (!primary || !primary.isActive || !primary.group.programId) {
-      throw new NotFoundException('הקישור אינו בתוקף');
+    // Group.isActive guards against an admin who archived the group AFTER
+    // findPgByToken cached the pair. Either flag false → bail to game_ended.
+    if (!primary || !primary.isActive || !primary.group.isActive || !primary.group.programId) {
+      throw new BadRequestException('game_ended');
     }
     const participantId = primary.participantId;
     const programId = primary.group.programId;
@@ -2701,9 +2770,15 @@ export class ParticipantPortalService {
     // All active memberships for this participant in the same program,
     // oldest-first so the switcher renders in a stable order and the
     // default selection is deterministic across refreshes.
+    // Both branches add `group: { isActive: true }` so an archived
+    // Group never appears in the switcher or the flag-off primary set.
     const memberships = multiGroupEnabled
       ? await this.prisma.participantGroup.findMany({
-          where: { participantId, isActive: true, group: { programId } },
+          where: {
+            participantId,
+            isActive: true,
+            group: { programId, isActive: true },
+          },
           orderBy: { joinedAt: 'asc' },
           select: { group: { select: { id: true, name: true, isActive: true } } },
         })
@@ -2711,7 +2786,11 @@ export class ParticipantPortalService {
       // sibling memberships, and any ?groupId= override is silently
       // ignored (the primary group is the only valid scope).
       : await this.prisma.participantGroup.findMany({
-          where: { participantId: pair.participantId, groupId: pair.groupId },
+          where: {
+            participantId: pair.participantId,
+            groupId: pair.groupId,
+            group: { isActive: true },
+          },
           select: { group: { select: { id: true, name: true, isActive: true } } },
         });
     if (memberships.length === 0) {
@@ -2737,18 +2816,17 @@ export class ParticipantPortalService {
     return { participantId, programId, primaryGroupId, activeGroupId, groups };
   }
 
-  // Phase 8 (corrected) — daily trend is program-wide per participant.
-  // The shape of the chart is the same regardless of which group the
-  // participant has selected; group only affects comparison surfaces
-  // (leaderboard / feed).
-  private async buildDailyTrend(participantId: string, programId: string, days: number): Promise<{ date: string; points: number }[]> {
+  // Phase 8 (fan-out model) — daily trend per group. Events stamped
+  // with the selected groupId only; the chart reflects what the
+  // participant earned IN THIS group.
+  private async buildDailyTrend(participantId: string, groupId: string, days: number): Promise<{ date: string; points: number }[]> {
     const now = new Date();
     const since = new Date(now);
     since.setDate(now.getDate() - days + 1);
     since.setHours(0, 0, 0, 0);
 
     const events = await this.prisma.scoreEvent.findMany({
-      where: { participantId, programId, createdAt: { gte: since } },
+      where: { participantId, groupId, createdAt: { gte: since } },
       select: { points: true, createdAt: true },
     });
 

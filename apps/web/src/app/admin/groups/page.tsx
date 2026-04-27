@@ -174,7 +174,11 @@ export default function GroupsPage() {
             {filtered.map((g) => {
               const programName = g.program?.name ?? g.challenge?.name ?? '—';
               const programType = g.program?.type ?? null;
-              const status = g.status ?? (g.isActive ? 'active' : 'inactive');
+              // Bug fix — prefer the live `isActive` flag over the legacy
+              // `status` enum. When admin flips isActive=false, the status
+              // column does NOT auto-flip, so a stale read of `status`
+              // would still render "פעיל" for an archived group.
+              const status = g.isActive ? 'active' : 'inactive';
               return (
                 <tr
                   key={g.id}
@@ -199,11 +203,12 @@ export default function GroupsPage() {
                   </td>
                   <td style={{ padding: '12px 16px' }}>
                     <span style={{
-                      background: status === 'active' ? '#f0fdf4' : '#f1f5f9',
-                      color: status === 'active' ? '#15803d' : '#64748b',
-                      padding: '3px 10px', borderRadius: 20, fontSize: 12, fontWeight: 500,
+                      background: status === 'active' ? '#f0fdf4' : '#fef2f2',
+                      color: status === 'active' ? '#15803d' : '#b91c1c',
+                      border: status === 'active' ? '1px solid #bbf7d0' : '1px solid #fecaca',
+                      padding: '3px 10px', borderRadius: 20, fontSize: 12, fontWeight: 600,
                     }}>
-                      {status === 'active' ? 'פעיל' : 'לא פעיל'}
+                      {status === 'active' ? '🟢 פעילה' : '🗄 בארכיון'}
                     </span>
                   </td>
                   <td style={{ padding: '12px 16px', color: '#374151' }}>{g._count?.participantGroups ?? 0}</td>

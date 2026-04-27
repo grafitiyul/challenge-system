@@ -1044,6 +1044,12 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
 
   // Bottom sheet state (report tab)
   const [activeAction, setActiveAction] = useState<Action | null>(null);
+  // Phase 8 — fan-out target groups for the next submission. Defaults
+  // to ALL active groups when the action sheet opens; participant can
+  // uncheck to apply the report to fewer groups. Single-group + flag-off
+  // participants never see the checkbox UI; their submissions go to
+  // their only / primary group via the array's one element.
+  const [fanOutGroupIds, setFanOutGroupIds] = useState<string[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [inputError, setInputError] = useState('');
   // Phase 3: in-flight values for the action's context dimensions. Reset per
@@ -1681,6 +1687,12 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
     // intentionally start blank so the participant must make an explicit choice.
     setContextDraft({});
     setExtraTextDraft('');
+    // Phase 8 — default the fan-out target set to every active group the
+    // participant currently has. The checkbox UI below is rendered only
+    // for multi-group-enabled participants with > 1 active group; for
+    // everyone else this is a 1-element list and the body just sends it
+    // along.
+    setFanOutGroupIds(ctx?.groups.map((g) => g.id) ?? []);
     if (action.inputType === 'number' && action.aggregationMode === 'latest_value' && ctx) {
       const current = ctx.todayValues[action.id];
       if (current && current > 0) setInputValue(String(current));
@@ -1775,12 +1787,14 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
           // Phase 4.1: action-level free-text answer. Only sent when the
           // participant actually typed something into the optional field.
           ...(extraTextDraft.trim() ? { extraText: extraTextDraft.trim() } : {}),
-          // Phase 8 — per-group scoring: tell the server which group
-          // the participant is currently looking at so the resulting
-          // ScoreEvent / FeedEvent are stamped with that groupId.
-          // Server validates against her active memberships and falls
-          // back to primary when missing or invalid (single-group +
-          // flag-off participants are unaffected).
+          // Phase 8 fan-out — the set of groups the participant chose
+          // to credit with this report. For single-group / flag-off
+          // participants this is a 1-element array. The server fans
+          // out one ScoreEvent + FeedEvent per id, all referencing the
+          // single UserActionLog created by the call.
+          ...(fanOutGroupIds.length > 0 ? { groupIds: fanOutGroupIds } : {}),
+          // Legacy single-group hint kept for back-compat with old
+          // clients during the rollout window.
           ...(selectedGroupId ? { groupId: selectedGroupId } : {}),
         }),
       });
@@ -2870,6 +2884,68 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                   maxLength={120}
                   placeholder="הקלידי טקסט קצר..."
                 />
+              </div>
+            )}
+
+            {/* Phase 8 — multi-group fan-out picker. Visible only when the
+                participant has more than one active group in this program
+                (the server gates ctx.groups by multiGroupEnabled). Default
+                state is "all groups checked" so the typical action keeps
+                the one-tap feel; she can uncheck if a report applies to
+                fewer groups. */}
+            {ctx && ctx.groups.length > 1 && (
+              <div
+                style={{
+                  background: '#f8fafc',
+                  border: '1px solid #e2e8f0',
+                  borderRadius: 10,
+                  padding: '10px 12px',
+                  marginTop: 10,
+                }}
+              >
+                <div style={{ fontSize: 12, fontWeight: 700, color: '#0f172a', marginBottom: 6 }}>
+                  לאיזו קבוצה לזכות את הדיווח?
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column' as const, gap: 4 }}>
+                  {ctx.groups.map((g) => {
+                    const checked = fanOutGroupIds.includes(g.id);
+                    const lastChecked = checked && fanOutGroupIds.length === 1;
+                    return (
+                      <label
+                        key={g.id}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 8,
+                          fontSize: 14, color: '#0f172a',
+                          cursor: lastChecked ? 'not-allowed' : 'pointer',
+                          opacity: lastChecked ? 0.85 : 1,
+                          padding: '4px 2px',
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={lastChecked}
+                          onChange={(e) => {
+                            // Prevent the participant from unchecking the
+                            // last selected group — server would reject and
+                            // it's confusing UX. At least one group must
+                            // receive the report.
+                            if (e.target.checked) {
+                              setFanOutGroupIds((cur) => Array.from(new Set([...cur, g.id])));
+                            } else if (fanOutGroupIds.length > 1) {
+                              setFanOutGroupIds((cur) => cur.filter((id) => id !== g.id));
+                            }
+                          }}
+                          style={{ width: 18, height: 18, accentColor: '#1d4ed8', cursor: 'inherit' }}
+                        />
+                        <span>{g.name}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <p style={{ fontSize: 11, color: '#64748b', margin: '6px 2px 0', lineHeight: 1.5 }}>
+                  ברירת מחדל: כל הקבוצות מסומנות. בטלי סימון אם הדיווח שייך רק לחלקן.
+                </p>
               </div>
             )}
 

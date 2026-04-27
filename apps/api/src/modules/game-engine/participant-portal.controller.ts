@@ -1,5 +1,5 @@
 import { Body, Controller, Delete, Get, Headers, Param, Patch, Post, Query } from '@nestjs/common';
-import { IsObject, IsOptional, IsString } from 'class-validator';
+import { IsArray, IsObject, IsOptional, IsString } from 'class-validator';
 import {
   ParticipantPortalService,
   PortalContext,
@@ -43,10 +43,26 @@ class LogActionPortalDto {
    * her active memberships in the same program; falls back silently to
    * the primary group when missing or invalid (single-group + flag-off
    * participants behave exactly as before).
+   *
+   * Used as a fallback when `groupIds` is empty/omitted; new clients
+   * should send `groupIds` instead.
    */
   @IsOptional()
   @IsString()
   groupId?: string;
+
+  /**
+   * Phase 8 fan-out — the set of groups the participant chose to credit
+   * with this report. Server creates one ScoreEvent + one FeedEvent per
+   * selected group, all referencing the SAME UserActionLog.id. Defaults
+   * to every active group of the participant when omitted (so every
+   * group she's a member of gets the points by default; she has to
+   * actively uncheck a group to exclude it).
+   */
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  groupIds?: string[];
 }
 
 // Phase 6.11: body for participant-scoped log editing.
@@ -92,6 +108,7 @@ export class ParticipantPortalController {
         contextJson: dto.contextJson,
         extraText: dto.extraText,
         groupId: dto.groupId,
+        groupIds: dto.groupIds,
       },
       idempotencyKey,
     );
