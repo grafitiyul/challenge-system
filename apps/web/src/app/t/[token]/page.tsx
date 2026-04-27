@@ -65,7 +65,7 @@ interface Action {
 }
 
 interface PortalContext {
-  participant: { id: string; firstName: string; lastName: string | null };
+  participant: { id: string; firstName: string; lastName: string | null; profileImageUrl: string | null };
   // Primary group — drives the portal-opening gate + page header.
   group: { id: string; name: string; startDate: string | null; endDate: string | null };
   // Phase 8 — every active group the participant has in this program.
@@ -99,6 +99,7 @@ interface PortalStats {
     participantId: string;
     firstName: string;
     lastName: string | null;
+    profileImageUrl: string | null;
     totalScore: number;
     todayScore: number;
     rank: number;
@@ -111,7 +112,7 @@ interface FeedItem {
   message: string;
   points: number;
   createdAt: string;
-  participant: { id: string; firstName: string; lastName: string | null };
+  participant: { id: string; firstName: string; lastName: string | null; profileImageUrl: string | null };
 }
 
 // ─── Phase 2A analytics shapes (match backend responses exactly) ──────────────
@@ -282,6 +283,54 @@ function relativeTime(iso: string): string {
 
 function initials(first: string, last: string | null): string {
   return (first[0] ?? '') + (last ? last[0] : '');
+}
+
+// Phase 8 — participant avatar bubble used by feed items + leaderboard rows.
+// Renders the uploaded profileImageUrl when present (resolved through the
+// /api-proxy rewrite when the URL is a relative /uploads/<file> path), and
+// falls back to the existing initials chip when the URL is missing OR the
+// browser fails to load the image. Pure presentation — no fetches.
+function ParticipantAvatar(props: {
+  firstName: string;
+  lastName: string | null;
+  profileImageUrl: string | null;
+  size?: number;
+  fontSize?: number;
+}) {
+  const { firstName, lastName, profileImageUrl, size = 40, fontSize = 13 } = props;
+  const [broken, setBroken] = useState(false);
+  const showImage = profileImageUrl && !broken;
+  const src = profileImageUrl
+    ? (profileImageUrl.startsWith('/uploads') ? `/api-proxy${profileImageUrl}` : profileImageUrl)
+    : null;
+  const baseStyle: React.CSSProperties = {
+    width: size,
+    height: size,
+    borderRadius: '50%',
+    flexShrink: 0,
+    overflow: 'hidden',
+    background: '#dbeafe',
+    color: '#1d4ed8',
+    fontSize,
+    fontWeight: 700,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+  };
+  if (showImage && src) {
+    return (
+      <span style={baseStyle}>
+        <img
+          src={src}
+          alt=""
+          onError={() => setBroken(true)}
+          style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+          loading="lazy"
+        />
+      </span>
+    );
+  }
+  return <span style={baseStyle}>{initials(firstName, lastName)}</span>;
 }
 
 function ruleDescription(rule: PortalRules['rules'][0]): string {
@@ -2401,6 +2450,13 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                     style={{ ...s.leaderRow, ...(row.isMe ? s.leaderRowMe : {}) }}
                   >
                     <span style={s.leaderRank}>#{row.rank}</span>
+                    <ParticipantAvatar
+                      firstName={row.firstName}
+                      lastName={row.lastName}
+                      profileImageUrl={row.profileImageUrl}
+                      size={28}
+                      fontSize={11}
+                    />
                     <span style={s.leaderName}>
                       {row.firstName}{row.lastName ? ` ${row.lastName}` : ''}
                       {row.isMe && <span style={s.meBadge}> (את)</span>}
@@ -2418,9 +2474,13 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
             )}
             {feed.map((item) => (
               <div key={item.id} style={s.feedItem}>
-                <div style={s.feedAvatar}>
-                  {initials(item.participant.firstName, item.participant.lastName)}
-                </div>
+                <ParticipantAvatar
+                  firstName={item.participant.firstName}
+                  lastName={item.participant.lastName}
+                  profileImageUrl={item.participant.profileImageUrl}
+                  size={40}
+                  fontSize={13}
+                />
                 <div style={s.feedContent}>
                   <p style={s.feedMessage}>
                     <span style={s.feedName}>
@@ -4018,21 +4078,6 @@ const s = {
     padding: '14px 0',
     borderBottom: '1px solid #f3f4f6',
     alignItems: 'flex-start',
-  } satisfies React.CSSProperties,
-
-  feedAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: '50%',
-    background: '#dbeafe',
-    color: '#1d4ed8',
-    fontSize: 13,
-    fontWeight: 700,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: 0,
-    textTransform: 'uppercase' as const,
   } satisfies React.CSSProperties,
 
   feedContent: {

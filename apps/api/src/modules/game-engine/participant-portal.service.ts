@@ -188,7 +188,7 @@ function resolveRange(opts: {
 }
 
 export interface PortalContext {
-  participant: { id: string; firstName: string; lastName: string | null };
+  participant: { id: string; firstName: string; lastName: string | null; profileImageUrl: string | null };
   // The "primary" group — drives the portal-opening gate (call/open times)
   // and the page header. Defined as the participant's oldest active
   // membership in the program, so a participant who's been moved between
@@ -247,6 +247,7 @@ export interface PortalStats {
     participantId: string;
     firstName: string;
     lastName: string | null;
+    profileImageUrl: string | null;
     totalScore: number;
     todayScore: number;
     rank: number;
@@ -259,7 +260,7 @@ export interface PortalFeedItem {
   message: string;
   points: number;
   createdAt: string;
-  participant: { id: string; firstName: string; lastName: string | null };
+  participant: { id: string; firstName: string; lastName: string | null; profileImageUrl: string | null };
 }
 
 export interface PortalRules {
@@ -453,7 +454,7 @@ export class ParticipantPortalService {
       where: { participantId_groupId: { participantId: multi.participantId, groupId: multi.primaryGroupId } },
       include: {
         participant: {
-          select: { id: true, firstName: true, lastName: true },
+          select: { id: true, firstName: true, lastName: true, profileImageUrl: true },
         },
         group: {
           include: {
@@ -663,7 +664,7 @@ export class ParticipantPortalService {
     // is per group context".
     const members = await this.prisma.participantGroup.findMany({
       where: { groupId, isActive: true },
-      include: { participant: { select: { id: true, firstName: true, lastName: true } } },
+      include: { participant: { select: { id: true, firstName: true, lastName: true, profileImageUrl: true } } },
     });
 
     const participantIds = members.map((m) => m.participantId);
@@ -686,6 +687,7 @@ export class ParticipantPortalService {
         participantId: m.participantId,
         firstName: m.participant.firstName,
         lastName: m.participant.lastName ?? null,
+        profileImageUrl: m.participant.profileImageUrl ?? null,
         totalScore: totalsMap[m.participantId] ?? 0,
         todayScore: todayMap[m.participantId] ?? 0,
         isMe: m.participantId === participantId,
@@ -730,7 +732,7 @@ export class ParticipantPortalService {
           orderBy: { createdAt: 'desc' },
           take: 30,
           include: {
-            participant: { select: { id: true, firstName: true, lastName: true } },
+            participant: { select: { id: true, firstName: true, lastName: true, profileImageUrl: true } },
           },
         });
     return events.map((e) => ({
@@ -738,7 +740,12 @@ export class ParticipantPortalService {
       message: e.message,
       points: e.points,
       createdAt: e.createdAt.toISOString(),
-      participant: e.participant,
+      participant: {
+        id: e.participant.id,
+        firstName: e.participant.firstName,
+        lastName: e.participant.lastName,
+        profileImageUrl: e.participant.profileImageUrl ?? null,
+      },
     }));
   }
 
