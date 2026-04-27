@@ -189,7 +189,21 @@ function resolveRange(opts: {
 
 export interface PortalContext {
   participant: { id: string; firstName: string; lastName: string | null };
+  // The "primary" group — drives the portal-opening gate (call/open times)
+  // and the page header. Defined as the participant's oldest active
+  // membership in the program, so a participant who's been moved between
+  // groups doesn't lose her gate context just because she joined a new
+  // group later.
   group: { id: string; name: string; startDate: Date | null; endDate: Date | null };
+  // Phase 8 — every active group the participant has in the same program,
+  // ordered by joinedAt ascending. The frontend uses this for the group
+  // switcher (only shown when length > 1). For single-group participants
+  // this is a 1-element array and the switcher is hidden.
+  groups: { id: string; name: string; isActive: boolean }[];
+  // The group context the leaderboard / feed are currently scoped to.
+  // Driven by an optional `?groupId=` query param; falls back to the
+  // primary group when absent or invalid.
+  activeGroupId: string;
   program: { id: string; name: string; isActive: boolean; profileTabEnabled: boolean };
   // Portal opening gate — both null means always open (backward compatible)
   // UTC ISO strings; frontend resolves state A/B/C purely by comparing now() to these values
@@ -422,7 +436,7 @@ export class ParticipantPortalService {
 
   // ─── Resolve token → participant context ──────────────────────────────────
 
-  async getContext(token: string, bypassSig?: string): Promise<PortalContext> {
+  async getContext(token: string, bypassSig?: string, requestedGroupId?: string): Promise<PortalContext> {
     // Validate bypass sig (HMAC-SHA256 of the access token, first 24 hex chars)
     let bypass = false;
     if (bypassSig) {
@@ -430,23 +444,25 @@ export class ParticipantPortalService {
       const expected = createHmac('sha256', secret).update(token).digest('hex').slice(0, 24);
       bypass = bypassSig === expected;
     }
-    const pair = await this.findPgByToken(token);
-    const pg = pair
-      ? await this.prisma.participantGroup.findUnique({
-          where: { participantId_groupId: pair },
+    // Phase 8: discover every group the participant has in this program.
+    // The primary group anchors portalCallTime / portalOpenTime so the
+    // gate state can't change just because the participant flipped the
+    // switcher. activeGroupId is what the leaderboard / feed scope to.
+    const multi = await this.resolveMultiGroup(token, requestedGroupId);
+    const pg = await this.prisma.participantGroup.findUnique({
+      where: { participantId_groupId: { participantId: multi.participantId, groupId: multi.primaryGroupId } },
+      include: {
+        participant: {
+          select: { id: true, firstName: true, lastName: true },
+        },
+        group: {
           include: {
-            participant: {
-              select: { id: true, firstName: true, lastName: true },
-            },
-            group: {
-              include: {
-                program: true,
-                challenge: { select: { startDate: true, endDate: true } },
-              },
-            },
+            program: true,
+            challenge: { select: { startDate: true, endDate: true } },
           },
-        })
-      : null;
+        },
+      },
+    });
 
     if (!pg || !pg.isActive) throw new NotFoundException('הקישור אינו בתוקף');
     if (!pg.group.programId || !pg.group.program) throw new NotFoundException('לא נמצאה תוכנית');
@@ -500,6 +516,8 @@ export class ParticipantPortalService {
         startDate: pg.group.startDate ?? pg.group.challenge.startDate,
         endDate: pg.group.endDate ?? pg.group.challenge.endDate,
       },
+      groups: multi.groups,
+      activeGroupId: multi.activeGroupId,
       program: {
         id: pg.group.program.id,
         name: pg.group.program.name,
@@ -612,9 +630,13 @@ export class ParticipantPortalService {
 
   // ─── Stats tab ─────────────────────────────────────────────────────────────
 
-  async getPortalStats(token: string): Promise<PortalStats> {
-    const pg = await this.resolveToken(token);
-    const { participantId, programId, groupId } = pg;
+  async getPortalStats(token: string, requestedGroupId?: string): Promise<PortalStats> {
+    // Phase 8: leaderboard scopes to whichever group the participant
+    // selected via the switcher (defaults to her primary group). Logs
+    // and personal scores remain participant-program scoped — only the
+    // member-set we compare against changes.
+    const multi = await this.resolveMultiGroup(token, requestedGroupId);
+    const { participantId, programId, activeGroupId: groupId } = multi;
 
     const now = new Date();
     const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
@@ -631,7 +653,14 @@ export class ParticipantPortalService {
     // 14-day daily trend
     const dailyTrend = await this.buildDailyTrend(participantId, programId, 14);
 
-    // Group leaderboard
+    // Group leaderboard. Member set comes from active ParticipantGroup
+    // rows for the SELECTED group; totals come from each member's
+    // program-scoped score events. We deliberately do NOT filter
+    // ScoreEvent by groupId — for multi-group participants the same
+    // log produces score events stamped with one group, but every
+    // group they're a member of is entitled to count those points.
+    // This mirrors the rule "logs are global per participant; ranking
+    // is per group context".
     const members = await this.prisma.participantGroup.findMany({
       where: { groupId, isActive: true },
       include: { participant: { select: { id: true, firstName: true, lastName: true } } },
@@ -640,12 +669,12 @@ export class ParticipantPortalService {
     const participantIds = members.map((m) => m.participantId);
     const memberTotals = await this.prisma.scoreEvent.groupBy({
       by: ['participantId'],
-      where: { groupId, participantId: { in: participantIds } },
+      where: { programId, participantId: { in: participantIds } },
       _sum: { points: true },
     });
     const memberTodayTotals = await this.prisma.scoreEvent.groupBy({
       by: ['participantId'],
-      where: { groupId, participantId: { in: participantIds }, createdAt: { gte: todayStart } },
+      where: { programId, participantId: { in: participantIds }, createdAt: { gte: todayStart } },
       _sum: { points: true },
     });
 
@@ -677,16 +706,33 @@ export class ParticipantPortalService {
 
   // ─── Feed tab ──────────────────────────────────────────────────────────────
 
-  async getPortalFeed(token: string): Promise<PortalFeedItem[]> {
-    const pg = await this.resolveToken(token);
-    const events = await this.prisma.feedEvent.findMany({
-      where: { groupId: pg.groupId, isPublic: true },
-      orderBy: { createdAt: 'desc' },
-      take: 30,
-      include: {
-        participant: { select: { id: true, firstName: true, lastName: true } },
-      },
+  async getPortalFeed(token: string, requestedGroupId?: string): Promise<PortalFeedItem[]> {
+    // Phase 8: feed scopes to the selected group's MEMBERS, not to
+    // events stamped with that groupId. A multi-group participant logs
+    // an action once → one FeedEvent is written tagged with her primary
+    // group id, but every group she's a member of can see it because we
+    // query by participantId IN (group members) AND programId. No event
+    // duplication; no per-group log copies.
+    const multi = await this.resolveMultiGroup(token, requestedGroupId);
+    const memberRows = await this.prisma.participantGroup.findMany({
+      where: { groupId: multi.activeGroupId, isActive: true },
+      select: { participantId: true },
     });
+    const memberIds = memberRows.map((m) => m.participantId);
+    const events = memberIds.length === 0
+      ? []
+      : await this.prisma.feedEvent.findMany({
+          where: {
+            programId: multi.programId,
+            participantId: { in: memberIds },
+            isPublic: true,
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 30,
+          include: {
+            participant: { select: { id: true, firstName: true, lastName: true } },
+          },
+        });
     return events.map((e) => ({
       id: e.id,
       message: e.message,
@@ -2568,6 +2614,64 @@ export class ParticipantPortalService {
     if (!pg || !pg.isActive) throw new NotFoundException('הקישור אינו בתוקף');
     if (!pg.group.programId) throw new NotFoundException('לא נמצאה תוכנית');
     return { participantId: pg.participantId, groupId: pg.groupId, programId: pg.group.programId };
+  }
+
+  // Phase 8 — multi-group resolution.
+  // Returns every active group the participant has in the program plus a
+  // chosen "active" group for read scoping. When `requestedGroupId` is
+  // supplied we validate that it belongs to the participant and is in
+  // the same program; otherwise we default to the oldest active
+  // membership (stable, deterministic).
+  //
+  // Importantly: this NEVER touches logs / score events / feed events.
+  // It's a read-side helper used by getContext / getPortalStats /
+  // getPortalFeed to choose which group's member-set to compare against.
+  private async resolveMultiGroup(
+    token: string,
+    requestedGroupId?: string | null,
+  ): Promise<{
+    participantId: string;
+    programId: string;
+    primaryGroupId: string;
+    activeGroupId: string;
+    groups: Array<{ id: string; name: string; isActive: boolean }>;
+  }> {
+    const pair = await this.findPgByToken(token);
+    if (!pair) throw new NotFoundException('הקישור אינו בתוקף');
+
+    const primary = await this.prisma.participantGroup.findUnique({
+      where: { participantId_groupId: pair },
+      select: { participantId: true, isActive: true, group: { select: { programId: true } } },
+    });
+    if (!primary || !primary.isActive || !primary.group.programId) {
+      throw new NotFoundException('הקישור אינו בתוקף');
+    }
+    const participantId = primary.participantId;
+    const programId = primary.group.programId;
+
+    // All active memberships for this participant in the same program,
+    // oldest-first so the switcher renders in a stable order and the
+    // default selection is deterministic across refreshes.
+    const memberships = await this.prisma.participantGroup.findMany({
+      where: { participantId, isActive: true, group: { programId } },
+      orderBy: { joinedAt: 'asc' },
+      select: { group: { select: { id: true, name: true, isActive: true } } },
+    });
+    if (memberships.length === 0) throw new NotFoundException('הקישור אינו בתוקף');
+
+    const groups = memberships.map((m) => m.group);
+    const primaryGroupId = groups[0].id;
+
+    // Validate ?groupId= against the participant's own membership set.
+    // Silently fall back to the primary group if the param is missing or
+    // points at another program — never 403/404 for a stale URL.
+    let activeGroupId = primaryGroupId;
+    if (requestedGroupId) {
+      const found = groups.find((g) => g.id === requestedGroupId);
+      if (found) activeGroupId = found.id;
+    }
+
+    return { participantId, programId, primaryGroupId, activeGroupId, groups };
   }
 
   private async buildDailyTrend(participantId: string, programId: string, days: number): Promise<{ date: string; points: number }[]> {

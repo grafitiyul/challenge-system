@@ -48,14 +48,19 @@ class EditLogPortalDto {
 export class ParticipantPortalController {
   constructor(private readonly portalService: ParticipantPortalService) {}
 
-  // GET /api/public/participant/:token?_bypass=sig
+  // GET /api/public/participant/:token?_bypass=sig&groupId=<id>
   // Optional _bypass query param: HMAC-signed sig enabling admin preview without the opening gate
+  // Optional groupId query param (Phase 8): chooses which group's
+  // member-set the leaderboard / feed scope to. Falls back silently to
+  // the participant's primary (oldest active) group when missing or
+  // pointing at a group she does not belong to.
   @Get(':token')
   getContext(
     @Param('token') token: string,
     @Query('_bypass') bypass?: string,
+    @Query('groupId') groupId?: string,
   ): Promise<PortalContext> {
-    return this.portalService.getContext(token, bypass);
+    return this.portalService.getContext(token, bypass, groupId);
   }
 
   // POST /api/public/participant/:token/log
@@ -109,15 +114,23 @@ export class ParticipantPortalController {
   }
 
   // GET /api/public/participant/:token/stats
+  // Optional Phase 8 ?groupId=: leaderboard scopes to the selected group's members.
   @Get(':token/stats')
-  getStats(@Param('token') token: string): Promise<PortalStats> {
-    return this.portalService.getPortalStats(token);
+  getStats(
+    @Param('token') token: string,
+    @Query('groupId') groupId?: string,
+  ): Promise<PortalStats> {
+    return this.portalService.getPortalStats(token, groupId);
   }
 
   // GET /api/public/participant/:token/feed
+  // Optional Phase 8 ?groupId=: feed scopes to the selected group's members.
   @Get(':token/feed')
-  getFeed(@Param('token') token: string): Promise<PortalFeedItem[]> {
-    return this.portalService.getPortalFeed(token);
+  getFeed(
+    @Param('token') token: string,
+    @Query('groupId') groupId?: string,
+  ): Promise<PortalFeedItem[]> {
+    return this.portalService.getPortalFeed(token, groupId);
   }
 
   // GET /api/public/participant/:token/rules

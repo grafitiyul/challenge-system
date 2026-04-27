@@ -930,17 +930,17 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
                           key={pg.id}
                           style={{
                             display: 'flex', alignItems: 'center', gap: 0,
-                            background: isDup ? '#fef3c7' : '#f0fdf4',
-                            border: `1px solid ${isDup ? '#fcd34d' : '#bbf7d0'}`,
+                            background: isDup ? '#eff6ff' : '#f0fdf4',
+                            border: `1px solid ${isDup ? '#bfdbfe' : '#bbf7d0'}`,
                             borderRadius: 8, overflow: 'hidden', fontSize: 12,
                           }}
-                          title={isDup ? 'משתתפת זו רשומה ליותר מקבוצה אחת בתוכנית הזו — בדקי אם נדרש לכבות אחת מהן.' : undefined}
+                          title={isDup ? 'המשתתפת רשומה לכמה קבוצות בתוכנית זו (תמיכה במנהלות / צוות).' : undefined}
                         >
-                          <span style={{ padding: '5px 10px', color: '#64748b', background: '#f8fafc', borderLeft: `1px solid ${isDup ? '#fcd34d' : '#bbf7d0'}`, fontWeight: 500 }}>
-                            {isDup && <span style={{ marginInlineEnd: 4 }}>⚠</span>}
+                          <span style={{ padding: '5px 10px', color: '#64748b', background: '#f8fafc', borderLeft: `1px solid ${isDup ? '#bfdbfe' : '#bbf7d0'}`, fontWeight: 500 }}>
+                            {isDup && <span style={{ marginInlineEnd: 4 }}>👥</span>}
                             תוכנית: <strong style={{ color: '#0f172a' }}>{pg.group.challenge.name}</strong>
                           </span>
-                          <span style={{ padding: '5px 10px', color: isDup ? '#92400e' : '#15803d', fontWeight: 600 }}>
+                          <span style={{ padding: '5px 10px', color: isDup ? '#1d4ed8' : '#15803d', fontWeight: 600 }}>
                             קבוצה: {pg.group.name}
                           </span>
                         </div>
@@ -948,8 +948,8 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
                     })}
                   </div>
                   {[...ctxCount.values()].some((n) => n > 1) && (
-                    <div style={{ fontSize: 12, color: '#92400e', background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 6, padding: '6px 10px' }}>
-                      ⚠ נמצאה השתייכות פעילה לכמה קבוצות בתוכנית זהה. בדקי בלשונית הקבוצות אם יש לכבות חברות כפולה.
+                    <div style={{ fontSize: 12, color: '#1d4ed8', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 6, padding: '6px 10px' }}>
+                      👥 המשתתפת חברה בכמה קבוצות בתוכנית זו. בפורטל יוצג מתג מעבר בין הקבוצות; הניקוד והמבזק מסונכרנים אוטומטית.
                     </div>
                   )}
                 </div>

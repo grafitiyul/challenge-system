@@ -66,7 +66,13 @@ interface Action {
 
 interface PortalContext {
   participant: { id: string; firstName: string; lastName: string | null };
+  // Primary group — drives the portal-opening gate + page header.
   group: { id: string; name: string; startDate: string | null; endDate: string | null };
+  // Phase 8 — every active group the participant has in this program.
+  // Length 1 → switcher hidden. Length > 1 → render the switcher above
+  // the main content; tapping a group reloads stats + feed scoped to it.
+  groups: { id: string; name: string; isActive: boolean }[];
+  activeGroupId: string;
   program: { id: string; name: string; isActive: boolean; profileTabEnabled: boolean };
   // Portal opening gate — null means portal is always open
   portalCallTime: string | null;
@@ -962,6 +968,15 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
   const [ctx, setCtx] = useState<PortalContext | null>(null);
   const [loadError, setLoadError] = useState('');
   const [activeTab, setActiveTab] = useState<TabId>('report');
+  // Phase 8 — selected group context for ranking + feed. Read from
+  // `?group=<id>` on first load so a refresh keeps the choice; null
+  // until the context loads, after which it defaults to the server's
+  // activeGroupId (the primary group). User switches via the group
+  // strip above the main content.
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    return new URLSearchParams(window.location.search).get('group');
+  });
   // Phase 7 — participant-profile snapshot. Drives the new bottom-nav
   // tab + its missing-required badge + ripple. Loads only when the
   // server says profileTabEnabled=true; otherwise the hook is a no-op.
@@ -1065,9 +1080,22 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
   // ─── Load context ──────────────────────────────────────────────────────────
 
   useEffect(() => {
-    apiFetch<PortalContext>(`${BASE_URL}/public/participant/${token}`, { cache: 'no-store' })
+    // Pass the URL-saved group selection (if any) to the server so the
+    // activeGroupId in the response reflects the user's last choice.
+    // Read fresh from the URL here rather than depend on state — the
+    // state gets updated below after the response lands and we don't
+    // want to re-fire the effect on every switcher click.
+    const urlGroup = typeof window !== 'undefined'
+      ? new URLSearchParams(window.location.search).get('group')
+      : null;
+    const groupParam = urlGroup ? `?groupId=${encodeURIComponent(urlGroup)}` : '';
+    apiFetch<PortalContext>(`${BASE_URL}/public/participant/${token}${groupParam}`, { cache: 'no-store' })
       .then((data) => {
         setCtx(data);
+        // Adopt the server-resolved activeGroupId — server validates
+        // membership and silently falls back to the primary group when
+        // the URL param is stale, so this is always a safe value.
+        setSelectedGroupId(data.activeGroupId);
         // ── Resolve portal opening state ─────────────────────────────────
         // All comparisons are in UTC (both sides are Date objects).
         const now = Date.now();
@@ -1104,11 +1132,12 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
 
   const refreshStats = useCallback((silent = false) => {
     if (!silent) setStatsLoading(true);
-    apiFetch<PortalStats>(`${BASE_URL}/public/participant/${token}/stats`, { cache: 'no-store' })
+    const groupQs = selectedGroupId ? `?groupId=${encodeURIComponent(selectedGroupId)}` : '';
+    apiFetch<PortalStats>(`${BASE_URL}/public/participant/${token}/stats${groupQs}`, { cache: 'no-store' })
       .then((data) => { setStats(data); setStatsError(''); })
       .catch(() => setStatsError('שגיאה בטעינת הנתונים'))
       .finally(() => setStatsLoading(false));
-  }, [token]);
+  }, [token, selectedGroupId]);
 
   // ── Analytics loaders (Phase 2B: range + groupBy aware) ────────────────
   //
@@ -1439,11 +1468,44 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
 
   const refreshFeed = useCallback((silent = false) => {
     if (!silent) setFeedLoading(true);
-    apiFetch<FeedItem[]>(`${BASE_URL}/public/participant/${token}/feed`, { cache: 'no-store' })
+    const groupQs = selectedGroupId ? `?groupId=${encodeURIComponent(selectedGroupId)}` : '';
+    apiFetch<FeedItem[]>(`${BASE_URL}/public/participant/${token}/feed${groupQs}`, { cache: 'no-store' })
       .then((data) => { setFeed(data); setFeedError(''); })
       .catch(() => setFeedError('שגיאה בטעינת המבזק'))
       .finally(() => setFeedLoading(false));
-  }, [token]);
+  }, [token, selectedGroupId]);
+
+  // Phase 8 — when the user picks a different group from the switcher,
+  // refresh stats + feed quietly. We don't reload the whole page or the
+  // context (the gate / actions / today's score are program-scoped, not
+  // group-scoped) so logs and inputs are never lost. Skip the very
+  // first render: the initial fetches are kicked off elsewhere.
+  const lastGroupRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (state !== 'ready') return;
+    if (!selectedGroupId) return;
+    if (lastGroupRef.current === null) { lastGroupRef.current = selectedGroupId; return; }
+    if (lastGroupRef.current === selectedGroupId) return;
+    lastGroupRef.current = selectedGroupId;
+    refreshStats(stats !== null);
+    refreshFeed(feed.length > 0);
+    // stats / feed deliberately omitted from deps — including them would
+    // refire after every refresh and we'd loop. We just need this to
+    // run when the selection actually changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedGroupId, state, refreshStats, refreshFeed]);
+
+  // Picks a group from the switcher. Updates state + URL (?group=<id>)
+  // so a refresh keeps the choice. Logs / inputs / streak / score are
+  // unaffected — only ranking + feed re-scope.
+  function switchGroup(id: string) {
+    setSelectedGroupId(id);
+    if (typeof window !== 'undefined') {
+      const url = new URL(window.location.href);
+      url.searchParams.set('group', id);
+      window.history.replaceState({}, '', url.toString());
+    }
+  }
 
   const loadRules = useCallback(() => {
     if (rulesLoaded.current) return;
@@ -1882,6 +1944,46 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
           {dateRange && <span style={s.dateRange}>{dateRange}</span>}
         </div>
       </div>
+
+      {/* ── Phase 8 — group context switcher ──
+          Shown only when the participant has more than one active group
+          in this program (managers / assistants / multi-cohort users).
+          Tapping a group reloads ranking + feed scoped to that group;
+          logs / today's score / streak stay shared. */}
+      {ctx.groups.length > 1 && (
+        <div
+          style={{
+            display: 'flex', gap: 6, padding: '8px 12px',
+            overflowX: 'auto', WebkitOverflowScrolling: 'touch',
+            background: '#f8fafc', borderBottom: '1px solid #e2e8f0',
+            position: 'sticky', top: 0, zIndex: 5,
+          }}
+          aria-label="בחירת קבוצה"
+        >
+          <span style={{ fontSize: 11, color: '#64748b', fontWeight: 600, alignSelf: 'center', whiteSpace: 'nowrap', paddingInlineEnd: 4 }}>
+            הקבוצה שלי:
+          </span>
+          {ctx.groups.map((g) => {
+            const isActive = (selectedGroupId ?? ctx.activeGroupId) === g.id;
+            return (
+              <button
+                key={g.id}
+                onClick={() => switchGroup(g.id)}
+                style={{
+                  padding: '6px 12px', fontSize: 12, fontWeight: 600,
+                  background: isActive ? '#1d4ed8' : '#fff',
+                  color: isActive ? '#fff' : '#475569',
+                  border: `1px solid ${isActive ? '#1d4ed8' : '#e2e8f0'}`,
+                  borderRadius: 999, cursor: 'pointer',
+                  whiteSpace: 'nowrap', flexShrink: 0,
+                }}
+              >
+                {g.name}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* ── Tab content ── */}
       <div style={s.tabContent}>
