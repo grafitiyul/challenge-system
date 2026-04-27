@@ -1775,6 +1775,13 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
           // Phase 4.1: action-level free-text answer. Only sent when the
           // participant actually typed something into the optional field.
           ...(extraTextDraft.trim() ? { extraText: extraTextDraft.trim() } : {}),
+          // Phase 8 — per-group scoring: tell the server which group
+          // the participant is currently looking at so the resulting
+          // ScoreEvent / FeedEvent are stamped with that groupId.
+          // Server validates against her active memberships and falls
+          // back to primary when missing or invalid (single-group +
+          // flag-off participants are unaffected).
+          ...(selectedGroupId ? { groupId: selectedGroupId } : {}),
         }),
       });
 

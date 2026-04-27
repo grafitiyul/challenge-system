@@ -36,6 +36,17 @@ class LogActionPortalDto {
   @IsOptional()
   @IsString()
   extraText?: string;
+
+  /**
+   * Phase 8 — per-group scoring. The active group the participant is
+   * viewing when she logs. Server validates that this group belongs to
+   * her active memberships in the same program; falls back silently to
+   * the primary group when missing or invalid (single-group + flag-off
+   * participants behave exactly as before).
+   */
+  @IsOptional()
+  @IsString()
+  groupId?: string;
 }
 
 // Phase 6.11: body for participant-scoped log editing.
@@ -80,6 +91,7 @@ export class ParticipantPortalController {
         value: dto.value,
         contextJson: dto.contextJson,
         extraText: dto.extraText,
+        groupId: dto.groupId,
       },
       idempotencyKey,
     );
