@@ -67,6 +67,7 @@ export class ProgramsService {
         ...(dto.showOtherGroupsMemberDetails !== undefined ? { showOtherGroupsMemberDetails: dto.showOtherGroupsMemberDetails } : {}),
         ...(dto.rulesContent !== undefined ? { rulesContent: dto.rulesContent ?? null } : {}),
         ...(dto.rulesPublished !== undefined ? { rulesPublished: dto.rulesPublished } : {}),
+        ...(dto.profileTabEnabled !== undefined ? { profileTabEnabled: dto.profileTabEnabled } : {}),
       },
     });
   }

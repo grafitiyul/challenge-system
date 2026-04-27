@@ -40,4 +40,10 @@ export class UpdateProgramDto {
   @IsOptional()
   @IsBoolean()
   rulesPublished?: boolean;
+
+  // Phase 7 — gates the participant-portal "פרטים אישיים" tab. When
+  // false (default) participants do not see the tab at all.
+  @IsOptional()
+  @IsBoolean()
+  profileTabEnabled?: boolean;
 }

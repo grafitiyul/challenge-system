@@ -97,11 +97,15 @@ model Program {
   insightTypeUsages        ProgramInsightTypeUsage[]
 
   // Phase 7 — participant-portal "פרטים אישיים" tab.
+  // Hidden from participants until the admin flips this flag per program.
+  // Default false so the field configuration can be staged without
+  // exposing a half-finished form to participants.
+  profileTabEnabled Boolean                   @default(false)
   // ProgramProfileField configures which fields appear; values are stored
   // either on Participant (for system fields like firstName) or in
   // ParticipantProfileValue (for custom fields like personalGoal).
-  profileFields ProgramProfileField[]
-  profileValues ParticipantProfileValue[]
+  profileFields     ProgramProfileField[]
+  profileValues     ParticipantProfileValue[]
 
   @@map("programs")
 }

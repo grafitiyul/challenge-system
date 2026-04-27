@@ -14,6 +14,7 @@ import { ParticipantsModule } from './modules/participants/participants.module';
 import { QuestionnairesModule } from './modules/questionnaires/questionnaires.module';
 import { UploadModule } from './modules/upload/upload.module';
 import { ProgramsModule } from './modules/programs/programs.module';
+import { ProgramProfileFieldsModule } from './modules/program-profile-fields/program-profile-fields.module';
 import { GameEngineModule } from './modules/game-engine/game-engine.module';
 import { ImportModule } from './modules/import/import.module';
 import { SettingsModule } from './modules/settings/settings.module';
@@ -39,6 +40,7 @@ import { AdminUsersModule } from './modules/admin-users/admin-users.module';
     QuestionnairesModule,
     UploadModule,
     ProgramsModule,
+    ProgramProfileFieldsModule,
     GameEngineModule,
     ImportModule,
     SettingsModule,

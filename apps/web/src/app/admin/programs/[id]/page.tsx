@@ -7,12 +7,13 @@ import { BASE_URL, apiFetch } from '@lib/api';
 import WhatsAppEditor from '@components/whatsapp-editor';
 import RichContentEditor from '@components/rich-content-editor';
 import { VariableButtonBar, type VariableEditorHandle } from '@components/variable-button-bar';
+import { ProfileTab } from './profile-tab';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type ProgramType = 'challenge' | 'game' | 'group_coaching' | 'personal_coaching';
 type GroupStatus = 'active' | 'inactive';
-type TabKey = 'settings' | 'groups' | 'game' | 'rules' | 'waitlist' | 'offers' | 'communication';
+type TabKey = 'settings' | 'groups' | 'game' | 'rules' | 'waitlist' | 'offers' | 'communication' | 'profile';
 
 interface Group {
   id: string;
@@ -37,6 +38,8 @@ interface Program {
   showOtherGroupsMemberDetails: boolean;
   rulesContent: string | null;
   rulesPublished: boolean;
+  // Phase 7 — gates the participant-portal "פרטים אישיים" tab.
+  profileTabEnabled: boolean;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -81,7 +84,7 @@ const labelStyle: React.CSSProperties = {
   fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 6, display: 'block',
 };
 
-const VALID_TABS: TabKey[] = ['settings', 'groups', 'game', 'rules', 'offers', 'waitlist', 'communication'];
+const VALID_TABS: TabKey[] = ['settings', 'groups', 'game', 'rules', 'offers', 'waitlist', 'communication', 'profile'];
 
 function formatDate(iso: string | null) {
   if (!iso) return '—';
@@ -4119,6 +4122,7 @@ function ProgramPageInner({ params }: { params: Promise<{ id: string }> }) {
       { key: 'game' as TabKey, label: 'מנוע משחק' },
       { key: 'rules' as TabKey, label: 'חוקים' },
     ] : []),
+    { key: 'profile', label: 'פרטים אישיים' },
     { key: 'settings', label: 'הגדרות' },
   ];
 
@@ -4168,6 +4172,15 @@ function ProgramPageInner({ params }: { params: Promise<{ id: string }> }) {
         {activeTab === 'offers' && <ProductOffersTab programId={program.id} />}
         {activeTab === 'waitlist' && <ProductWaitlistTab programId={program.id} />}
         {activeTab === 'communication' && <ProductCommunicationTab programId={program.id} />}
+        {activeTab === 'profile' && (
+          <ProfileTab
+            programId={program.id}
+            profileTabEnabled={program.profileTabEnabled}
+            onProfileTabEnabledChanged={(next) =>
+              setProgram((p) => p ? { ...p, profileTabEnabled: next } : p)
+            }
+          />
+        )}
       </div>
     </div>
   );
