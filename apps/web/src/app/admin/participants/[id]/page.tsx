@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { use } from 'react';
 import { useSearchParams } from 'next/navigation';
@@ -83,9 +83,9 @@ interface Submission {
   answers: SubmissionAnswer[];
 }
 
-type Tab = 'questionnaires' | 'forms' | 'goals' | 'projects' | 'collected' | 'communication' | 'reports' | 'payments' | 'history';
+type Tab = 'questionnaires' | 'forms' | 'goals' | 'projects' | 'collected' | 'communication' | 'reports' | 'payments' | 'history' | 'profile';
 
-const VALID_TABS: Tab[] = ['questionnaires', 'forms', 'goals', 'projects', 'collected', 'communication', 'reports', 'payments', 'history'];
+const VALID_TABS: Tab[] = ['questionnaires', 'forms', 'goals', 'projects', 'collected', 'communication', 'reports', 'payments', 'history', 'profile'];
 
 interface FormSubmission {
   id: string;
@@ -766,6 +766,7 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
     { key: 'communication',  label: 'תקשורת' },
     { key: 'reports',        label: 'דיווחים שוטפים' },
     { key: 'payments',       label: 'תשלומים וחשבונות' },
+    { key: 'profile',        label: 'פרופיל' },
     { key: 'history',        label: 'היסטוריה' },
   ];
 
@@ -1095,6 +1096,9 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
             currentGroupIds={participant.participantGroups.map((pg) => pg.group.id)}
             onParticipantChanged={() => void reloadParticipant()}
           />
+        )}
+        {activeTab === 'profile' && (
+          <AdminProfileTab participant={participant} />
         )}
         {activeTab === 'history' && (
           <HistoryTimeline participant={participant} submissions={submissions} />
@@ -1563,4 +1567,224 @@ function WhatsappComposeModal(props: {
       </div>
     </div>
   );
+}
+
+// ─── Admin profile tab — read-only program-by-program snapshot ─────────────
+//
+// Calls GET /api/admin/participants/:id/profile/:programId for every
+// active group's program the participant belongs to. Mirrors what the
+// participant herself sees in the portal so admin and participant
+// always look at identical data.
+
+interface AdminProfileSnapshot {
+  participant: { id: string; firstName: string; lastName: string | null; profileImageUrl: string | null };
+  program: { id: string; name: string; profileTabEnabled: boolean };
+  fields: Array<{
+    id: string; fieldKey: string; label: string; helperText: string | null;
+    fieldType: string; isRequired: boolean; isSystemField: boolean; sortOrder: number;
+  }>;
+  values: Record<string, unknown>;
+  files: Record<string, { id: string; url: string; mimeType: string; sizeBytes: number; uploadedAt: string }>;
+  missingRequiredCount: number;
+  missingRequiredKeys: string[];
+}
+
+function AdminProfileTab({ participant }: { participant: Participant }) {
+  // Programs the participant is currently active in. We dedupe by
+  // program.id (a participant could in theory be in two groups under
+  // the same program, though autoJoinGroup now prevents that).
+  const programIds = useMemo<string[]>(() => {
+    const ids = new Set<string>();
+    for (const pg of participant.participantGroups ?? []) {
+      const pid = pg.group.program?.id ?? pg.group.programId ?? null;
+      if (pid) ids.add(pid);
+    }
+    return Array.from(ids);
+  }, [participant.participantGroups]);
+
+  const [snapshots, setSnapshots] = useState<Record<string, AdminProfileSnapshot | { error: string }>>({});
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (programIds.length === 0) return;
+    setLoading(true);
+    Promise.all(programIds.map(async (pid) => {
+      try {
+        const r = await apiFetch<AdminProfileSnapshot>(
+          `${BASE_URL}/admin/participants/${participant.id}/profile/${pid}`,
+          { cache: 'no-store' },
+        );
+        return [pid, r] as const;
+      } catch (e) {
+        return [pid, { error: e instanceof Error ? e.message : 'טעינה נכשלה' }] as const;
+      }
+    })).then((rows) => {
+      const next: Record<string, AdminProfileSnapshot | { error: string }> = {};
+      for (const [pid, snap] of rows) next[pid] = snap;
+      setSnapshots(next);
+    }).finally(() => setLoading(false));
+  }, [programIds, participant.id]);
+
+  if (programIds.length === 0) {
+    return (
+      <div style={{ padding: 28, textAlign: 'center', color: '#64748b' }}>
+        המשתתפת אינה משויכת לאף תוכנית פעילה. הוסיפי אותה לקבוצה כדי לראות פרופיל.
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {loading && Object.keys(snapshots).length === 0 && (
+        <div style={{ color: '#94a3b8', textAlign: 'center', padding: 24 }}>טוען...</div>
+      )}
+      {programIds.map((pid) => {
+        const snap = snapshots[pid];
+        if (!snap) return null;
+        if ('error' in snap) {
+          return (
+            <div key={pid} style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 10, padding: 14, color: '#b91c1c', fontSize: 13 }}>
+              שגיאה בטעינת פרופיל לתוכנית {pid}: {snap.error}
+            </div>
+          );
+        }
+        return <AdminProfileProgramCard key={pid} snapshot={snap} />;
+      })}
+    </div>
+  );
+}
+
+function AdminProfileProgramCard({ snapshot }: { snapshot: AdminProfileSnapshot }) {
+  // Programs without configured fields show an empty-state message
+  // rather than render a card with nothing in it.
+  if (snapshot.fields.length === 0) {
+    return (
+      <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10, padding: 16 }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: '#0f172a', marginBottom: 4 }}>{snapshot.program.name}</div>
+        <div style={{ fontSize: 12, color: '#64748b' }}>לא הוגדרו שדות פרופיל לתוכנית זו.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, overflow: 'hidden' }}>
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+        padding: '12px 16px', background: '#f8fafc', borderBottom: '1px solid #e2e8f0',
+      }}>
+        <div style={{ fontSize: 15, fontWeight: 700, color: '#0f172a' }}>{snapshot.program.name}</div>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+          {!snapshot.program.profileTabEnabled && (
+            <span style={{ background: '#f1f5f9', color: '#64748b', fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 999 }}>
+              לשונית מוסתרת מהמשתתפת
+            </span>
+          )}
+          {snapshot.missingRequiredCount > 0 ? (
+            <span style={{ background: '#fef3c7', color: '#b45309', fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 999 }}>
+              חסרים {snapshot.missingRequiredCount} שדות חובה
+            </span>
+          ) : (
+            <span style={{ background: '#dcfce7', color: '#15803d', fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 999 }}>
+              הכל מולא
+            </span>
+          )}
+        </div>
+      </div>
+      <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {snapshot.fields.map((f) => (
+          <AdminProfileField
+            key={f.id}
+            field={f}
+            value={snapshot.values[f.fieldKey]}
+            files={snapshot.files}
+            isMissing={snapshot.missingRequiredKeys.includes(f.fieldKey)}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AdminProfileField(props: {
+  field: AdminProfileSnapshot['fields'][number];
+  value: unknown;
+  files: AdminProfileSnapshot['files'];
+  isMissing: boolean;
+}) {
+  const { field, value, files, isMissing } = props;
+  const display = renderAdminValue(field.fieldType, value, field.isSystemField, files);
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'flex-start', gap: 10,
+      padding: '10px 12px',
+      background: isMissing ? '#fffbeb' : '#fff',
+      border: `1px solid ${isMissing ? '#fde68a' : '#e2e8f0'}`,
+      borderRadius: 8,
+    }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: '#0f172a', marginBottom: 4 }}>
+          {field.label}
+          {field.isRequired && <span style={{ color: '#dc2626', marginInlineStart: 4 }}>*</span>}
+          {field.isSystemField && (
+            <span style={{ marginInlineStart: 8, background: '#eef2ff', color: '#4338ca', fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 999 }}>שדה מערכת</span>
+          )}
+          {isMissing && (
+            <span style={{ marginInlineStart: 8, background: '#fee2e2', color: '#b91c1c', fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 999 }}>חסר</span>
+          )}
+        </div>
+        {display}
+        <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4, fontFamily: 'monospace' }} dir="ltr">
+          {field.fieldKey}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function renderAdminValue(
+  fieldType: string,
+  value: unknown,
+  isSystemField: boolean,
+  files: AdminProfileSnapshot['files'],
+): React.ReactNode {
+  const empty = <span style={{ color: '#94a3b8', fontSize: 13, fontStyle: 'italic' }}>— ריק —</span>;
+
+  if (fieldType === 'text' || fieldType === 'textarea' || fieldType === 'date') {
+    if (typeof value !== 'string' || !value) return empty;
+    return <div style={{ fontSize: 13, color: '#0f172a', whiteSpace: 'pre-wrap' }}>{value}</div>;
+  }
+  if (fieldType === 'number') {
+    if (typeof value !== 'number') return empty;
+    return <div style={{ fontSize: 13, color: '#0f172a' }}>{value.toLocaleString('he-IL')}</div>;
+  }
+  if (fieldType === 'image') {
+    if (typeof value !== 'string' || !value) return empty;
+    const url = isSystemField ? value : files[value]?.url;
+    if (!url) return empty;
+    const src = url.startsWith('/uploads') ? `${API_BASE}${url}` : url;
+    return (
+      <a href={src} target="_blank" rel="noopener noreferrer">
+        <img src={src} alt="" style={{ maxHeight: 120, borderRadius: 8, border: '1px solid #e2e8f0' }} />
+      </a>
+    );
+  }
+  if (fieldType === 'imageGallery') {
+    if (!Array.isArray(value) || value.length === 0) return empty;
+    return (
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {value.map((id) => {
+          if (typeof id !== 'string') return null;
+          const meta = files[id];
+          if (!meta) return null;
+          const src = meta.url.startsWith('/uploads') ? `${API_BASE}${meta.url}` : meta.url;
+          return (
+            <a key={id} href={src} target="_blank" rel="noopener noreferrer">
+              <img src={src} alt="" style={{ height: 80, width: 80, objectFit: 'cover', borderRadius: 8, border: '1px solid #e2e8f0' }} />
+            </a>
+          );
+        })}
+      </div>
+    );
+  }
+  return empty;
 }

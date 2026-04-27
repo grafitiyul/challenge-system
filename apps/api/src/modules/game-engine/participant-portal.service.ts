@@ -190,7 +190,7 @@ function resolveRange(opts: {
 export interface PortalContext {
   participant: { id: string; firstName: string; lastName: string | null };
   group: { id: string; name: string; startDate: Date | null; endDate: Date | null };
-  program: { id: string; name: string; isActive: boolean };
+  program: { id: string; name: string; isActive: boolean; profileTabEnabled: boolean };
   // Portal opening gate — both null means always open (backward compatible)
   // UTC ISO strings; frontend resolves state A/B/C purely by comparing now() to these values
   portalCallTime: string | null;
@@ -504,6 +504,7 @@ export class ParticipantPortalService {
         id: pg.group.program.id,
         name: pg.group.program.name,
         isActive: pg.group.program.isActive,
+        profileTabEnabled: pg.group.program.profileTabEnabled,
       },
       // bypass=true: return null times so the frontend skips the opening gate (admin preview only)
       portalCallTime: bypass ? null : (pg.group.portalCallTime ? pg.group.portalCallTime.toISOString() : null),

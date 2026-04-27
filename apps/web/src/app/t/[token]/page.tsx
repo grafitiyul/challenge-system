@@ -4,6 +4,7 @@ import { use, useCallback, useEffect, useRef, useState } from 'react';
 // REFRESH_INTERVAL_MS: background refresh cadence while portal is open
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 import { BASE_URL, apiFetch } from '@lib/api';
+import { ProfileTab, useProfileSnapshot } from './profile-tab';
 
 // ─── Sound helper — plays built-in static audio files ────────────────────────
 // Files live in /public/sounds/. Played via HTMLAudioElement so they work
@@ -66,7 +67,7 @@ interface Action {
 interface PortalContext {
   participant: { id: string; firstName: string; lastName: string | null };
   group: { id: string; name: string; startDate: string | null; endDate: string | null };
-  program: { id: string; name: string; isActive: boolean };
+  program: { id: string; name: string; isActive: boolean; profileTabEnabled: boolean };
   // Portal opening gate — null means portal is always open
   portalCallTime: string | null;
   portalOpenTime: string | null;
@@ -218,7 +219,7 @@ interface PortalRules {
   }[]; // conditionJson/rewardJson typed as Record for frontend convenience
 }
 
-type TabId = 'report' | 'stats' | 'feed' | 'rules';
+type TabId = 'report' | 'stats' | 'feed' | 'rules' | 'profile';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -961,6 +962,12 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
   const [ctx, setCtx] = useState<PortalContext | null>(null);
   const [loadError, setLoadError] = useState('');
   const [activeTab, setActiveTab] = useState<TabId>('report');
+  // Phase 7 — participant-profile snapshot. Drives the new bottom-nav
+  // tab + its missing-required badge + ripple. Loads only when the
+  // server says profileTabEnabled=true; otherwise the hook is a no-op.
+  const profileSnapshotState = useProfileSnapshot(token, !!ctx?.program?.profileTabEnabled);
+  const { snapshot: profileSnapshot, setSnapshot: setProfileSnapshot } = profileSnapshotState;
+  const profileMissingCount = profileSnapshot?.missingRequiredCount ?? 0;
   // Tab persistence (Phase 6.1): restore the selected tab from `?tab=` on
   // page load so a refresh doesn't bounce the participant back to "report".
   // A ref guards the restore so it only runs once per session, immediately
@@ -1543,8 +1550,8 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
     didRestoreTab.current = true;
     if (typeof window === 'undefined') return;
     const raw = new URLSearchParams(window.location.search).get('tab');
-    if (raw === 'stats' || raw === 'feed' || raw === 'rules') {
-      switchTab(raw);
+    if (raw === 'stats' || raw === 'feed' || raw === 'rules' || raw === 'profile') {
+      switchTab(raw as TabId);
     }
     // switchTab is a stable function reference in this component (declared at
     // top-level inside the component). Dependencies intentionally omitted —
@@ -2430,7 +2437,50 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
           </div>
         )}
 
+        {/* ── Tab 5: פרטים אישיים (Phase 7 — gated by program.profileTabEnabled) ── */}
+        {activeTab === 'profile' && ctx?.program?.profileTabEnabled && profileSnapshot && (
+          <ProfileTab
+            token={token}
+            snapshot={profileSnapshot}
+            onSnapshotChanged={setProfileSnapshot}
+          />
+        )}
+        {activeTab === 'profile' && ctx?.program?.profileTabEnabled && !profileSnapshot && (
+          <div style={{ padding: 24, textAlign: 'center', color: '#94a3b8' }}>
+            {profileSnapshotState.err ? profileSnapshotState.err : 'טוען...'}
+          </div>
+        )}
+
       </div>
+
+      {/* Phase 7 — ripple-attention animation for the profile tab. Soft
+          expanding wave keyframes; honors prefers-reduced-motion so the
+          animation is suppressed for users who opt out. The class is
+          attached only when there are missing required fields. */}
+      <style>{`
+        @keyframes profile-tab-ripple {
+          0%   { transform: scale(0.85); opacity: 0.55; }
+          70%  { transform: scale(1.65); opacity: 0; }
+          100% { transform: scale(1.65); opacity: 0; }
+        }
+        .profile-tab-ripple::before,
+        .profile-tab-ripple::after {
+          content: '';
+          position: absolute;
+          inset: 50% auto auto 50%;
+          width: 38px; height: 38px;
+          margin: -19px 0 0 -19px;
+          border-radius: 50%;
+          background: rgba(220, 38, 38, 0.35);
+          pointer-events: none;
+          animation: profile-tab-ripple 2.2s ease-out infinite;
+        }
+        .profile-tab-ripple::after { animation-delay: 1.1s; }
+        @media (prefers-reduced-motion: reduce) {
+          .profile-tab-ripple::before,
+          .profile-tab-ripple::after { animation: none; display: none; }
+        }
+      `}</style>
 
       {/* ── Bottom navigation ── */}
       <nav style={s.bottomNav}>
@@ -2443,16 +2493,28 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
             // Rendered via `iconNode` below; `icon` is kept as a fallback string.
             { id: 'feed',   label: 'הקבוצה',      icon: '',   iconNode: true as const },
             { id: 'rules',  label: 'חוקים',       icon: '📋' },
+            // Phase 7 — added last, only when the program admin enabled it.
+            ...(ctx?.program?.profileTabEnabled
+              ? [{ id: 'profile' as TabId, label: 'פרטים אישיים', icon: '👤' }]
+              : []),
           ] as { id: TabId; label: string; icon: string; iconNode?: true }[]
         ).map((tab) => {
           const isActive = activeTab === tab.id;
+          // Profile tab gets a missing-required badge + ripple-attention
+          // animation when configured fields are still empty. Both stop
+          // the moment the count hits zero (badge hidden, ripple class removed).
+          const isProfile = tab.id === 'profile';
+          const showBadge = isProfile && profileMissingCount > 0;
+          const rippleClass = showBadge ? 'profile-tab-ripple' : '';
           return (
             <button
               key={tab.id}
               onClick={() => switchTab(tab.id)}
+              className={rippleClass}
               style={{
                 ...s.navBtn,
                 ...(isActive ? s.navBtnActive : {}),
+                position: 'relative',
               }}
             >
               {tab.iconNode ? (
@@ -2461,6 +2523,29 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                 <span style={s.navIcon}>{tab.icon}</span>
               )}
               <span style={s.navLabel(isActive)}>{tab.label}</span>
+              {showBadge && (
+                <span
+                  aria-label={`${profileMissingCount} שדות חסרים`}
+                  style={{
+                    position: 'absolute',
+                    top: 4,
+                    insetInlineEnd: 'calc(50% - 26px)',
+                    minWidth: 18,
+                    height: 18,
+                    padding: '0 5px',
+                    background: '#dc2626',
+                    color: '#fff',
+                    fontSize: 11,
+                    fontWeight: 700,
+                    lineHeight: '18px',
+                    borderRadius: 999,
+                    textAlign: 'center',
+                    boxShadow: '0 0 0 2px #fff',
+                  }}
+                >
+                  {profileMissingCount}
+                </span>
+              )}
             </button>
           );
         })}
