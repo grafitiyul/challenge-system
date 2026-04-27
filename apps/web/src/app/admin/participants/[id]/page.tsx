@@ -46,6 +46,9 @@ interface Participant {
   joinedAt: string;
   isActive: boolean;
   canManageProjects?: boolean;
+  // Phase 8 — explicit opt-in for the participant-portal group switcher.
+  // Default false; admin flips it via the toggle below the active-groups chips.
+  multiGroupEnabled?: boolean;
   participantGroups: ParticipantGroup[];
 }
 
@@ -653,6 +656,9 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
   const [uploadingImage, setUploadingImage] = useState(false);
   const [imagePreviewOpen, setImagePreviewOpen] = useState(false);
   const imageInputRef = useRef<HTMLInputElement>(null);
+  // Phase 8 — multi-group toggle inline state.
+  const [multiGroupBusy, setMultiGroupBusy] = useState(false);
+  const [multiGroupErr, setMultiGroupErr] = useState('');
 
   const [submissions, setSubmissions] = useState<Submission[]>([]);
   const [submissionsLoaded, setSubmissionsLoaded] = useState(false);
@@ -787,6 +793,25 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
   });
 
   const age = calcAge(participant.birthDate);
+
+  // Phase 8 — flip Participant.multiGroupEnabled. The participant-portal
+  // server gates the group switcher on this flag; flipping it on (or off)
+  // takes effect on the participant's next page load of /t/:token.
+  async function toggleMultiGroup(next: boolean) {
+    setMultiGroupBusy(true);
+    setMultiGroupErr('');
+    try {
+      const updated = await apiFetch(`${BASE_URL}/participants/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ multiGroupEnabled: next }),
+      });
+      setParticipant((prev) => prev ? { ...(updated as Participant), participantGroups: prev.participantGroups } : prev);
+    } catch (e) {
+      setMultiGroupErr(e instanceof Error ? e.message : 'שמירה נכשלה');
+    } finally {
+      setMultiGroupBusy(false);
+    }
+  }
 
   async function handleProfileImageUpload(file: File) {
     setUploadingImage(true);
@@ -947,11 +972,56 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
                       );
                     })}
                   </div>
-                  {[...ctxCount.values()].some((n) => n > 1) && (
-                    <div style={{ fontSize: 12, color: '#1d4ed8', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 6, padding: '6px 10px' }}>
-                      👥 המשתתפת חברה בכמה קבוצות בתוכנית זו. בפורטל יוצג מתג מעבר בין הקבוצות; הניקוד והמבזק מסונכרנים אוטומטית.
+                  {/* Phase 8 — explicit multi-group toggle. Always visible so
+                      the admin can opt-in proactively before adding the second
+                      group, but the contextual hint only appears when the
+                      participant actually has multiple active memberships. */}
+                  <div style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    gap: 12, flexWrap: 'wrap',
+                    fontSize: 12,
+                    background: participant.multiGroupEnabled ? '#eff6ff' : '#f8fafc',
+                    border: `1px solid ${participant.multiGroupEnabled ? '#bfdbfe' : '#e2e8f0'}`,
+                    borderRadius: 8, padding: '8px 12px',
+                  }}>
+                    <div style={{ flex: 1, minWidth: 240 }}>
+                      <div style={{ fontWeight: 700, color: '#0f172a', marginBottom: 2 }}>
+                        מצב ריבוי קבוצות
+                      </div>
+                      <div style={{ color: '#475569', lineHeight: 1.5 }}>
+                        מאפשר למשתתפת עם כמה קבוצות פעילות באותה תוכנית לעבור ביניהן באפליקציה בלי להחליף לינק.
+                      </div>
+                      {[...ctxCount.values()].some((n) => n > 1) && participant.multiGroupEnabled && (
+                        <div style={{ marginTop: 6, color: '#1d4ed8', fontWeight: 600 }}>
+                          👥 כעת מוצג מתג מעבר בין הקבוצות בפורטל המשתתפת.
+                        </div>
+                      )}
+                      {[...ctxCount.values()].some((n) => n > 1) && !participant.multiGroupEnabled && (
+                        <div style={{ marginTop: 6, color: '#92400e', fontWeight: 600 }}>
+                          המשתתפת חברה בכמה קבוצות אבל המתג כבוי — הפורטל מציג רק את הקבוצה הראשית.
+                        </div>
+                      )}
+                      {multiGroupErr && (
+                        <div style={{ marginTop: 6, color: '#b91c1c', fontWeight: 600 }}>{multiGroupErr}</div>
+                      )}
                     </div>
-                  )}
+                    <button
+                      type="button"
+                      onClick={() => { void toggleMultiGroup(!participant.multiGroupEnabled); }}
+                      disabled={multiGroupBusy}
+                      aria-pressed={participant.multiGroupEnabled ?? false}
+                      style={{
+                        padding: '6px 14px', fontSize: 12, fontWeight: 700,
+                        background: participant.multiGroupEnabled ? '#fff' : '#1d4ed8',
+                        color: participant.multiGroupEnabled ? '#1d4ed8' : '#fff',
+                        border: `1px solid ${participant.multiGroupEnabled ? '#bfdbfe' : '#1d4ed8'}`,
+                        borderRadius: 999,
+                        cursor: multiGroupBusy ? 'not-allowed' : 'pointer',
+                      }}
+                    >
+                      {multiGroupBusy ? '...' : participant.multiGroupEnabled ? 'מופעל — כבי' : 'הפעלי'}
+                    </button>
+                  </div>
                 </div>
               );
             })()}

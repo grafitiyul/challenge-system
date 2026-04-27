@@ -2644,7 +2644,25 @@ export class ParticipantPortalService {
     groups: Array<{ id: string; name: string; isActive: boolean }>;
   }> {
     const pair = await this.findPgByToken(token);
-    if (!pair) throw new NotFoundException('הקישור אינו בתוקף');
+
+    // Token didn't match any current active membership. Distinguish two
+    // sub-cases for a friendlier portal experience:
+    //   (a) token belongs to a participant who once played but whose
+    //       memberships are all inactive now → throw 'game_ended' so
+    //       the portal shows "המשחק הזה הסתיים..." instead of
+    //       "הקישור אינו בתוקף".
+    //   (b) token does not match any participant at all → genuine
+    //       invalid link.
+    if (!pair) {
+      const ghost = await this.prisma.participant.findUnique({
+        where: { accessToken: token },
+        select: { id: true, _count: { select: { participantGroups: true } } },
+      });
+      if (ghost && ghost._count.participantGroups > 0) {
+        throw new BadRequestException('game_ended');
+      }
+      throw new NotFoundException('הקישור אינו בתוקף');
+    }
 
     const primary = await this.prisma.participantGroup.findUnique({
       where: { participantId_groupId: pair },
@@ -2656,22 +2674,46 @@ export class ParticipantPortalService {
     const participantId = primary.participantId;
     const programId = primary.group.programId;
 
+    // Phase 8 — explicit opt-in for the multi-group switcher. When the
+    // flag is off we expose ONLY the primary group, so the portal never
+    // reveals other memberships through the API and the frontend
+    // length-check naturally suppresses the switcher UI.
+    const participantRow = await this.prisma.participant.findUnique({
+      where: { id: participantId },
+      select: { multiGroupEnabled: true },
+    });
+    const multiGroupEnabled = !!participantRow?.multiGroupEnabled;
+
     // All active memberships for this participant in the same program,
     // oldest-first so the switcher renders in a stable order and the
     // default selection is deterministic across refreshes.
-    const memberships = await this.prisma.participantGroup.findMany({
-      where: { participantId, isActive: true, group: { programId } },
-      orderBy: { joinedAt: 'asc' },
-      select: { group: { select: { id: true, name: true, isActive: true } } },
-    });
-    if (memberships.length === 0) throw new NotFoundException('הקישור אינו בתוקף');
+    const memberships = multiGroupEnabled
+      ? await this.prisma.participantGroup.findMany({
+          where: { participantId, isActive: true, group: { programId } },
+          orderBy: { joinedAt: 'asc' },
+          select: { group: { select: { id: true, name: true, isActive: true } } },
+        })
+      // Flag off → resolve only the primary so the API doesn't leak
+      // sibling memberships, and any ?groupId= override is silently
+      // ignored (the primary group is the only valid scope).
+      : await this.prisma.participantGroup.findMany({
+          where: { participantId: pair.participantId, groupId: pair.groupId },
+          select: { group: { select: { id: true, name: true, isActive: true } } },
+        });
+    if (memberships.length === 0) {
+      // Active memberships for this program disappeared between the
+      // initial token resolution and this query (race / admin
+      // deactivation). Treat the same as ghost-with-only-inactive.
+      throw new BadRequestException('game_ended');
+    }
 
     const groups = memberships.map((m) => m.group);
     const primaryGroupId = groups[0].id;
 
     // Validate ?groupId= against the participant's own membership set.
-    // Silently fall back to the primary group if the param is missing or
-    // points at another program — never 403/404 for a stale URL.
+    // Silently fall back to the primary group if the param is missing,
+    // points at another program, or the participant doesn't have the
+    // multi-group flag (in which case `groups` is just [primary]).
     let activeGroupId = primaryGroupId;
     if (requestedGroupId) {
       const found = groups.find((g) => g.id === requestedGroupId);

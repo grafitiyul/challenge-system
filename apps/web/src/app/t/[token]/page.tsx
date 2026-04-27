@@ -1011,7 +1011,7 @@ function donutPath(
 export default function ParticipantPortal({ params }: { params: Promise<{ token: string }> }) {
   const { token } = use(params);
 
-  const [state, setState] = useState<'loading' | 'invalid' | 'inactive' | 'waiting_a' | 'waiting_b' | 'ready'>('loading');
+  const [state, setState] = useState<'loading' | 'invalid' | 'inactive' | 'game_ended' | 'waiting_a' | 'waiting_b' | 'ready'>('loading');
   // Countdown for waiting_a state — updated every second
   const [countdown, setCountdown] = useState({ days: 0, hours: 0, minutes: 0, seconds: 0 });
   const [ctx, setCtx] = useState<PortalContext | null>(null);
@@ -1168,6 +1168,7 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
           ? String((err as { message: string }).message)
           : '';
         if (msg === 'program_inactive') { setState('inactive'); return; }
+        if (msg === 'game_ended') { setState('game_ended'); return; }
         setLoadError(msg || 'שגיאה בטעינת הדף');
         setState('invalid');
       });
@@ -1854,6 +1855,21 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
           <div style={{ fontSize: 40, marginBottom: 16 }}>🏁</div>
           <p style={s.statusTitle}>התוכנית הסתיימה</p>
           <p style={s.statusText}>תודה על ההשתתפות</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Phase 8 — token resolves to a real participant but every membership
+  // is inactive (or the active one was just deactivated). Friendlier
+  // than "invalid link" because the user once played and may rejoin.
+  if (state === 'game_ended') {
+    return (
+      <div style={s.fullScreen}>
+        <div style={s.statusBox}>
+          <div style={{ fontSize: 44, marginBottom: 16 }}>🎯</div>
+          <p style={s.statusTitle}>המשחק הזה הסתיים</p>
+          <p style={s.statusText}>אבל אנחנו כבר מחכות לך באתגר הבא 💛</p>
         </div>
       </div>
     );

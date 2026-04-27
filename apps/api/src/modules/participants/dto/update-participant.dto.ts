@@ -48,4 +48,10 @@ export class UpdateParticipantDto {
   @IsOptional()
   @IsBoolean()
   canManageProjects?: boolean;
+
+  // Phase 8 — explicit opt-in for the multi-group switcher in /t/:token.
+  // Default false; admin flips per participant.
+  @IsOptional()
+  @IsBoolean()
+  multiGroupEnabled?: boolean;
 }

@@ -266,6 +266,7 @@ export class ParticipantsService {
         ...(dto.source !== undefined ? { source: dto.source || null } : {}),
         ...(dto.birthDate !== undefined ? { birthDate: dto.birthDate ? new Date(dto.birthDate) : null } : {}),
         ...(dto.canManageProjects !== undefined ? { canManageProjects: dto.canManageProjects } : {}),
+        ...(dto.multiGroupEnabled !== undefined ? { multiGroupEnabled: dto.multiGroupEnabled } : {}),
       },
       include: { gender: true },
     });

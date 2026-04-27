@@ -330,6 +330,13 @@ model Participant {
   // manage their own projects. When false they can still fill logs and notes
   // on projects assigned to them by an admin, but cannot create/edit structure.
   canManageProjects Boolean           @default(false)
+  // Phase 8 — explicit opt-in for the participant-portal group switcher.
+  // When false (default), the portal only ever shows the primary
+  // (oldest active) group context and never reveals the participant's
+  // other memberships, even if she has multiple active groups in the
+  // same program. Admin flips this for managers / assistants who
+  // legitimately need to see several group leaderboards from one URL.
+  multiGroupEnabled Boolean           @default(false)
   projects          Project[]
   projectItemLogs   ProjectItemLog[]
   projectNotes      ProjectNote[]
