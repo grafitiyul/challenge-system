@@ -486,14 +486,13 @@ export class ParticipantPortalService {
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
 
-    // Phase 8 — today's score is per-group. Use the active group from
-    // the multi-group resolver so the number on the report tab matches
-    // the group strip selection. todayValues stay program-scoped because
-    // they read UserActionLog which has no groupId — the count of
-    // submissions today is invariant across groups.
+    // Phase 8 (corrected) — personal score is program-scoped. One log
+    // gives the participant points that show up regardless of which
+    // group context she's currently viewing. Group selection only
+    // affects the leaderboard / feed member set on later screens.
     const scoreAgg = await this.prisma.scoreEvent.aggregate({
       _sum: { points: true },
-      where: { participantId: pg.participantId, groupId: multi.activeGroupId, createdAt: { gte: todayStart } },
+      where: { participantId: pg.participantId, programId, createdAt: { gte: todayStart } },
     });
 
     const todayValues: Record<string, number> = {};
@@ -590,13 +589,13 @@ export class ParticipantPortalService {
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
 
-    // Phase 8 — today's score is now per-group. Filter ScoreEvent by
-    // groupId so the participant sees the points she earned in this
-    // group only. Single-group + flag-off participants get the same
-    // number as before because their primary group stamps every event.
+    // Phase 8 (corrected) — return the participant's program-scoped
+    // total for today. One log gives points across ALL groups she
+    // belongs to via the member-set leaderboard query; group context
+    // only affects ranking / feed member set, never the personal sum.
     const scoreAgg = await this.prisma.scoreEvent.aggregate({
       _sum: { points: true },
-      where: { participantId, groupId: activeGroupId, createdAt: { gte: todayStart } },
+      where: { participantId, programId, createdAt: { gte: todayStart } },
     });
 
     const action = await this.prisma.gameAction.findUnique({ where: { id: dto.actionId } });
@@ -644,13 +643,14 @@ export class ParticipantPortalService {
   // ─── Stats tab ─────────────────────────────────────────────────────────────
 
   async getPortalStats(token: string, requestedGroupId?: string): Promise<PortalStats> {
-    // Phase 8 — per-group scoring. Personal totals (today/week/total)
-    // and the leaderboard now filter by ScoreEvent.groupId, so a
-    // participant's number changes when she switches groups in the
-    // strip. Streak remains (participant, program)-scoped because the
-    // ParticipantGameState row is unique on those two columns; making
-    // streak per-group would require a schema migration that's out of
-    // scope here.
+    // Phase 8 (corrected) — score is program-wide per participant.
+    // The active group only determines the COMPARISON window:
+    //   - personal totals: same number regardless of group
+    //   - leaderboard: members of the selected group, ranked by their
+    //     program-wide totals
+    //   - feed: events authored by members of the selected group
+    // Streak stays (participant, program)-scoped (single ParticipantGameState
+    // row by schema unique).
     const multi = await this.resolveMultiGroup(token, requestedGroupId);
     const { participantId, programId, activeGroupId: groupId } = multi;
 
@@ -658,24 +658,24 @@ export class ParticipantPortalService {
     const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
     const weekStart = new Date(now); weekStart.setDate(now.getDate() - now.getDay()); weekStart.setHours(0, 0, 0, 0);
 
-    // Personal scores filter by groupId so multi-group participants see
-    // independent totals per group. Streak stays program-wide.
+    // Personal scores remain program-wide. One log = one set of points
+    // reflected in every group the participant belongs to.
     const [todayAgg, weekAgg, totalAgg, streak] = await Promise.all([
-      this.prisma.scoreEvent.aggregate({ _sum: { points: true }, where: { participantId, groupId, createdAt: { gte: todayStart } } }),
-      this.prisma.scoreEvent.aggregate({ _sum: { points: true }, where: { participantId, groupId, createdAt: { gte: weekStart } } }),
-      this.prisma.scoreEvent.aggregate({ _sum: { points: true }, where: { participantId, groupId } }),
+      this.prisma.scoreEvent.aggregate({ _sum: { points: true }, where: { participantId, programId, createdAt: { gte: todayStart } } }),
+      this.prisma.scoreEvent.aggregate({ _sum: { points: true }, where: { participantId, programId, createdAt: { gte: weekStart } } }),
+      this.prisma.scoreEvent.aggregate({ _sum: { points: true }, where: { participantId, programId } }),
       this.gameEngine.getStreakLive(participantId, programId),
     ]);
 
-    // 14-day daily trend — also per-group now.
-    const dailyTrend = await this.buildDailyTrend(participantId, groupId, 14);
+    // 14-day daily trend — program-wide; same shape regardless of
+    // which group the participant is currently viewing.
+    const dailyTrend = await this.buildDailyTrend(participantId, programId, 14);
 
     // Group leaderboard. Members come from the active ParticipantGroup
-    // rows of the SELECTED group; per-member totals come from
-    // ScoreEvent rows stamped with that groupId. The double filter
-    // (groupId on the events + member-set) protects against historical
-    // events from members who have since left the group still showing
-    // up under the new owners.
+    // rows of the SELECTED group; totals are each member's program-wide
+    // sum. This way a participant's score is identical across her
+    // groups, but every group ranks her against a different set of
+    // peers — exactly the requested behavior.
     const members = await this.prisma.participantGroup.findMany({
       where: { groupId, isActive: true },
       include: { participant: { select: { id: true, firstName: true, lastName: true, profileImageUrl: true } } },
@@ -684,12 +684,12 @@ export class ParticipantPortalService {
     const participantIds = members.map((m) => m.participantId);
     const memberTotals = await this.prisma.scoreEvent.groupBy({
       by: ['participantId'],
-      where: { groupId, participantId: { in: participantIds } },
+      where: { programId, participantId: { in: participantIds } },
       _sum: { points: true },
     });
     const memberTodayTotals = await this.prisma.scoreEvent.groupBy({
       by: ['participantId'],
-      where: { groupId, participantId: { in: participantIds }, createdAt: { gte: todayStart } },
+      where: { programId, participantId: { in: participantIds }, createdAt: { gte: todayStart } },
       _sum: { points: true },
     });
 
@@ -2737,19 +2737,18 @@ export class ParticipantPortalService {
     return { participantId, programId, primaryGroupId, activeGroupId, groups };
   }
 
-  // Phase 8 — daily trend now scopes by groupId so the chart shows the
-  // points the participant earned IN THIS GROUP. Multi-group
-  // participants see different trends per group; single-group +
-  // flag-off participants see the same shape as before because every
-  // event they've ever logged was stamped with the primary group.
-  private async buildDailyTrend(participantId: string, groupId: string, days: number): Promise<{ date: string; points: number }[]> {
+  // Phase 8 (corrected) — daily trend is program-wide per participant.
+  // The shape of the chart is the same regardless of which group the
+  // participant has selected; group only affects comparison surfaces
+  // (leaderboard / feed).
+  private async buildDailyTrend(participantId: string, programId: string, days: number): Promise<{ date: string; points: number }[]> {
     const now = new Date();
     const since = new Date(now);
     since.setDate(now.getDate() - days + 1);
     since.setHours(0, 0, 0, 0);
 
     const events = await this.prisma.scoreEvent.findMany({
-      where: { participantId, groupId, createdAt: { gte: since } },
+      where: { participantId, programId, createdAt: { gte: since } },
       select: { points: true, createdAt: true },
     });
 
