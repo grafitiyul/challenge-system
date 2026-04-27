@@ -2391,16 +2391,27 @@ export class GameEngineService {
     const isUnitsDelta =
       oldLog.action.baseScoringType === 'latest_value_units_delta';
 
-    // Find the original action ScoreEvent for compensation.
-    const oldScoreEvent = await this.prisma.scoreEvent.findFirst({
+    // Phase 8 multi-group fan-out — a single submission can have N
+    // action ScoreEvents (one per group the participant chose, all
+    // sharing logId). Edit must compensate every old event AND emit a
+    // new event per group the original report covered, so each group's
+    // ledger reflects the corrected points. Mirrors voidLog's per-event
+    // loop. Single-group submissions hit the same code path with a
+    // 1-element array — no behaviour change for them.
+    const oldScoreEvents = await this.prisma.scoreEvent.findMany({
       where: { logId: oldLog.id, sourceType: 'action' },
+      orderBy: { createdAt: 'asc' },
     });
-    if (!oldScoreEvent) {
+    if (oldScoreEvents.length === 0) {
       // Should be impossible given the CHECK constraint on action-type events.
       throw new BadRequestException(
         `Internal inconsistency: active log ${oldLog.id} has no action ScoreEvent.`,
       );
     }
+    // The first action event remains the "primary" — used for cascade
+    // hints (units-delta + threshold rules) so those engines don't
+    // need to fork yet. The new fan-out below covers every group.
+    const oldScoreEvent = oldScoreEvents[0];
 
     try {
       return await this.prisma.$transaction(
@@ -2438,63 +2449,65 @@ export class GameEngineService {
             },
           });
 
-          // 3. Compensating ScoreEvent — reverses the OLD LOG's full net
-          //    contribution. Phase 6.10: we sum action points + any prior
-          //    cascade correction events attached to this action event,
-          //    so that the supersede cleanly zeroes out the log's entire
-          //    footprint. Filtering by sourceType='correction' intentionally
-          //    EXCLUDES rule events (which also carry parentEventId=action.id);
-          //    rule attribution is handled separately by the threshold-rule
-          //    recompute below.
-          const priorAdjustments = await tx.scoreEvent.findMany({
-            where: {
-              parentEventId: oldScoreEvent.id,
-              sourceType: 'correction',
-            },
-            select: { points: true },
-          });
-          const priorAdjustmentsSum = priorAdjustments.reduce(
-            (s, a) => s + a.points,
-            0,
-          );
-          const oldLogNetPoints = oldScoreEvent.points + priorAdjustmentsSum;
-          const compensation = await tx.scoreEvent.create({
-            data: {
-              participantId: oldLog.participantId,
-              programId: oldLog.programId,
-              groupId: oldScoreEvent.groupId,
-              sourceType: 'correction',
-              sourceId: oldLog.actionId,
-              points: -oldLogNetPoints,
-              parentEventId: oldScoreEvent.id,
-              metadata: {
-                reason: 'correction',
-                supersededScoreEventId: oldScoreEvent.id,
-                supersededLogId: oldLog.id,
-                supersededLogNetPoints: oldLogNetPoints,
-                actorRole: dto.actorRole,
+          // 3. Compensate every per-group old action event AND emit a
+          //    matching new action event for the corrected value. Each
+          //    pair stays bound to one group so the per-group ledger
+          //    walks cleanly:
+          //      Group G:  old (+oldPts), correction (-net), new (+newPts)
+          //    sourceType filter excludes rule events (those carry
+          //    parentEventId=action.id but are reconciled by the
+          //    threshold-rule pass below).
+          const compensations = [];
+          const newScoreEvents = [];
+          for (const ev of oldScoreEvents) {
+            const priorAdjustments = await tx.scoreEvent.findMany({
+              where: { parentEventId: ev.id, sourceType: 'correction' },
+              select: { points: true },
+            });
+            const priorAdjustmentsSum = priorAdjustments.reduce((s, a) => s + a.points, 0);
+            const netPoints = ev.points + priorAdjustmentsSum;
+            const c = await tx.scoreEvent.create({
+              data: {
+                participantId: oldLog.participantId,
+                programId: oldLog.programId,
+                groupId: ev.groupId,
+                sourceType: 'correction',
+                sourceId: oldLog.actionId,
+                points: -netPoints,
+                parentEventId: ev.id,
+                metadata: {
+                  reason: 'correction',
+                  supersededScoreEventId: ev.id,
+                  supersededLogId: oldLog.id,
+                  supersededLogNetPoints: netPoints,
+                  actorRole: dto.actorRole,
+                },
               },
-            },
-          });
+            });
+            compensations.push(c);
 
-          // 4. New ScoreEvent for the corrected value — linked to the new log,
-          //    same CHECK-enforced invariant as a fresh submission.
-          const newScoreEvent = await tx.scoreEvent.create({
-            data: {
-              participantId: oldLog.participantId,
-              programId: oldLog.programId,
-              groupId: oldScoreEvent.groupId,
-              sourceType: 'action',
-              sourceId: oldLog.actionId,
-              points: newPoints,
-              logId: newLog.id,
-              metadata: {
-                actionName: oldLog.action.name,
-                value: newValue,
-                correctedFromLogId: oldLog.id,
+            const ns = await tx.scoreEvent.create({
+              data: {
+                participantId: oldLog.participantId,
+                programId: oldLog.programId,
+                groupId: ev.groupId,
+                sourceType: 'action',
+                sourceId: oldLog.actionId,
+                points: newPoints,
+                logId: newLog.id,
+                metadata: {
+                  actionName: oldLog.action.name,
+                  value: newValue,
+                  correctedFromLogId: oldLog.id,
+                },
               },
-            },
-          });
+            });
+            newScoreEvents.push(ns);
+          }
+          // Keep the legacy single return shape — first compensation +
+          // first new event, matching the previous contract.
+          const compensation = compensations[0];
+          const newScoreEvent = newScoreEvents[0];
 
           // 5. Hide the legacy FeedEvent for the old log (if any) by flipping isPublic.
           //    We don't delete — keeping the row preserves audit trail and
