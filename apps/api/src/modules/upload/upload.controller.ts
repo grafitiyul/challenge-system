@@ -11,7 +11,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const multer = require('multer');
 import * as path from 'path';
-import * as fs from 'fs';
+import { resolveUploadsDir } from './uploads-dir';
 
 // Local type stub (avoids @types/multer dependency)
 interface UploadedFileInfo {
@@ -24,13 +24,9 @@ interface UploadedFileInfo {
   size: number;
 }
 
-// Resolve uploads directory relative to project root
-const UPLOADS_DIR = path.join(process.cwd(), 'uploads');
-
-// Ensure directory exists at module load time
-if (!fs.existsSync(UPLOADS_DIR)) {
-  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-}
+// Single source of truth — same path main.ts serves under /uploads/*.
+// Honors UPLOADS_DIR env (Railway volume mount) in production.
+const UPLOADS_DIR = resolveUploadsDir();
 
 function generateFilename(originalname: string): string {
   const ext = path.extname(originalname).toLowerCase();

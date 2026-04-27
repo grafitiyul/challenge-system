@@ -2,18 +2,19 @@ import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
-import * as path from 'path';
-import * as fs from 'fs';
 import * as express from 'express';
 import * as cookieParser from 'cookie-parser';
+import { resolveUploadsDir } from './modules/upload/uploads-dir';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
-  // Serve uploaded files as static assets
-  const uploadsDir = path.join(process.cwd(), 'uploads');
-  if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+  // Serve uploaded files as static assets. UPLOADS_DIR env points at the
+  // Railway persistent volume in production; falls back to ./uploads
+  // locally. See modules/upload/uploads-dir.ts for the resolution rules.
+  const uploadsDir = resolveUploadsDir();
   app.useStaticAssets(uploadsDir, { prefix: '/uploads' });
+  console.log(`[uploads] serving /uploads from ${uploadsDir}`);
 
   // Parse cookies (required for admin session auth)
   app.use(cookieParser());
