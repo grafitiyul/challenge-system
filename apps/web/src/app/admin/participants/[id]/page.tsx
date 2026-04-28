@@ -1839,6 +1839,10 @@ function renderAdminValue(
     );
   }
   if (fieldType === 'imageGallery') {
+    // Mixed media: gallery can hold images OR videos. Render each
+    // entry per its file mimeType — videos get a small inline player
+    // with controls; images stay as before. Same dimensions either
+    // way so the strip layout doesn't reflow.
     if (!Array.isArray(value) || value.length === 0) return empty;
     return (
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -1847,6 +1851,19 @@ function renderAdminValue(
           const meta = files[id];
           if (!meta) return null;
           const src = meta.url.startsWith('/uploads') ? `${API_BASE}${meta.url}` : meta.url;
+          const isVideo = /^video\//i.test(meta.mimeType);
+          if (isVideo) {
+            return (
+              <video
+                key={id}
+                src={src}
+                style={{ height: 80, width: 80, objectFit: 'cover', borderRadius: 8, border: '1px solid #e2e8f0', background: '#0f172a' }}
+                controls
+                preload="metadata"
+                playsInline
+              />
+            );
+          }
           return (
             <a key={id} href={src} target="_blank" rel="noopener noreferrer">
               <img src={src} alt="" style={{ height: 80, width: 80, objectFit: 'cover', borderRadius: 8, border: '1px solid #e2e8f0' }} />

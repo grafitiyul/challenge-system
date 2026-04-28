@@ -75,14 +75,22 @@ export class ParticipantProfilePortalController {
           cb(null, generateFilename(file.originalname));
         },
       }),
-      limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
+      // 20 MB ceiling — image avatars stay tiny; video clips
+      // (before-photos gallery, etc.) need the headroom.
+      limits: { fileSize: 20 * 1024 * 1024 },
       fileFilter: (_req: unknown, file: { originalname: string; mimetype: string }, cb: (err: Error | null, accept: boolean) => void) => {
-        // Profile uploads are images only — avatar + before photos. The
-        // participant portal never needs PDF / video uploads.
-        const allowed = /\.(jpg|jpeg|png|gif|webp)$/i;
-        const allowedMime = /^image\//i;
-        if (!allowed.test(file.originalname) || !allowedMime.test(file.mimetype)) {
-          return cb(new BadRequestException('רק קבצי תמונה (jpg / jpeg / png / gif / webp)'), false);
+        // Images: jpg/jpeg/png/gif/webp.  Videos: mp4/mov/webm.
+        // Both extension and mime must agree — prevents an mp4 file
+        // disguised as .jpg from sneaking past the gallery picker.
+        const allowedExt  = /\.(jpg|jpeg|png|gif|webp|mp4|mov|webm)$/i;
+        const allowedMime = /^(image|video)\//i;
+        if (!allowedExt.test(file.originalname) || !allowedMime.test(file.mimetype)) {
+          return cb(
+            new BadRequestException(
+              'רק קבצי תמונה (jpg / jpeg / png / gif / webp) או וידאו (mp4 / mov / webm)',
+            ),
+            false,
+          );
         }
         cb(null, true);
       },

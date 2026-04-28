@@ -345,7 +345,14 @@ function ImageField(props: {
   );
 }
 
-// ─── Image gallery ─────────────────────────────────────────────────────────
+// ─── Mixed-media gallery (images + videos) ────────────────────────────────
+// fieldType is still called "imageGallery" for back-compat with existing
+// configs, but the rendering now branches on each file's mimeType so a
+// before-photos field can hold a mix of stills and short clips.
+
+// Hard caps mirror server constants (see participant-profile-portal.service).
+const GALLERY_MAX_FILES = 10;
+const MAX_UPLOAD_BYTES = 20 * 1024 * 1024; // 20 MB
 
 function ImageGalleryField(props: {
   token: string;
@@ -360,6 +367,7 @@ function ImageGalleryField(props: {
   const ids: string[] = Array.isArray(props.value)
     ? (props.value as unknown[]).filter((v): v is string => typeof v === 'string')
     : [];
+  const slotsLeft = Math.max(0, GALLERY_MAX_FILES - ids.length);
 
   async function persist(nextIds: string[]) {
     setErrMsg('');
@@ -374,11 +382,23 @@ function ImageGalleryField(props: {
     setBusy(true);
     setErrMsg('');
     try {
+      // Client-side preflight: fail fast if any selected file exceeds
+      // 20 MB or if the resulting array would blow past the 10-slot cap.
+      // Server enforces both, but we surface the message immediately.
+      const incoming = Array.from(fileList);
+      if (incoming.length > slotsLeft) {
+        throw { message: `ניתן להוסיף עוד ${slotsLeft} קבצים בלבד (מקסימום ${GALLERY_MAX_FILES}).` };
+      }
+      const tooBig = incoming.find((f) => f.size > MAX_UPLOAD_BYTES);
+      if (tooBig) {
+        throw { message: `הקובץ "${tooBig.name}" חורג מ-20MB.` };
+      }
+
       const newIds: string[] = [];
       // Sequential upload to keep the multer disk-storage write order
       // deterministic for the participant; a parallel barrage could
       // also race with multipart parsing on small Railway instances.
-      for (const file of Array.from(fileList)) {
+      for (const file of incoming) {
         const meta = await apiFetch<ProfileFileMeta>(
           `${BASE_URL}/public/participant/${props.token}/profile/upload`,
           { method: 'POST', body: (() => { const fd = new FormData(); fd.append('file', file); return fd; })() },
@@ -405,12 +425,16 @@ function ImageGalleryField(props: {
     }
   }
 
+  const atCap = slotsLeft === 0;
+
   return (
     <div>
       <input
         ref={inputRef}
         type="file"
-        accept="image/jpeg,image/png,image/gif,image/webp"
+        // image/* + video/* — the OS picker shows both. Server enforces
+        // exact extensions + mimes, so a sneaky file gets rejected.
+        accept="image/jpeg,image/png,image/gif,image/webp,video/mp4,video/quicktime,video/webm"
         multiple
         style={{ display: 'none' }}
         onChange={(e) => { const fl = e.target.files; if (fl?.length) void handleFiles(fl); e.target.value = ''; }}
@@ -420,9 +444,20 @@ function ImageGalleryField(props: {
           {ids.map((id) => {
             const meta = props.files[id];
             if (!meta) return null;
+            const isVideo = /^video\//i.test(meta.mimeType);
             return (
               <div key={id} style={s.galleryItem}>
-                <img src={srcOf(meta.url)} alt="" style={s.galleryImg} />
+                {isVideo ? (
+                  <video
+                    src={srcOf(meta.url)}
+                    style={s.galleryImg}
+                    controls
+                    preload="metadata"
+                    playsInline
+                  />
+                ) : (
+                  <img src={srcOf(meta.url)} alt="" style={s.galleryImg} />
+                )}
                 <button
                   type="button"
                   onClick={() => { void removeAt(id); }}
@@ -438,11 +473,18 @@ function ImageGalleryField(props: {
       <button
         type="button"
         onClick={() => inputRef.current?.click()}
-        disabled={busy}
-        style={{ ...s.uploadButton, marginTop: ids.length > 0 ? 10 : 0 }}
+        disabled={busy || atCap}
+        style={{
+          ...s.uploadButton,
+          marginTop: ids.length > 0 ? 10 : 0,
+          ...(atCap ? { opacity: 0.55, cursor: 'not-allowed' } : {}),
+        }}
       >
-        {busy ? 'מעלה...' : '+ הוסיפי תמונות'}
+        {busy ? 'מעלה...' : atCap ? `מקסימום ${GALLERY_MAX_FILES} קבצים` : '+ הוסיפי תמונות / וידאו'}
       </button>
+      <p style={{ fontSize: 11, color: '#94a3b8', margin: '6px 2px 0' }}>
+        עד {GALLERY_MAX_FILES} קבצים, עד 20MB לקובץ. תמונות (jpg/png/gif/webp) או וידאו (mp4/mov/webm).
+      </p>
       {errMsg && <p style={s.fieldErr}>{errMsg}</p>}
     </div>
   );

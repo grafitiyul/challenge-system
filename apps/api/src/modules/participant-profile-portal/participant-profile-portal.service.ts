@@ -43,6 +43,11 @@ export interface FileMeta {
   uploadedAt: string;
 }
 
+// Hard cap on imageGallery entries. The portal also enforces it on the
+// client (disable the upload button at the cap), but the server is the
+// source of truth so a hand-crafted PATCH can't exceed it either.
+const GALLERY_MAX_FILES = 10;
+
 const SYSTEM_FIELD_PARTICIPANT_COLUMNS: Record<string, keyof Prisma.ParticipantUpdateInput> = {
   firstName: 'firstName',
   lastName: 'lastName',
@@ -329,6 +334,10 @@ export class ParticipantProfilePortalService {
         if (isEmpty) return null;
         if (typeof rawValue !== 'string') throw new BadRequestException('image expects a file id');
         await this.assertFileOwnership(participantId, [rawValue]);
+        // Single-image fields (e.g. profileImageUrl avatar) stay
+        // image-only at the field level — the upload endpoint accepts
+        // video too for the gallery flow, so we re-check mime here.
+        await this.assertImageMime(rawValue);
         return rawValue;
       case 'imageGallery':
         if (isEmpty) return [];
@@ -337,7 +346,17 @@ export class ParticipantProfilePortalService {
         if (ids.length !== rawValue.length) {
           throw new BadRequestException('All gallery entries must be file ids (strings)');
         }
+        if (ids.length > GALLERY_MAX_FILES) {
+          throw new BadRequestException(
+            `מקסימום ${GALLERY_MAX_FILES} קבצים בגלריה`,
+          );
+        }
         if (ids.length) await this.assertFileOwnership(participantId, ids);
+        // Mixed media is allowed in imageGallery — both image/* and
+        // video/* mimes pass. Anything else (the upload endpoint
+        // already filters at write time) is rejected here as a safety
+        // net in case a stale row exists.
+        if (ids.length) await this.assertMediaMime(ids);
         return ids;
       default:
         throw new BadRequestException(`Unsupported fieldType "${fieldType}"`);
@@ -353,6 +372,34 @@ export class ParticipantProfilePortalService {
     const stray = ids.filter((id) => !ownedSet.has(id));
     if (stray.length) {
       throw new ForbiddenException(`Files do not belong to this participant: ${stray.join(',')}`);
+    }
+  }
+
+  // Single-image field (e.g. avatar). Reject if the underlying file is
+  // a video — the upload endpoint accepts video so the gallery flow
+  // works, but the avatar field itself stays image-only.
+  private async assertImageMime(fileId: string) {
+    const f = await this.prisma.participantUploadedFile.findUnique({
+      where: { id: fileId },
+      select: { mimeType: true },
+    });
+    if (f && !/^image\//i.test(f.mimeType)) {
+      throw new BadRequestException('שדה זה מקבל תמונה בלבד (לא וידאו).');
+    }
+  }
+
+  // Mixed media gallery — image/* OR video/* are both fine; anything
+  // else (text, PDF, etc.) is rejected. Belt-and-braces: the upload
+  // endpoint already filters by mime; this catches stale rows that
+  // pre-date a future filter change.
+  private async assertMediaMime(ids: string[]) {
+    const files = await this.prisma.participantUploadedFile.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, mimeType: true },
+    });
+    const bad = files.filter((f) => !/^(image|video)\//i.test(f.mimeType));
+    if (bad.length) {
+      throw new BadRequestException(`קבצים לא נתמכים בגלריה: ${bad.map((b) => b.id).join(',')}`);
     }
   }
 
