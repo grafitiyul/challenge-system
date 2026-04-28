@@ -40,6 +40,15 @@ interface Program {
   rulesPublished: boolean;
   // Phase 7 — gates the participant-portal "פרטים אישיים" tab.
   profileTabEnabled: boolean;
+  // Catch-up mode admin config — see /admin/programs/:id settings tab.
+  catchUpEnabled: boolean;
+  catchUpButtonLabel: string;
+  catchUpConfirmTitle: string | null;
+  catchUpConfirmBody: string | null;
+  catchUpDurationMinutes: number;
+  catchUpAllowedDaysBack: number;
+  catchUpBannerText: string | null;
+  catchUpAvailableDates: string[];
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -212,6 +221,12 @@ function SettingsTab({ program, onSaved }: { program: Program; onSaved: (p: Prog
         </div>
       </div>
 
+      {/* ── Catch-up mode ── Per-program admin section. Master toggle
+           gates everything; available-dates list controls when the
+           button can appear at all. Snapshot of duration / days-back
+           on the session row insulates running sessions from edits. */}
+      <CatchUpSettings program={program} onSaved={onSaved} />
+
       {/* ── Destructive zone ── Archive OR hard-delete. Hard-delete is
            gated server-side on zero dependents; the modal falls back to
            showing the reason + offers archive when blocked. */}
@@ -286,6 +301,253 @@ function SettingsTab({ program, onSaved }: { program: Program; onSaved: (p: Prog
           onDeleted={() => router.push('/admin/programs')}
         />
       )}
+    </div>
+  );
+}
+
+// ─── Catch-up mode settings (Settings tab subsection) ─────────────────────
+// 8 admin-controlled fields. Master toggle (catchUpEnabled) at the top
+// dims but does not disable the rest of the form, so the admin can
+// stage all the wording before flipping the switch live.
+//
+// catchUpAvailableDates is rendered as a chip list with a +הוסף תאריך
+// affordance. Each chip is a YYYY-MM-DD string; the backend dedups +
+// sorts on save. Empty list = button never appears (safe default).
+
+function CatchUpSettings({ program, onSaved }: { program: Program; onSaved: (p: Program) => void }) {
+  const [form, setForm] = useState({
+    catchUpEnabled:         program.catchUpEnabled,
+    catchUpButtonLabel:     program.catchUpButtonLabel ?? '',
+    catchUpConfirmTitle:    program.catchUpConfirmTitle ?? '',
+    catchUpConfirmBody:     program.catchUpConfirmBody ?? '',
+    catchUpDurationMinutes: program.catchUpDurationMinutes ?? 10,
+    catchUpAllowedDaysBack: program.catchUpAllowedDaysBack ?? 2,
+    catchUpBannerText:      program.catchUpBannerText ?? '',
+    catchUpAvailableDates:  [...(program.catchUpAvailableDates ?? [])].sort(),
+  });
+  const [newDate, setNewDate] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [err, setErr] = useState('');
+
+  const dim = !form.catchUpEnabled;
+
+  function addDate() {
+    const v = newDate.trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return;
+    setForm((p) => {
+      if (p.catchUpAvailableDates.includes(v)) return p;
+      return { ...p, catchUpAvailableDates: [...p.catchUpAvailableDates, v].sort() };
+    });
+    setNewDate('');
+    setSaved(false);
+  }
+
+  function removeDate(d: string) {
+    setForm((p) => ({ ...p, catchUpAvailableDates: p.catchUpAvailableDates.filter((x) => x !== d) }));
+    setSaved(false);
+  }
+
+  async function save() {
+    setSaving(true); setErr(''); setSaved(false);
+    try {
+      // Send empty strings as nulls so the backend stores null when the
+      // admin clears a field, rather than a literal empty string.
+      const payload = {
+        catchUpEnabled:         form.catchUpEnabled,
+        catchUpButtonLabel:     form.catchUpButtonLabel.trim() || 'דיווח השלמה',
+        catchUpConfirmTitle:    form.catchUpConfirmTitle.trim() || null,
+        catchUpConfirmBody:     form.catchUpConfirmBody.trim() || null,
+        catchUpDurationMinutes: Math.max(1, Number(form.catchUpDurationMinutes) || 1),
+        catchUpAllowedDaysBack: Math.max(1, Number(form.catchUpAllowedDaysBack) || 1),
+        catchUpBannerText:      form.catchUpBannerText.trim() || null,
+        catchUpAvailableDates:  form.catchUpAvailableDates,
+      };
+      const updated = await apiFetch(`${BASE_URL}/programs/${program.id}`, {
+        method: 'PATCH',
+        cache: 'no-store',
+        body: JSON.stringify(payload),
+      }) as Program;
+      onSaved({ ...program, ...updated });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'שמירה נכשלה');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: 24, display: 'flex', flexDirection: 'column', gap: 14, maxWidth: 520 }}>
+      <div>
+        <label style={labelStyle}>מצב השלמה</label>
+        <div style={{ fontSize: 12, color: '#64748b', marginBottom: 10, lineHeight: 1.5 }}>
+          מאפשר למשתתפת לפתוח חלון זמן קצר בתאריכים שתבחרי, ולדווח דיווחים רטרואקטיבית עד מספר ימים אחורה (למשל אחרי שבת או חג).
+        </div>
+      </div>
+
+      {/* Master toggle */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+        <input
+          type="checkbox"
+          id="catchUpEnabled"
+          checked={form.catchUpEnabled}
+          onChange={(e) => { setForm((p) => ({ ...p, catchUpEnabled: e.target.checked })); setSaved(false); }}
+          style={{ width: 16, height: 16, marginTop: 2, cursor: 'pointer', flexShrink: 0 }}
+        />
+        <label htmlFor="catchUpEnabled" style={{ cursor: 'pointer' }}>
+          <div style={{ fontSize: 14, fontWeight: 500, color: '#0f172a' }}>הצג כפתור מצב השלמה למשתתפות</div>
+          <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
+            מתג ראשי. כשהוא כבוי הכפתור לא יופיע גם אם הוגדרו תאריכי זמינות.
+          </div>
+        </label>
+      </div>
+
+      {/* Form fields — dimmed when master is off */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12, opacity: dim ? 0.55 : 1 }}>
+        <div>
+          <label style={labelStyle}>תווית הכפתור</label>
+          <input
+            style={inputStyle}
+            value={form.catchUpButtonLabel}
+            onChange={(e) => { setForm((p) => ({ ...p, catchUpButtonLabel: e.target.value })); setSaved(false); }}
+            placeholder="דיווח אחרי שבת/חג ל-10 דקות"
+          />
+        </div>
+
+        <div>
+          <label style={labelStyle}>כותרת אישור</label>
+          <input
+            style={inputStyle}
+            value={form.catchUpConfirmTitle}
+            onChange={(e) => { setForm((p) => ({ ...p, catchUpConfirmTitle: e.target.value })); setSaved(false); }}
+            placeholder="להפעיל מצב השלמה?"
+          />
+        </div>
+
+        <div>
+          <label style={labelStyle}>טקסט אישור</label>
+          <textarea
+            rows={3}
+            style={{ ...inputStyle, resize: 'vertical', minHeight: 72, lineHeight: 1.55 }}
+            value={form.catchUpConfirmBody}
+            onChange={(e) => { setForm((p) => ({ ...p, catchUpConfirmBody: e.target.value })); setSaved(false); }}
+            placeholder="לאחר ההפעלה תוכלי לדווח על דיווחים מהימים האחרונים. החלון פתוח למספר דקות בלבד."
+          />
+        </div>
+
+        <div style={{ display: 'flex', gap: 12 }}>
+          <div style={{ flex: 1 }}>
+            <label style={labelStyle}>משך הפעלה (דקות)</label>
+            <input
+              type="number"
+              min={1}
+              style={inputStyle}
+              value={form.catchUpDurationMinutes}
+              onChange={(e) => { setForm((p) => ({ ...p, catchUpDurationMinutes: Number(e.target.value) })); setSaved(false); }}
+            />
+          </div>
+          <div style={{ flex: 1 }}>
+            <label style={labelStyle}>ימים אחורה מותרים</label>
+            <input
+              type="number"
+              min={1}
+              style={inputStyle}
+              value={form.catchUpAllowedDaysBack}
+              onChange={(e) => { setForm((p) => ({ ...p, catchUpAllowedDaysBack: Number(e.target.value) })); setSaved(false); }}
+            />
+            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>
+              מינימום 1. שני ימים = היום / אתמול / שלשום.
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <label style={labelStyle}>טקסט באנר/טיימר</label>
+          <input
+            style={inputStyle}
+            value={form.catchUpBannerText}
+            onChange={(e) => { setForm((p) => ({ ...p, catchUpBannerText: e.target.value })); setSaved(false); }}
+            placeholder="מצב השלמה פעיל — נשארו {time}"
+          />
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>
+            ניתן להשתמש ב-{'{time}'} למיקום הטיימר.
+          </div>
+        </div>
+
+        {/* Available dates chip list */}
+        <div>
+          <label style={labelStyle}>תאריכי זמינות (זמן ישראל)</label>
+          <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8, lineHeight: 1.5 }}>
+            הכפתור יופיע למשתתפות רק בתאריכים שכאן. הסרה אינה מבטלת סשנים שכבר רצים.
+          </div>
+          {form.catchUpAvailableDates.length === 0 ? (
+            <div style={{ fontSize: 13, color: '#94a3b8', padding: '8px 0' }}>
+              אין תאריכים מוגדרים — הכפתור לא יופיע.
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+              {form.catchUpAvailableDates.map((d) => (
+                <div
+                  key={d}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 6,
+                    background: '#eff6ff', color: '#1d4ed8',
+                    border: '1px solid #bfdbfe', borderRadius: 999,
+                    padding: '4px 10px', fontSize: 12, fontWeight: 600,
+                  }}
+                >
+                  📅 {d}
+                  <button
+                    type="button"
+                    onClick={() => removeDate(d)}
+                    aria-label={`הסר ${d}`}
+                    style={{ background: 'none', border: 'none', color: '#1d4ed8', cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: 0 }}
+                  >×</button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              type="date"
+              value={newDate}
+              onChange={(e) => setNewDate(e.target.value)}
+              style={{ ...inputStyle, width: 'auto' }}
+            />
+            <button
+              type="button"
+              onClick={addDate}
+              disabled={!/^\d{4}-\d{2}-\d{2}$/.test(newDate)}
+              style={{
+                padding: '8px 14px', fontSize: 13, fontWeight: 600,
+                background: '#fff', color: '#1d4ed8',
+                border: '1px solid #bfdbfe', borderRadius: 8,
+                cursor: /^\d{4}-\d{2}-\d{2}$/.test(newDate) ? 'pointer' : 'not-allowed',
+                opacity: /^\d{4}-\d{2}-\d{2}$/.test(newDate) ? 1 : 0.5,
+              }}
+            >+ הוסף תאריך</button>
+          </div>
+        </div>
+      </div>
+
+      {err && <div style={{ color: '#dc2626', fontSize: 13 }}>{err}</div>}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <button
+          onClick={save}
+          disabled={saving}
+          style={{
+            background: saving ? '#93c5fd' : '#2563eb', color: '#fff',
+            border: 'none', borderRadius: 7, padding: '9px 20px',
+            fontSize: 13, fontWeight: 600,
+            cursor: saving ? 'not-allowed' : 'pointer',
+          }}
+        >
+          {saving ? 'שומר...' : 'שמור הגדרות מצב השלמה'}
+        </button>
+        {saved && <span style={{ color: '#16a34a', fontSize: 13 }}>✓ נשמר</span>}
+      </div>
     </div>
   );
 }

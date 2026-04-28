@@ -80,6 +80,25 @@ interface PortalContext {
   actions: Action[];
   todayScore: number;
   todayValues: Record<string, number>;
+  // Catch-up mode visibility — null when the program has it disabled.
+  // The button at the bottom of "הנתונים שלי" is shown when
+  // catchUp.enabled && catchUp.availableToday && activeCatchUpSession === null.
+  catchUp: {
+    enabled: boolean;
+    availableToday: boolean;
+    buttonLabel: string;
+    confirmTitle: string | null;
+    confirmBody: string | null;
+    durationMinutes: number;
+    allowedDaysBack: number;
+    bannerText: string | null;
+  } | null;
+  activeCatchUpSession: {
+    id: string;
+    expiresAt: string;
+    allowedDaysBack: number;
+    bannerText: string | null;
+  } | null;
 }
 
 interface LogResult {
@@ -267,6 +286,45 @@ function getTodayDisplay(action: Action, todayValues: Record<string, number>): s
   if (action.inputType === 'number' && action.unit) return `היום: ${val.toLocaleString('he-IL')} ${action.unit}`;
   if (action.inputType === 'number') return `היום: ${val.toLocaleString('he-IL')}`;
   return 'בוצע היום';
+}
+
+// Hebrew label for the day-N-back chip during a catch-up session.
+//   0 → היום, 1 → אתמול, 2 → שלשום, n>=3 → "לפני N ימים".
+// No religious / holiday wording — admin controls availability dates,
+// chip labels stay neutral.
+function catchUpDayLabel(daysBack: number): string {
+  if (daysBack === 0) return 'היום';
+  if (daysBack === 1) return 'אתמול';
+  if (daysBack === 2) return 'שלשום';
+  return `לפני ${daysBack} ימים`;
+}
+
+// Compute a YYYY-MM-DD string that is `daysBack` calendar days before
+// "today" in Asia/Jerusalem. Used by the action-sheet day chips when
+// an active catch-up session is in flight. Server re-validates against
+// the session, so a slightly skewed client clock can't slip past the
+// allowedDaysBack cap — at worst the request is rejected.
+function shiftLocalDateBack(daysBack: number): string {
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Jerusalem',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  });
+  const todayLocal = fmt.format(new Date());
+  const [y, m, d] = todayLocal.split('-').map(Number);
+  // Anchor at UTC noon then shift in millisecond multiples — DST
+  // transitions happen at 02:00–03:00 local, well away from noon, so
+  // this is stable across the gap.
+  const target = new Date(Date.UTC(y, m - 1, d, 12, 0, 0) - daysBack * 86400000);
+  return fmt.format(target);
+}
+
+// Format remaining milliseconds as "MM:SS" for the catch-up countdown
+// banner. Caps at 99:59 (we never run > 99 minutes anyway).
+function formatCountdown(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const mm = Math.min(99, Math.floor(total / 60)).toString().padStart(2, '0');
+  const ss = (total % 60).toString().padStart(2, '0');
+  return `${mm}:${ss}`;
 }
 
 function relativeTime(iso: string): string {
@@ -1063,6 +1121,24 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
   const [glowActionId, setGlowActionId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // ── Catch-up mode state ─────────────────────────────────────────────────
+  // The confirm modal renders only when the participant taps the
+  // catch-up button and there's no active session yet. Re-entering
+  // the portal mid-session goes straight to the banner — never the
+  // modal — per the UX spec.
+  const [catchUpConfirmOpen, setCatchUpConfirmOpen] = useState(false);
+  const [catchUpStarting, setCatchUpStarting] = useState(false);
+  const [catchUpError, setCatchUpError] = useState('');
+  // Day chip selected inside the action sheet during an active
+  // session. Number of days back from "today" — 0 = today (default).
+  // Reset to 0 on every openAction.
+  const [catchUpDaysBack, setCatchUpDaysBack] = useState(0);
+  // Live countdown driven by an interval; recomputes against
+  // expiresAt every second so a stale browser tab can't drift.
+  const [catchUpRemainingMs, setCatchUpRemainingMs] = useState<number | null>(null);
+  // Brief Hebrew toast when the timer hits zero.
+  const [catchUpExpiredToast, setCatchUpExpiredToast] = useState(false);
+
   // Stats tab — legacy shape, still used by the feed tab's leaderboard card.
   const [stats, setStats] = useState<PortalStats | null>(null);
   const [statsLoading, setStatsLoading] = useState(false);
@@ -1677,6 +1753,75 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state]);
 
+  // ─── Catch-up countdown ────────────────────────────────────────────────────
+  // Drives the active-session banner. Recomputed against the
+  // server-issued absolute `expiresAt` rather than `setTimeout(duration)`
+  // so client-clock skew can't desync the banner. When the timer
+  // crosses zero we fire a toast, clear the session from ctx, and
+  // re-fetch the portal context so the button-vs-banner state lands
+  // back in sync with the server.
+  useEffect(() => {
+    const session = ctx?.activeCatchUpSession ?? null;
+    if (!session) {
+      setCatchUpRemainingMs(null);
+      return;
+    }
+    const expiresAtMs = new Date(session.expiresAt).getTime();
+    const tick = () => {
+      const remaining = expiresAtMs - Date.now();
+      if (remaining <= 0) {
+        setCatchUpRemainingMs(0);
+        setCatchUpExpiredToast(true);
+        setTimeout(() => setCatchUpExpiredToast(false), 3500);
+        // Drop the active session locally so the banner disappears
+        // immediately. The server has already enforced expiry; the
+        // next poll will agree.
+        setCtx((prev) => prev ? { ...prev, activeCatchUpSession: null } : prev);
+        return;
+      }
+      setCatchUpRemainingMs(remaining);
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [ctx?.activeCatchUpSession]);
+
+  // ─── Catch-up start ────────────────────────────────────────────────────────
+  async function startCatchUp() {
+    if (!ctx) return;
+    setCatchUpStarting(true);
+    setCatchUpError('');
+    try {
+      const session = await apiFetch<{
+        id: string;
+        expiresAt: string;
+        durationMinutes: number;
+        allowedDaysBack: number;
+        bannerText: string | null;
+      }>(`${BASE_URL}/public/participant/${token}/catch-up/start`, {
+        method: 'POST',
+        body: JSON.stringify({ programId: ctx.program.id }),
+      });
+      // Inject the new session into ctx so the banner appears + the
+      // button hides without a full refetch.
+      setCtx((prev) => prev ? {
+        ...prev,
+        activeCatchUpSession: {
+          id: session.id,
+          expiresAt: session.expiresAt,
+          allowedDaysBack: session.allowedDaysBack,
+          bannerText: session.bannerText,
+        },
+        catchUp: prev.catchUp ? { ...prev.catchUp, availableToday: false } : prev.catchUp,
+      } : prev);
+      setCatchUpConfirmOpen(false);
+    } catch (e) {
+      setCatchUpError(e instanceof Error ? e.message : 'הפעלה נכשלה');
+    } finally {
+      setCatchUpStarting(false);
+    }
+  }
+
   // ─── Action sheet ──────────────────────────────────────────────────────────
 
   function openAction(action: Action) {
@@ -1687,6 +1832,10 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
     // intentionally start blank so the participant must make an explicit choice.
     setContextDraft({});
     setExtraTextDraft('');
+    // Catch-up: every action sheet opens defaulted to "today". The
+    // day-chip strip below the input lets the participant pick אתמול /
+    // שלשום / etc. when an active catch-up session is in flight.
+    setCatchUpDaysBack(0);
     // Phase 8 — default the fan-out target set to every active group the
     // participant currently has. The checkbox UI below is rendered only
     // for multi-group-enabled participants with > 1 active group; for
@@ -1796,6 +1945,13 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
           // Legacy single-group hint kept for back-compat with old
           // clients during the rollout window.
           ...(selectedGroupId ? { groupId: selectedGroupId } : {}),
+          // Catch-up backdate. Only sent when an active session exists
+          // AND the participant chose a day other than today. Server
+          // re-validates against the session's allowedDaysBack and
+          // re-derives the canonical YYYY-MM-DD from server "now".
+          ...(ctx.activeCatchUpSession && catchUpDaysBack > 0
+            ? { effectiveDate: shiftLocalDateBack(catchUpDaysBack) }
+            : {}),
         }),
       });
 
@@ -2077,6 +2233,32 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
         {/* ── Tab 1: דיווח שוטף ── */}
         {activeTab === 'report' && (
           <div style={s.actionList}>
+            {/* Active catch-up banner — shown ONLY while a session is live.
+                Replaces the catch-up button area with a live mm:ss
+                countdown. Banner text comes from program config; {time}
+                is replaced with the current remaining countdown. */}
+            {ctx.activeCatchUpSession && catchUpRemainingMs !== null && catchUpRemainingMs > 0 && (
+              <div
+                style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  gap: 12, padding: '12px 14px', marginBottom: 10,
+                  background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 10,
+                  color: '#1d4ed8', fontSize: 13, fontWeight: 600,
+                }}
+                role="status"
+                aria-live="polite"
+              >
+                <span style={{ flex: 1, lineHeight: 1.5 }}>
+                  {(() => {
+                    const tpl = ctx.activeCatchUpSession.bannerText
+                      ?? `מצב השלמה פעיל — נשארו {time}`;
+                    const cd = formatCountdown(catchUpRemainingMs);
+                    return tpl.includes('{time}') ? tpl.replace('{time}', cd) : `${tpl} (${cd})`;
+                  })()}
+                </span>
+              </div>
+            )}
+
             {ctx.actions.map((action) => {
               const fb = feedback[action.id];
               const todayDisplay = getTodayDisplay(action, ctx.todayValues);
@@ -2110,6 +2292,33 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
               <p style={{ textAlign: 'center', color: '#9ca3af', padding: '40px 0', fontSize: 15 }}>
                 אין פעולות להצגה כרגע
               </p>
+            )}
+
+            {/* Catch-up button — quiet, at the bottom of the list. Only
+                rendered when the program has catch-up enabled, today is
+                in the configured availability dates, and no active
+                session for today has been started yet. The visibility
+                rule is computed entirely server-side and surfaced as
+                ctx.catchUp.availableToday so the client never has to
+                check dates / sessions / master flag separately. */}
+            {ctx.catchUp?.enabled && ctx.catchUp.availableToday && !ctx.activeCatchUpSession && (
+              <button
+                type="button"
+                onClick={() => { setCatchUpError(''); setCatchUpConfirmOpen(true); }}
+                style={{
+                  marginTop: 18,
+                  width: '100%',
+                  padding: '12px 16px',
+                  background: '#fff',
+                  color: '#1d4ed8',
+                  border: '1px dashed #93c5fd',
+                  borderRadius: 10,
+                  fontSize: 13, fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                {ctx.catchUp.buttonLabel || 'דיווח השלמה'}
+              </button>
             )}
           </div>
         )}
@@ -2791,6 +3000,42 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
             <p style={s.sheetActionName}>{activeAction.name}</p>
             <p style={s.sheetLabel}>{getInputLabel(activeAction)}</p>
 
+            {/* Catch-up day chips — shown ONLY when an active session
+                exists. Number of chips = allowedDaysBack + 1, e.g.
+                allowedDaysBack=2 → היום / אתמול / שלשום. Default
+                selection is היום so a participant who taps an action
+                without thinking about the day still credits today.
+                Outside an active session this block doesn't render
+                and the rest of the sheet behaves identically to before. */}
+            {ctx.activeCatchUpSession && (
+              <div style={{ marginBottom: 12 }}>
+                <p style={{ ...s.sheetLabel, marginBottom: 6 }}>לאיזה יום לשייך את הדיווח?</p>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {Array.from({ length: ctx.activeCatchUpSession.allowedDaysBack + 1 }, (_, i) => i).map((d) => {
+                    const selected = catchUpDaysBack === d;
+                    return (
+                      <button
+                        key={d}
+                        type="button"
+                        onClick={() => setCatchUpDaysBack(d)}
+                        style={{
+                          padding: '8px 14px',
+                          fontSize: 13, fontWeight: 600,
+                          background: selected ? '#1d4ed8' : '#fff',
+                          color: selected ? '#fff' : '#1d4ed8',
+                          border: `1px solid ${selected ? '#1d4ed8' : '#bfdbfe'}`,
+                          borderRadius: 999,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {catchUpDayLabel(d)}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {activeAction.inputType === 'number' ? (
               <div style={s.inputRow}>
                 <input
@@ -2988,6 +3233,97 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
           </div>
         )}
       </div>
+
+      {/* ── Catch-up confirm modal ────────────────────────────────────────
+          Locked: no backdrop close, explicit X. Title + body come from
+          program config; falls back to a minimal default if the admin
+          left them empty. Re-entering the portal mid-session never
+          opens this modal — the visibility rule on the trigger button
+          already excludes that case. */}
+      {catchUpConfirmOpen && ctx?.catchUp && (
+        <div
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            zIndex: 1100, padding: 16,
+          }}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div style={{
+            background: '#fff', borderRadius: 12, padding: 22, width: '100%',
+            maxWidth: 420, boxShadow: '0 20px 60px rgba(0,0,0,0.25)',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 12 }}>
+              <h3 style={{ fontSize: 17, fontWeight: 700, margin: 0, color: '#0f172a' }}>
+                {ctx.catchUp.confirmTitle?.trim() || 'להפעיל מצב השלמה?'}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setCatchUpConfirmOpen(false)}
+                disabled={catchUpStarting}
+                aria-label="סגור"
+                style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: catchUpStarting ? 'not-allowed' : 'pointer', lineHeight: 1 }}
+              >×</button>
+            </div>
+            <div style={{ fontSize: 14, color: '#475569', lineHeight: 1.6, marginBottom: 12 }}>
+              {ctx.catchUp.confirmBody?.trim()
+                || `לאחר ההפעלה תוכלי לדווח על דיווחים מ-${ctx.catchUp.allowedDaysBack} הימים האחרונים. החלון פתוח ל-${ctx.catchUp.durationMinutes} דקות בלבד.`}
+            </div>
+            {catchUpError && <p style={{ color: '#b91c1c', fontSize: 13, margin: '0 0 10px' }}>{catchUpError}</p>}
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                type="button"
+                onClick={() => setCatchUpConfirmOpen(false)}
+                disabled={catchUpStarting}
+                style={{
+                  padding: '8px 16px', fontSize: 13, fontWeight: 600,
+                  background: '#f1f5f9', color: '#374151',
+                  border: '1px solid #e2e8f0', borderRadius: 8,
+                  cursor: catchUpStarting ? 'not-allowed' : 'pointer',
+                }}
+              >ביטול</button>
+              <button
+                type="button"
+                onClick={() => { void startCatchUp(); }}
+                disabled={catchUpStarting}
+                style={{
+                  padding: '8px 16px', fontSize: 13, fontWeight: 700,
+                  background: catchUpStarting ? '#93c5fd' : '#1d4ed8',
+                  color: '#fff', border: 'none', borderRadius: 8,
+                  cursor: catchUpStarting ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {catchUpStarting ? 'מפעיל...' : 'הפעלי'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Catch-up expired toast ────────────────────────────────────────
+          Briefly visible when the timer reaches 0. Position: fixed top
+          so it doesn't fight the bottom nav. Auto-dismissed after 3.5s. */}
+      {catchUpExpiredToast && (
+        <div
+          style={{
+            position: 'fixed', top: 16, insetInline: 0,
+            display: 'flex', justifyContent: 'center',
+            zIndex: 1200, pointerEvents: 'none',
+          }}
+          role="status"
+          aria-live="polite"
+        >
+          <div style={{
+            background: '#1e293b', color: '#fff',
+            padding: '10px 18px', borderRadius: 999,
+            fontSize: 13, fontWeight: 600,
+            boxShadow: '0 8px 24px rgba(0,0,0,0.25)',
+          }}>
+            מצב השלמה הסתיים
+          </div>
+        </div>
+      )}
 
       {/* ── Day drill-down sheet (Phase 2A) ──────────────────────────────── */}
       {daySheetDate && (

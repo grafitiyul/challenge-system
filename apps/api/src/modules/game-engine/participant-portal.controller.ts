@@ -1,5 +1,5 @@
 import { Body, Controller, Delete, Get, Headers, Param, Patch, Post, Query } from '@nestjs/common';
-import { IsArray, IsObject, IsOptional, IsString } from 'class-validator';
+import { IsArray, IsObject, IsOptional, IsString, Matches } from 'class-validator';
 import {
   ParticipantPortalService,
   PortalContext,
@@ -63,6 +63,29 @@ class LogActionPortalDto {
   @IsArray()
   @IsString({ each: true })
   groupIds?: string[];
+
+  /**
+   * Catch-up mode — Asia/Jerusalem YYYY-MM-DD this report should be
+   * credited to. Optional; absent means "today" and the existing flow
+   * applies. When present the server validates an active CatchUpSession
+   * exists, the date is within session.allowedDaysBack, and the date is
+   * not in the future. The credited date is rewritten into the new
+   * rows' createdAt at 12:00 Asia/Jerusalem (approach B); occurredAt
+   * preserves the wall-clock submission time.
+   */
+  @IsOptional()
+  @IsString()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/)
+  effectiveDate?: string;
+}
+
+// Catch-up mode start request body. programId is required even for
+// single-program participants — an explicit programId in the body
+// removes any ambiguity in multi-group / multi-program scenarios and
+// makes "this session belongs to that program" airtight.
+class StartCatchUpDto {
+  @IsString()
+  programId: string;
 }
 
 // Phase 6.11: body for participant-scoped log editing.
@@ -109,9 +132,25 @@ export class ParticipantPortalController {
         extraText: dto.extraText,
         groupId: dto.groupId,
         groupIds: dto.groupIds,
+        effectiveDate: dto.effectiveDate,
       },
       idempotencyKey,
     );
+  }
+
+  // POST /api/public/participant/:token/catch-up/start
+  //
+  // Opens a catch-up session for (participant, programId, todayLocal).
+  // 403 when catchUpEnabled=false / today not in catchUpAvailableDates.
+  // 409 when an active session already exists today (returns it so the
+  // client can adopt). 4xx body always carries a Hebrew message field
+  // matching the rest of this surface.
+  @Post(':token/catch-up/start')
+  startCatchUp(
+    @Param('token') token: string,
+    @Body() dto: StartCatchUpDto,
+  ) {
+    return this.portalService.startCatchUpSession(token, dto.programId);
   }
 
   // Phase 6.11: PATCH /api/public/participant/:token/logs/:logId

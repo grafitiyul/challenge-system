@@ -1,4 +1,4 @@
-import { IsObject, IsOptional, IsString } from 'class-validator';
+import { IsDate, IsObject, IsOptional, IsString } from 'class-validator';
 
 export class LogActionDto {
   @IsString()
@@ -44,4 +44,25 @@ export class LogActionDto {
   @IsOptional()
   @IsString()
   clientSubmissionId?: string;
+
+  /**
+   * Catch-up mode override. When present, the engine writes UserActionLog,
+   * ScoreEvent and FeedEvent with createdAt = creditedAt (typically 12:00
+   * Asia/Jerusalem on the credited day). occurredAt remains the
+   * wall-clock insertion time via the schema's @default(now()).
+   * Set ONLY by the participant-portal service after it has validated an
+   * active CatchUpSession; not exposed on the public log DTO.
+   */
+  @IsOptional()
+  @IsDate()
+  creditedAt?: Date;
+
+  /**
+   * Suffix appended to the FeedEvent.message when a catch-up backdate
+   * is in effect (e.g. " (דווח עבור אתמול)"). Composed by the caller.
+   * Empty/undefined for normal "today" submissions.
+   */
+  @IsOptional()
+  @IsString()
+  messageSuffix?: string;
 }

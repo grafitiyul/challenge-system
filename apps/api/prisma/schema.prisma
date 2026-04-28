@@ -107,6 +107,33 @@ model Program {
   profileFields     ProgramProfileField[]
   profileValues     ParticipantProfileValue[]
 
+  // ── Catch-up mode (post-Shabbat / post-holiday backdated reporting) ─────
+  // Master kill switch. When false: button never shown, start endpoint
+  // refuses, even if availability dates include today.
+  catchUpEnabled         Boolean  @default(false)
+  // Participant-facing button label and modal copy. All Hebrew, no
+  // hardcoded religious wording in the backend — the admin controls
+  // every word the participant sees.
+  catchUpButtonLabel     String   @default("דיווח השלמה")
+  catchUpConfirmTitle    String?
+  catchUpConfirmBody     String?
+  // Session length in wall-clock minutes. Snapshotted onto the session
+  // row at start so changing this value mid-session never shortens or
+  // extends a running countdown.
+  catchUpDurationMinutes Int      @default(10)
+  // How many calendar days back (Asia/Jerusalem) a participant may
+  // backdate. allowedDaysBack=2 gives chips היום / אתמול / שלשום.
+  // Validated >= 1 (0 would be meaningless — same as turning off).
+  catchUpAllowedDaysBack Int      @default(2)
+  // Banner text displayed during an active session. {time} is replaced
+  // with mm:ss countdown on the client.
+  catchUpBannerText      String?
+  // Asia/Jerusalem YYYY-MM-DD strings on which the button is allowed
+  // to appear. Empty array = button never appears (safe default).
+  catchUpAvailableDates  String[] @default([])
+
+  catchUpSessions        CatchUpSession[]
+
   @@map("programs")
 }
 
@@ -316,6 +343,7 @@ model Participant {
   scoreEvents           ScoreEvent[]
   participantGameStates ParticipantGameState[]
   feedEvents            FeedEvent[]
+  catchUpSessions       CatchUpSession[]
 
   // Task engine
   weeklyPlans     WeeklyPlan[]
@@ -1170,6 +1198,13 @@ model UserActionLog {
   // submission. Kept OUT of contextJson intentionally — this is action-scoped
   // extra data, not a queryable dimension.
   extraText          String?
+  // For catch-up backdated reports: createdAt is rewritten to the credited
+  // day at 12:00 Asia/Jerusalem so existing "today" queries credit the
+  // report against the correct day. occurredAt always reflects wall-clock
+  // submission time, populated for every new row. For non-catch-up rows
+  // they're approximately equal; the divergence on backdated rows is the
+  // audit-trail signal.
+  occurredAt         DateTime    @default(now()) @db.Timestamptz
   createdAt          DateTime    @default(now()) @db.Timestamptz
 
   @@index([participantId, programId])
@@ -1213,6 +1248,8 @@ model ScoreEvent {
   // Unique index is partial: enforced only when sourceType='rule' AND bucketKey IS NOT NULL.
   bucketKey     String?
   metadata      Json?
+  // See UserActionLog.occurredAt — same semantics. Present on every row.
+  occurredAt    DateTime    @default(now()) @db.Timestamptz
   createdAt     DateTime    @default(now()) @db.Timestamptz
 
   dependents   ScoreEventDependency[] @relation("event")
@@ -1343,12 +1380,49 @@ model FeedEvent {
   scoreEventId  String?     @unique
   // Legacy payload — new writes prefer the dedicated columns above.
   metadata      Json?
+  // See UserActionLog.occurredAt — same semantics. Present on every row.
+  occurredAt    DateTime    @default(now()) @db.Timestamptz
   createdAt     DateTime    @default(now()) @db.Timestamptz
 
   @@index([groupId])
   @@index([programId])
   @@index([logId])
   @@map("feed_events")
+}
+
+// Catch-up mode session — gates backdated reporting for a participant
+// in a specific program. Started by the participant pressing the
+// admin-configured "catch-up" button on an availability date; expires
+// after the snapshotted duration. The (participantId, programId,
+// availabilityDate) uniqueness constraint enforces "one activation per
+// participant per program per available date" at the database layer.
+//
+// Audit-friendly: rows survive expiry. "Active" is derived
+// (expiresAt > now() AND endedAt IS NULL). The snapshot of
+// duration / allowedDaysBack / bannerText insulates a running session
+// from admin config edits made while it's still ticking.
+model CatchUpSession {
+  id               String      @id @default(cuid())
+  participantId    String
+  participant      Participant @relation(fields: [participantId], references: [id])
+  programId        String
+  program          Program     @relation(fields: [programId], references: [id])
+  // Asia/Jerusalem YYYY-MM-DD on which the session was opened. The
+  // visibility + start endpoints both check membership in
+  // program.catchUpAvailableDates against this same string.
+  availabilityDate String
+  startedAt        DateTime    @default(now()) @db.Timestamptz
+  expiresAt        DateTime    @db.Timestamptz
+  // Snapshot — never read live from program after creation.
+  durationMinutes  Int
+  allowedDaysBack  Int
+  bannerText       String?
+  endedAt          DateTime?   @db.Timestamptz
+  createdAt        DateTime    @default(now())
+
+  @@unique([participantId, programId, availabilityDate])
+  @@index([programId])
+  @@map("catch_up_sessions")
 }
 
 model QuestionnaireExternalLink {

@@ -15,6 +15,13 @@ function startOfDayUTC(d: Date): Date {
 /** Participant timezone. Hardcoded for now — all our participants live here. */
 const PARTICIPANT_TZ = 'Asia/Jerusalem';
 
+/** True when err is a Prisma unique-constraint violation (P2002). */
+function isUniqueViolation(e: unknown): boolean {
+  return (
+    e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002'
+  );
+}
+
 /**
  * Format a UTC timestamp as HH:MM in the participant's local wall clock.
  * Uses Intl so it works regardless of the Node server's system timezone.
@@ -38,6 +45,74 @@ function formatLocalDate(d: Date): string {
     month: '2-digit',
     day: '2-digit',
   }).format(d);
+}
+
+/**
+ * Convert a YYYY-MM-DD (interpreted as Asia/Jerusalem local date) into the
+ * UTC Date that represents 12:00 local on that calendar day. Used by
+ * catch-up mode to anchor a backdated UserActionLog/ScoreEvent/FeedEvent
+ * createdAt squarely inside the credited day under any "today" filter
+ * (which uses local-midnight boundaries).
+ *
+ * DST-safe within reason: noon is many hours away from any DST transition
+ * (transitions happen at 02:00–03:00 local), so the offset probed via
+ * Intl is stable across the gap. Do not use this helper for dates near
+ * midnight — it is intended only for 12:00 anchors.
+ */
+/**
+ * Calendar-day distance between two YYYY-MM-DD strings (treating each
+ * as Asia/Jerusalem local). Returns positive when `from` is earlier
+ * than `to`. Used to compute "how many days back is this catch-up
+ * report?" without instantiating Dates with timezone-dependent parsing.
+ */
+function daysBetweenLocalDates(from: string, to: string): number {
+  const [fy, fm, fd] = from.split('-').map(Number);
+  const [ty, tm, td] = to.split('-').map(Number);
+  // Use UTC noon on each day so the millisecond difference is exactly
+  // 24h × N — no DST edge cases on the divide.
+  const fUtc = Date.UTC(fy, fm - 1, fd, 12, 0, 0);
+  const tUtc = Date.UTC(ty, tm - 1, td, 12, 0, 0);
+  return Math.round((tUtc - fUtc) / DAY_MS);
+}
+
+function jerusalemNoonUtc(ymd: string): Date {
+  const [y, m, d] = ymd.split('-').map(Number);
+  // Probe: at UTC noon on this date, what does the Jerusalem wall clock
+  // read? +02 → 14, +03 → 15. The difference from 12 is the local offset.
+  const probe = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+  const jerHour = parseInt(
+    new Intl.DateTimeFormat('en-GB', {
+      timeZone: PARTICIPANT_TZ, hour: '2-digit', hour12: false,
+    }).format(probe),
+    10,
+  );
+  const offsetHours = jerHour - 12; // local is `offsetHours` ahead of UTC
+  return new Date(Date.UTC(y, m - 1, d, 12 - offsetHours, 0, 0));
+}
+
+/**
+ * Day-credit suffix used on backdated FeedEvent.message strings. No
+ * religious / holiday-specific wording — purely "<relative day>" so the
+ * admin's choice of which days to make available stays out of the
+ * backend message bank.
+ */
+function backdatedDaySuffix(daysBack: number): string {
+  if (daysBack <= 0) return '';
+  if (daysBack === 1) return ' (דווח עבור אתמול)';
+  if (daysBack === 2) return ' (דווח עבור שלשום)';
+  return ` (דווח עבור לפני ${daysBack} ימים)`;
+}
+
+/**
+ * Built-in default for the catch-up session-start FeedEvent. Used when
+ * the program has no `catchUpBannerText` configured. Includes duration
+ * + days-back so the group sees what's actually allowed without having
+ * to ask the admin.
+ */
+function defaultCatchUpActivationMessage(
+  fullName: string, durationMinutes: number, allowedDaysBack: number,
+): string {
+  return `${fullName} הפעילה מצב השלמה (${durationMinutes} דקות, עד ${allowedDaysBack} ימים אחורה)`;
 }
 
 /**
@@ -234,6 +309,30 @@ export interface PortalContext {
   }[];
   todayScore: number;
   todayValues: Record<string, number>; // actionId → current daily value
+  // Catch-up mode visibility state. Drives whether the participant sees
+  // the "catch-up" button at the bottom of "הנתונים שלי" tab, and
+  // whether an active session banner + day-chips are currently showing.
+  // null when the program has catch-up turned off entirely (master flag
+  // off) — saves the client from having to guard on individual fields.
+  catchUp: {
+    enabled: boolean;          // master switch (program.catchUpEnabled)
+    availableToday: boolean;   // today in catchUpAvailableDates AND no session today
+    buttonLabel: string;
+    confirmTitle: string | null;
+    confirmBody: string | null;
+    durationMinutes: number;
+    allowedDaysBack: number;
+    bannerText: string | null;
+  } | null;
+  // Set when an unexpired session exists right now. Banner + day chips
+  // render based on this. Outside an active session the field is null
+  // and the action sheet behaves exactly as before (today-only).
+  activeCatchUpSession: {
+    id: string;
+    expiresAt: string;
+    allowedDaysBack: number;
+    bannerText: string | null;
+  } | null;
 }
 
 export interface PortalStats {
@@ -516,6 +615,51 @@ export class ParticipantPortalService {
       }
     }
 
+    // ── Catch-up state ──────────────────────────────────────────────────
+    // Resolved entirely server-side so the client never has to check
+    // dates / sessions / master flag separately. When the master flag
+    // is off we hand back null and the participant UI suppresses the
+    // entire surface with a single conditional.
+    const program = pg.group.program;
+    const todayLocal = formatLocalDate(new Date());
+    let catchUp: PortalContext['catchUp'] = null;
+    let activeCatchUpSession: PortalContext['activeCatchUpSession'] = null;
+    if (program.catchUpEnabled) {
+      // Two cheap reads, both indexed: the today-row check (unique key)
+      // and the active-session lookup (same row when present).
+      const sessionToday = await this.prisma.catchUpSession.findUnique({
+        where: {
+          participantId_programId_availabilityDate: {
+            participantId: pg.participantId,
+            programId,
+            availabilityDate: todayLocal,
+          },
+        },
+      });
+      const todayInList = (program.catchUpAvailableDates ?? []).includes(todayLocal);
+      catchUp = {
+        enabled: true,
+        // "Available" requires the master flag, today in the configured
+        // dates, AND no session row already exists for today (one
+        // activation per participant per program per available date).
+        availableToday: todayInList && !sessionToday,
+        buttonLabel: program.catchUpButtonLabel,
+        confirmTitle: program.catchUpConfirmTitle,
+        confirmBody: program.catchUpConfirmBody,
+        durationMinutes: program.catchUpDurationMinutes,
+        allowedDaysBack: program.catchUpAllowedDaysBack,
+        bannerText: program.catchUpBannerText,
+      };
+      if (sessionToday && sessionToday.endedAt === null && sessionToday.expiresAt > new Date()) {
+        activeCatchUpSession = {
+          id: sessionToday.id,
+          expiresAt: sessionToday.expiresAt.toISOString(),
+          allowedDaysBack: sessionToday.allowedDaysBack,
+          bannerText: sessionToday.bannerText,
+        };
+      }
+    }
+
     return {
       participant: pg.participant,
       group: {
@@ -554,6 +698,162 @@ export class ParticipantPortalService {
       })),
       todayScore: scoreAgg._sum.points ?? 0,
       todayValues,
+      catchUp,
+      activeCatchUpSession,
+    };
+  }
+
+  // ─── Catch-up mode ─────────────────────────────────────────────────────────
+  // Open a session that allows the participant to backdate up to N
+  // days (snapshotted from program config). Read-side gating + the
+  // (participantId, programId, availabilityDate) unique constraint
+  // together guarantee one activation per participant per program per
+  // available local-Jerusalem date. Emits a public FeedEvent per active
+  // group so the activation is transparent in the group feed.
+  async startCatchUpSession(token: string, programId: string): Promise<{
+    id: string;
+    expiresAt: string;
+    durationMinutes: number;
+    allowedDaysBack: number;
+    bannerText: string | null;
+  }> {
+    if (!programId) throw new BadRequestException('programId נדרש');
+    const multi = await this.resolveMultiGroup(token);
+    if (multi.programId !== programId) {
+      throw new BadRequestException('התוכנית לא תואמת את המשתתפת');
+    }
+    const program = await this.prisma.program.findUnique({
+      where: { id: programId },
+      select: {
+        id: true, name: true, isActive: true,
+        catchUpEnabled: true,
+        catchUpDurationMinutes: true,
+        catchUpAllowedDaysBack: true,
+        catchUpAvailableDates: true,
+        catchUpBannerText: true,
+      },
+    });
+    if (!program || !program.isActive) throw new NotFoundException('התוכנית אינה פעילה');
+    if (!program.catchUpEnabled) {
+      throw new BadRequestException('מצב השלמה אינו פעיל');
+    }
+    const todayLocal = formatLocalDate(new Date());
+    if (!(program.catchUpAvailableDates ?? []).includes(todayLocal)) {
+      throw new BadRequestException('מצב השלמה לא מופעל היום');
+    }
+    if (program.catchUpAllowedDaysBack < 1) {
+      throw new BadRequestException('מספר הימים אחורה לא תקין');
+    }
+
+    // Conflict check against today's row (the @@unique key). If an
+    // active row exists, return it — double-tapping the button just
+    // adopts the in-flight session. If a row exists but already
+    // expired, this still rejects (per "one activation per available
+    // date" — the day is consumed even if the timer already ran out).
+    const existing = await this.prisma.catchUpSession.findUnique({
+      where: {
+        participantId_programId_availabilityDate: {
+          participantId: multi.participantId,
+          programId,
+          availabilityDate: todayLocal,
+        },
+      },
+    });
+    if (existing) {
+      const stillRunning = existing.endedAt === null && existing.expiresAt > new Date();
+      if (stillRunning) {
+        return {
+          id: existing.id,
+          expiresAt: existing.expiresAt.toISOString(),
+          durationMinutes: existing.durationMinutes,
+          allowedDaysBack: existing.allowedDaysBack,
+          bannerText: existing.bannerText,
+        };
+      }
+      throw new BadRequestException('כבר השתמשת במצב השלמה היום');
+    }
+
+    // Snapshot the program config now. Editing the program later does
+    // NOT change a session that's already running.
+    const startedAt = new Date();
+    const expiresAt = new Date(startedAt.getTime() + program.catchUpDurationMinutes * 60_000);
+
+    let session;
+    try {
+      session = await this.prisma.catchUpSession.create({
+        data: {
+          participantId: multi.participantId,
+          programId,
+          availabilityDate: todayLocal,
+          startedAt,
+          expiresAt,
+          durationMinutes: program.catchUpDurationMinutes,
+          allowedDaysBack: program.catchUpAllowedDaysBack,
+          bannerText: program.catchUpBannerText,
+        },
+      });
+    } catch (e) {
+      // Race: two browser tabs starting at once. The unique key catches
+      // it; the loser reads the winner's row and adopts.
+      if (isUniqueViolation(e)) {
+        const won = await this.prisma.catchUpSession.findUnique({
+          where: {
+            participantId_programId_availabilityDate: {
+              participantId: multi.participantId,
+              programId,
+              availabilityDate: todayLocal,
+            },
+          },
+        });
+        if (won) {
+          return {
+            id: won.id,
+            expiresAt: won.expiresAt.toISOString(),
+            durationMinutes: won.durationMinutes,
+            allowedDaysBack: won.allowedDaysBack,
+            bannerText: won.bannerText,
+          };
+        }
+      }
+      throw e;
+    }
+
+    // Activation feed event — one row per active group of this
+    // participant in this program (matches the regular fan-out shape).
+    // Publicly visible so the group sees catch-up mode being entered.
+    // Built-in default carries duration + days-back numbers so the
+    // group context is self-describing.
+    const participant = await this.prisma.participant.findUnique({
+      where: { id: multi.participantId },
+      select: { firstName: true, lastName: true },
+    });
+    const fullName = participant
+      ? [participant.firstName, participant.lastName].filter(Boolean).join(' ')
+      : 'משתתפת';
+    const message = defaultCatchUpActivationMessage(
+      fullName, program.catchUpDurationMinutes, program.catchUpAllowedDaysBack,
+    );
+    for (const g of multi.groups) {
+      await this.prisma.feedEvent.create({
+        data: {
+          participantId: multi.participantId,
+          programId,
+          groupId: g.id,
+          type: 'system',
+          message,
+          points: 0,
+          isPublic: true,
+          metadata: { catchUpSessionId: session.id, expiresAt: expiresAt.toISOString() },
+        },
+      });
+    }
+
+    return {
+      id: session.id,
+      expiresAt: session.expiresAt.toISOString(),
+      durationMinutes: session.durationMinutes,
+      allowedDaysBack: session.allowedDaysBack,
+      bannerText: session.bannerText,
     };
   }
 
@@ -574,11 +874,52 @@ export class ParticipantPortalService {
       // one FeedEvent per group. Validated against her active
       // memberships; falls back silently to the primary when omitted.
       groupIds?: string[];
+      // Catch-up mode — when set, the action is credited to that local
+      // Asia/Jerusalem date instead of today. Requires an active
+      // CatchUpSession; daysBack must be within session.allowedDaysBack;
+      // future dates are rejected.
+      effectiveDate?: string;
     },
     idempotencyKey?: string,
   ): Promise<{ pointsEarned: number; todayScore: number; todayValue: number | null }> {
     const multi = await this.resolveMultiGroup(token, dto.groupId);
     const { participantId, programId, activeGroupId } = multi;
+
+    // ── Catch-up validation ────────────────────────────────────────────────
+    // When effectiveDate is present we resolve it against an active
+    // session and compute the credited createdAt + the day-suffix that
+    // gets appended to the FeedEvent message. Both stay null when this
+    // is a normal "today" submission; the engine then falls through to
+    // its existing now()-based behavior with no semantic change.
+    const todayLocal = formatLocalDate(new Date());
+    let creditedAt: Date | null = null;
+    let messageSuffix: string = '';
+    if (dto.effectiveDate && dto.effectiveDate !== todayLocal) {
+      const session = await this.prisma.catchUpSession.findFirst({
+        where: {
+          participantId,
+          programId,
+          endedAt: null,
+          expiresAt: { gt: new Date() },
+        },
+        orderBy: { startedAt: 'desc' },
+      });
+      if (!session) {
+        throw new BadRequestException('אין סשן מצב השלמה פעיל');
+      }
+      // daysBack is calendar-day distance in Asia/Jerusalem.
+      const daysBack = daysBetweenLocalDates(dto.effectiveDate, todayLocal);
+      if (daysBack < 0) {
+        throw new BadRequestException('לא ניתן לדווח לתאריך עתידי');
+      }
+      if (daysBack > session.allowedDaysBack) {
+        throw new BadRequestException(
+          `לא ניתן לדווח יותר מ-${session.allowedDaysBack} ימים אחורה`,
+        );
+      }
+      creditedAt = jerusalemNoonUtc(dto.effectiveDate);
+      messageSuffix = backdatedDaySuffix(daysBack);
+    }
 
     // Resolve fan-out target set:
     //   - explicit `groupIds` → use those (validated below)
@@ -613,6 +954,12 @@ export class ParticipantPortalService {
       contextJson: dto.contextJson,
       extraText: dto.extraText,
       clientSubmissionId: idempotencyKey,
+      // Catch-up backdating: when set, the engine writes UserActionLog,
+      // ScoreEvent and FeedEvent with createdAt = creditedAt and the
+      // message gets the suffix appended. occurredAt stays now() via
+      // the @default(now()) on the column.
+      creditedAt: creditedAt ?? undefined,
+      messageSuffix: messageSuffix || undefined,
     });
 
     // Fan-out: one ScoreEvent + one FeedEvent per additional group, all
@@ -635,6 +982,11 @@ export class ParticipantPortalService {
             sourceId: dto.actionId,
             logId: result.log.id,
             points: result.scoreEvent.points,
+            // Backdate the fanned-out rows the same way the primary
+            // row was backdated. Without this, per-group leaderboards
+            // would credit yesterday's catch-up report to today on the
+            // non-primary groups.
+            ...(creditedAt ? { createdAt: creditedAt } : {}),
           },
         });
         if (primaryFeed?.message) {
@@ -644,10 +996,15 @@ export class ParticipantPortalService {
               programId,
               groupId: gid,
               type: 'action',
+              // The primary FeedEvent already has the day-suffix baked
+              // into its message (the engine appended it before write),
+              // so reading primaryFeed.message and copying it gives
+              // every fan-out group the suffix for free.
               message: primaryFeed.message,
               points: result.scoreEvent.points,
               isPublic: true,
               logId: result.log.id,
+              ...(creditedAt ? { createdAt: creditedAt } : {}),
             },
           });
         }

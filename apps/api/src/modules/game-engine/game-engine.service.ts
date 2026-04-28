@@ -867,6 +867,9 @@ export class GameEngineService {
         async (tx) => {
           // 1. UAL — placeholder chainRootId then self-rewrite (Prisma doesn't
           //    expose the generated cuid ahead of insert).
+          // creditedAt overrides createdAt for catch-up backdated reports.
+          // occurredAt is left to its @default(now()) on every code path,
+          // so it always reflects wall-clock submission time.
           const created = await tx.userActionLog.create({
             data: {
               participantId: dto.participantId,
@@ -881,6 +884,7 @@ export class GameEngineService {
               clientSubmissionId: dto.clientSubmissionId ?? null,
               schemaVersion: action.contextSchemaVersion,
               chainRootId: '__pending__',
+              ...(dto.creditedAt ? { createdAt: dto.creditedAt } : {}),
             },
           });
           const updatedLog = await tx.userActionLog.update({
@@ -899,6 +903,7 @@ export class GameEngineService {
               points: pointsForThisLog,
               logId: updatedLog.id,
               metadata: { actionName: action.name, value: dto.value ?? 'true' },
+              ...(dto.creditedAt ? { createdAt: dto.creditedAt } : {}),
             },
           });
 
@@ -946,19 +951,23 @@ export class GameEngineService {
               feedParts.push(`"${dto.extraText.trim().slice(0, 500)}"`);
             }
             const feedSuffix = feedParts.length ? ` · ${feedParts.join(' · ')}` : '';
+            // dto.messageSuffix carries the catch-up day-credit hint
+            // (e.g. " (דווח עבור אתמול)"); empty for normal submissions.
+            const catchUpSuffix = dto.messageSuffix ?? '';
             await tx.feedEvent.create({
               data: {
                 participantId: dto.participantId,
                 groupId: dto.groupId,
                 programId: dto.programId,
                 type: 'action',
-                message: `דיווחה על ${action.name}${valueStr}${feedSuffix}`,
+                message: `דיווחה על ${action.name}${valueStr}${feedSuffix}${catchUpSuffix}`,
                 points: pointsForThisLog,
                 isPublic: true,
                 logId: updatedLog.id,
                 scoreEventId: se.id,
                 // Legacy JSON payload — consumed by disabled deleteFeedEvent path.
                 metadata: { logId: updatedLog.id, scoreEventId: se.id },
+                ...(dto.creditedAt ? { createdAt: dto.creditedAt } : {}),
               },
             });
           }

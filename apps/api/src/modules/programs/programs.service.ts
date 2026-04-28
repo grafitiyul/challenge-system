@@ -68,6 +68,19 @@ export class ProgramsService {
         ...(dto.rulesContent !== undefined ? { rulesContent: dto.rulesContent ?? null } : {}),
         ...(dto.rulesPublished !== undefined ? { rulesPublished: dto.rulesPublished } : {}),
         ...(dto.profileTabEnabled !== undefined ? { profileTabEnabled: dto.profileTabEnabled } : {}),
+        // Catch-up mode — explicit whitelist mirrors the rest of this update.
+        // Available-dates list is deduped + sorted before persist so the admin
+        // UI never has to sort or worry about duplicates from rapid clicks.
+        ...(dto.catchUpEnabled !== undefined ? { catchUpEnabled: dto.catchUpEnabled } : {}),
+        ...(dto.catchUpButtonLabel !== undefined ? { catchUpButtonLabel: dto.catchUpButtonLabel } : {}),
+        ...(dto.catchUpConfirmTitle !== undefined ? { catchUpConfirmTitle: dto.catchUpConfirmTitle ?? null } : {}),
+        ...(dto.catchUpConfirmBody !== undefined ? { catchUpConfirmBody: dto.catchUpConfirmBody ?? null } : {}),
+        ...(dto.catchUpDurationMinutes !== undefined ? { catchUpDurationMinutes: dto.catchUpDurationMinutes } : {}),
+        ...(dto.catchUpAllowedDaysBack !== undefined ? { catchUpAllowedDaysBack: dto.catchUpAllowedDaysBack } : {}),
+        ...(dto.catchUpBannerText !== undefined ? { catchUpBannerText: dto.catchUpBannerText ?? null } : {}),
+        ...(dto.catchUpAvailableDates !== undefined
+          ? { catchUpAvailableDates: Array.from(new Set(dto.catchUpAvailableDates)).sort() }
+          : {}),
       },
     });
   }
