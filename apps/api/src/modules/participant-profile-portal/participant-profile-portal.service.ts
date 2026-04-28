@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 
@@ -43,10 +43,12 @@ export interface FileMeta {
   uploadedAt: string;
 }
 
-// Hard cap on imageGallery entries. The portal also enforces it on the
-// client (disable the upload button at the cap), but the server is the
-// source of truth so a hand-crafted PATCH can't exceed it either.
-const GALLERY_MAX_FILES = 10;
+// Soft cap on imageGallery entries. The participant portal renders
+// only the latest 10 with a "load more" button, so a busy gallery
+// stays manageable on mobile while still letting motivated users
+// keep their full timeline. 30 is the server-side hard ceiling — a
+// hand-crafted PATCH cannot exceed it.
+const GALLERY_MAX_FILES = 30;
 
 const SYSTEM_FIELD_PARTICIPANT_COLUMNS: Record<string, keyof Prisma.ParticipantUpdateInput> = {
   firstName: 'firstName',
@@ -61,6 +63,11 @@ const SYSTEM_FIELD_PARTICIPANT_COLUMNS: Record<string, keyof Prisma.ParticipantU
 @Injectable()
 export class ParticipantProfilePortalService {
   constructor(private readonly prisma: PrismaService) {}
+
+  // Per-participant storage observability. Not enforced as a quota yet —
+  // logged after every upload so we can spot heavy users in the API
+  // logs and decide where to draw a line later.
+  private readonly logger = new Logger(ParticipantProfilePortalService.name);
 
   // ── Token resolution ────────────────────────────────────────────────────
   // Mirrors the helper in game-engine.participant-portal.service so
@@ -253,6 +260,20 @@ export class ParticipantProfilePortalService {
         sizeBytes: info.sizeBytes,
       },
     });
+    // Storage observability — log per-participant aggregates so we can
+    // spot heavy users in the API logs without standing up a dashboard.
+    // Cheap query: hits an indexed (participantId, category) row set.
+    // Wrapped in catch so a failed log NEVER breaks the upload response.
+    void this.prisma.participantUploadedFile
+      .aggregate({ where: { participantId }, _count: { _all: true }, _sum: { sizeBytes: true } })
+      .then((agg) => {
+        const totalMb = ((agg._sum.sizeBytes ?? 0) / 1024 / 1024).toFixed(1);
+        this.logger.log(
+          `[storage] participant=${participantId} files=${agg._count._all} totalMB=${totalMb} ` +
+          `lastFile mime=${info.mimeType} size=${(info.sizeBytes / 1024 / 1024).toFixed(2)}MB`,
+        );
+      })
+      .catch((err) => this.logger.warn(`[storage] aggregate failed for ${participantId}: ${String(err)}`));
     return {
       id: row.id, url: row.url, mimeType: row.mimeType,
       sizeBytes: row.sizeBytes, uploadedAt: row.uploadedAt.toISOString(),

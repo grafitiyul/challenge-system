@@ -12,6 +12,7 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import * as path from 'path';
+import * as fs from 'fs';
 import { resolveUploadsDir } from '../upload/uploads-dir';
 import { AdminSessionGuard } from '../auth/admin-session.guard';
 import { ParticipantProfilePortalService, ProfileSnapshot } from './participant-profile-portal.service';
@@ -33,6 +34,12 @@ interface UploadedFileInfo {
 }
 
 const UPLOADS_DIR = resolveUploadsDir();
+
+// Per-mime size budgets. Images stay tight at 10 MB — anything bigger
+// is almost certainly an unflattened phone export. Videos get 50 MB so
+// short clips for "before photos" land cleanly without re-encoding.
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const MAX_VIDEO_BYTES = 50 * 1024 * 1024;
 
 function generateFilename(originalname: string): string {
   const ext = path.extname(originalname).toLowerCase();
@@ -75,9 +82,11 @@ export class ParticipantProfilePortalController {
           cb(null, generateFilename(file.originalname));
         },
       }),
-      // 20 MB ceiling — image avatars stay tiny; video clips
-      // (before-photos gallery, etc.) need the headroom.
-      limits: { fileSize: 20 * 1024 * 1024 },
+      // 50 MB ceiling — videos can run to 50 MB; we then re-check
+      // image uploads against the tighter 10 MB image budget AFTER
+      // multer wrote the file (multer's fileFilter runs before any
+      // bytes arrive, so size + mime can't be cross-checked there).
+      limits: { fileSize: MAX_VIDEO_BYTES },
       fileFilter: (_req: unknown, file: { originalname: string; mimetype: string }, cb: (err: Error | null, accept: boolean) => void) => {
         // Images: jpg/jpeg/png/gif/webp.  Videos: mp4/mov/webm.
         // Both extension and mime must agree — prevents an mp4 file
@@ -101,6 +110,15 @@ export class ParticipantProfilePortalController {
     @UploadedFile() file: UploadedFileInfo,
   ): Promise<{ id: string; url: string; mimeType: string; sizeBytes: number; uploadedAt: string }> {
     if (!file) throw new BadRequestException('No file uploaded');
+    // Per-mime budget — images stay small (10 MB), videos may run to
+    // 50 MB. multer's fileFilter only sees the mime, not the size, so
+    // the cross-check happens here AFTER the file landed on disk.
+    // On a violation we delete the temporary file so we don't leak
+    // bytes under UPLOADS_DIR.
+    if (/^image\//i.test(file.mimetype) && file.size > MAX_IMAGE_BYTES) {
+      try { fs.unlinkSync(file.path); } catch { /* file may already be gone */ }
+      throw new BadRequestException(`קובץ תמונה חורג מ-${MAX_IMAGE_BYTES / 1024 / 1024} MB`);
+    }
     const ctx = await this.svc.resolveByToken(token);
     return this.svc.recordUpload(ctx.participantId, {
       url: `/uploads/${file.filename}`,

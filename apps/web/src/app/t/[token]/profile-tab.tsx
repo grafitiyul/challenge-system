@@ -350,9 +350,12 @@ function ImageField(props: {
 // configs, but the rendering now branches on each file's mimeType so a
 // before-photos field can hold a mix of stills and short clips.
 
-// Hard caps mirror server constants (see participant-profile-portal.service).
-const GALLERY_MAX_FILES = 10;
-const MAX_UPLOAD_BYTES = 20 * 1024 * 1024; // 20 MB
+// Caps mirror server constants (see participant-profile-portal.service +
+// participant-profile-portal.controller).
+const GALLERY_MAX_FILES   = 30;                  // server hard ceiling
+const GALLERY_VISIBLE     = 10;                  // initially-rendered cells; "load more" reveals the rest
+const MAX_IMAGE_BYTES     = 10 * 1024 * 1024;    // 10 MB per image
+const MAX_VIDEO_BYTES     = 50 * 1024 * 1024;    // 50 MB per video
 
 function ImageGalleryField(props: {
   token: string;
@@ -364,10 +367,18 @@ function ImageGalleryField(props: {
   const inputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [errMsg, setErrMsg] = useState('');
+  const [showAll, setShowAll] = useState(false);
   const ids: string[] = Array.isArray(props.value)
     ? (props.value as unknown[]).filter((v): v is string => typeof v === 'string')
     : [];
   const slotsLeft = Math.max(0, GALLERY_MAX_FILES - ids.length);
+  // Render newest-first. The server stores append-order, so reverse to
+  // surface the latest cell at the top. Cap visible cells unless the
+  // participant taps "הצג את כולן" — keeps mobile scrolling sane on
+  // big galleries without losing access to older entries.
+  const orderedIds = [...ids].reverse();
+  const visibleIds = showAll ? orderedIds : orderedIds.slice(0, GALLERY_VISIBLE);
+  const hiddenCount = Math.max(0, orderedIds.length - visibleIds.length);
 
   async function persist(nextIds: string[]) {
     setErrMsg('');
@@ -382,16 +393,20 @@ function ImageGalleryField(props: {
     setBusy(true);
     setErrMsg('');
     try {
-      // Client-side preflight: fail fast if any selected file exceeds
-      // 20 MB or if the resulting array would blow past the 10-slot cap.
-      // Server enforces both, but we surface the message immediately.
+      // Client-side preflight: per-mime size budget + cap check. Server
+      // enforces both for real; we surface the message immediately so
+      // the participant doesn't wait for the round-trip.
       const incoming = Array.from(fileList);
       if (incoming.length > slotsLeft) {
         throw { message: `ניתן להוסיף עוד ${slotsLeft} קבצים בלבד (מקסימום ${GALLERY_MAX_FILES}).` };
       }
-      const tooBig = incoming.find((f) => f.size > MAX_UPLOAD_BYTES);
-      if (tooBig) {
-        throw { message: `הקובץ "${tooBig.name}" חורג מ-20MB.` };
+      for (const f of incoming) {
+        const isVideo = /^video\//i.test(f.type);
+        const limit = isVideo ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES;
+        if (f.size > limit) {
+          const limitMb = Math.round(limit / 1024 / 1024);
+          throw { message: `הקובץ "${f.name}" חורג מ-${limitMb}MB (${isVideo ? 'וידאו' : 'תמונה'}).` };
+        }
       }
 
       const newIds: string[] = [];
@@ -441,7 +456,7 @@ function ImageGalleryField(props: {
       />
       {ids.length > 0 && (
         <div style={s.galleryGrid}>
-          {ids.map((id) => {
+          {visibleIds.map((id) => {
             const meta = props.files[id];
             if (!meta) return null;
             const isVideo = /^video\//i.test(meta.mimeType);
@@ -470,6 +485,20 @@ function ImageGalleryField(props: {
           })}
         </div>
       )}
+      {hiddenCount > 0 && (
+        <button
+          type="button"
+          onClick={() => setShowAll(true)}
+          style={{
+            display: 'block', width: '100%', marginTop: 8, padding: '8px 12px',
+            fontSize: 13, fontWeight: 600, color: '#1d4ed8',
+            background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8,
+            cursor: 'pointer',
+          }}
+        >
+          הצג את כולן ({hiddenCount} נוספות)
+        </button>
+      )}
       <button
         type="button"
         onClick={() => inputRef.current?.click()}
@@ -482,8 +511,8 @@ function ImageGalleryField(props: {
       >
         {busy ? 'מעלה...' : atCap ? `מקסימום ${GALLERY_MAX_FILES} קבצים` : '+ הוסיפי תמונות / וידאו'}
       </button>
-      <p style={{ fontSize: 11, color: '#94a3b8', margin: '6px 2px 0' }}>
-        עד {GALLERY_MAX_FILES} קבצים, עד 20MB לקובץ. תמונות (jpg/png/gif/webp) או וידאו (mp4/mov/webm).
+      <p style={{ fontSize: 11, color: '#94a3b8', margin: '6px 2px 0', lineHeight: 1.5 }}>
+        עד {GALLERY_MAX_FILES} קבצים. תמונות עד 10MB (jpg/png/gif/webp), וידאו עד 50MB (mp4/mov/webm).
       </p>
       {errMsg && <p style={s.fieldErr}>{errMsg}</p>}
     </div>
