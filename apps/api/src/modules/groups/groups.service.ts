@@ -140,6 +140,127 @@ export class GroupsService {
     return { ok: true };
   }
 
+  // Per-participant completion tracking for ONE questionnaire template
+  // inside ONE group. Read-only admin visibility surface for the
+  // /admin/groups/[id] questionnaires tab → "מעקב מילוי" modal.
+  //
+  // What "completed" means:
+  //   - There exists a QuestionnaireSubmission for this (templateId,
+  //     participantId) pair with status='completed' (i.e. submittedAt
+  //     was stamped at finalization). Drafts do NOT count.
+  //
+  // Two queries, no N+1:
+  //   1. active participants in this group
+  //   2. submissions for those participants for this template
+  // Then a JS merge picks the most-recent submission per participant
+  // (preferring completed over draft, then most-recent submittedAt /
+  // createdAt).
+  async getQuestionnaireCompletion(groupId: string, templateId: string) {
+    const group = await this.prisma.group.findUnique({
+      where: { id: groupId },
+      select: {
+        id: true,
+        programId: true,
+        participantGroups: {
+          where: { isActive: true },
+          select: {
+            participant: {
+              select: {
+                id: true, firstName: true, lastName: true,
+                phoneNumber: true, email: true,
+              },
+            },
+          },
+          orderBy: { joinedAt: 'asc' },
+        },
+      },
+    });
+    if (!group) throw new NotFoundException(`Group ${groupId} not found`);
+
+    const template = await this.prisma.questionnaireTemplate.findUnique({
+      where: { id: templateId },
+      select: { id: true, internalName: true, publicTitle: true, programId: true },
+    });
+    if (!template) throw new NotFoundException(`Questionnaire ${templateId} not found`);
+    // Sanity: only allow templates that belong to this group's program.
+    // Prevents the admin from URL-poking another program's template
+    // through this surface.
+    if (group.programId && template.programId && template.programId !== group.programId) {
+      throw new BadRequestException('Questionnaire is not linked to this group\'s program');
+    }
+
+    const memberIds = group.participantGroups.map((pg) => pg.participant.id);
+
+    const submissions = memberIds.length === 0 ? [] : await this.prisma.questionnaireSubmission.findMany({
+      where: {
+        templateId,
+        participantId: { in: memberIds },
+      },
+      select: {
+        id: true,
+        participantId: true,
+        status: true,
+        submittedAt: true,
+        createdAt: true,
+        submittedByMode: true,
+      },
+      orderBy: [
+        // Completed first, so the per-participant pick below picks a
+        // completed submission even if a later draft exists.
+        { submittedAt: 'desc' },
+        { createdAt: 'desc' },
+      ],
+    });
+
+    // Per participant: prefer completed (with submittedAt), else most
+    // recent draft, else null. submissions are already ordered, so the
+    // first hit per participantId wins.
+    const byParticipant = new Map<string, typeof submissions[number]>();
+    for (const sub of submissions) {
+      if (!sub.participantId) continue;
+      const existing = byParticipant.get(sub.participantId);
+      if (!existing) {
+        byParticipant.set(sub.participantId, sub);
+        continue;
+      }
+      // Upgrade to a completed submission if we already cached a draft.
+      if (existing.status !== 'completed' && sub.status === 'completed') {
+        byParticipant.set(sub.participantId, sub);
+      }
+    }
+
+    const rows = group.participantGroups.map((pg) => {
+      const p = pg.participant;
+      const sub = byParticipant.get(p.id) ?? null;
+      const hasCompleted = sub?.status === 'completed';
+      return {
+        participantId: p.id,
+        firstName: p.firstName,
+        lastName: p.lastName,
+        phoneNumber: p.phoneNumber,
+        email: p.email,
+        hasCompleted,
+        submissionId: sub?.id ?? null,
+        submittedAt: sub?.submittedAt ?? null,
+        status: hasCompleted ? 'completed' as const
+              : sub ? 'draft' as const
+              : 'none' as const,
+        submittedByMode: sub?.submittedByMode ?? null,
+      };
+    });
+
+    const completedCount = rows.filter((r) => r.hasCompleted).length;
+    return {
+      templateId: template.id,
+      templateInternalName: template.internalName,
+      templatePublicTitle: template.publicTitle,
+      totalParticipants: rows.length,
+      completedCount,
+      missingCount: rows.length - completedCount,
+      rows,
+    };
+  }
+
   // Returns active questionnaire templates that are linked to the same program as this group.
   // Returns empty array if the group has no program or no questionnaires are linked.
   async listQuestionnaires(groupId: string) {

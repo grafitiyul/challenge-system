@@ -210,6 +210,12 @@ export default function GroupDetailPage() {
   const [questionnaires, setQuestionnaires] = useState<QTemplate[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // Questionnaire completion tracking modal — opens with a template
+  // when the admin clicks "מעקב מילוי" on a row in the שאלונים tab.
+  // Holds the template metadata so the modal header can render before
+  // the completion fetch resolves.
+  const [trackingTemplate, setTrackingTemplate] = useState<QTemplate | null>(null);
+
   // Bulk move — selected participant IDs + destination picker visibility.
   const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set());
   const [bulkMoveOpen, setBulkMoveOpen] = useState(false);
@@ -1055,10 +1061,23 @@ export default function GroupDetailPage() {
                         <div style={{ fontWeight: 600, fontSize: 14, color: '#0f172a' }}>{q.internalName}</div>
                         <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>{q.publicTitle}</div>
                       </div>
-                      <Link href={`/admin/questionnaires/${q.id}`}
-                        style={{ fontSize: 12, color: '#6b7280', padding: '3px 8px', flexShrink: 0, textDecoration: 'none' }}>
-                        ערוך ↗
-                      </Link>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                        <button
+                          type="button"
+                          onClick={() => setTrackingTemplate(q)}
+                          style={{
+                            fontSize: 12, color: '#1d4ed8', background: '#eff6ff',
+                            border: '1px solid #bfdbfe', borderRadius: 6,
+                            padding: '4px 10px', cursor: 'pointer', fontWeight: 600,
+                          }}
+                        >
+                          מעקב מילוי
+                        </button>
+                        <Link href={`/admin/questionnaires/${q.id}`}
+                          style={{ fontSize: 12, color: '#6b7280', padding: '3px 8px', textDecoration: 'none' }}>
+                          ערוך ↗
+                        </Link>
+                      </div>
                     </div>
                     {q.externalLinks.length > 0 && (
                       <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
@@ -2174,6 +2193,17 @@ export default function GroupDetailPage() {
       )}
 
       {/* ══════════════════════════════════════════════════════════════════════
+          MODAL — QUESTIONNAIRE COMPLETION TRACKING
+      ══════════════════════════════════════════════════════════════════════ */}
+      {trackingTemplate && (
+        <CompletionTrackingModal
+          groupId={id}
+          template={trackingTemplate}
+          onClose={() => setTrackingTemplate(null)}
+        />
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════════════
           MODAL — ADD PARTICIPANT
       ══════════════════════════════════════════════════════════════════════ */}
       {bulkMoveOpen && (
@@ -2365,6 +2395,216 @@ function Section({
         {action}
       </div>
       <div style={{ padding: '16px 20px' }}>{children}</div>
+    </div>
+  );
+}
+
+// ─── Questionnaire completion tracking modal ──────────────────────────────────
+// Locked in-app modal: no backdrop close, explicit X. Read-only — never
+// mutates submissions. Reuses existing routes:
+//   - GET  /api/groups/:groupId/questionnaires/:templateId/completion
+//   - link "פתחי תשובות"  → /admin/participants/:pid?tab=questionnaires
+//   - link "מלאי עבור משתתפת" → /admin/questionnaires/:tid/fill?participantId=:pid
+
+interface CompletionRow {
+  participantId: string;
+  firstName: string;
+  lastName: string | null;
+  phoneNumber: string;
+  email: string | null;
+  hasCompleted: boolean;
+  submissionId: string | null;
+  submittedAt: string | null;
+  status: 'completed' | 'draft' | 'none';
+  submittedByMode: 'internal' | 'external' | null;
+}
+interface CompletionResponse {
+  templateId: string;
+  templateInternalName: string;
+  templatePublicTitle: string;
+  totalParticipants: number;
+  completedCount: number;
+  missingCount: number;
+  rows: CompletionRow[];
+}
+
+function CompletionTrackingModal(props: {
+  groupId: string;
+  template: QTemplate;
+  onClose: () => void;
+}) {
+  const { groupId, template, onClose } = props;
+  const [data, setData] = useState<CompletionResponse | null>(null);
+  const [err, setErr] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState<'completed' | 'missing'>('missing');
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    apiFetch<CompletionResponse>(
+      `${BASE_URL}/groups/${groupId}/questionnaires/${template.id}/completion`,
+      { cache: 'no-store' },
+    )
+      .then((r) => { if (!cancelled) { setData(r); setErr(''); } })
+      .catch((e) => { if (!cancelled) setErr(e instanceof Error ? e.message : 'טעינה נכשלה'); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [groupId, template.id]);
+
+  const visibleRows: CompletionRow[] = data
+    ? data.rows.filter((r) => tab === 'completed' ? r.hasCompleted : !r.hasCompleted)
+    : [];
+
+  const stat = (label: string, value: number, color: string): React.ReactNode => (
+    <div style={{
+      flex: 1, minWidth: 0, background: '#f8fafc', border: '1px solid #e2e8f0',
+      borderRadius: 8, padding: '10px 12px', textAlign: 'center',
+    }}>
+      <div style={{ fontSize: 22, fontWeight: 700, color }}>{value}</div>
+      <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>{label}</div>
+    </div>
+  );
+
+  return (
+    <div
+      style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100, padding: 16 }}
+      role="dialog"
+      aria-modal="true"
+    >
+      <div style={{ background: '#fff', borderRadius: 12, padding: 22, width: '100%', maxWidth: 640, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.25)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14, gap: 12 }}>
+          <div style={{ minWidth: 0 }}>
+            <h3 style={{ fontSize: 17, fontWeight: 700, margin: 0, color: '#0f172a' }}>מעקב מילוי שאלון</h3>
+            <div style={{ fontSize: 13, color: '#475569', marginTop: 4 }}>{template.internalName}</div>
+            <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 1 }}>{template.publicTitle}</div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="סגור"
+            style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: 'pointer', lineHeight: 1, flexShrink: 0 }}
+          >×</button>
+        </div>
+
+        {loading && <p style={{ textAlign: 'center', color: '#94a3b8', fontSize: 14, padding: '24px 0' }}>טוען...</p>}
+        {err && !loading && <p style={{ color: '#b91c1c', fontSize: 13 }}>{err}</p>}
+
+        {data && !loading && !err && (
+          <>
+            {/* Summary stats */}
+            <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
+              {stat('משתתפות בקבוצה', data.totalParticipants, '#0f172a')}
+              {stat('מילאו', data.completedCount, '#15803d')}
+              {stat('לא מילאו', data.missingCount, '#b45309')}
+            </div>
+
+            {/* Tabs */}
+            <div style={{ display: 'flex', gap: 4, marginBottom: 12, borderBottom: '1px solid #e2e8f0' }}>
+              {(['missing', 'completed'] as const).map((key) => {
+                const active = tab === key;
+                const label = key === 'missing'
+                  ? `לא מילאו (${data.missingCount})`
+                  : `מילאו (${data.completedCount})`;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setTab(key)}
+                    style={{
+                      background: 'none', border: 'none', cursor: 'pointer',
+                      padding: '8px 14px', fontSize: 13, fontWeight: 600,
+                      color: active ? '#1d4ed8' : '#64748b',
+                      borderBottom: active ? '2px solid #1d4ed8' : '2px solid transparent',
+                      marginBottom: -1,
+                    }}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Rows */}
+            {visibleRows.length === 0 ? (
+              <p style={{ color: '#94a3b8', fontSize: 13, textAlign: 'center', padding: '20px 0' }}>
+                {tab === 'completed' ? 'אף משתתפת עוד לא מילאה' : 'כל המשתתפות מילאו ✓'}
+              </p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+                {visibleRows.map((row, idx) => (
+                  <div
+                    key={row.participantId}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 10,
+                      padding: '10px 0',
+                      borderBottom: idx < visibleRows.length - 1 ? '1px solid #f1f5f9' : 'none',
+                    }}
+                  >
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 14, fontWeight: 600, color: '#0f172a' }}>
+                        {displayName(row)}
+                        {row.status === 'draft' && (
+                          <span style={{
+                            fontSize: 10, fontWeight: 600, color: '#92400e',
+                            background: '#fef3c7', borderRadius: 999,
+                            padding: '1px 7px', marginInlineStart: 6,
+                          }}>טיוטה</span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 12, color: '#6b7280', direction: 'ltr', textAlign: 'right' }}>
+                        {row.phoneNumber}{row.email ? `  ·  ${row.email}` : ''}
+                      </div>
+                      {row.hasCompleted && row.submittedAt && (
+                        <div style={{ fontSize: 11, color: '#15803d', marginTop: 2 }}>
+                          הוגש: {formatDate(row.submittedAt)}
+                          {row.submittedByMode === 'external' && ' · חיצוני'}
+                          {row.submittedByMode === 'internal' && ' · פנימי'}
+                        </div>
+                      )}
+                    </div>
+                    {row.hasCompleted ? (
+                      <Link
+                        href={`/admin/participants/${row.participantId}?tab=questionnaires`}
+                        style={{
+                          fontSize: 12, color: '#15803d', background: '#f0fdf4',
+                          border: '1px solid #bbf7d0', borderRadius: 6,
+                          padding: '5px 10px', textDecoration: 'none', fontWeight: 600,
+                          flexShrink: 0,
+                        }}
+                      >
+                        פתחי תשובות ↗
+                      </Link>
+                    ) : (
+                      <Link
+                        href={`/admin/questionnaires/${template.id}/fill?participantId=${row.participantId}`}
+                        style={{
+                          fontSize: 12, color: '#1d4ed8', background: '#eff6ff',
+                          border: '1px solid #bfdbfe', borderRadius: 6,
+                          padding: '5px 10px', textDecoration: 'none', fontWeight: 600,
+                          flexShrink: 0,
+                        }}
+                      >
+                        מלאי עבור משתתפת ↗
+                      </Link>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 18 }}>
+          <button
+            type="button"
+            onClick={onClose}
+            style={{ padding: '8px 16px', background: '#f1f5f9', border: '1px solid #e2e8f0', color: '#374151', borderRadius: 8, fontSize: 13, cursor: 'pointer' }}
+          >
+            סגור
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

@@ -58,6 +58,17 @@ export class GroupsController {
     return this.groupsService.listQuestionnaires(id);
   }
 
+  // Per-template completion snapshot for THIS group. Powers the
+  // "מעקב מילוי" tracking modal in the admin group page. Read-only:
+  // never mutates a submission, never auto-creates participants.
+  @Get(':id/questionnaires/:templateId/completion')
+  getQuestionnaireCompletion(
+    @Param('id') id: string,
+    @Param('templateId') templateId: string,
+  ) {
+    return this.groupsService.getQuestionnaireCompletion(id, templateId);
+  }
+
   // ── Participant management ──────────────────────────────────────────────────
 
   @Post(':id/participants')
