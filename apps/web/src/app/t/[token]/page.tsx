@@ -2498,7 +2498,14 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                       {row.firstName}{row.lastName ? ` ${row.lastName}` : ''}
                       {row.isMe && <span style={s.meBadge}> (את)</span>}
                     </span>
-                    <span style={s.leaderScore}>{row.totalScore}</span>
+                    <span style={s.leaderScore}>
+                      {row.totalScore}
+                      {row.todayScore !== 0 && (
+                        <span style={s.leaderScoreToday}>
+                          {' ('}{row.todayScore > 0 ? '+' : ''}{row.todayScore} היום{')'}
+                        </span>
+                      )}
+                    </span>
                   </div>
                 ))}
               </div>
@@ -4180,6 +4187,12 @@ const s = {
     fontSize: 15,
     fontWeight: 700,
     color: '#1d4ed8',
+  } satisfies React.CSSProperties,
+
+  leaderScoreToday: {
+    fontSize: 12,
+    fontWeight: 500,
+    color: '#94a3b8',
   } satisfies React.CSSProperties,
 
   meBadge: {
