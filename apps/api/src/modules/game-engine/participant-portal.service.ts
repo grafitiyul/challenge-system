@@ -793,12 +793,14 @@ export class ParticipantPortalService {
     // explicitly credited to it. No member-set duplicates; no leakage
     // from groups she opted out of.
     //
-    // Phase 8.1 — show every event from the last 48 hours instead of
-    // the previous hard 30-row cap. The portal wraps the result in a
-    // scrollable container, so a busy group can render many cards
-    // without pushing other UI off-screen. The 500-row safety cap below
-    // protects the response from runaway groups (e.g. mass-import) and
-    // is essentially never hit in practice.
+    // Product behavior is "show the last 48 hours". The take ceiling
+    // below is a SAFETY ceiling, not the product limit — it only
+    // prevents runaway payloads when a group has an unusually high
+    // event volume in 48 hours (mass imports, future automation,
+    // misconfigured rules). Normal groups produce dozens of rows per
+    // day, well under the ceiling. Do not lower it below the product
+    // intent of "show 48 hours" — and do not load more than this
+    // many rows in a single response.
     const multi = await this.resolveMultiGroup(token, requestedGroupId);
     const since = new Date(Date.now() - 48 * 60 * 60 * 1000);
     const events = await this.prisma.feedEvent.findMany({
@@ -808,7 +810,7 @@ export class ParticipantPortalService {
         createdAt: { gte: since },
       },
       orderBy: { createdAt: 'desc' },
-      take: 500,
+      take: 1500,
       include: {
         participant: { select: { id: true, firstName: true, lastName: true, profileImageUrl: true } },
       },
