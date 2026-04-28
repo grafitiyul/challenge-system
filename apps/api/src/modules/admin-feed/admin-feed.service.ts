@@ -37,14 +37,25 @@ export interface ListFeedOpts {
   take?: number;
 }
 
-const DEFAULT_TAKE = 200;
-const MAX_TAKE = 1000;
+// Generous defaults for the admin audit surface. Page size is also
+// admin-selectable in the UI; MAX_TAKE only protects against a
+// pathological direct API call.
+const DEFAULT_TAKE = 500;
+const MAX_TAKE = 2000;
+
+export interface AdminFeedPage {
+  rows: AdminFeedRow[];
+  total: number;       // total rows matching the filter (no pagination)
+  skip: number;        // echoed back so the UI can compute "X-Y of Z"
+  take: number;        // applied page size after clamping
+  hasMore: boolean;    // skip + rows.length < total
+}
 
 @Injectable()
 export class AdminFeedService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async list(opts: ListFeedOpts = {}): Promise<AdminFeedRow[]> {
+  async list(opts: ListFeedOpts = {}): Promise<AdminFeedPage> {
     const where: Prisma.FeedEventWhereInput = {
       ...(opts.participantId ? { participantId: opts.participantId } : {}),
       ...(opts.groupId ? { groupId: opts.groupId } : {}),
@@ -56,30 +67,43 @@ export class AdminFeedService {
     const take = Math.min(opts.take ?? DEFAULT_TAKE, MAX_TAKE);
     const skip = Math.max(opts.skip ?? 0, 0);
 
-    const rows = await this.prisma.feedEvent.findMany({
-      where,
-      orderBy: { createdAt: 'desc' },
+    // Run page query + total count in parallel so the UI can render
+    // explicit pagination ("מציג 1-500 מתוך 2347") instead of guessing
+    // when more rows exist by checking if the page came back full.
+    const [rows, total] = await Promise.all([
+      this.prisma.feedEvent.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take,
+        include: {
+          participant: { select: { id: true, firstName: true, lastName: true } },
+          group: { select: { id: true, name: true } },
+          program: { select: { id: true, name: true } },
+        },
+      }),
+      this.prisma.feedEvent.count({ where }),
+    ]);
+
+    return {
+      rows: rows.map((r) => ({
+        id: r.id,
+        type: r.type,
+        message: r.message,
+        points: r.points,
+        isPublic: r.isPublic,
+        createdAt: r.createdAt.toISOString(),
+        logId: r.logId,
+        participant: r.participant
+          ? { id: r.participant.id, firstName: r.participant.firstName, lastName: r.participant.lastName ?? null }
+          : null,
+        group: r.group ? { id: r.group.id, name: r.group.name } : null,
+        program: r.program ? { id: r.program.id, name: r.program.name } : null,
+      })),
+      total,
       skip,
       take,
-      include: {
-        participant: { select: { id: true, firstName: true, lastName: true } },
-        group: { select: { id: true, name: true } },
-        program: { select: { id: true, name: true } },
-      },
-    });
-    return rows.map((r) => ({
-      id: r.id,
-      type: r.type,
-      message: r.message,
-      points: r.points,
-      isPublic: r.isPublic,
-      createdAt: r.createdAt.toISOString(),
-      logId: r.logId,
-      participant: r.participant
-        ? { id: r.participant.id, firstName: r.participant.firstName, lastName: r.participant.lastName ?? null }
-        : null,
-      group: r.group ? { id: r.group.id, name: r.group.name } : null,
-      program: r.program ? { id: r.program.id, name: r.program.name } : null,
-    }));
+      hasMore: skip + rows.length < total,
+    };
   }
 }

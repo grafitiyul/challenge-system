@@ -1,6 +1,6 @@
 import { Controller, Get, Query, UseGuards } from '@nestjs/common';
 import { AdminSessionGuard } from '../auth/admin-session.guard';
-import { AdminFeedService, AdminFeedRow } from './admin-feed.service';
+import { AdminFeedService, AdminFeedPage } from './admin-feed.service';
 
 // Admin-only feed audit surface. Lives at /api/admin/feed-events so it
 // can never be reached by a participant token. No time limit; includes
@@ -21,7 +21,7 @@ export class AdminFeedController {
     @Query('visibility') visibility?: string,
     @Query('skip') skip?: string,
     @Query('take') take?: string,
-  ): Promise<AdminFeedRow[]> {
+  ): Promise<AdminFeedPage> {
     const v = visibility === 'public' || visibility === 'hidden' ? visibility : 'all';
     return this.svc.list({
       participantId,

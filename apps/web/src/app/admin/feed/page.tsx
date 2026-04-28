@@ -22,6 +22,15 @@ interface FeedRow {
   program: { id: string; name: string } | null;
 }
 
+// Page envelope returned by /api/admin/feed-events.
+interface FeedPage {
+  rows: FeedRow[];
+  total: number;
+  skip: number;
+  take: number;
+  hasMore: boolean;
+}
+
 interface ProgramLite { id: string; name: string }
 interface GroupLite { id: string; name: string; programId?: string | null; program?: { id: string; name: string } | null }
 interface ParticipantLite { id: string; firstName: string; lastName?: string | null }
@@ -32,10 +41,17 @@ const TYPE_LABEL: Record<string, string> = {
   system: 'הודעת מערכת',
 };
 
-const PAGE_SIZE = 200;
+// Default page size matches the server default. Admin can pick a
+// larger size from the dropdown to avoid pagination entirely on
+// medium datasets, and the server hard ceiling of 2000 protects the
+// payload against pathological values.
+const PAGE_SIZE_OPTIONS = [200, 500, 1000, 2000] as const;
+const DEFAULT_PAGE_SIZE = 500;
 
 export default function AdminFeedPage() {
   const [rows, setRows] = useState<FeedRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
 
@@ -49,6 +65,7 @@ export default function AdminFeedPage() {
   const [type, setType] = useState('');
   const [visibility, setVisibility] = useState<'all' | 'public' | 'hidden'>('all');
   const [skip, setSkip] = useState(0);
+  const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
 
   // Load filter options once.
   useEffect(() => {
@@ -70,19 +87,30 @@ export default function AdminFeedPage() {
     if (participantId) qs.set('participantId', participantId);
     if (type) qs.set('type', type);
     if (visibility !== 'all') qs.set('visibility', visibility);
-    qs.set('take', String(PAGE_SIZE));
+    qs.set('take', String(pageSize));
     qs.set('skip', String(skip));
-    apiFetch<FeedRow[]>(`${BASE_URL}/admin/feed-events?${qs.toString()}`, { cache: 'no-store' })
-      .then((r) => { setRows(r); setErr(''); })
+    apiFetch<FeedPage>(`${BASE_URL}/admin/feed-events?${qs.toString()}`, { cache: 'no-store' })
+      .then((r) => {
+        setRows(r.rows);
+        setTotal(r.total);
+        setHasMore(r.hasMore);
+        setErr('');
+      })
       .catch((e) => setErr(e instanceof Error ? e.message : 'טעינה נכשלה'))
       .finally(() => setLoading(false));
-  }, [programId, groupId, participantId, type, visibility, skip]);
+  }, [programId, groupId, participantId, type, visibility, skip, pageSize]);
 
   useEffect(() => { reload(); }, [reload]);
 
   function clearFilters() {
     setProgramId(''); setGroupId(''); setParticipantId(''); setType(''); setVisibility('all'); setSkip(0);
   }
+
+  // Display range "X-Y מתוך Z". X and Y are 1-based for human readers.
+  const fromIndex = total === 0 ? 0 : skip + 1;
+  const toIndex = skip + rows.length;
+  const totalPages = total === 0 ? 0 : Math.ceil(total / pageSize);
+  const currentPage = Math.floor(skip / pageSize) + 1;
 
   const select: React.CSSProperties = {
     padding: '7px 12px', fontSize: 13, border: '1px solid #e2e8f0',
@@ -124,11 +152,49 @@ export default function AdminFeedPage() {
           <option value="public">גלוי</option>
           <option value="hidden">מוסתר</option>
         </select>
+        <select
+          style={select}
+          value={pageSize}
+          onChange={(e) => { setPageSize(Number(e.target.value)); setSkip(0); }}
+          title="כמה רשומות לטעון בעת ובעונה אחת"
+        >
+          {PAGE_SIZE_OPTIONS.map((n) => (
+            <option key={n} value={n}>{`גודל דף: ${n}`}</option>
+          ))}
+        </select>
         <button
           onClick={clearFilters}
           style={{ padding: '7px 14px', fontSize: 13, fontWeight: 600, background: '#f1f5f9', border: '1px solid #e2e8f0', borderRadius: 8, cursor: 'pointer', color: '#475569' }}
         >ניקוי סינון</button>
       </div>
+
+      {/* Explicit results-summary strip — always visible (never relies
+          on a full page to signal that more rows exist). Reads cleanly
+          even when total < pageSize. */}
+      {!loading && total > 0 && (
+        <div
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            gap: 12, flexWrap: 'wrap',
+            background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8,
+            padding: '8px 12px', marginBottom: 10, fontSize: 12, color: '#475569',
+          }}
+        >
+          <span>
+            מציג <strong style={{ color: '#0f172a' }}>{fromIndex.toLocaleString('he-IL')}-{toIndex.toLocaleString('he-IL')}</strong>
+            {' '}מתוך{' '}
+            <strong style={{ color: '#0f172a' }}>{total.toLocaleString('he-IL')}</strong>
+            {' '}רשומות (דף {currentPage} מתוך {totalPages})
+          </span>
+          <span style={{
+            background: hasMore ? '#fef3c7' : '#dcfce7',
+            color: hasMore ? '#92400e' : '#15803d',
+            padding: '2px 10px', borderRadius: 999, fontSize: 11, fontWeight: 700,
+          }}>
+            {hasMore ? `יש עוד ${Math.max(0, total - toIndex).toLocaleString('he-IL')} רשומות` : 'נטענו כל הרשומות'}
+          </span>
+        </div>
+      )}
 
       {loading && <div style={{ padding: 40, textAlign: 'center', color: '#94a3b8' }}>טוען...</div>}
       {err && <div style={{ padding: 16, color: '#b91c1c' }}>{err}</div>}
@@ -210,22 +276,24 @@ export default function AdminFeedPage() {
         </div>
       )}
 
-      {/* Pagination — only shown when the response filled the page,
-          since we don't get a count back. Older rows are reachable by
-          tapping "ישנים יותר". */}
-      {!loading && rows.length === PAGE_SIZE && (
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 14 }}>
+      {/* Pagination — always visible whenever there are matching rows.
+          "Next" disabled when no more rows; "Prev" disabled on page 1.
+          A clear counter is rendered in the summary strip above so the
+          admin never has to guess whether silent truncation happened. */}
+      {!loading && total > 0 && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginTop: 14 }}>
           <button
-            onClick={() => setSkip((s) => Math.max(0, s - PAGE_SIZE))}
+            onClick={() => setSkip((sk) => Math.max(0, sk - pageSize))}
             disabled={skip === 0}
             style={{ padding: '7px 14px', fontSize: 13, fontWeight: 600, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, cursor: skip === 0 ? 'not-allowed' : 'pointer', opacity: skip === 0 ? 0.5 : 1 }}
           >חדשים יותר →</button>
-          <span style={{ fontSize: 12, color: '#64748b', alignSelf: 'center' }}>
-            דף {Math.floor(skip / PAGE_SIZE) + 1}
+          <span style={{ fontSize: 12, color: '#64748b' }}>
+            דף {currentPage} מתוך {totalPages}
           </span>
           <button
-            onClick={() => setSkip((s) => s + PAGE_SIZE)}
-            style={{ padding: '7px 14px', fontSize: 13, fontWeight: 600, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, cursor: 'pointer' }}
+            onClick={() => setSkip((sk) => sk + pageSize)}
+            disabled={!hasMore}
+            style={{ padding: '7px 14px', fontSize: 13, fontWeight: 600, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, cursor: hasMore ? 'pointer' : 'not-allowed', opacity: hasMore ? 1 : 0.5 }}
           >← ישנים יותר</button>
         </div>
       )}
