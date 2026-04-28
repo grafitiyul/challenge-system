@@ -314,12 +314,6 @@ export interface PortalContext {
   // whether an active session banner + day-chips are currently showing.
   // null when the program has catch-up turned off entirely (master flag
   // off) — saves the client from having to guard on individual fields.
-  //
-  // The three "diagnostic" fields (programId, todayLocal, availableDates)
-  // are surfaced so an admin hitting /api/public/participant/:token
-  // directly can verify wiring without DB access: which program did the
-  // token resolve to, what does the SERVER think today's local date is,
-  // and what's actually saved as the configured availability list.
   catchUp: {
     enabled: boolean;          // master switch (program.catchUpEnabled)
     availableToday: boolean;   // today in catchUpAvailableDates AND no session today
@@ -329,10 +323,6 @@ export interface PortalContext {
     durationMinutes: number;
     allowedDaysBack: number;
     bannerText: string | null;
-    // Diagnostic fields — let the operator confirm wiring without DB.
-    programId: string;
-    todayLocal: string;        // server-computed YYYY-MM-DD in Asia/Jerusalem
-    availableDates: string[];  // raw list saved on the program
   } | null;
   // Set when an unexpired session exists right now. Banner + day chips
   // render based on this. Outside an active session the field is null
@@ -368,7 +358,13 @@ export interface PortalFeedItem {
   id: string;
   message: string;
   points: number;
-  createdAt: string;
+  // Wall-clock submission time. For backdated catch-up reports this is
+  // when the participant tapped submit (often "now"), NOT the credited
+  // day stored on createdAt. The feed represents real-time activity, so
+  // every consumer that renders relative time / orders rows reads this.
+  // createdAt remains the scoring/credited date and is intentionally
+  // not surfaced on this DTO.
+  occurredAt: string;
   participant: { id: string; firstName: string; lastName: string | null; profileImageUrl: string | null };
 }
 
@@ -646,8 +642,7 @@ export class ParticipantPortalService {
           },
         },
       });
-      const availableDates = program.catchUpAvailableDates ?? [];
-      const todayInList = availableDates.includes(todayLocal);
+      const todayInList = (program.catchUpAvailableDates ?? []).includes(todayLocal);
       catchUp = {
         enabled: true,
         // "Available" requires the master flag, today in the configured
@@ -660,9 +655,6 @@ export class ParticipantPortalService {
         durationMinutes: program.catchUpDurationMinutes,
         allowedDaysBack: program.catchUpAllowedDaysBack,
         bannerText: program.catchUpBannerText,
-        programId,
-        todayLocal,
-        availableDates,
       };
       if (sessionToday && sessionToday.endedAt === null && sessionToday.expiresAt > new Date()) {
         activeCatchUpSession = {
@@ -1164,6 +1156,14 @@ export class ParticipantPortalService {
     // explicitly credited to it. No member-set duplicates; no leakage
     // from groups she opted out of.
     //
+    // Time semantics: this surface represents REAL-TIME ACTIVITY, so
+    // the 48h window, ordering, and per-row timestamp all read
+    // FeedEvent.occurredAt — the wall-clock instant the participant
+    // tapped submit. createdAt is the credited/scoring date and for
+    // catch-up backdated reports it points at the credited day, NOT
+    // wall-clock now; using it here would push catch-up rows backward
+    // in the feed and out of the 48h window.
+    //
     // Product behavior is "show the last 48 hours". The take ceiling
     // below is a SAFETY ceiling, not the product limit — it only
     // prevents runaway payloads when a group has an unusually high
@@ -1178,9 +1178,9 @@ export class ParticipantPortalService {
       where: {
         groupId: multi.activeGroupId,
         isPublic: true,
-        createdAt: { gte: since },
+        occurredAt: { gte: since },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { occurredAt: 'desc' },
       take: 1500,
       include: {
         participant: { select: { id: true, firstName: true, lastName: true, profileImageUrl: true } },
@@ -1190,7 +1190,7 @@ export class ParticipantPortalService {
       id: e.id,
       message: e.message,
       points: e.points,
-      createdAt: e.createdAt.toISOString(),
+      occurredAt: e.occurredAt.toISOString(),
       participant: {
         id: e.participant.id,
         firstName: e.participant.firstName,
