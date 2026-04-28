@@ -92,6 +92,11 @@ interface PortalContext {
     durationMinutes: number;
     allowedDaysBack: number;
     bannerText: string | null;
+    // Diagnostic fields — surfaced by the API so the operator can
+    // confirm wiring without devtools. Drive the temporary debug strip.
+    programId: string;
+    todayLocal: string;
+    availableDates: string[];
   } | null;
   activeCatchUpSession: {
     id: string;
@@ -2300,6 +2305,46 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
         {/* ── Tab 2: הנתונים שלי (Phase 2A) ── */}
         {activeTab === 'stats' && (
           <div style={s.tabPane}>
+            {/* TEMPORARY catch-up diagnostic strip — visible at the top
+                of the stats tab so the operator can see exactly which
+                gate is blocking the button. Always rendered while ctx
+                is loaded; remove after the wiring is confirmed in
+                production. The values reflect what the SERVER computed
+                and sent down — not anything the client guesses. */}
+            {ctx && (
+              <div
+                style={{
+                  margin: '0 0 12px',
+                  padding: '8px 10px',
+                  background: '#fef3c7',
+                  border: '1px solid #fde68a',
+                  borderRadius: 8,
+                  fontSize: 11,
+                  color: '#92400e',
+                  fontFamily: 'monospace',
+                  lineHeight: 1.6,
+                  direction: 'ltr',
+                  textAlign: 'left',
+                }}
+              >
+                <div>
+                  <strong>[catchup-debug]</strong>{' '}
+                  enabled={String(ctx.catchUp?.enabled ?? false)}{' · '}
+                  availableToday={String(ctx.catchUp?.availableToday ?? false)}{' · '}
+                  hasSession={String(ctx.activeCatchUpSession !== null)}
+                </div>
+                {ctx.catchUp && (
+                  <>
+                    <div>programId={ctx.catchUp.programId}</div>
+                    <div>todayLocal={ctx.catchUp.todayLocal}</div>
+                    <div>availableDates=[{ctx.catchUp.availableDates.join(', ') || '<empty>'}]</div>
+                    <div>buttonLabel={JSON.stringify(ctx.catchUp.buttonLabel)}</div>
+                  </>
+                )}
+                {!ctx.catchUp && <div>catchUp=null (master flag off OR API not redeployed)</div>}
+              </div>
+            )}
+
             {/* Spinner only when we have NO data yet — otherwise re-fetches are silent
                 so the user never sees a full-tab flash during background refresh. */}
             {analyticsLoading && analyticsSummary === null && (

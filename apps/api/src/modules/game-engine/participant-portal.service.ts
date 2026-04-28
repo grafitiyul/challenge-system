@@ -314,6 +314,12 @@ export interface PortalContext {
   // whether an active session banner + day-chips are currently showing.
   // null when the program has catch-up turned off entirely (master flag
   // off) — saves the client from having to guard on individual fields.
+  //
+  // The three "diagnostic" fields (programId, todayLocal, availableDates)
+  // are surfaced so an admin hitting /api/public/participant/:token
+  // directly can verify wiring without DB access: which program did the
+  // token resolve to, what does the SERVER think today's local date is,
+  // and what's actually saved as the configured availability list.
   catchUp: {
     enabled: boolean;          // master switch (program.catchUpEnabled)
     availableToday: boolean;   // today in catchUpAvailableDates AND no session today
@@ -323,6 +329,10 @@ export interface PortalContext {
     durationMinutes: number;
     allowedDaysBack: number;
     bannerText: string | null;
+    // Diagnostic fields — let the operator confirm wiring without DB.
+    programId: string;
+    todayLocal: string;        // server-computed YYYY-MM-DD in Asia/Jerusalem
+    availableDates: string[];  // raw list saved on the program
   } | null;
   // Set when an unexpired session exists right now. Banner + day chips
   // render based on this. Outside an active session the field is null
@@ -636,7 +646,8 @@ export class ParticipantPortalService {
           },
         },
       });
-      const todayInList = (program.catchUpAvailableDates ?? []).includes(todayLocal);
+      const availableDates = program.catchUpAvailableDates ?? [];
+      const todayInList = availableDates.includes(todayLocal);
       catchUp = {
         enabled: true,
         // "Available" requires the master flag, today in the configured
@@ -649,6 +660,9 @@ export class ParticipantPortalService {
         durationMinutes: program.catchUpDurationMinutes,
         allowedDaysBack: program.catchUpAllowedDaysBack,
         bannerText: program.catchUpBannerText,
+        programId,
+        todayLocal,
+        availableDates,
       };
       if (sessionToday && sessionToday.endedAt === null && sessionToday.expiresAt > new Date()) {
         activeCatchUpSession = {
