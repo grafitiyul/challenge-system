@@ -70,6 +70,36 @@ function errMessage(e: unknown, fallback: string): string {
   return fallback;
 }
 
+// Upload a single file with a hard timeout. Without this, a hung
+// request leaves the gallery stuck on "טוען..." forever — the busy
+// state never clears because the fetch never resolves or rejects.
+// The 120-second budget covers a 50 MB video over a slow mobile
+// connection (~80s at 5 Mbit/s) plus margin.
+const UPLOAD_TIMEOUT_MS = 120_000;
+async function uploadOneFile(token: string, file: File): Promise<ProfileFileMeta> {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), UPLOAD_TIMEOUT_MS);
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    return await apiFetch<ProfileFileMeta>(
+      `${BASE_URL}/public/participant/${token}/profile/upload`,
+      { method: 'POST', body: fd, signal: ctl.signal },
+    );
+  } catch (e) {
+    if ((e as { name?: string })?.name === 'AbortError' || ctl.signal.aborted) {
+      throw {
+        message:
+          `ההעלאה ארכה זמן רב מדי (יותר מ-${Math.round(UPLOAD_TIMEOUT_MS / 1000)} שניות). ` +
+          `בדקי את החיבור ונסי שוב.`,
+      };
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 interface ProfileTabProps {
   token: string;
   snapshot: ProfileSnapshot;
@@ -124,16 +154,42 @@ function FieldRow(props: {
 }) {
   const { token, field, value, files, isMissing, onSnapshotChanged } = props;
 
-  // Local "pending" state so typing feels responsive while a debounced
-  // autosave is in flight. Snapshot drives the source of truth.
+  // Local draft so typing feels responsive while a debounced autosave
+  // is in flight. The snapshot is authoritative for the *first* render
+  // and for genuine external updates (admin edit, another tab), but we
+  // CANNOT blindly copy it into local state on every prop change —
+  // that would overwrite characters the user typed AFTER the save
+  // request was sent. lastSavedDraftRef remembers what came back from
+  // the server so we can tell "external update" (sync) from "echo of
+  // our own save" (ignore).
   const initialDraft = useMemo(() => valueToDraft(value, field.fieldType), [value, field.fieldType]);
   const [draft, setDraft] = useState<string>(initialDraft);
   const [status, setStatus] = useState<SaveStatus>('idle');
   const [errMsg, setErrMsg] = useState('');
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Re-sync when the snapshot value changes from outside (e.g. after an
-  // image upload also rendered server-side as a side effect).
-  useEffect(() => { setDraft(initialDraft); }, [initialDraft]);
+  const lastSavedDraftRef = useRef<string>(initialDraft);
+
+  // Pure-external-update sync: only swap the local draft when the
+  // snapshot brings a value DIFFERENT from the one we last wrote
+  // ourselves. This kills the lost-character bug where the snapshot
+  // echo of our own save overwrote ongoing typing.
+  useEffect(() => {
+    if (initialDraft !== lastSavedDraftRef.current) {
+      setDraft(initialDraft);
+      lastSavedDraftRef.current = initialDraft;
+    }
+    // Intentionally only depends on initialDraft — see comment above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialDraft]);
+
+  // Cancel any pending debounced save when the field unmounts.
+  // Otherwise the timer fires after the modal is gone and a stale
+  // PATCH lands → "ghost saves" that look like phantom edits.
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, []);
 
   async function persist(rawValue: unknown) {
     setStatus('saving');
@@ -144,6 +200,14 @@ function FieldRow(props: {
         { method: 'PATCH', body: JSON.stringify({ fieldKey: field.fieldKey, value: rawValue }) },
       );
       onSnapshotChanged(next);
+      // Stamp what came back so the sync effect knows that the next
+      // snapshot prop change is the echo of THIS save and not an
+      // external one. Without this, every successful save would race
+      // ongoing typing.
+      lastSavedDraftRef.current = valueToDraft(
+        next.values[field.fieldKey],
+        field.fieldType,
+      );
       setStatus('saved');
       setTimeout(() => { setStatus((cur) => cur === 'saved' ? 'idle' : cur); }, 1400);
     } catch (e) {
@@ -207,6 +271,11 @@ function FieldRow(props: {
           value={draft}
           onChange={(e) => commitText(e.target.value)}
           inputMode="decimal"
+          // step="any" disables the integer-only enforcement that
+          // <input type="number"> applies by default. Without it,
+          // values like 67.5 are flagged as invalid by the browser
+          // and can be silently coerced to 67 on blur.
+          step="any"
         />
       )}
       {field.fieldType === 'date' && (
@@ -267,12 +336,7 @@ function ImageField(props: {
     setBusy(true);
     setErrMsg('');
     try {
-      const fd = new FormData();
-      fd.append('file', file);
-      const meta = await apiFetch<ProfileFileMeta>(
-        `${BASE_URL}/public/participant/${props.token}/profile/upload`,
-        { method: 'POST', body: fd },
-      );
+      const meta = await uploadOneFile(props.token, file);
       // Both system and custom image fields take a file id — server
       // resolves the URL for the system column (profileImageUrl).
       const next = await apiFetch<ProfileSnapshot>(
@@ -283,6 +347,8 @@ function ImageField(props: {
     } catch (e) {
       setErrMsg(errMessage(e, 'העלאה נכשלה'));
     } finally {
+      // Always clear the busy state, even on timeout / network error,
+      // so the button never stays stuck on "מעלה...".
       setBusy(false);
     }
   }
@@ -368,6 +434,11 @@ function ImageGalleryField(props: {
   const [busy, setBusy] = useState(false);
   const [errMsg, setErrMsg] = useState('');
   const [showAll, setShowAll] = useState(false);
+  // Multi-upload progress: which file is currently uploading and how
+  // many in total. Drives the "מעלה X מתוך Y" status string instead
+  // of an opaque "טוען..." that gives no signal a 50 MB video is
+  // making progress.
+  const [progress, setProgress] = useState<{ current: number; total: number } | null>(null);
   const ids: string[] = Array.isArray(props.value)
     ? (props.value as unknown[]).filter((v): v is string => typeof v === 'string')
     : [];
@@ -410,20 +481,24 @@ function ImageGalleryField(props: {
       }
 
       const newIds: string[] = [];
-      // Sequential upload to keep the multer disk-storage write order
-      // deterministic for the participant; a parallel barrage could
+      // Sequential upload to keep multer's disk-storage write order
+      // deterministic for the participant; a parallel barrage would
       // also race with multipart parsing on small Railway instances.
-      for (const file of incoming) {
-        const meta = await apiFetch<ProfileFileMeta>(
-          `${BASE_URL}/public/participant/${props.token}/profile/upload`,
-          { method: 'POST', body: (() => { const fd = new FormData(); fd.append('file', file); return fd; })() },
-        );
+      // Each iteration runs through uploadOneFile() which carries its
+      // own AbortController + 120 s timeout, so a hung request now
+      // surfaces as a clear Hebrew error instead of an infinite spinner.
+      for (let i = 0; i < incoming.length; i++) {
+        setProgress({ current: i + 1, total: incoming.length });
+        const meta = await uploadOneFile(props.token, incoming[i]);
         newIds.push(meta.id);
       }
       await persist([...ids, ...newIds]);
     } catch (e) {
       setErrMsg(errMessage(e, 'העלאה נכשלה'));
     } finally {
+      // Always clear progress + busy, even on timeout / network error,
+      // so the button never sticks at "מעלה...".
+      setProgress(null);
       setBusy(false);
     }
   }
@@ -509,7 +584,13 @@ function ImageGalleryField(props: {
           ...(atCap ? { opacity: 0.55, cursor: 'not-allowed' } : {}),
         }}
       >
-        {busy ? 'מעלה...' : atCap ? `מקסימום ${GALLERY_MAX_FILES} קבצים` : '+ הוסיפי תמונות / וידאו'}
+        {busy
+          ? (progress
+              ? `מעלה ${progress.current} מתוך ${progress.total}...`
+              : 'מעלה...')
+          : atCap
+            ? `מקסימום ${GALLERY_MAX_FILES} קבצים`
+            : '+ הוסיפי תמונות / וידאו'}
       </button>
       <p style={{ fontSize: 11, color: '#94a3b8', margin: '6px 2px 0', lineHeight: 1.5 }}>
         עד {GALLERY_MAX_FILES} קבצים. תמונות עד 15MB (jpg/png/gif/webp), וידאו עד 50MB (mp4/mov/webm).
