@@ -58,6 +58,18 @@ function srcOf(url: string): string {
   return url;
 }
 
+// apiFetch throws an ApiError object (not a real Error), so the
+// previous `e instanceof Error ? e.message : fallback` checks always
+// fell through to the fallback string and the actual server message
+// was hidden. Read .message off either shape.
+function errMessage(e: unknown, fallback: string): string {
+  if (typeof e === 'object' && e !== null && 'message' in e) {
+    const m = (e as { message?: unknown }).message;
+    if (typeof m === 'string' && m) return m;
+  }
+  return fallback;
+}
+
 interface ProfileTabProps {
   token: string;
   snapshot: ProfileSnapshot;
@@ -136,7 +148,7 @@ function FieldRow(props: {
       setTimeout(() => { setStatus((cur) => cur === 'saved' ? 'idle' : cur); }, 1400);
     } catch (e) {
       setStatus('error');
-      setErrMsg(e instanceof Error ? e.message : 'שמירה נכשלה');
+      setErrMsg(errMessage(e, 'שמירה נכשלה'));
     }
   }
 
@@ -269,7 +281,7 @@ function ImageField(props: {
       );
       props.onSnapshotChanged(next);
     } catch (e) {
-      setErrMsg(e instanceof Error ? e.message : 'העלאה נכשלה');
+      setErrMsg(errMessage(e, 'העלאה נכשלה'));
     } finally {
       setBusy(false);
     }
@@ -285,7 +297,7 @@ function ImageField(props: {
       );
       props.onSnapshotChanged(next);
     } catch (e) {
-      setErrMsg(e instanceof Error ? e.message : 'הסרה נכשלה');
+      setErrMsg(errMessage(e, 'הסרה נכשלה'));
     } finally {
       setBusy(false);
     }
@@ -375,7 +387,7 @@ function ImageGalleryField(props: {
       }
       await persist([...ids, ...newIds]);
     } catch (e) {
-      setErrMsg(e instanceof Error ? e.message : 'העלאה נכשלה');
+      setErrMsg(errMessage(e, 'העלאה נכשלה'));
     } finally {
       setBusy(false);
     }
@@ -387,7 +399,7 @@ function ImageGalleryField(props: {
     try {
       await persist(ids.filter((i) => i !== id));
     } catch (e) {
-      setErrMsg(e instanceof Error ? e.message : 'הסרה נכשלה');
+      setErrMsg(errMessage(e, 'הסרה נכשלה'));
     } finally {
       setBusy(false);
     }
@@ -470,7 +482,7 @@ export function useProfileSnapshot(token: string, profileTabEnabled: boolean) {
     setLoading(true);
     apiFetch<ProfileSnapshot>(`${BASE_URL}/public/participant/${token}/profile`, { cache: 'no-store' })
       .then((r) => { setSnapshot(r); setErr(''); })
-      .catch((e) => setErr(e instanceof Error ? e.message : 'טעינה נכשלה'))
+      .catch((e) => setErr(errMessage(e, 'טעינה נכשלה')))
       .finally(() => setLoading(false));
   }, [token, profileTabEnabled]);
 
