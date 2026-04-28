@@ -196,6 +196,72 @@ function safeParseJson(s: string): unknown {
   try { return JSON.parse(s); } catch { return null; }
 }
 
+// Phase-1 quick win: shrink phone-camera photos in the browser before
+// upload. A 12 MB straight-from-camera JPEG drops to ~400-900 KB at
+// 2000px / quality 0.85 with no visible quality loss for our gallery
+// thumbnails — that's a 10-30× reduction in bytes on the wire and the
+// dominant factor in upload wall-clock time on slow mobile.
+//
+// Skip rules (return original file unchanged):
+//   - non-images (videos pass through; we don't transcode in-browser)
+//   - GIFs (canvas would lose animation)
+//   - already small (<= minSize, default 1 MB) — not worth re-encoding
+//   - canvas/encode errors — fall back to the original; the server's
+//     15 MB image cap still catches the truly-huge ones
+//
+// Note: Phase 2 will move uploads to direct-to-R2/S3 via signed URLs;
+// this helper is still useful there because smaller bytes = faster
+// even on direct upload. It just isn't a permanent workaround.
+async function compressImage(
+  file: File,
+  opts?: { maxDim?: number; quality?: number; minSize?: number },
+): Promise<File> {
+  if (!/^image\//i.test(file.type)) return file;
+  if (/\/gif$/i.test(file.type)) return file;
+  const minSize = opts?.minSize ?? 1024 * 1024;
+  if (file.size <= minSize) return file;
+
+  const maxDim = opts?.maxDim ?? 2000;
+  const quality = opts?.quality ?? 0.85;
+
+  try {
+    // imageOrientation: 'from-image' applies the EXIF rotation tag so
+    // portrait phone shots land upright on the canvas — without it,
+    // iOS uploads come out sideways after re-encode.
+    const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+    let width = bitmap.width;
+    let height = bitmap.height;
+    const scale = Math.min(1, maxDim / Math.max(width, height));
+    width = Math.max(1, Math.round(width * scale));
+    height = Math.max(1, Math.round(height * scale));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) { bitmap.close(); return file; }
+    ctx.drawImage(bitmap, 0, 0, width, height);
+    bitmap.close();
+
+    const blob = await new Promise<Blob | null>((res) => {
+      canvas.toBlob((b) => res(b), 'image/jpeg', quality);
+    });
+    if (!blob) return file;
+    // Belt-and-braces: if the encoded JPEG is somehow larger than the
+    // original (already-tiny images, weird color profiles), keep the
+    // original — never make a file bigger.
+    if (blob.size >= file.size) return file;
+
+    const baseName = file.name.replace(/\.[^.]+$/, '');
+    return new File([blob], `${baseName}.jpg`, {
+      type: 'image/jpeg',
+      lastModified: Date.now(),
+    });
+  } catch {
+    return file;
+  }
+}
+
 interface ProfileTabProps {
   token: string;
   snapshot: ProfileSnapshot;
@@ -426,6 +492,16 @@ function ImageField(props: {
   // server-side, so this is belt-and-braces protection against any
   // intermediate cache that might still hold a stale 404.
   const [cacheBust, setCacheBust] = useState<number>(0);
+  // Instant preview from the picked File via URL.createObjectURL —
+  // shown the moment the user picks a file, BEFORE compression and
+  // upload start. On slow mobile this is the difference between
+  // "I picked nothing happened" and "I picked, I see it instantly".
+  // The blob URL is revoked when state changes or the component
+  // unmounts (the useEffect cleanup below).
+  const [localPreviewUrl, setLocalPreviewUrl] = useState<string | null>(null);
+  useEffect(() => {
+    return () => { if (localPreviewUrl) URL.revokeObjectURL(localPreviewUrl); };
+  }, [localPreviewUrl]);
 
   // Resolve current preview URL: profileImageUrl (system) stores the
   // /uploads URL directly; custom image fields store a file id that we
@@ -437,11 +513,17 @@ function ImageField(props: {
   }
 
   async function handleFile(file: File) {
+    // Instant local preview BEFORE compression/upload — the user sees
+    // the image they just picked immediately, even on a slow connection.
+    setLocalPreviewUrl(URL.createObjectURL(file));
     setBusy(true);
     setErrMsg('');
     setUploadPct(0);
     try {
-      const meta = await uploadOneFile(props.token, file, {
+      // Phase-1: shrink large camera photos in the browser before
+      // sending. Videos and small images pass through unchanged.
+      const upload = await compressImage(file);
+      const meta = await uploadOneFile(props.token, upload, {
         onProgress: (p) => setUploadPct(p),
       });
       // Both system and custom image fields take a file id — server
@@ -461,8 +543,13 @@ function ImageField(props: {
       // Always clear the busy state, even on timeout / network error,
       // so the button never stays stuck on "מעלה...".
       setBusy(false);
-      // Hold the 100% pill briefly so the user sees the success state.
-      setTimeout(() => setUploadPct(null), 600);
+      // Hold the 100% pill briefly so the user sees the success state,
+      // and keep the local blob preview for the same beat so AvatarPreview
+      // can swap to the server URL without a flash.
+      setTimeout(() => {
+        setUploadPct(null);
+        setLocalPreviewUrl(null);
+      }, 600);
     }
   }
 
@@ -491,9 +578,34 @@ function ImageField(props: {
         style={{ display: 'none' }}
         onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleFile(f); e.target.value = ''; }}
       />
-      {previewUrl ? (
+      {(localPreviewUrl || previewUrl) ? (
         <div style={s.imagePreviewWrap}>
-          <AvatarPreview url={srcOf(previewUrl)} cacheBust={cacheBust} />
+          {/* localPreviewUrl wins while present so the picked File is
+              visible instantly. AvatarPreview takes over once the upload
+              completes and we drop the blob URL. */}
+          {localPreviewUrl ? (
+            <img
+              src={localPreviewUrl}
+              alt=""
+              style={{
+                display: 'block',
+                maxWidth: '100%', maxHeight: 220, borderRadius: 8,
+                objectFit: 'cover', margin: '0 auto',
+                opacity: busy ? 0.85 : 1,
+                transition: 'opacity 200ms',
+              }}
+            />
+          ) : (
+            <AvatarPreview url={srcOf(previewUrl!)} cacheBust={cacheBust} />
+          )}
+          {busy && uploadPct !== null && (
+            <div style={{
+              marginTop: 8, fontSize: 12, fontWeight: 600, color: '#475569',
+              textAlign: 'center',
+            }}>
+              {uploadPct >= 95 ? 'מעבד...' : `מעלה... ${uploadPct}%`}
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
             <button
               type="button"
@@ -577,8 +689,24 @@ function ImageGalleryField(props: {
     percent: number;
     status: UploadStatus;
     error?: string;
+    // Blob URL of the picked File — shown as a tiny thumbnail next to
+    // each row so the participant sees "yes, that's the file I picked"
+    // before any bytes leave the device. Revoked when the row clears.
+    localPreviewUrl?: string;
+    isVideo: boolean;
   }
   const [uploadingFiles, setUploadingFiles] = useState<UploadingFile[]>([]);
+  // All blob URLs we've created for the current batch. Held in a ref
+  // so cleanup paths (batch end, unmount, next batch starting) can
+  // revoke them all without re-reading state. URL.revokeObjectURL is
+  // a noop if the URL is already revoked, so double-revoke is safe.
+  const activeBlobUrlsRef = useRef<string[]>([]);
+  useEffect(() => {
+    return () => {
+      activeBlobUrlsRef.current.forEach((u) => URL.revokeObjectURL(u));
+      activeBlobUrlsRef.current = [];
+    };
+  }, []);
   const ids: string[] = Array.isArray(props.value)
     ? (props.value as unknown[]).filter((v): v is string => typeof v === 'string')
     : [];
@@ -603,6 +731,11 @@ function ImageGalleryField(props: {
   async function handleFiles(fileList: FileList) {
     setBusy(true);
     setErrMsg('');
+    // Revoke any leftover blob URLs from a previous batch before we
+    // mint new ones — keeps memory bounded if the participant taps
+    // upload twice in quick succession.
+    activeBlobUrlsRef.current.forEach((u) => URL.revokeObjectURL(u));
+    activeBlobUrlsRef.current = [];
     try {
       // Client-side preflight: per-mime size budget + cap check. Server
       // enforces both for real; we surface the message immediately so
@@ -621,15 +754,20 @@ function ImageGalleryField(props: {
       }
 
       const newIds: string[] = [];
-      // Seed the per-file status list. Sequential upload keeps multer
-      // disk-storage write order deterministic and avoids racing
-      // multipart parsing on small Railway instances. Each iteration
-      // runs through uploadOneFile(), which now reports real upload
-      // bytes via XHR `progress` events. The 120 s timeout still fires
-      // per file via xhr.timeout.
-      setUploadingFiles(incoming.map((f) => ({
-        name: f.name, sizeBytes: f.size, percent: 0, status: 'queued',
-      })));
+      // Seed the per-file status list with INSTANT local previews —
+      // each file gets a blob URL the participant can see right now,
+      // before any byte hits the network. Sequential upload keeps
+      // multer disk-storage write order deterministic and avoids
+      // racing multipart parsing on small Railway instances.
+      setUploadingFiles(incoming.map((f) => {
+        const isVideo = /^video\//i.test(f.type);
+        const localPreviewUrl = URL.createObjectURL(f);
+        activeBlobUrlsRef.current.push(localPreviewUrl);
+        return {
+          name: f.name, sizeBytes: f.size, percent: 0, status: 'queued',
+          localPreviewUrl, isVideo,
+        };
+      }));
 
       // Continue past per-file failures so a single bad file doesn't
       // discard the successful uploads. THIS WAS THE PERSISTENCE BUG:
@@ -642,11 +780,16 @@ function ImageGalleryField(props: {
       const failures: { name: string; error: string }[] = [];
       for (let i = 0; i < incoming.length; i++) {
         const file = incoming[i];
+        const isVideo = /^video\//i.test(file.type);
         setUploadingFiles((curr) =>
           curr.map((u, idx) => idx === i ? { ...u, status: 'uploading' } : u),
         );
         try {
-          const meta = await uploadOneFile(props.token, file, {
+          // Phase-1: shrink large camera photos before uploading.
+          // Videos pass through (we don't transcode in-browser); small
+          // images pass through too (compressImage skips files <= 1 MB).
+          const upload = isVideo ? file : await compressImage(file);
+          const meta = await uploadOneFile(props.token, upload, {
             onProgress: (pct) => {
               setUploadingFiles((curr) =>
                 curr.map((u, idx) => idx === i ? { ...u, percent: pct } : u),
@@ -698,7 +841,13 @@ function ImageGalleryField(props: {
         })
       );
       const wait = hadError ? 5000 : 1200;
-      setTimeout(() => setUploadingFiles([]), wait);
+      setTimeout(() => {
+        // Revoke and clear blob URLs along with the row state, so a
+        // gallery sitting open for a long time doesn't leak memory.
+        activeBlobUrlsRef.current.forEach((u) => URL.revokeObjectURL(u));
+        activeBlobUrlsRef.current = [];
+        setUploadingFiles([]);
+      }, wait);
     }
   }
 
@@ -813,36 +962,56 @@ function ImageGalleryField(props: {
               : u.status === 'done'    ? 'הועלה ✓' :
                                          (u.error ? `שגיאה: ${u.error}` : 'שגיאה');
             return (
-              <div key={`${i}-${u.name}`} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12, color: '#0f172a' }}>
-                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '60%' }}>
-                    {u.name} <span style={{ color: '#94a3b8' }}>({sizeMb}MB)</span>
-                  </span>
-                  <span
-                    style={{
-                      fontWeight: 600,
-                      color: u.status === 'error' ? '#b91c1c' :
-                             u.status === 'done'  ? '#15803d' :
-                                                    '#475569',
-                    }}
-                  >
-                    {statusText}
-                  </span>
-                </div>
-                <div
-                  style={{
-                    width: '100%', height: 6, borderRadius: 999,
-                    background: '#e2e8f0', overflow: 'hidden',
-                  }}
-                >
+              <div key={`${i}-${u.name}`} style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                {/* Instant thumb from the local File. Images render via
+                    <img>; videos render a muted <video> so the first
+                    frame is visible without any network fetch. The
+                    participant can confirm what they picked without
+                    waiting for the upload to finish. */}
+                {u.localPreviewUrl && (
+                  u.isVideo ? (
+                    <video
+                      src={u.localPreviewUrl}
+                      style={s.uploadThumb}
+                      muted
+                      playsInline
+                      preload="metadata"
+                    />
+                  ) : (
+                    <img src={u.localPreviewUrl} alt="" style={s.uploadThumb} />
+                  )
+                )}
+                <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12, color: '#0f172a' }}>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '60%' }}>
+                      {u.name} <span style={{ color: '#94a3b8' }}>({sizeMb}MB)</span>
+                    </span>
+                    <span
+                      style={{
+                        fontWeight: 600,
+                        color: u.status === 'error' ? '#b91c1c' :
+                               u.status === 'done'  ? '#15803d' :
+                                                      '#475569',
+                      }}
+                    >
+                      {statusText}
+                    </span>
+                  </div>
                   <div
                     style={{
-                      width: `${u.status === 'done' ? 100 : u.percent}%`,
-                      height: '100%',
-                      background: barColor,
-                      transition: 'width 120ms linear',
+                      width: '100%', height: 6, borderRadius: 999,
+                      background: '#e2e8f0', overflow: 'hidden',
                     }}
-                  />
+                  >
+                    <div
+                      style={{
+                        width: `${u.status === 'done' ? 100 : u.percent}%`,
+                        height: '100%',
+                        background: barColor,
+                        transition: 'width 120ms linear',
+                      }}
+                    />
+                  </div>
                 </div>
               </div>
             );
@@ -1002,6 +1171,10 @@ const s = {
   galleryImg: {
     position: 'absolute' as const, inset: 0, width: '100%', height: '100%',
     objectFit: 'cover' as const,
+  } as React.CSSProperties,
+  uploadThumb: {
+    width: 48, height: 48, borderRadius: 8, objectFit: 'cover' as const,
+    flexShrink: 0, background: '#e2e8f0',
   } as React.CSSProperties,
   galleryRemoveBtn: {
     position: 'absolute' as const, top: 4, insetInlineEnd: 4,
