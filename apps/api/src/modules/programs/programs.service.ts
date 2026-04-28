@@ -54,6 +54,18 @@ export class ProgramsService {
 
   async update(id: string, dto: UpdateProgramDto) {
     await this.findById(id);
+    // TEMP catch-up diagnostic — remove once wiring is confirmed in
+    // production. Logs the array length + the raw values so we can see
+    // on Railway logs whether the array is making it into the service.
+    if (dto.catchUpAvailableDates !== undefined || dto.catchUpEnabled !== undefined) {
+      // eslint-disable-next-line no-console
+      console.log('[catchup-debug] programs.update id=%s dates=%j len=%d enabled=%s',
+        id,
+        dto.catchUpAvailableDates ?? null,
+        Array.isArray(dto.catchUpAvailableDates) ? dto.catchUpAvailableDates.length : -1,
+        dto.catchUpEnabled,
+      );
+    }
     return this.prisma.program.update({
       where: { id },
       data: {

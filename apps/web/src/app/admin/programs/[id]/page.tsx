@@ -351,6 +351,20 @@ function CatchUpSettings({ program, onSaved }: { program: Program; onSaved: (p: 
   async function save() {
     setSaving(true); setErr(''); setSaved(false);
     try {
+      // Auto-flush an unconfirmed date in the picker. The previous flow
+      // required the admin to click "+ הוסף תאריך" to convert the date
+      // input into a chip; if she skipped that and clicked שמירה
+      // directly, the date silently dropped on the floor and the array
+      // saved empty (the original root cause that broke the participant
+      // button). Now we accept "what you see is what gets saved": if
+      // the date input holds a valid YYYY-MM-DD, include it.
+      const pendingDate = newDate.trim();
+      const datesToSave = (
+        /^\d{4}-\d{2}-\d{2}$/.test(pendingDate) && !form.catchUpAvailableDates.includes(pendingDate)
+          ? [...form.catchUpAvailableDates, pendingDate].sort()
+          : form.catchUpAvailableDates
+      );
+
       // Send empty strings as nulls so the backend stores null when the
       // admin clears a field, rather than a literal empty string.
       const payload = {
@@ -361,13 +375,22 @@ function CatchUpSettings({ program, onSaved }: { program: Program; onSaved: (p: 
         catchUpDurationMinutes: Math.max(1, Number(form.catchUpDurationMinutes) || 1),
         catchUpAllowedDaysBack: Math.max(1, Number(form.catchUpAllowedDaysBack) || 1),
         catchUpBannerText:      form.catchUpBannerText.trim() || null,
-        catchUpAvailableDates:  form.catchUpAvailableDates,
+        catchUpAvailableDates:  datesToSave,
       };
       const updated = await apiFetch(`${BASE_URL}/programs/${program.id}`, {
         method: 'PATCH',
         cache: 'no-store',
         body: JSON.stringify(payload),
       }) as Program;
+      // Sync local form state to whatever the server actually persisted.
+      // Without this, the UI showed the chip the admin had typed but
+      // never confirmed, masking the bug. Now the source of truth is
+      // always what came back.
+      setForm((p) => ({
+        ...p,
+        catchUpAvailableDates: [...(updated.catchUpAvailableDates ?? [])].sort(),
+      }));
+      setNewDate('');
       onSaved({ ...program, ...updated });
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
@@ -529,6 +552,16 @@ function CatchUpSettings({ program, onSaved }: { program: Program; onSaved: (p: 
               }}
             >+ הוסף תאריך</button>
           </div>
+          {/* Visible reminder when the admin has typed/picked a date
+              but hasn't yet converted it into a chip. The save handler
+              auto-flushes this on submit so it's no longer destructive
+              — the hint is still useful so the chip list reflects
+              reality before save. */}
+          {/^\d{4}-\d{2}-\d{2}$/.test(newDate) && !form.catchUpAvailableDates.includes(newDate) && (
+            <div style={{ fontSize: 11, color: '#92400e', marginTop: 6, lineHeight: 1.5 }}>
+              ⚠ {newDate} עוד לא נוסף לרשימה. לחצי על "+ הוסף תאריך" או על "שמירה" — שניהם יוסיפו אותו.
+            </div>
+          )}
         </div>
       </div>
 
