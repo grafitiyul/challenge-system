@@ -70,34 +70,84 @@ function errMessage(e: unknown, fallback: string): string {
   return fallback;
 }
 
-// Upload a single file with a hard timeout. Without this, a hung
-// request leaves the gallery stuck on "טוען..." forever — the busy
-// state never clears because the fetch never resolves or rejects.
-// The 120-second budget covers a 50 MB video over a slow mobile
-// connection (~80s at 5 Mbit/s) plus margin.
+// Upload a single file with real upload progress + a hard timeout.
+//
+// Why XMLHttpRequest instead of fetch():
+//   fetch() exposes ONLY the response body progress (via streams), not
+//   the upload body progress. For multipart uploads of large videos
+//   that's the entire problem — the user has nothing to look at while
+//   the request body is being pushed to the server. XMLHttpRequest's
+//   xhr.upload `progress` event reports `loaded` / `total` bytes as the
+//   browser actually streams them out, which is the only way we can
+//   render a real percent.
+//
+// The 120-second timeout (xhr.timeout) is preserved exactly. Optional
+// AbortSignal is honored via xhr.abort() so callers that already wire
+// AbortController stay compatible. Same /api-proxy URL pattern as
+// apiFetch — the Next.js rewrite still routes to the API.
 const UPLOAD_TIMEOUT_MS = 120_000;
-async function uploadOneFile(token: string, file: File): Promise<ProfileFileMeta> {
-  const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), UPLOAD_TIMEOUT_MS);
-  const fd = new FormData();
-  fd.append('file', file);
-  try {
-    return await apiFetch<ProfileFileMeta>(
-      `${BASE_URL}/public/participant/${token}/profile/upload`,
-      { method: 'POST', body: fd, signal: ctl.signal },
-    );
-  } catch (e) {
-    if ((e as { name?: string })?.name === 'AbortError' || ctl.signal.aborted) {
-      throw {
-        message:
-          `ההעלאה ארכה זמן רב מדי (יותר מ-${Math.round(UPLOAD_TIMEOUT_MS / 1000)} שניות). ` +
-          `בדקי את החיבור ונסי שוב.`,
-      };
+interface UploadCallbacks {
+  onProgress?: (percent: number) => void;
+  signal?: AbortSignal;
+}
+function uploadOneFile(
+  token: string,
+  file: File,
+  cb?: UploadCallbacks,
+): Promise<ProfileFileMeta> {
+  return new Promise<ProfileFileMeta>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.timeout = UPLOAD_TIMEOUT_MS;
+    xhr.responseType = 'json';
+
+    xhr.upload.addEventListener('progress', (e) => {
+      if (!e.lengthComputable || !cb?.onProgress) return;
+      const pct = e.total > 0 ? Math.round((e.loaded / e.total) * 100) : 0;
+      cb.onProgress(Math.min(99, pct)); // 100 only when the response lands
+    });
+
+    xhr.addEventListener('load', () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        const data = xhr.response ?? safeParseJson(xhr.responseText);
+        if (data && typeof data === 'object' && typeof (data as { id?: unknown }).id === 'string') {
+          cb?.onProgress?.(100);
+          resolve(data as ProfileFileMeta);
+        } else {
+          reject({ message: 'תגובת השרת אינה תקינה.' });
+        }
+      } else {
+        const data = xhr.response ?? safeParseJson(xhr.responseText);
+        let message = 'העלאה נכשלה';
+        if (data && typeof data === 'object') {
+          const m = (data as Record<string, unknown>).message ?? (data as Record<string, unknown>).error;
+          if (typeof m === 'string' && m) message = m;
+        }
+        reject({ status: xhr.status, message });
+      }
+    });
+    xhr.addEventListener('timeout', () => reject({
+      message:
+        `ההעלאה ארכה זמן רב מדי (יותר מ-${Math.round(UPLOAD_TIMEOUT_MS / 1000)} שניות). ` +
+        `בדקי את החיבור ונסי שוב.`,
+    }));
+    xhr.addEventListener('error', () => reject({ message: 'שגיאת רשת בזמן ההעלאה.' }));
+    xhr.addEventListener('abort', () => reject({ message: 'ההעלאה בוטלה.' }));
+
+    if (cb?.signal) {
+      const onAbort = () => { try { xhr.abort(); } catch { /* xhr already done */ } };
+      cb.signal.addEventListener('abort', onAbort, { once: true });
     }
-    throw e;
-  } finally {
-    clearTimeout(timer);
-  }
+
+    const fd = new FormData();
+    fd.append('file', file);
+
+    xhr.open('POST', `${BASE_URL}/public/participant/${token}/profile/upload`, true);
+    xhr.withCredentials = true;
+    xhr.send(fd);
+  });
+}
+function safeParseJson(s: string): unknown {
+  try { return JSON.parse(s); } catch { return null; }
 }
 
 interface ProfileTabProps {
@@ -322,6 +372,7 @@ function ImageField(props: {
   const inputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [errMsg, setErrMsg] = useState('');
+  const [uploadPct, setUploadPct] = useState<number | null>(null);
 
   // Resolve current preview URL: profileImageUrl (system) stores the
   // /uploads URL directly; custom image fields store a file id that we
@@ -335,8 +386,11 @@ function ImageField(props: {
   async function handleFile(file: File) {
     setBusy(true);
     setErrMsg('');
+    setUploadPct(0);
     try {
-      const meta = await uploadOneFile(props.token, file);
+      const meta = await uploadOneFile(props.token, file, {
+        onProgress: (p) => setUploadPct(p),
+      });
       // Both system and custom image fields take a file id — server
       // resolves the URL for the system column (profileImageUrl).
       const next = await apiFetch<ProfileSnapshot>(
@@ -350,6 +404,8 @@ function ImageField(props: {
       // Always clear the busy state, even on timeout / network error,
       // so the button never stays stuck on "מעלה...".
       setBusy(false);
+      // Hold the 100% pill briefly so the user sees the success state.
+      setTimeout(() => setUploadPct(null), 600);
     }
   }
 
@@ -401,9 +457,28 @@ function ImageField(props: {
           type="button"
           onClick={() => inputRef.current?.click()}
           disabled={busy}
-          style={s.uploadButton}
+          style={{ ...s.uploadButton, position: 'relative' }}
         >
-          {busy ? 'מעלה...' : '📷 העלי תמונה'}
+          <span style={{ position: 'relative', zIndex: 1 }}>
+            {busy
+              ? `מעלה... ${uploadPct ?? 0}%`
+              : '📷 העלי תמונה'}
+          </span>
+          {/* Live progress fill — driven by the XHR upload event so a
+              50 MB image actually animates instead of sitting still. */}
+          {busy && (
+            <span
+              aria-hidden="true"
+              style={{
+                position: 'absolute', insetInlineStart: 0, top: 0, bottom: 0,
+                width: `${uploadPct ?? 0}%`,
+                background: 'rgba(29, 78, 216, 0.18)',
+                transition: 'width 120ms linear',
+                borderRadius: 'inherit',
+                pointerEvents: 'none',
+              }}
+            />
+          )}
         </button>
       )}
       {errMsg && <p style={s.fieldErr}>{errMsg}</p>}
@@ -434,11 +509,19 @@ function ImageGalleryField(props: {
   const [busy, setBusy] = useState(false);
   const [errMsg, setErrMsg] = useState('');
   const [showAll, setShowAll] = useState(false);
-  // Multi-upload progress: which file is currently uploading and how
-  // many in total. Drives the "מעלה X מתוך Y" status string instead
-  // of an opaque "טוען..." that gives no signal a 50 MB video is
-  // making progress.
-  const [progress, setProgress] = useState<{ current: number; total: number } | null>(null);
+  // Per-file upload progress — drives the inline status list so a
+  // 50 MB video uploading shows real bytes-pushed feedback instead of
+  // an opaque spinner. Cleared shortly after the batch completes
+  // (or on the next batch start).
+  type UploadStatus = 'queued' | 'uploading' | 'done' | 'error';
+  interface UploadingFile {
+    name: string;
+    sizeBytes: number;
+    percent: number;
+    status: UploadStatus;
+    error?: string;
+  }
+  const [uploadingFiles, setUploadingFiles] = useState<UploadingFile[]>([]);
   const ids: string[] = Array.isArray(props.value)
     ? (props.value as unknown[]).filter((v): v is string => typeof v === 'string')
     : [];
@@ -481,25 +564,64 @@ function ImageGalleryField(props: {
       }
 
       const newIds: string[] = [];
-      // Sequential upload to keep multer's disk-storage write order
-      // deterministic for the participant; a parallel barrage would
-      // also race with multipart parsing on small Railway instances.
-      // Each iteration runs through uploadOneFile() which carries its
-      // own AbortController + 120 s timeout, so a hung request now
-      // surfaces as a clear Hebrew error instead of an infinite spinner.
+      // Seed the per-file status list. Sequential upload keeps multer
+      // disk-storage write order deterministic and avoids racing
+      // multipart parsing on small Railway instances. Each iteration
+      // runs through uploadOneFile(), which now reports real upload
+      // bytes via XHR `progress` events. The 120 s timeout still fires
+      // per file via xhr.timeout.
+      setUploadingFiles(incoming.map((f) => ({
+        name: f.name, sizeBytes: f.size, percent: 0, status: 'queued',
+      })));
+
       for (let i = 0; i < incoming.length; i++) {
-        setProgress({ current: i + 1, total: incoming.length });
-        const meta = await uploadOneFile(props.token, incoming[i]);
-        newIds.push(meta.id);
+        const file = incoming[i];
+        setUploadingFiles((curr) =>
+          curr.map((u, idx) => idx === i ? { ...u, status: 'uploading' } : u),
+        );
+        try {
+          const meta = await uploadOneFile(props.token, file, {
+            onProgress: (pct) => {
+              setUploadingFiles((curr) =>
+                curr.map((u, idx) => idx === i ? { ...u, percent: pct } : u),
+              );
+            },
+          });
+          newIds.push(meta.id);
+          setUploadingFiles((curr) =>
+            curr.map((u, idx) => idx === i ? { ...u, percent: 100, status: 'done' } : u),
+          );
+        } catch (e) {
+          // Mark this file failed — keep prior successes visible — and
+          // bail out of the loop. The outer catch surfaces the message.
+          const msg = errMessage(e, 'העלאה נכשלה');
+          setUploadingFiles((curr) =>
+            curr.map((u, idx) => idx === i ? { ...u, status: 'error', error: msg } : u),
+          );
+          throw e;
+        }
       }
       await persist([...ids, ...newIds]);
     } catch (e) {
       setErrMsg(errMessage(e, 'העלאה נכשלה'));
     } finally {
-      // Always clear progress + busy, even on timeout / network error,
-      // so the button never sticks at "מעלה...".
-      setProgress(null);
       setBusy(false);
+      // Hold the per-file list briefly so the participant sees the ✓
+      // marks before they vanish into gallery cells. Errors stay
+      // longer (3.5 s) so the message is readable; clean batches go
+      // sooner (1.2 s) since the new gallery cells already render.
+      const hadError = (
+        // Read the latest setUploadingFiles state lazily via the
+        // setter callback — avoids a stale closure here.
+        await new Promise<boolean>((res) => {
+          setUploadingFiles((curr) => {
+            res(curr.some((u) => u.status === 'error'));
+            return curr;
+          });
+        })
+      );
+      const wait = hadError ? 3500 : 1200;
+      setTimeout(() => setUploadingFiles([]), wait);
     }
   }
 
@@ -574,20 +696,94 @@ function ImageGalleryField(props: {
           הצג את כולן ({hiddenCount} נוספות)
         </button>
       )}
+      {/* Per-file progress list — visible during the upload sequence
+          and held briefly afterward so ✓ / שגיאה are readable. */}
+      {uploadingFiles.length > 0 && (
+        <div
+          style={{
+            marginTop: 10,
+            background: '#f8fafc',
+            border: '1px solid #e2e8f0',
+            borderRadius: 10,
+            padding: '10px 12px',
+            display: 'flex', flexDirection: 'column', gap: 8,
+          }}
+          role="status"
+          aria-live="polite"
+        >
+          <div style={{ fontSize: 12, fontWeight: 700, color: '#475569' }}>
+            {(() => {
+              const activeIdx = uploadingFiles.findIndex((u) => u.status === 'uploading');
+              const idx = activeIdx >= 0 ? activeIdx : uploadingFiles.length - 1;
+              return `מעלה ${idx + 1} מתוך ${uploadingFiles.length}`;
+            })()}
+          </div>
+          {uploadingFiles.map((u, i) => {
+            const sizeMb = (u.sizeBytes / 1024 / 1024).toFixed(1);
+            const barColor =
+              u.status === 'error' ? '#dc2626' :
+              u.status === 'done'  ? '#16a34a' :
+                                     '#1d4ed8';
+            const statusText =
+              u.status === 'queued'    ? 'ממתין'   :
+              u.status === 'uploading' ? `מעלה... ${u.percent}%` :
+              u.status === 'done'      ? 'הועלה ✓' :
+                                         (u.error ? `שגיאה: ${u.error}` : 'שגיאה');
+            return (
+              <div key={`${i}-${u.name}`} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12, color: '#0f172a' }}>
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '60%' }}>
+                    {u.name} <span style={{ color: '#94a3b8' }}>({sizeMb}MB)</span>
+                  </span>
+                  <span
+                    style={{
+                      fontWeight: 600,
+                      color: u.status === 'error' ? '#b91c1c' :
+                             u.status === 'done'  ? '#15803d' :
+                                                    '#475569',
+                    }}
+                  >
+                    {statusText}
+                  </span>
+                </div>
+                <div
+                  style={{
+                    width: '100%', height: 6, borderRadius: 999,
+                    background: '#e2e8f0', overflow: 'hidden',
+                  }}
+                >
+                  <div
+                    style={{
+                      width: `${u.status === 'done' ? 100 : u.percent}%`,
+                      height: '100%',
+                      background: barColor,
+                      transition: 'width 120ms linear',
+                    }}
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
       <button
         type="button"
         onClick={() => inputRef.current?.click()}
         disabled={busy || atCap}
         style={{
           ...s.uploadButton,
-          marginTop: ids.length > 0 ? 10 : 0,
+          marginTop: ids.length > 0 || uploadingFiles.length > 0 ? 10 : 0,
           ...(atCap ? { opacity: 0.55, cursor: 'not-allowed' } : {}),
         }}
       >
         {busy
-          ? (progress
-              ? `מעלה ${progress.current} מתוך ${progress.total}...`
-              : 'מעלה...')
+          ? (() => {
+              const activeIdx = uploadingFiles.findIndex((u) => u.status === 'uploading');
+              const active = activeIdx >= 0 ? uploadingFiles[activeIdx] : null;
+              return active
+                ? `מעלה ${activeIdx + 1}/${uploadingFiles.length} — ${active.percent}%`
+                : 'מעלה...';
+            })()
           : atCap
             ? `מקסימום ${GALLERY_MAX_FILES} קבצים`
             : '+ הוסיפי תמונות / וידאו'}
