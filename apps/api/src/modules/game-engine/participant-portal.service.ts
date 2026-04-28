@@ -792,14 +792,23 @@ export class ParticipantPortalService {
     // selected, so each group only sees events the participant
     // explicitly credited to it. No member-set duplicates; no leakage
     // from groups she opted out of.
+    //
+    // Phase 8.1 — show every event from the last 48 hours instead of
+    // the previous hard 30-row cap. The portal wraps the result in a
+    // scrollable container, so a busy group can render many cards
+    // without pushing other UI off-screen. The 500-row safety cap below
+    // protects the response from runaway groups (e.g. mass-import) and
+    // is essentially never hit in practice.
     const multi = await this.resolveMultiGroup(token, requestedGroupId);
+    const since = new Date(Date.now() - 48 * 60 * 60 * 1000);
     const events = await this.prisma.feedEvent.findMany({
       where: {
         groupId: multi.activeGroupId,
         isPublic: true,
+        createdAt: { gte: since },
       },
       orderBy: { createdAt: 'desc' },
-      take: 30,
+      take: 500,
       include: {
         participant: { select: { id: true, firstName: true, lastName: true, profileImageUrl: true } },
       },

@@ -123,6 +123,7 @@ const NAV_MAIN: NavItemDef[] = [
   { href: '/admin/tasks', label: 'משימות', icon: <IconCheckSquare /> },
   { href: '/admin/questionnaires', label: 'שאלונים', icon: <IconFileText /> },
   { href: '/admin/icount-webhook', label: 'iCount', icon: <IconCreditCard /> },
+  { href: '/admin/feed', label: 'מבזק', icon: <IconZap /> },
 ];
 
 const NAV_BOTTOM: NavItemDef[] = [

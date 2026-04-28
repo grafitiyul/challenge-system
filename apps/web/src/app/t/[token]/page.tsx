@@ -2507,35 +2507,53 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
             {feedLoading && <div style={s.tabCenter}><div style={s.spinner} /></div>}
             {feedError && <p style={s.tabError}>{feedError}</p>}
             {!feedLoading && !feedError && feed.length === 0 && (
-              <p style={{ textAlign: 'center', color: '#9ca3af', padding: '40px 0', fontSize: 15 }}>אין פעילות עדיין</p>
+              <p style={{ textAlign: 'center', color: '#9ca3af', padding: '40px 0', fontSize: 15 }}>אין פעילות ב-48 השעות האחרונות</p>
             )}
-            {feed.map((item) => (
-              <div key={item.id} style={s.feedItem}>
-                <ParticipantAvatar
-                  firstName={item.participant.firstName}
-                  lastName={item.participant.lastName}
-                  profileImageUrl={item.participant.profileImageUrl}
-                  size={40}
-                  fontSize={13}
-                />
-                <div style={s.feedContent}>
-                  <p style={s.feedMessage}>
-                    <span style={s.feedName}>
-                      {item.participant.firstName}
-                      {item.participant.lastName ? ` ${item.participant.lastName}` : ''}
-                    </span>
-                    {' '}
-                    {item.message}
-                  </p>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={s.feedTime}>{relativeTime(item.createdAt)}</span>
-                    {item.points > 0 && (
-                      <span style={s.feedPoints}>+{item.points} נק׳</span>
-                    )}
+            {/* Phase 8.1 — feed window expanded from 30 rows to "last 48
+                hours". Wrap the list in a scrollable container so a busy
+                group doesn't push the bottom nav off-screen on mobile.
+                The container height is bounded by viewport math instead
+                of a magic px so it adapts to phones, tablets, and the
+                portal-opening header above it. */}
+            {feed.length > 0 && (
+              <div
+                style={{
+                  maxHeight: 'calc(100vh - 320px)',
+                  minHeight: 240,
+                  overflowY: 'auto',
+                  WebkitOverflowScrolling: 'touch',
+                  paddingInlineEnd: 4,
+                }}
+              >
+                {feed.map((item) => (
+                  <div key={item.id} style={s.feedItem}>
+                    <ParticipantAvatar
+                      firstName={item.participant.firstName}
+                      lastName={item.participant.lastName}
+                      profileImageUrl={item.participant.profileImageUrl}
+                      size={40}
+                      fontSize={13}
+                    />
+                    <div style={s.feedContent}>
+                      <p style={s.feedMessage}>
+                        <span style={s.feedName}>
+                          {item.participant.firstName}
+                          {item.participant.lastName ? ` ${item.participant.lastName}` : ''}
+                        </span>
+                        {' '}
+                        {item.message}
+                      </p>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={s.feedTime}>{relativeTime(item.createdAt)}</span>
+                        {item.points > 0 && (
+                          <span style={s.feedPoints}>+{item.points} נק׳</span>
+                        )}
+                      </div>
+                    </div>
                   </div>
-                </div>
+                ))}
               </div>
-            ))}
+            )}
           </div>
         )}
 
