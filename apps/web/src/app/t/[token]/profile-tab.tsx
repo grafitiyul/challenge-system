@@ -58,6 +58,52 @@ function srcOf(url: string): string {
   return url;
 }
 
+// Avatar preview that suppresses the browser's broken-image icon and
+// the harsh "no image yet" gap while the response loads. The <img> is
+// rendered display:none until the load event fires; an inline spinner
+// fills the same box in the meantime, an error placeholder takes over
+// if onError fires (404 / mime mismatch / network drop). Cache-bust
+// token bumps after a fresh upload, in case an intermediate cache is
+// still holding a 404 from a pre-write request.
+function AvatarPreview({ url, cacheBust }: { url: string; cacheBust: number }) {
+  const [loaded, setLoaded] = useState(false);
+  const [errored, setErrored] = useState(false);
+  // Reset states whenever the URL or the cache-bust token changes,
+  // so a "replace" upload re-shows the spinner instead of flashing
+  // the previous image's loaded state.
+  useEffect(() => { setLoaded(false); setErrored(false); }, [url, cacheBust]);
+  const src = cacheBust > 0
+    ? `${url}${url.includes('?') ? '&' : '?'}cb=${cacheBust}`
+    : url;
+  const placeholder: React.CSSProperties = {
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    minHeight: 160, borderRadius: 8, background: '#f1f5f9',
+    color: '#64748b', fontSize: 13,
+  };
+  return (
+    <>
+      {!loaded && !errored && <div style={placeholder}>טוען תמונה...</div>}
+      {errored && (
+        <div style={{ ...placeholder, background: '#fef2f2', color: '#b91c1c' }}>
+          התמונה לא זמינה
+        </div>
+      )}
+      <img
+        src={src}
+        alt=""
+        loading="eager"
+        style={{
+          display: loaded && !errored ? 'block' : 'none',
+          maxWidth: '100%', maxHeight: 220, borderRadius: 8,
+          objectFit: 'cover', margin: '0 auto',
+        }}
+        onLoad={() => setLoaded(true)}
+        onError={() => setErrored(true)}
+      />
+    </>
+  );
+}
+
 // apiFetch throws an ApiError object (not a real Error), so the
 // previous `e instanceof Error ? e.message : fallback` checks always
 // fell through to the fallback string and the actual server message
@@ -373,6 +419,13 @@ function ImageField(props: {
   const [busy, setBusy] = useState(false);
   const [errMsg, setErrMsg] = useState('');
   const [uploadPct, setUploadPct] = useState<number | null>(null);
+  // Cache-bust token. We append ?cb=<token> to the avatar URL ONLY
+  // when this component just performed an upload; subsequent renders
+  // (and other tabs) leave the URL alone so the browser cache keeps
+  // working normally. Each fresh upload also produces a new filename
+  // server-side, so this is belt-and-braces protection against any
+  // intermediate cache that might still hold a stale 404.
+  const [cacheBust, setCacheBust] = useState<number>(0);
 
   // Resolve current preview URL: profileImageUrl (system) stores the
   // /uploads URL directly; custom image fields store a file id that we
@@ -398,6 +451,10 @@ function ImageField(props: {
         { method: 'PATCH', body: JSON.stringify({ fieldKey: props.fieldKey, value: meta.id }) },
       );
       props.onSnapshotChanged(next);
+      // New filename → new URL anyway, but bumping cb defeats any
+      // intermediate proxy/CDN that might briefly hold a 404 from a
+      // pre-write request.
+      setCacheBust(Date.now());
     } catch (e) {
       setErrMsg(errMessage(e, 'העלאה נכשלה'));
     } finally {
@@ -436,7 +493,7 @@ function ImageField(props: {
       />
       {previewUrl ? (
         <div style={s.imagePreviewWrap}>
-          <img src={srcOf(previewUrl)} alt="" style={s.imagePreview} />
+          <AvatarPreview url={srcOf(previewUrl)} cacheBust={cacheBust} />
           <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
             <button
               type="button"
@@ -461,7 +518,7 @@ function ImageField(props: {
         >
           <span style={{ position: 'relative', zIndex: 1 }}>
             {busy
-              ? `מעלה... ${uploadPct ?? 0}%`
+              ? ((uploadPct ?? 0) >= 95 ? 'מעבד...' : `מעלה... ${uploadPct ?? 0}%`)
               : '📷 העלי תמונה'}
           </span>
           {/* Live progress fill — driven by the XHR upload event so a
@@ -574,6 +631,15 @@ function ImageGalleryField(props: {
         name: f.name, sizeBytes: f.size, percent: 0, status: 'queued',
       })));
 
+      // Continue past per-file failures so a single bad file doesn't
+      // discard the successful uploads. THIS WAS THE PERSISTENCE BUG:
+      // the previous version threw out of the loop on first error,
+      // skipping the persist() below — so files that uploaded fine
+      // never landed in ParticipantProfileValue and "disappeared"
+      // after refresh. Now we collect all successes, surface a clear
+      // summary message about failures, and always persist whatever
+      // worked.
+      const failures: { name: string; error: string }[] = [];
       for (let i = 0; i < incoming.length; i++) {
         const file = incoming[i];
         setUploadingFiles((curr) =>
@@ -592,27 +658,38 @@ function ImageGalleryField(props: {
             curr.map((u, idx) => idx === i ? { ...u, percent: 100, status: 'done' } : u),
           );
         } catch (e) {
-          // Mark this file failed — keep prior successes visible — and
-          // bail out of the loop. The outer catch surfaces the message.
           const msg = errMessage(e, 'העלאה נכשלה');
+          failures.push({ name: file.name, error: msg });
           setUploadingFiles((curr) =>
             curr.map((u, idx) => idx === i ? { ...u, status: 'error', error: msg } : u),
           );
-          throw e;
+          // Do NOT throw — keep the loop running so the next file gets
+          // its own attempt. The summary error below tells the user
+          // exactly which files failed and why.
         }
       }
-      await persist([...ids, ...newIds]);
+      // Always persist the successes, even if some files failed.
+      // This is the critical fix: without it, a partial-success batch
+      // left orphan ParticipantUploadedFile rows that never linked to
+      // the field, and the gallery looked empty after refresh.
+      if (newIds.length > 0) {
+        await persist([...ids, ...newIds]);
+      }
+      if (failures.length > 0) {
+        const summary = failures.length === incoming.length
+          ? `כל ההעלאות נכשלו (${failures.length}). שגיאה ראשונה: ${failures[0].error}`
+          : `הועלו ${newIds.length} בהצלחה, ${failures.length} נכשלו. שגיאה ראשונה: ${failures[0].error}`;
+        setErrMsg(summary);
+      }
     } catch (e) {
+      // Outer catch handles preflight rejections (cap, oversize) +
+      // catastrophic persist failures.
       setErrMsg(errMessage(e, 'העלאה נכשלה'));
     } finally {
       setBusy(false);
-      // Hold the per-file list briefly so the participant sees the ✓
-      // marks before they vanish into gallery cells. Errors stay
-      // longer (3.5 s) so the message is readable; clean batches go
-      // sooner (1.2 s) since the new gallery cells already render.
+      // Hold the per-file list a touch longer when there were errors
+      // so the participant has time to read which file failed and why.
       const hadError = (
-        // Read the latest setUploadingFiles state lazily via the
-        // setter callback — avoids a stale closure here.
         await new Promise<boolean>((res) => {
           setUploadingFiles((curr) => {
             res(curr.some((u) => u.status === 'error'));
@@ -620,7 +697,7 @@ function ImageGalleryField(props: {
           });
         })
       );
-      const wait = hadError ? 3500 : 1200;
+      const wait = hadError ? 5000 : 1200;
       setTimeout(() => setUploadingFiles([]), wait);
     }
   }
@@ -724,10 +801,16 @@ function ImageGalleryField(props: {
               u.status === 'error' ? '#dc2626' :
               u.status === 'done'  ? '#16a34a' :
                                      '#1d4ed8';
+            // Once bytes hit 95%, the server is processing the multipart
+            // body + writing to disk + recording the row. Showing a
+            // misleading "99%" for that whole stretch reads as "stuck".
+            // Switch to "מעבד..." so the participant knows progress IS
+            // happening, just on the server side.
             const statusText =
               u.status === 'queued'    ? 'ממתין'   :
-              u.status === 'uploading' ? `מעלה... ${u.percent}%` :
-              u.status === 'done'      ? 'הועלה ✓' :
+              u.status === 'uploading'
+                ? (u.percent >= 95 ? 'מעבד...' : `מעלה... ${u.percent}%`)
+              : u.status === 'done'    ? 'הועלה ✓' :
                                          (u.error ? `שגיאה: ${u.error}` : 'שגיאה');
             return (
               <div key={`${i}-${u.name}`} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -780,9 +863,9 @@ function ImageGalleryField(props: {
           ? (() => {
               const activeIdx = uploadingFiles.findIndex((u) => u.status === 'uploading');
               const active = activeIdx >= 0 ? uploadingFiles[activeIdx] : null;
-              return active
-                ? `מעלה ${activeIdx + 1}/${uploadingFiles.length} — ${active.percent}%`
-                : 'מעלה...';
+              if (!active) return 'מעלה...';
+              const tail = active.percent >= 95 ? 'מעבד...' : `${active.percent}%`;
+              return `מעלה ${activeIdx + 1}/${uploadingFiles.length} — ${tail}`;
             })()
           : atCap
             ? `מקסימום ${GALLERY_MAX_FILES} קבצים`

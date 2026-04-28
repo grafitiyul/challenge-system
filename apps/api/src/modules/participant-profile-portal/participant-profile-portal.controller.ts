@@ -7,6 +7,7 @@ import {
   Patch,
   Post,
   UploadedFile,
+  UseFilters,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
@@ -17,6 +18,7 @@ import { resolveUploadsDir } from '../upload/uploads-dir';
 import { AdminSessionGuard } from '../auth/admin-session.guard';
 import { ParticipantProfilePortalService, ProfileSnapshot } from './participant-profile-portal.service';
 import { SetProfileValueDto } from './dto/set-value.dto';
+import { MulterExceptionFilter } from './multer-exception.filter';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const multer = require('multer');
@@ -74,6 +76,9 @@ export class ParticipantProfilePortalController {
   }
 
   @Post('upload')
+  // Convert opaque multer "File too large" / fileFilter rejections
+  // into clear Hebrew JSON the XHR client can surface verbatim.
+  @UseFilters(new MulterExceptionFilter(MAX_IMAGE_BYTES, MAX_VIDEO_BYTES))
   @UseInterceptors(
     FileInterceptor('file', {
       storage: multer.diskStorage({
