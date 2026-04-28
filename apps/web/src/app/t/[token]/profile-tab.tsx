@@ -354,7 +354,7 @@ function ImageField(props: {
 // participant-profile-portal.controller).
 const GALLERY_MAX_FILES   = 30;                  // server hard ceiling
 const GALLERY_VISIBLE     = 10;                  // initially-rendered cells; "load more" reveals the rest
-const MAX_IMAGE_BYTES     = 10 * 1024 * 1024;    // 10 MB per image
+const MAX_IMAGE_BYTES     = 15 * 1024 * 1024;    // 15 MB per image
 const MAX_VIDEO_BYTES     = 50 * 1024 * 1024;    // 50 MB per video
 
 function ImageGalleryField(props: {
@@ -512,7 +512,7 @@ function ImageGalleryField(props: {
         {busy ? 'מעלה...' : atCap ? `מקסימום ${GALLERY_MAX_FILES} קבצים` : '+ הוסיפי תמונות / וידאו'}
       </button>
       <p style={{ fontSize: 11, color: '#94a3b8', margin: '6px 2px 0', lineHeight: 1.5 }}>
-        עד {GALLERY_MAX_FILES} קבצים. תמונות עד 10MB (jpg/png/gif/webp), וידאו עד 50MB (mp4/mov/webm).
+        עד {GALLERY_MAX_FILES} קבצים. תמונות עד 15MB (jpg/png/gif/webp), וידאו עד 50MB (mp4/mov/webm).
       </p>
       {errMsg && <p style={s.fieldErr}>{errMsg}</p>}
     </div>

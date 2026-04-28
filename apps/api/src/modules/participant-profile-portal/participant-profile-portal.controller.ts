@@ -35,10 +35,10 @@ interface UploadedFileInfo {
 
 const UPLOADS_DIR = resolveUploadsDir();
 
-// Per-mime size budgets. Images stay tight at 10 MB — anything bigger
-// is almost certainly an unflattened phone export. Videos get 50 MB so
-// short clips for "before photos" land cleanly without re-encoding.
-const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+// Per-mime size budgets. Images get 15 MB — generous enough for
+// straight-from-camera phone shots without re-encoding. Videos get
+// 50 MB so short clips for "before photos" land cleanly.
+const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
 const MAX_VIDEO_BYTES = 50 * 1024 * 1024;
 
 function generateFilename(originalname: string): string {
