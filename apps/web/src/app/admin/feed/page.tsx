@@ -17,6 +17,13 @@ interface FeedRow {
   isPublic: boolean;
   createdAt: string;
   logId: string | null;
+  log: {
+    id: string;
+    value: string;
+    status: string;
+    actionName: string;
+    actionInputType: string | null;
+  } | null;
   participant: { id: string; firstName: string; lastName: string | null } | null;
   group: { id: string; name: string } | null;
   program: { id: string; name: string } | null;
@@ -66,6 +73,12 @@ export default function AdminFeedPage() {
   const [visibility, setVisibility] = useState<'all' | 'public' | 'hidden'>('all');
   const [skip, setSkip] = useState(0);
   const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
+
+  // Row-action modals — both locked: no backdrop close, explicit X.
+  // The shape carries the row so the modal text can spell out exactly
+  // what's being touched (log-linked vs standalone).
+  const [voidTarget, setVoidTarget] = useState<FeedRow | null>(null);
+  const [editTarget, setEditTarget] = useState<FeedRow | null>(null);
 
   // Load filter options once.
   useEffect(() => {
@@ -208,16 +221,20 @@ export default function AdminFeedPage() {
         <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
+              {/* Column order תוכנית → קבוצה → משתתפת — wider context
+                  reads left-to-right (in RTL, right-to-left visually):
+                  program first, then group, then the specific participant. */}
               <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0', textAlign: 'right' }}>
                 <th style={th}>זמן</th>
                 <th style={th}>סוג</th>
-                <th style={th}>משתתפת</th>
-                <th style={th}>קבוצה</th>
                 <th style={th}>תוכנית</th>
+                <th style={th}>קבוצה</th>
+                <th style={th}>משתתפת</th>
                 <th style={th}>הודעה</th>
                 <th style={th}>נקודות</th>
                 <th style={th}>נראות</th>
                 <th style={th}>logId</th>
+                <th style={th}>פעולות</th>
               </tr>
             </thead>
             <tbody>
@@ -233,10 +250,8 @@ export default function AdminFeedPage() {
                   <td style={td}>{formatWhen(r.createdAt)}</td>
                   <td style={td}>{TYPE_LABEL[r.type] ?? r.type}</td>
                   <td style={td}>
-                    {r.participant ? (
-                      <Link href={`/admin/participants/${r.participant.id}`} style={{ color: '#2563eb', textDecoration: 'none' }}>
-                        {r.participant.firstName}{r.participant.lastName ? ` ${r.participant.lastName}` : ''}
-                      </Link>
+                    {r.program ? (
+                      <Link href={`/admin/programs/${r.program.id}`} style={{ color: '#2563eb', textDecoration: 'none' }}>{r.program.name}</Link>
                     ) : '—'}
                   </td>
                   <td style={td}>
@@ -245,8 +260,10 @@ export default function AdminFeedPage() {
                     ) : '—'}
                   </td>
                   <td style={td}>
-                    {r.program ? (
-                      <Link href={`/admin/programs/${r.program.id}`} style={{ color: '#2563eb', textDecoration: 'none' }}>{r.program.name}</Link>
+                    {r.participant ? (
+                      <Link href={`/admin/participants/${r.participant.id}`} style={{ color: '#2563eb', textDecoration: 'none' }}>
+                        {r.participant.firstName}{r.participant.lastName ? ` ${r.participant.lastName}` : ''}
+                      </Link>
                     ) : '—'}
                   </td>
                   <td style={{ ...td, maxWidth: 320 }}>{r.message}</td>
@@ -268,6 +285,28 @@ export default function AdminFeedPage() {
                   </td>
                   <td style={{ ...td, fontFamily: 'monospace', direction: 'ltr', fontSize: 11, color: '#64748b' }}>
                     {r.logId ?? '—'}
+                  </td>
+                  <td style={td}>
+                    <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                      {/* Edit: only useful for log-linked rows or non-
+                          hidden standalone rows. We keep it always
+                          available — the modal explains the case. */}
+                      <button
+                        type="button"
+                        onClick={() => setEditTarget(r)}
+                        style={btnEdit}
+                      >ערוך</button>
+                      {/* Delete: a no-op for already-hidden rows
+                          (server is idempotent for log-voided rows;
+                          standalone hidden rows have nothing to do). */}
+                      <button
+                        type="button"
+                        onClick={() => setVoidTarget(r)}
+                        disabled={!r.isPublic && !r.logId}
+                        title={!r.isPublic && !r.logId ? 'הרשומה כבר מוסתרת' : undefined}
+                        style={{ ...btnDelete, ...(!r.isPublic && !r.logId ? btnDisabled : {}) }}
+                      >מחק / הסתר</button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -297,12 +336,242 @@ export default function AdminFeedPage() {
           >← ישנים יותר</button>
         </div>
       )}
+
+      {voidTarget && (
+        <VoidModal
+          row={voidTarget}
+          onClose={() => setVoidTarget(null)}
+          onDone={() => { setVoidTarget(null); reload(); }}
+        />
+      )}
+      {editTarget && (
+        <EditModal
+          row={editTarget}
+          onClose={() => setEditTarget(null)}
+          onDone={() => { setEditTarget(null); reload(); }}
+        />
+      )}
     </div>
   );
 }
 
 const th: React.CSSProperties = { padding: '10px 12px', fontWeight: 700, color: '#374151', fontSize: 12 };
 const td: React.CSSProperties = { padding: '10px 12px', verticalAlign: 'top', color: '#0f172a' };
+const btnEdit: React.CSSProperties = {
+  padding: '5px 10px', fontSize: 12, fontWeight: 600,
+  background: '#eff6ff', color: '#1d4ed8',
+  border: '1px solid #bfdbfe', borderRadius: 6, cursor: 'pointer',
+};
+const btnDelete: React.CSSProperties = {
+  padding: '5px 10px', fontSize: 12, fontWeight: 600,
+  background: '#fff', color: '#b91c1c',
+  border: '1px solid #fecaca', borderRadius: 6, cursor: 'pointer',
+};
+const btnDisabled: React.CSSProperties = { opacity: 0.4, cursor: 'not-allowed' };
+
+// ─── Locked in-app modal ─────────────────────────────────────────────────
+// No backdrop close (clicks outside the card don't dismiss). Explicit X
+// button. No browser confirm/alert anywhere in this surface.
+function ModalShell(props: { title: string; busy?: boolean; onClose: () => void; children: React.ReactNode; footer: React.ReactNode }) {
+  return (
+    <div
+      style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100, padding: 16 }}
+      role="dialog"
+      aria-modal="true"
+    >
+      <div style={{ background: '#fff', borderRadius: 12, padding: 22, width: '100%', maxWidth: 460, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.25)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+          <h3 style={{ fontSize: 17, fontWeight: 700, margin: 0, color: '#0f172a' }}>{props.title}</h3>
+          <button
+            type="button"
+            onClick={props.onClose}
+            disabled={props.busy}
+            aria-label="סגור"
+            style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: props.busy ? 'not-allowed' : 'pointer', lineHeight: 1 }}
+          >×</button>
+        </div>
+        {props.children}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 18 }}>
+          {props.footer}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Void / hide ─────────────────────────────────────────────────────────
+function VoidModal({ row, onClose, onDone }: { row: FeedRow; onClose: () => void; onDone: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const isLogLinked = !!row.logId;
+
+  async function submit() {
+    setBusy(true); setErr('');
+    try {
+      await apiFetch(`${BASE_URL}/admin/feed-events/${row.id}/void`, { method: 'POST' });
+      onDone();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'הפעולה נכשלה');
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <ModalShell
+      title={isLogLinked ? 'מחיקת דיווח (משפיע על ניקוד)' : 'הסתרת מבזק בלבד'}
+      busy={busy}
+      onClose={onClose}
+      footer={
+        <>
+          <button onClick={onClose} disabled={busy} style={{ padding: '8px 16px', background: '#f1f5f9', border: '1px solid #e2e8f0', color: '#374151', borderRadius: 8, fontSize: 13, cursor: busy ? 'not-allowed' : 'pointer' }}>
+            ביטול
+          </button>
+          <button onClick={submit} disabled={busy} style={{ padding: '8px 16px', background: busy ? '#fca5a5' : '#dc2626', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: busy ? 'not-allowed' : 'pointer' }}>
+            {busy ? 'מבצע...' : (isLogLinked ? 'מחק את הדיווח' : 'הסתר מבזק')}
+          </button>
+        </>
+      }
+    >
+      {isLogLinked ? (
+        <div style={{ fontSize: 13, color: '#475569', lineHeight: 1.6 }}>
+          <p style={{ margin: '0 0 8px' }}>
+            השורה הזו מקושרת לדיווח פעולה (<span dir="ltr" style={{ fontFamily: 'monospace' }}>logId={row.logId}</span>).
+          </p>
+          <p style={{ margin: '0 0 8px' }}>
+            <strong>מה יקרה:</strong>
+          </p>
+          <ul style={{ margin: '0 0 0 18px', padding: 0 }}>
+            <li>הניקוד של המשתתפת יתוקן (יבוטל הניקוד שהדיווח חישב).</li>
+            <li>אם הדיווח שותף לכמה קבוצות (multi-group), כל הקבוצות הקשורות יקבלו תיקון.</li>
+            <li>כל שורות המבזק שמקושרות לאותו logId יוסתרו אוטומטית.</li>
+            <li>הפורטל של המשתתפת ידכן את עצמו בריענון הבא.</li>
+          </ul>
+          <p style={{ margin: '12px 0 0', color: '#92400e', background: '#fef3c7', border: '1px solid #fde68a', padding: '8px 10px', borderRadius: 6, fontSize: 12 }}>
+            הפעולה משתמשת ב-voidLog הקיים — אותה לוגיקה שמשתתפת מפעילה כשהיא מוחקת דיווח שלה.
+          </p>
+        </div>
+      ) : (
+        <div style={{ fontSize: 13, color: '#475569', lineHeight: 1.6 }}>
+          <p style={{ margin: '0 0 8px' }}>
+            השורה הזו אינה מקושרת לדיווח פעולה (אין logId).
+          </p>
+          <p style={{ margin: 0 }}>
+            <strong>מה יקרה:</strong> הסתרת שורת המבזק בלבד (<code>isPublic = false</code>). אין שינוי ניקוד.
+          </p>
+        </div>
+      )}
+      {err && <p style={{ color: '#b91c1c', fontSize: 13, marginTop: 10 }}>{err}</p>}
+    </ModalShell>
+  );
+}
+
+// ─── Edit ────────────────────────────────────────────────────────────────
+function EditModal({ row, onClose, onDone }: { row: FeedRow; onClose: () => void; onDone: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const isLogLinked = !!row.logId;
+  // Pre-fill: log-linked rows take the current log value; standalone
+  // rows take the current message text.
+  const [valueDraft, setValueDraft] = useState(row.log?.value ?? '');
+  const [messageDraft, setMessageDraft] = useState(row.message);
+  const [isPublicDraft, setIsPublicDraft] = useState(row.isPublic);
+
+  async function submit() {
+    setBusy(true); setErr('');
+    try {
+      const body: Record<string, unknown> = isLogLinked
+        ? { value: valueDraft }
+        : { message: messageDraft, isPublic: isPublicDraft };
+      await apiFetch(`${BASE_URL}/admin/feed-events/${row.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      });
+      onDone();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'הפעולה נכשלה');
+    } finally { setBusy(false); }
+  }
+
+  const inputStyle: React.CSSProperties = {
+    width: '100%', padding: '9px 12px', border: '1px solid #e2e8f0', borderRadius: 8,
+    fontSize: 14, background: '#fff', color: '#0f172a', boxSizing: 'border-box', fontFamily: 'inherit',
+  };
+  const labelStyle: React.CSSProperties = {
+    display: 'block', fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 4,
+  };
+
+  return (
+    <ModalShell
+      title={isLogLinked ? 'עריכת דיווח (משפיע על ניקוד)' : 'עריכת מבזק (טקסט בלבד)'}
+      busy={busy}
+      onClose={onClose}
+      footer={
+        <>
+          <button onClick={onClose} disabled={busy} style={{ padding: '8px 16px', background: '#f1f5f9', border: '1px solid #e2e8f0', color: '#374151', borderRadius: 8, fontSize: 13, cursor: busy ? 'not-allowed' : 'pointer' }}>
+            ביטול
+          </button>
+          <button onClick={submit} disabled={busy || (isLogLinked && !valueDraft.trim())} style={{ padding: '8px 16px', background: busy ? '#93c5fd' : '#2563eb', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: busy ? 'not-allowed' : 'pointer' }}>
+            {busy ? 'מבצע...' : 'שמור'}
+          </button>
+        </>
+      }
+    >
+      {isLogLinked ? (
+        <div style={{ display: 'grid', gap: 12 }}>
+          <div style={{ fontSize: 12, color: '#92400e', background: '#fef3c7', border: '1px solid #fde68a', padding: '8px 10px', borderRadius: 6, lineHeight: 1.5 }}>
+            השורה מקושרת לדיווח <strong>{row.log?.actionName}</strong>. שינוי הערך משתמש ב-correctLog ויעדכן את הניקוד בכל הקבוצות הקשורות (multi-group fan-out).
+          </div>
+          <div>
+            <label style={labelStyle}>ערך נוכחי בלוג</label>
+            <input
+              dir="ltr"
+              style={{ ...inputStyle, fontFamily: 'monospace', background: '#f8fafc', color: '#64748b' }}
+              value={row.log?.value ?? ''}
+              readOnly
+            />
+          </div>
+          <div>
+            <label style={labelStyle}>ערך חדש</label>
+            <input
+              dir="ltr"
+              style={inputStyle}
+              type={row.log?.actionInputType === 'number' ? 'number' : 'text'}
+              step={row.log?.actionInputType === 'number' ? 'any' : undefined}
+              value={valueDraft}
+              onChange={(e) => setValueDraft(e.target.value)}
+              autoFocus
+            />
+            <p style={{ fontSize: 11, color: '#64748b', margin: '4px 2px 0' }}>
+              לאחר השמירה, סטטוס הלוג הישן יעבור ל-superseded ולוג חדש ייווצר.
+            </p>
+          </div>
+        </div>
+      ) : (
+        <div style={{ display: 'grid', gap: 12 }}>
+          <div style={{ fontSize: 12, color: '#475569', background: '#f8fafc', border: '1px solid #e2e8f0', padding: '8px 10px', borderRadius: 6, lineHeight: 1.5 }}>
+            השורה אינה מקושרת ללוג פעולה (אין logId). העריכה משפיעה רק על שורת המבזק; הניקוד אינו מושפע.
+          </div>
+          <div>
+            <label style={labelStyle}>טקסט מבזק</label>
+            <textarea
+              style={{ ...inputStyle, minHeight: 90, resize: 'vertical' }}
+              value={messageDraft}
+              onChange={(e) => setMessageDraft(e.target.value)}
+            />
+          </div>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#0f172a' }}>
+            <input
+              type="checkbox"
+              checked={isPublicDraft}
+              onChange={(e) => setIsPublicDraft(e.target.checked)}
+            />
+            השורה גלויה למשתתפות
+          </label>
+        </div>
+      )}
+      {err && <p style={{ color: '#b91c1c', fontSize: 13, marginTop: 10 }}>{err}</p>}
+    </ModalShell>
+  );
+}
 
 function formatWhen(iso: string): string {
   const d = new Date(iso);
