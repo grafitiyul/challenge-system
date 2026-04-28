@@ -2227,38 +2227,39 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
         </div>
       )}
 
+      {/* ── Active catch-up banner ── Global — visible across all tabs
+           per the spec ("top timer/banner appears"). Live mm:ss
+           countdown driven by the recurring tick effect, recomputed
+           against the server-issued absolute expiresAt so client
+           clock skew can't desync. */}
+      {ctx.activeCatchUpSession && catchUpRemainingMs !== null && catchUpRemainingMs > 0 && (
+        <div
+          style={{
+            margin: '0 12px 10px', padding: '12px 14px',
+            background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 10,
+            color: '#1d4ed8', fontSize: 13, fontWeight: 600,
+            display: 'flex', alignItems: 'center', gap: 12,
+          }}
+          role="status"
+          aria-live="polite"
+        >
+          <span style={{ flex: 1, lineHeight: 1.5 }}>
+            {(() => {
+              const tpl = ctx.activeCatchUpSession.bannerText
+                ?? `מצב השלמה פעיל — נשארו {time}`;
+              const cd = formatCountdown(catchUpRemainingMs);
+              return tpl.includes('{time}') ? tpl.replace('{time}', cd) : `${tpl} (${cd})`;
+            })()}
+          </span>
+        </div>
+      )}
+
       {/* ── Tab content ── */}
       <div style={s.tabContent}>
 
         {/* ── Tab 1: דיווח שוטף ── */}
         {activeTab === 'report' && (
           <div style={s.actionList}>
-            {/* Active catch-up banner — shown ONLY while a session is live.
-                Replaces the catch-up button area with a live mm:ss
-                countdown. Banner text comes from program config; {time}
-                is replaced with the current remaining countdown. */}
-            {ctx.activeCatchUpSession && catchUpRemainingMs !== null && catchUpRemainingMs > 0 && (
-              <div
-                style={{
-                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                  gap: 12, padding: '12px 14px', marginBottom: 10,
-                  background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 10,
-                  color: '#1d4ed8', fontSize: 13, fontWeight: 600,
-                }}
-                role="status"
-                aria-live="polite"
-              >
-                <span style={{ flex: 1, lineHeight: 1.5 }}>
-                  {(() => {
-                    const tpl = ctx.activeCatchUpSession.bannerText
-                      ?? `מצב השלמה פעיל — נשארו {time}`;
-                    const cd = formatCountdown(catchUpRemainingMs);
-                    return tpl.includes('{time}') ? tpl.replace('{time}', cd) : `${tpl} (${cd})`;
-                  })()}
-                </span>
-              </div>
-            )}
-
             {ctx.actions.map((action) => {
               const fb = feedback[action.id];
               const todayDisplay = getTodayDisplay(action, ctx.todayValues);
@@ -2292,33 +2293,6 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
               <p style={{ textAlign: 'center', color: '#9ca3af', padding: '40px 0', fontSize: 15 }}>
                 אין פעולות להצגה כרגע
               </p>
-            )}
-
-            {/* Catch-up button — quiet, at the bottom of the list. Only
-                rendered when the program has catch-up enabled, today is
-                in the configured availability dates, and no active
-                session for today has been started yet. The visibility
-                rule is computed entirely server-side and surfaced as
-                ctx.catchUp.availableToday so the client never has to
-                check dates / sessions / master flag separately. */}
-            {ctx.catchUp?.enabled && ctx.catchUp.availableToday && !ctx.activeCatchUpSession && (
-              <button
-                type="button"
-                onClick={() => { setCatchUpError(''); setCatchUpConfirmOpen(true); }}
-                style={{
-                  marginTop: 18,
-                  width: '100%',
-                  padding: '12px 16px',
-                  background: '#fff',
-                  color: '#1d4ed8',
-                  border: '1px dashed #93c5fd',
-                  borderRadius: 10,
-                  fontSize: 13, fontWeight: 600,
-                  cursor: 'pointer',
-                }}
-              >
-                {ctx.catchUp.buttonLabel || 'דיווח השלמה'}
-              </button>
             )}
           </div>
         )}
@@ -2678,6 +2652,31 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                   )}
                 </div>
               </>
+            )}
+
+            {/* Catch-up button — quiet, at the bottom of the "הנתונים שלי"
+                tab per the spec. Visibility is computed server-side and
+                surfaced as ctx.catchUp.availableToday, so the three
+                conditions (master flag on, today in availability dates,
+                no session today) collapse into one truthy check here. */}
+            {ctx.catchUp?.enabled && ctx.catchUp.availableToday && !ctx.activeCatchUpSession && (
+              <button
+                type="button"
+                onClick={() => { setCatchUpError(''); setCatchUpConfirmOpen(true); }}
+                style={{
+                  marginTop: 18,
+                  width: '100%',
+                  padding: '12px 16px',
+                  background: '#fff',
+                  color: '#1d4ed8',
+                  border: '1px dashed #93c5fd',
+                  borderRadius: 10,
+                  fontSize: 13, fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                {ctx.catchUp.buttonLabel || 'דיווח השלמה'}
+              </button>
             )}
           </div>
         )}
