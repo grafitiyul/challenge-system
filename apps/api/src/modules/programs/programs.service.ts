@@ -39,6 +39,21 @@ export class ProgramsService {
       },
     });
     if (!program) throw new NotFoundException(`Program ${id} not found`);
+    // TEMP catch-up persistence diagnostic — prints what GET returns so
+    // we can see whether the reload's empty fields are because the DB
+    // is empty or because the response is missing them. Remove once
+    // round-trip is confirmed.
+    // eslint-disable-next-line no-console
+    console.log('[catchup-load] findById id=%s fields=%j', id, {
+      catchUpEnabled:         program.catchUpEnabled,
+      catchUpButtonLabel:     program.catchUpButtonLabel,
+      catchUpConfirmTitle:    program.catchUpConfirmTitle,
+      catchUpConfirmBody:     program.catchUpConfirmBody,
+      catchUpDurationMinutes: program.catchUpDurationMinutes,
+      catchUpAllowedDaysBack: program.catchUpAllowedDaysBack,
+      catchUpBannerText:      program.catchUpBannerText,
+      catchUpAvailableDates:  program.catchUpAvailableDates,
+    });
     return program;
   }
 
@@ -54,7 +69,33 @@ export class ProgramsService {
 
   async update(id: string, dto: UpdateProgramDto) {
     await this.findById(id);
-    return this.prisma.program.update({
+    // TEMP catch-up persistence diagnostic — prints what arrived in the
+    // DTO so we can see if any text field gets stripped between the
+    // PATCH body and the service. Remove once text-field round-trip is
+    // confirmed. Logs show key=undefined when the field never reached
+    // the DTO at all (whitelist strip / validation strip), distinct
+    // from key=null (sent as null by client) and key="value" (sent ok).
+    if (
+      dto.catchUpEnabled !== undefined ||
+      dto.catchUpButtonLabel !== undefined ||
+      dto.catchUpConfirmTitle !== undefined ||
+      dto.catchUpConfirmBody !== undefined ||
+      dto.catchUpBannerText !== undefined ||
+      dto.catchUpAvailableDates !== undefined
+    ) {
+      // eslint-disable-next-line no-console
+      console.log('[catchup-save] DTO arrived id=%s fields=%j', id, {
+        catchUpEnabled:         dto.catchUpEnabled,
+        catchUpButtonLabel:     dto.catchUpButtonLabel,
+        catchUpConfirmTitle:    dto.catchUpConfirmTitle,
+        catchUpConfirmBody:     dto.catchUpConfirmBody,
+        catchUpDurationMinutes: dto.catchUpDurationMinutes,
+        catchUpAllowedDaysBack: dto.catchUpAllowedDaysBack,
+        catchUpBannerText:      dto.catchUpBannerText,
+        catchUpAvailableDates:  dto.catchUpAvailableDates,
+      });
+    }
+    const result = await this.prisma.program.update({
       where: { id },
       data: {
         ...(dto.name !== undefined ? { name: dto.name } : {}),
@@ -83,6 +124,22 @@ export class ProgramsService {
           : {}),
       },
     });
+    // TEMP catch-up persistence diagnostic — prints what Prisma wrote
+    // to the DB. Compare with the [DTO arrived] line above to see if
+    // a value was filtered between DTO and Prisma. Remove with the
+    // matching block above once round-trip is confirmed.
+    // eslint-disable-next-line no-console
+    console.log('[catchup-save] Prisma returned id=%s fields=%j', id, {
+      catchUpEnabled:         result.catchUpEnabled,
+      catchUpButtonLabel:     result.catchUpButtonLabel,
+      catchUpConfirmTitle:    result.catchUpConfirmTitle,
+      catchUpConfirmBody:     result.catchUpConfirmBody,
+      catchUpDurationMinutes: result.catchUpDurationMinutes,
+      catchUpAllowedDaysBack: result.catchUpAllowedDaysBack,
+      catchUpBannerText:      result.catchUpBannerText,
+      catchUpAvailableDates:  result.catchUpAvailableDates,
+    });
+    return result;
   }
 
   async deactivate(id: string) {

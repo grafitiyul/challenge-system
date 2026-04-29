@@ -377,11 +377,30 @@ function CatchUpSettings({ program, onSaved }: { program: Program; onSaved: (p: 
         catchUpBannerText:      form.catchUpBannerText.trim() || null,
         catchUpAvailableDates:  datesToSave,
       };
+      // TEMP catch-up persistence diagnostic — print exactly what the
+      // form is sending and what comes back. Remove once text fields
+      // are confirmed to round-trip cleanly. Open devtools console
+      // before clicking Save to capture this.
+      // eslint-disable-next-line no-console
+      console.log('[catchup-save] form snapshot:', JSON.parse(JSON.stringify(form)));
+      // eslint-disable-next-line no-console
+      console.log('[catchup-save] PATCH payload:', JSON.parse(JSON.stringify(payload)));
       const updated = await apiFetch(`${BASE_URL}/programs/${program.id}`, {
         method: 'PATCH',
         cache: 'no-store',
         body: JSON.stringify(payload),
       }) as Program;
+      // eslint-disable-next-line no-console
+      console.log('[catchup-save] PATCH response catch-up fields:', {
+        catchUpEnabled:         updated.catchUpEnabled,
+        catchUpButtonLabel:     updated.catchUpButtonLabel,
+        catchUpConfirmTitle:    updated.catchUpConfirmTitle,
+        catchUpConfirmBody:     updated.catchUpConfirmBody,
+        catchUpDurationMinutes: updated.catchUpDurationMinutes,
+        catchUpAllowedDaysBack: updated.catchUpAllowedDaysBack,
+        catchUpBannerText:      updated.catchUpBannerText,
+        catchUpAvailableDates:  updated.catchUpAvailableDates,
+      });
       // Sync local form state to whatever the server actually persisted.
       // Without this, the UI showed the chip the admin had typed but
       // never confirmed, masking the bug. Now the source of truth is
