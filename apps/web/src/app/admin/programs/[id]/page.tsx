@@ -365,50 +365,44 @@ function CatchUpSettings({ program, onSaved }: { program: Program; onSaved: (p: 
           : form.catchUpAvailableDates
       );
 
-      // Send empty strings as nulls so the backend stores null when the
-      // admin clears a field, rather than a literal empty string.
+      // Always send the four text fields as plain strings — never null
+      // and never undefined. Empty string means "clear this field"; the
+      // server normalises "" → null at the DB layer for the nullable
+      // columns. Sending null directly was tripping a class-validator /
+      // class-transformer interaction with `whitelist:true + transform:
+      // true` that silently dropped the field from the validated DTO,
+      // so the spread in the service treated it as "untouched" and the
+      // value never landed.
       const payload = {
         catchUpEnabled:         form.catchUpEnabled,
-        catchUpButtonLabel:     form.catchUpButtonLabel.trim() || 'דיווח השלמה',
-        catchUpConfirmTitle:    form.catchUpConfirmTitle.trim() || null,
-        catchUpConfirmBody:     form.catchUpConfirmBody.trim() || null,
+        catchUpButtonLabel:     form.catchUpButtonLabel.trim(),
+        catchUpConfirmTitle:    form.catchUpConfirmTitle.trim(),
+        catchUpConfirmBody:     form.catchUpConfirmBody.trim(),
         catchUpDurationMinutes: Math.max(1, Number(form.catchUpDurationMinutes) || 1),
         catchUpAllowedDaysBack: Math.max(1, Number(form.catchUpAllowedDaysBack) || 1),
-        catchUpBannerText:      form.catchUpBannerText.trim() || null,
+        catchUpBannerText:      form.catchUpBannerText.trim(),
         catchUpAvailableDates:  datesToSave,
       };
-      // TEMP catch-up persistence diagnostic — print exactly what the
-      // form is sending and what comes back. Remove once text fields
-      // are confirmed to round-trip cleanly. Open devtools console
-      // before clicking Save to capture this.
-      // eslint-disable-next-line no-console
-      console.log('[catchup-save] form snapshot:', JSON.parse(JSON.stringify(form)));
-      // eslint-disable-next-line no-console
-      console.log('[catchup-save] PATCH payload:', JSON.parse(JSON.stringify(payload)));
       const updated = await apiFetch(`${BASE_URL}/programs/${program.id}`, {
         method: 'PATCH',
         cache: 'no-store',
         body: JSON.stringify(payload),
       }) as Program;
-      // eslint-disable-next-line no-console
-      console.log('[catchup-save] PATCH response catch-up fields:', {
+
+      // Hydrate the form from the server's response — every field, not
+      // just the dates list. This makes the saved values the single
+      // source of truth: the UI reflects exactly what's in the DB
+      // immediately after save (no need to wait for the next reload).
+      setForm({
         catchUpEnabled:         updated.catchUpEnabled,
-        catchUpButtonLabel:     updated.catchUpButtonLabel,
-        catchUpConfirmTitle:    updated.catchUpConfirmTitle,
-        catchUpConfirmBody:     updated.catchUpConfirmBody,
-        catchUpDurationMinutes: updated.catchUpDurationMinutes,
-        catchUpAllowedDaysBack: updated.catchUpAllowedDaysBack,
-        catchUpBannerText:      updated.catchUpBannerText,
-        catchUpAvailableDates:  updated.catchUpAvailableDates,
+        catchUpButtonLabel:     updated.catchUpButtonLabel ?? '',
+        catchUpConfirmTitle:    updated.catchUpConfirmTitle ?? '',
+        catchUpConfirmBody:     updated.catchUpConfirmBody ?? '',
+        catchUpDurationMinutes: updated.catchUpDurationMinutes ?? 10,
+        catchUpAllowedDaysBack: updated.catchUpAllowedDaysBack ?? 2,
+        catchUpBannerText:      updated.catchUpBannerText ?? '',
+        catchUpAvailableDates:  [...(updated.catchUpAvailableDates ?? [])].sort(),
       });
-      // Sync local form state to whatever the server actually persisted.
-      // Without this, the UI showed the chip the admin had typed but
-      // never confirmed, masking the bug. Now the source of truth is
-      // always what came back.
-      setForm((p) => ({
-        ...p,
-        catchUpAvailableDates: [...(updated.catchUpAvailableDates ?? [])].sort(),
-      }));
       setNewDate('');
       onSaved({ ...program, ...updated });
       setSaved(true);

@@ -3,7 +3,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { CreateProgramDto } from './dto/create-program.dto';
 import { UpdateProgramDto } from './dto/update-program.dto';
 import { CreateProgramGroupDto } from './dto/create-program-group.dto';
-import { ProgramType } from '@prisma/client';
+import { Prisma, ProgramType } from '@prisma/client';
 
 @Injectable()
 export class ProgramsService {
@@ -39,21 +39,6 @@ export class ProgramsService {
       },
     });
     if (!program) throw new NotFoundException(`Program ${id} not found`);
-    // TEMP catch-up persistence diagnostic — prints what GET returns so
-    // we can see whether the reload's empty fields are because the DB
-    // is empty or because the response is missing them. Remove once
-    // round-trip is confirmed.
-    // eslint-disable-next-line no-console
-    console.log('[catchup-load] findById id=%s fields=%j', id, {
-      catchUpEnabled:         program.catchUpEnabled,
-      catchUpButtonLabel:     program.catchUpButtonLabel,
-      catchUpConfirmTitle:    program.catchUpConfirmTitle,
-      catchUpConfirmBody:     program.catchUpConfirmBody,
-      catchUpDurationMinutes: program.catchUpDurationMinutes,
-      catchUpAllowedDaysBack: program.catchUpAllowedDaysBack,
-      catchUpBannerText:      program.catchUpBannerText,
-      catchUpAvailableDates:  program.catchUpAvailableDates,
-    });
     return program;
   }
 
@@ -69,77 +54,54 @@ export class ProgramsService {
 
   async update(id: string, dto: UpdateProgramDto) {
     await this.findById(id);
-    // TEMP catch-up persistence diagnostic — prints what arrived in the
-    // DTO so we can see if any text field gets stripped between the
-    // PATCH body and the service. Remove once text-field round-trip is
-    // confirmed. Logs show key=undefined when the field never reached
-    // the DTO at all (whitelist strip / validation strip), distinct
-    // from key=null (sent as null by client) and key="value" (sent ok).
-    if (
-      dto.catchUpEnabled !== undefined ||
-      dto.catchUpButtonLabel !== undefined ||
-      dto.catchUpConfirmTitle !== undefined ||
-      dto.catchUpConfirmBody !== undefined ||
-      dto.catchUpBannerText !== undefined ||
-      dto.catchUpAvailableDates !== undefined
-    ) {
-      // eslint-disable-next-line no-console
-      console.log('[catchup-save] DTO arrived id=%s fields=%j', id, {
-        catchUpEnabled:         dto.catchUpEnabled,
-        catchUpButtonLabel:     dto.catchUpButtonLabel,
-        catchUpConfirmTitle:    dto.catchUpConfirmTitle,
-        catchUpConfirmBody:     dto.catchUpConfirmBody,
-        catchUpDurationMinutes: dto.catchUpDurationMinutes,
-        catchUpAllowedDaysBack: dto.catchUpAllowedDaysBack,
-        catchUpBannerText:      dto.catchUpBannerText,
-        catchUpAvailableDates:  dto.catchUpAvailableDates,
-      });
+
+    // Build the Prisma update payload explicitly. Fields that aren't
+    // present on the DTO stay untouched. For the four catch-up text
+    // fields we ALSO normalise empty strings to null at the DB layer
+    // for the nullable columns — the client always sends strings, so
+    // there's no ambiguity here about whether to write or not.
+    const data: Prisma.ProgramUpdateInput = {};
+    if (dto.name !== undefined) data.name = dto.name;
+    if (dto.description !== undefined) data.description = dto.description || null;
+    if (dto.isActive !== undefined) data.isActive = dto.isActive;
+    if (dto.isHidden !== undefined) data.isHidden = dto.isHidden;
+    if (dto.showIndividualLeaderboard !== undefined) data.showIndividualLeaderboard = dto.showIndividualLeaderboard;
+    if (dto.showGroupComparison !== undefined) data.showGroupComparison = dto.showGroupComparison;
+    if (dto.showOtherGroupsCharts !== undefined) data.showOtherGroupsCharts = dto.showOtherGroupsCharts;
+    if (dto.showOtherGroupsMemberDetails !== undefined) data.showOtherGroupsMemberDetails = dto.showOtherGroupsMemberDetails;
+    if (dto.rulesContent !== undefined) data.rulesContent = dto.rulesContent ?? null;
+    if (dto.rulesPublished !== undefined) data.rulesPublished = dto.rulesPublished;
+    if (dto.profileTabEnabled !== undefined) data.profileTabEnabled = dto.profileTabEnabled;
+
+    // Catch-up — explicit, no spread. Each field assigned directly so
+    // there's no chance of a stripped property silently turning into a
+    // no-op write. Empty string → null for the three nullable columns;
+    // empty buttonLabel falls back to the schema default so the UI
+    // never renders a blank button label.
+    if (dto.catchUpEnabled !== undefined) data.catchUpEnabled = dto.catchUpEnabled;
+    if (dto.catchUpButtonLabel !== undefined) {
+      const v = dto.catchUpButtonLabel.trim();
+      data.catchUpButtonLabel = v === '' ? 'דיווח השלמה' : v;
     }
-    const result = await this.prisma.program.update({
-      where: { id },
-      data: {
-        ...(dto.name !== undefined ? { name: dto.name } : {}),
-        ...(dto.description !== undefined ? { description: dto.description || null } : {}),
-        ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
-        ...(dto.isHidden !== undefined ? { isHidden: dto.isHidden } : {}),
-        ...(dto.showIndividualLeaderboard !== undefined ? { showIndividualLeaderboard: dto.showIndividualLeaderboard } : {}),
-        ...(dto.showGroupComparison !== undefined ? { showGroupComparison: dto.showGroupComparison } : {}),
-        ...(dto.showOtherGroupsCharts !== undefined ? { showOtherGroupsCharts: dto.showOtherGroupsCharts } : {}),
-        ...(dto.showOtherGroupsMemberDetails !== undefined ? { showOtherGroupsMemberDetails: dto.showOtherGroupsMemberDetails } : {}),
-        ...(dto.rulesContent !== undefined ? { rulesContent: dto.rulesContent ?? null } : {}),
-        ...(dto.rulesPublished !== undefined ? { rulesPublished: dto.rulesPublished } : {}),
-        ...(dto.profileTabEnabled !== undefined ? { profileTabEnabled: dto.profileTabEnabled } : {}),
-        // Catch-up mode — explicit whitelist mirrors the rest of this update.
-        // Available-dates list is deduped + sorted before persist so the admin
-        // UI never has to sort or worry about duplicates from rapid clicks.
-        ...(dto.catchUpEnabled !== undefined ? { catchUpEnabled: dto.catchUpEnabled } : {}),
-        ...(dto.catchUpButtonLabel !== undefined ? { catchUpButtonLabel: dto.catchUpButtonLabel } : {}),
-        ...(dto.catchUpConfirmTitle !== undefined ? { catchUpConfirmTitle: dto.catchUpConfirmTitle ?? null } : {}),
-        ...(dto.catchUpConfirmBody !== undefined ? { catchUpConfirmBody: dto.catchUpConfirmBody ?? null } : {}),
-        ...(dto.catchUpDurationMinutes !== undefined ? { catchUpDurationMinutes: dto.catchUpDurationMinutes } : {}),
-        ...(dto.catchUpAllowedDaysBack !== undefined ? { catchUpAllowedDaysBack: dto.catchUpAllowedDaysBack } : {}),
-        ...(dto.catchUpBannerText !== undefined ? { catchUpBannerText: dto.catchUpBannerText ?? null } : {}),
-        ...(dto.catchUpAvailableDates !== undefined
-          ? { catchUpAvailableDates: Array.from(new Set(dto.catchUpAvailableDates)).sort() }
-          : {}),
-      },
-    });
-    // TEMP catch-up persistence diagnostic — prints what Prisma wrote
-    // to the DB. Compare with the [DTO arrived] line above to see if
-    // a value was filtered between DTO and Prisma. Remove with the
-    // matching block above once round-trip is confirmed.
-    // eslint-disable-next-line no-console
-    console.log('[catchup-save] Prisma returned id=%s fields=%j', id, {
-      catchUpEnabled:         result.catchUpEnabled,
-      catchUpButtonLabel:     result.catchUpButtonLabel,
-      catchUpConfirmTitle:    result.catchUpConfirmTitle,
-      catchUpConfirmBody:     result.catchUpConfirmBody,
-      catchUpDurationMinutes: result.catchUpDurationMinutes,
-      catchUpAllowedDaysBack: result.catchUpAllowedDaysBack,
-      catchUpBannerText:      result.catchUpBannerText,
-      catchUpAvailableDates:  result.catchUpAvailableDates,
-    });
-    return result;
+    if (dto.catchUpConfirmTitle !== undefined) {
+      const v = dto.catchUpConfirmTitle.trim();
+      data.catchUpConfirmTitle = v === '' ? null : v;
+    }
+    if (dto.catchUpConfirmBody !== undefined) {
+      const v = dto.catchUpConfirmBody.trim();
+      data.catchUpConfirmBody = v === '' ? null : v;
+    }
+    if (dto.catchUpDurationMinutes !== undefined) data.catchUpDurationMinutes = dto.catchUpDurationMinutes;
+    if (dto.catchUpAllowedDaysBack !== undefined) data.catchUpAllowedDaysBack = dto.catchUpAllowedDaysBack;
+    if (dto.catchUpBannerText !== undefined) {
+      const v = dto.catchUpBannerText.trim();
+      data.catchUpBannerText = v === '' ? null : v;
+    }
+    if (dto.catchUpAvailableDates !== undefined) {
+      data.catchUpAvailableDates = Array.from(new Set(dto.catchUpAvailableDates)).sort();
+    }
+
+    return this.prisma.program.update({ where: { id }, data });
   }
 
   async deactivate(id: string) {

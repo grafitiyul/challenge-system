@@ -54,17 +54,25 @@ export class UpdateProgramDto {
   @IsBoolean()
   catchUpEnabled?: boolean;
 
+  // All four catch-up text fields are typed as plain `string` here, not
+  // `string | null`. The client always sends a string (empty string when
+  // the admin cleared the field); the service normalises "" → null at
+  // the DB layer for the nullable columns. Allowing `null` on the wire
+  // tripped a class-validator + class-transformer interaction under
+  // `whitelist:true + transform:true` that silently stripped the field,
+  // so the conditional spread in the service treated it as "untouched"
+  // and no value reached the column.
   @IsOptional()
   @IsString()
   catchUpButtonLabel?: string;
 
   @IsOptional()
   @IsString()
-  catchUpConfirmTitle?: string | null;
+  catchUpConfirmTitle?: string;
 
   @IsOptional()
   @IsString()
-  catchUpConfirmBody?: string | null;
+  catchUpConfirmBody?: string;
 
   // Wall-clock minutes — snapshotted onto the session row at start so
   // editing this mid-session doesn't change a running countdown.
@@ -83,7 +91,7 @@ export class UpdateProgramDto {
 
   @IsOptional()
   @IsString()
-  catchUpBannerText?: string | null;
+  catchUpBannerText?: string;
 
   // Asia/Jerusalem YYYY-MM-DD strings on which the button is allowed
   // to appear. Empty array = button never appears (safe default).
