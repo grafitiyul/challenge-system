@@ -45,8 +45,22 @@ export interface ListFeedOpts {
   // actually saw" vs "things hidden by void/edit".
   visibility?: 'all' | 'public' | 'hidden';
   type?: string;
+  // Phase: action-specific filter. Resolved by joining FeedEvent.logId
+  // through UserActionLog.actionId (no Prisma relation declared, so
+  // we do the join manually below). When set, ONLY log-linked rows
+  // for that action are returned — system / rule events are excluded
+  // because they aren't "for" a specific action.
+  actionId?: string;
   skip?: number;
   take?: number;
+}
+
+export interface AdminFeedActionOption {
+  id: string;
+  name: string;
+  programId: string;
+  programName: string;
+  isActive: boolean;
 }
 
 // Generous defaults for the admin audit surface. Page size is also
@@ -76,6 +90,33 @@ export class AdminFeedService {
   ) {}
 
   async list(opts: ListFeedOpts = {}): Promise<AdminFeedPage> {
+    // Action filter — resolve to a logId set first. FeedEvent.logId has
+    // no Prisma relation declared (legacy reasons), so we can't write
+    // `where: { log: { actionId } }`. Two-step is cheap: actions
+    // typically have at most a few thousand logs, well within the
+    // Postgres IN-list comfort zone. When the action has zero logs
+    // we short-circuit to an empty page so the count query doesn't
+    // run a wasted scan.
+    const take = Math.min(opts.take ?? DEFAULT_TAKE, MAX_TAKE);
+    const skip = Math.max(opts.skip ?? 0, 0);
+
+    let logIdConstraint: string[] | null = null;
+    if (opts.actionId) {
+      const matchingLogs = await this.prisma.userActionLog.findMany({
+        where: {
+          actionId: opts.actionId,
+          // Narrow further by program if the admin already has program
+          // filter set — keeps the IN-list smaller.
+          ...(opts.programId ? { programId: opts.programId } : {}),
+        },
+        select: { id: true },
+      });
+      logIdConstraint = matchingLogs.map((l) => l.id);
+      if (logIdConstraint.length === 0) {
+        return { rows: [], total: 0, skip, take, hasMore: false };
+      }
+    }
+
     const where: Prisma.FeedEventWhereInput = {
       ...(opts.participantId ? { participantId: opts.participantId } : {}),
       ...(opts.groupId ? { groupId: opts.groupId } : {}),
@@ -83,9 +124,8 @@ export class AdminFeedService {
       ...(opts.type ? { type: opts.type } : {}),
       ...(opts.visibility === 'public' ? { isPublic: true } :
           opts.visibility === 'hidden' ? { isPublic: false } : {}),
+      ...(logIdConstraint ? { logId: { in: logIdConstraint } } : {}),
     };
-    const take = Math.min(opts.take ?? DEFAULT_TAKE, MAX_TAKE);
-    const skip = Math.max(opts.skip ?? 0, 0);
 
     // Run page query + total count in parallel so the UI can render
     // explicit pagination ("מציג 1-500 מתוך 2347") instead of guessing
@@ -157,6 +197,34 @@ export class AdminFeedService {
       take,
       hasMore: skip + rows.length < total,
     };
+  }
+
+  // ── Filter options ─────────────────────────────────────────────────────────
+  // Powers the "פעולה" dropdown in the admin feed. Returns ALL game
+  // actions across ALL programs — including inactive ones — so the
+  // admin can filter on actions that have been disabled but still
+  // have historical logs in the feed. Sorted by program name then
+  // action name so the dropdown lands in a stable order.
+  async listActionsForFilter(): Promise<AdminFeedActionOption[]> {
+    const actions = await this.prisma.gameAction.findMany({
+      select: {
+        id: true,
+        name: true,
+        isActive: true,
+        program: { select: { id: true, name: true } },
+      },
+      orderBy: [
+        { program: { name: 'asc' } },
+        { name: 'asc' },
+      ],
+    });
+    return actions.map((a) => ({
+      id: a.id,
+      name: a.name,
+      programId: a.program.id,
+      programName: a.program.name,
+      isActive: a.isActive,
+    }));
   }
 
   // ── Row-level admin actions ────────────────────────────────────────────────

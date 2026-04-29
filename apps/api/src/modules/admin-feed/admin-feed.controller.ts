@@ -20,6 +20,7 @@ export class AdminFeedController {
     @Query('programId') programId?: string,
     @Query('type') type?: string,
     @Query('visibility') visibility?: string,
+    @Query('actionId') actionId?: string,
     @Query('skip') skip?: string,
     @Query('take') take?: string,
   ): Promise<AdminFeedPage> {
@@ -30,9 +31,18 @@ export class AdminFeedController {
       programId,
       type,
       visibility: v,
+      actionId,
       skip: skip ? Number(skip) : undefined,
       take: take ? Number(take) : undefined,
     });
+  }
+
+  // Powers the "פעולה" dropdown in /admin/feed. Returns every game
+  // action across every program (including inactive) so the admin
+  // can filter on actions that still have historical feed events.
+  @Get('actions')
+  listActions() {
+    return this.svc.listActionsForFilter();
   }
 
   // POST /api/admin/feed-events/:id/void

@@ -41,6 +41,7 @@ interface FeedPage {
 interface ProgramLite { id: string; name: string }
 interface GroupLite { id: string; name: string; programId?: string | null; program?: { id: string; name: string } | null }
 interface ParticipantLite { id: string; firstName: string; lastName?: string | null }
+interface ActionLite { id: string; name: string; programId: string; programName: string; isActive: boolean }
 
 const TYPE_LABEL: Record<string, string> = {
   action: 'דיווח פעולה',
@@ -65,10 +66,12 @@ export default function AdminFeedPage() {
   const [programs, setPrograms] = useState<ProgramLite[]>([]);
   const [groups, setGroups] = useState<GroupLite[]>([]);
   const [participants, setParticipants] = useState<ParticipantLite[]>([]);
+  const [actions, setActions] = useState<ActionLite[]>([]);
 
   const [programId, setProgramId] = useState('');
   const [groupId, setGroupId] = useState('');
   const [participantId, setParticipantId] = useState('');
+  const [actionId, setActionId] = useState('');
   const [type, setType] = useState('');
   const [visibility, setVisibility] = useState<'all' | 'public' | 'hidden'>('all');
   const [skip, setSkip] = useState(0);
@@ -85,6 +88,7 @@ export default function AdminFeedPage() {
     apiFetch<ProgramLite[]>(`${BASE_URL}/programs`).then(setPrograms).catch(() => setPrograms([]));
     apiFetch<GroupLite[]>(`${BASE_URL}/groups?includeArchived=true`).then(setGroups).catch(() => setGroups([]));
     apiFetch<ParticipantLite[]>(`${BASE_URL}/participants`).then((r) => setParticipants(r.slice(0, 1000))).catch(() => setParticipants([]));
+    apiFetch<ActionLite[]>(`${BASE_URL}/admin/feed-events/actions`).then(setActions).catch(() => setActions([]));
   }, []);
 
   const filteredGroups = useMemo(() => {
@@ -92,12 +96,22 @@ export default function AdminFeedPage() {
     return groups.filter((g) => (g.program?.id ?? g.programId) === programId);
   }, [groups, programId]);
 
+  // Action dropdown is filtered to the selected program when one is
+  // chosen; otherwise it shows every action across every program with
+  // a "<action> · <program>" label so admins can disambiguate same-
+  // named actions.
+  const filteredActions = useMemo(() => {
+    if (!programId) return actions;
+    return actions.filter((a) => a.programId === programId);
+  }, [actions, programId]);
+
   const reload = useCallback(() => {
     setLoading(true);
     const qs = new URLSearchParams();
     if (programId) qs.set('programId', programId);
     if (groupId) qs.set('groupId', groupId);
     if (participantId) qs.set('participantId', participantId);
+    if (actionId) qs.set('actionId', actionId);
     if (type) qs.set('type', type);
     if (visibility !== 'all') qs.set('visibility', visibility);
     qs.set('take', String(pageSize));
@@ -111,12 +125,12 @@ export default function AdminFeedPage() {
       })
       .catch((e) => setErr(e instanceof Error ? e.message : 'טעינה נכשלה'))
       .finally(() => setLoading(false));
-  }, [programId, groupId, participantId, type, visibility, skip, pageSize]);
+  }, [programId, groupId, participantId, actionId, type, visibility, skip, pageSize]);
 
   useEffect(() => { reload(); }, [reload]);
 
   function clearFilters() {
-    setProgramId(''); setGroupId(''); setParticipantId(''); setType(''); setVisibility('all'); setSkip(0);
+    setProgramId(''); setGroupId(''); setParticipantId(''); setActionId(''); setType(''); setVisibility('all'); setSkip(0);
   }
 
   // Display range "X-Y מתוך Z". X and Y are 1-based for human readers.
@@ -140,7 +154,12 @@ export default function AdminFeedPage() {
       </div>
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
-        <select style={select} value={programId} onChange={(e) => { setProgramId(e.target.value); setGroupId(''); setSkip(0); }}>
+        <select style={select} value={programId} onChange={(e) => {
+          // Changing program also resets group + action — both are
+          // program-scoped and the previously-selected ids may not
+          // exist in the new program.
+          setProgramId(e.target.value); setGroupId(''); setActionId(''); setSkip(0);
+        }}>
           <option value="">תוכנית: הכל</option>
           {programs.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
@@ -152,6 +171,21 @@ export default function AdminFeedPage() {
           <option value="">משתתפת: הכל</option>
           {participants.map((p) => (
             <option key={p.id} value={p.id}>{p.firstName}{p.lastName ? ` ${p.lastName}` : ''}</option>
+          ))}
+        </select>
+        <select style={select} value={actionId} onChange={(e) => { setActionId(e.target.value); setSkip(0); }}>
+          <option value="">פעולה: הכל</option>
+          {filteredActions.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name}
+              {/* When no program filter is active, append the program
+                  name so admins can disambiguate same-named actions
+                  across different programs. Inactive actions are
+                  marked so filtering on a deleted action's history
+                  is obvious. */}
+              {!programId && ` · ${a.programName}`}
+              {!a.isActive && ' (לא פעיל)'}
+            </option>
           ))}
         </select>
         <select style={select} value={type} onChange={(e) => { setType(e.target.value); setSkip(0); }}>
