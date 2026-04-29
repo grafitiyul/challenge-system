@@ -102,7 +102,20 @@ interface PortalContext {
 }
 
 interface LogResult {
+  // Total credited (action + every fired bonus rule). Kept for
+  // legacy consumers; the success animation splits the breakdown
+  // below so the participant sees what came from the action vs
+  // what came from a bonus rule.
   pointsEarned: number;
+  // Points the action itself earned this submission. Always equals
+  // the configured action.points × value (or unitsDelta × pointsPerUnit
+  // for unit-delta actions).
+  actionPoints: number;
+  // Sum of bonus points awarded by rules that fired on this submission.
+  bonusPoints: number;
+  // Per-rule breakdown so the UI can label "+60 בונוס · <name>" instead
+  // of silently inflating the action figure.
+  bonuses: { ruleId: string; ruleName: string | null; points: number }[];
   todayScore: number;
   todayValue: number | null;
 }
@@ -1123,7 +1136,16 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
   // Phase 4.1: in-flight value for action.participantTextPrompt.
   const [extraTextDraft, setExtraTextDraft] = useState<string>('');
   const [submitting, setSubmitting] = useState(false);
-  const [feedback, setFeedback] = useState<Record<string, { points: number; visible: boolean }>>({});
+  // Success-flash state per action. Carries the action+bonus breakdown
+  // so the animation can label them distinctly — preventing the
+  // "+80 silently includes a +60 bonus rule" misread.
+  const [feedback, setFeedback] = useState<Record<string, {
+    points: number;
+    actionPoints: number;
+    bonusPoints: number;
+    bonuses: { ruleId: string; ruleName: string | null; points: number }[];
+    visible: boolean;
+  }>>({});
   const [glowActionId, setGlowActionId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -1991,7 +2013,16 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
         setTimeout(() => setGlowActionId(null), 600);
       }
 
-      setFeedback((prev) => ({ ...prev, [actionId]: { points: pointsEarned, visible: true } }));
+      setFeedback((prev) => ({
+        ...prev,
+        [actionId]: {
+          points: pointsEarned,
+          actionPoints: result.actionPoints,
+          bonusPoints: result.bonusPoints,
+          bonuses: result.bonuses,
+          visible: true,
+        },
+      }));
       setTimeout(() => {
         setFeedback((prev) => ({ ...prev, [actionId]: { ...prev[actionId], visible: false } }));
       }, 2200);
@@ -2289,7 +2320,23 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                   </div>
                   {fb?.visible && (
                     <div style={s.successFlash}>
-                      <span style={s.successFlashText}>+{fb.points} נקודות!</span>
+                      {/* Show the action's own points prominently. If a
+                          bonus rule fired, list it below in smaller type
+                          so the participant sees that "+60 בונוס" came
+                          from a rule, not from the action itself. */}
+                      <span style={s.successFlashText}>+{fb.actionPoints} נקודות!</span>
+                      {fb.bonusPoints > 0 && (
+                        <span style={{ display: 'block', marginTop: 2, fontSize: 12, fontWeight: 600, opacity: 0.92 }}>
+                          {fb.bonuses
+                            .filter((b) => b.points > 0)
+                            .map((b, i) => (
+                              <span key={`${b.ruleId}-${i}`}>
+                                {i > 0 ? ' · ' : ''}
+                                + {b.points} בונוס{b.ruleName ? ` · ${b.ruleName}` : ''}
+                              </span>
+                            ))}
+                        </span>
+                      )}
                     </div>
                   )}
                 </button>

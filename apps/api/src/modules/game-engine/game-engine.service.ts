@@ -1002,6 +1002,43 @@ export class GameEngineService {
         },
         { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
       );
+
+      // ── Scoring observability + duplicate-event guardrail ───────────────
+      // Temporary log: prints the actionId, action name, raw value, base
+      // points, rule firings, and the primary-group SE id so the operator
+      // can diff "what the participant saw" against ledger truth.
+      // The duplicate check is permanent — the participant-portal fan-out
+      // is supposed to create exactly ONE action SE per (logId, groupId);
+      // anything else is an invariant breach that would silently inflate
+      // a per-group score.
+      const actionSeForLog = await this.prisma.scoreEvent.findMany({
+        where: { logId: log.id, sourceType: 'action' },
+        select: { id: true, groupId: true, points: true },
+      });
+      const perGroup: Record<string, number> = {};
+      for (const s of actionSeForLog) {
+        const k = s.groupId ?? '<no-group>';
+        perGroup[k] = (perGroup[k] ?? 0) + 1;
+      }
+      const dupGroups = Object.keys(perGroup).filter((k) => perGroup[k] > 1);
+      // eslint-disable-next-line no-console
+      console.log('[scoring-debug] log=%s action=%s(%s) value=%s base=%d ruleFired=%j actionSEs=%d primarySE=%s',
+        log.id,
+        action.name,
+        action.baseScoringType,
+        dto.value ?? '',
+        pointsForThisLog,
+        ruleResults.filter((r) => r.fired).map((r) => ({ ruleId: r.ruleId, points: r.points ?? 0 })),
+        actionSeForLog.length,
+        scoreEvent?.id ?? null,
+      );
+      if (dupGroups.length > 0) {
+        // eslint-disable-next-line no-console
+        console.error('[scoring-invariant-breach] duplicate action SE detected log=%s groups=%j  perGroup=%j',
+          log.id, dupGroups, perGroup,
+        );
+      }
+
       return { log, scoreEvent, ruleResults };
     } catch (e) {
       // Idempotency race — two concurrent requests with the same clientSubmissionId.

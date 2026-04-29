@@ -887,7 +887,14 @@ export class ParticipantPortalService {
       effectiveDate?: string;
     },
     idempotencyKey?: string,
-  ): Promise<{ pointsEarned: number; todayScore: number; todayValue: number | null }> {
+  ): Promise<{
+    pointsEarned: number;
+    actionPoints: number;
+    bonusPoints: number;
+    bonuses: { ruleId: string; ruleName: string | null; points: number }[];
+    todayScore: number;
+    todayValue: number | null;
+  }> {
     const multi = await this.resolveMultiGroup(token, dto.groupId);
     const { participantId, programId, activeGroupId } = multi;
 
@@ -1056,16 +1063,69 @@ export class ParticipantPortalService {
     // firings also already happened and are part of the stored total). The sum of
     // today's ScoreEvents is authoritative, so pointsEarned falls back to 0 for
     // replays — the caller sees the same todayScore as the original submission.
-    const pointsEarned = result.scoreEvent
-      ? result.scoreEvent.points +
-        result.ruleResults.reduce(
-          (sum: number, r: { fired: boolean; points?: number }) => sum + (r.fired ? (r.points ?? 0) : 0),
-          0,
-        )
-      : 0;
+    //
+    // Split the response so the success animation can label "+20 action"
+    // and "+60 bonus · <ruleName>" distinctly instead of conflating them
+    // into a single "+80" that misleads the participant about how the
+    // points were earned.
+    const actionPoints = result.scoreEvent ? result.scoreEvent.points : 0;
+    const firedRuleResults = result.ruleResults.filter(
+      (r: { fired: boolean; points?: number }) => r.fired,
+    );
+    const bonusPoints = firedRuleResults.reduce(
+      (sum: number, r: { points?: number }) => sum + (r.points ?? 0),
+      0,
+    );
+    // Look up rule names for any fired rules so the UI can name the
+    // bonus ("בונוס: <ruleName>") rather than just show a number. One
+    // tiny extra query per submission; only runs when a rule fired.
+    let bonuses: { ruleId: string; ruleName: string | null; points: number }[] = [];
+    if (firedRuleResults.length > 0) {
+      const ruleIds = firedRuleResults.map((r: { ruleId: string }) => r.ruleId);
+      const rulesById = new Map(
+        (await this.prisma.gameRule.findMany({
+          where: { id: { in: ruleIds } },
+          select: { id: true, name: true },
+        })).map((r) => [r.id, r.name] as const),
+      );
+      bonuses = firedRuleResults.map((r: { ruleId: string; points?: number }) => ({
+        ruleId: r.ruleId,
+        ruleName: rulesById.get(r.ruleId) ?? null,
+        points: r.points ?? 0,
+      }));
+    }
+
+    // ── Fan-out invariant guardrail ────────────────────────────────────
+    // Detect any (logId, groupId) with > 1 action ScoreEvent. The
+    // participant-portal flow is supposed to write exactly one action
+    // SE per group: gameEngine.logAction creates one for primaryGroupId,
+    // the fan-out loop creates one per id in extraGroupIds (slice(1)
+    // dedupes against primary), and dto.groupIds is itself deduped via
+    // `new Set(...)`. If a duplicate ever lands, log loudly. This is a
+    // permanent guardrail — it catches future regressions that would
+    // silently double a participant's per-group score.
+    const fanOutAudit = await this.prisma.scoreEvent.groupBy({
+      by: ['groupId'],
+      where: { logId: result.log.id, sourceType: 'action' },
+      _count: { _all: true },
+    });
+    const dups = fanOutAudit.filter((row) => row._count._all > 1);
+    if (dups.length > 0) {
+      // eslint-disable-next-line no-console
+      console.error(
+        '[scoring-invariant-breach] fan-out duplicates log=%s rows=%j fanOutGroupIds=%j',
+        result.log.id, dups, fanOutGroupIds,
+      );
+    }
 
     return {
-      pointsEarned,
+      // pointsEarned kept for backwards-compat with any pre-existing
+      // caller that may have read it. New surfaces should prefer the
+      // explicit actionPoints / bonusPoints split below.
+      pointsEarned: actionPoints + bonusPoints,
+      actionPoints,
+      bonusPoints,
+      bonuses,
       todayScore: scoreAgg._sum.points ?? 0,
       todayValue,
     };
