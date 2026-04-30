@@ -77,14 +77,23 @@ Create a new Railway service in the same project as the API:
 2. Build command: `npm install && npm run build`.
    - The bridge's `postinstall` runs `prisma generate
      --schema=../api/prisma/schema.prisma`, which generates the
-     Prisma client into `apps/whatsapp-bridge/node_modules/@prisma/client`
-     using the API's shared schema. The `build` script also runs
-     `prisma:generate` first as a belt-and-braces, so the client
-     exists even if Railway happens to skip postinstall.
+     Prisma client using the API's shared schema. The `build` script
+     also runs `prisma:generate` first as a belt-and-braces, so the
+     client exists even if Railway happens to skip postinstall.
    - Do NOT pass `--workspaces=false` — that flag was the original
      cause of "@prisma/client did not initialize yet" because it
      suppressed the postinstall hook.
 3. Start command: `npm run start`.
+   - `start` runs `prisma generate` AGAIN before `node dist/index.js`.
+     This is the third defence layer and the only one that's
+     guaranteed to fire on every container boot. Some Railway build
+     pipelines (Nixpacks with separate build/runtime images, or
+     aggressive node_modules caching that bypasses postinstall) end
+     up with a runtime container whose `@prisma/client` is just the
+     stub, and importing it throws "did not initialize yet". Running
+     generate at boot fixes that regardless of which path Railway
+     chose during build. The cost is ~500ms of startup time, which
+     is negligible for a service that stays connected for days.
 4. Env vars: copy `DATABASE_URL` from the API service. Set
    `INTERNAL_API_SECRET` (same value on both services). Set `PORT` to
    whatever Railway exposes; the internal URL becomes
