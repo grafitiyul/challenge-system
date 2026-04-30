@@ -75,25 +75,58 @@ Create a new Railway service in the same project as the API:
 
 1. New service → connect to this repo → root directory `apps/whatsapp-bridge`.
 2. Build command: `npm install && npm run build`.
-   - The bridge's `postinstall` runs `prisma generate
-     --schema=../api/prisma/schema.prisma`, which generates the
-     Prisma client using the API's shared schema. The `build` script
-     also runs `prisma:generate` first as a belt-and-braces, so the
-     client exists even if Railway happens to skip postinstall.
+   - The bridge ships its OWN copy of the Prisma schema at
+     `apps/whatsapp-bridge/prisma/schema.prisma`. Railway with Root
+     Directory = `apps/whatsapp-bridge` only has the bridge folder
+     in `/app`, so a relative path to the API's schema would fail —
+     the local copy is what `prisma generate` reads on Railway.
+   - Every Prisma-touching script (`postinstall`, `build`, `start`)
+     runs `prisma:sync` first, which is `node scripts/sync-schema.js`.
+     The sync copies from `../api/prisma/schema.prisma` when the API
+     folder is reachable (monorepo dev) and silently no-ops when it
+     isn't (Railway sparse checkout). Net effect:
+       - Local dev: schema is always fresh, no manual sync needed.
+       - Railway: committed copy is authoritative.
    - Do NOT pass `--workspaces=false` — that flag was the original
      cause of "@prisma/client did not initialize yet" because it
      suppressed the postinstall hook.
 3. Start command: `npm run start`.
-   - `start` runs `prisma generate` AGAIN before `node dist/index.js`.
-     This is the third defence layer and the only one that's
-     guaranteed to fire on every container boot. Some Railway build
-     pipelines (Nixpacks with separate build/runtime images, or
-     aggressive node_modules caching that bypasses postinstall) end
-     up with a runtime container whose `@prisma/client` is just the
-     stub, and importing it throws "did not initialize yet". Running
-     generate at boot fixes that regardless of which path Railway
-     chose during build. The cost is ~500ms of startup time, which
-     is negligible for a service that stays connected for days.
+   - `start` runs `prisma:generate` (which runs sync + generate) AGAIN
+     before `node dist/index.js`. This is the third defence layer and
+     the only one that's guaranteed to fire on every container boot.
+     Some Railway build pipelines (Nixpacks with separate build/
+     runtime images, or aggressive node_modules caching that bypasses
+     postinstall) end up with a runtime container whose
+     `@prisma/client` is just the stub, and importing it throws "did
+     not initialize yet". Running generate at boot fixes that
+     regardless of which path Railway chose during build. The cost is
+     ~500ms of startup time, which is negligible for a service that
+     stays connected for days.
+
+### Keeping the bridge schema in sync
+
+Source of truth: **`apps/api/prisma/schema.prisma`**.
+
+When you change the API schema, the bridge's local copy is updated
+automatically the next time anyone runs `npm install`, `npm run
+build`, `npm run dev`, or `npm run start` inside the bridge — the
+sync script runs first and overwrites the bridge's copy from the API
+source. No manual `cp` step needed.
+
+Risk window: a developer changes `apps/api/prisma/schema.prisma`,
+commits + pushes, but never invokes the bridge locally between the
+edit and the push. The bridge's committed copy is then stale, and
+Railway picks up the stale copy on its next deploy. Mitigation:
+- Run `npm install` at the monorepo root before pushing — that
+  triggers the bridge's postinstall via npm workspaces, which fires
+  the sync.
+- Or explicitly `cd apps/whatsapp-bridge && npm run prisma:sync` and
+  commit the resulting schema change in the same PR as the API
+  schema change.
+
+Future hardening (not in this commit): a CI step that runs
+`prisma:sync` and fails if the working tree is dirty afterward —
+that catches stale-copy pushes at PR review time.
 4. Env vars: copy `DATABASE_URL` from the API service. Set
    `INTERNAL_API_SECRET` (same value on both services). Set `PORT` to
    whatever Railway exposes; the internal URL becomes

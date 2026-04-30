@@ -6,10 +6,11 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
-    "prisma:generate": "prisma generate --schema=../api/prisma/schema.prisma",
-    "postinstall": "prisma generate --schema=../api/prisma/schema.prisma",
+    "prisma:sync": "node scripts/sync-schema.js",
+    "prisma:generate": "npm run prisma:sync && prisma generate --schema=prisma/schema.prisma",
+    "postinstall": "npm run prisma:generate",
     "build": "npm run prisma:generate && tsc -p tsconfig.json",
-    "start": "prisma generate --schema=../api/prisma/schema.prisma && node dist/index.js",
+    "start": "npm run prisma:generate && node dist/index.js",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

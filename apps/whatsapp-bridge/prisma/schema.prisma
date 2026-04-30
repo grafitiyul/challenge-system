@@ -1,0 +1,2072 @@
+// =============================================================================
+// Challenge System — V1 Database Schema
+// =============================================================================
+// Principles:
+//   - No hardcoded business logic (statuses, types, sources use ID references)
+//   - Every config value is admin-editable without code changes
+//   - Participants can belong to multiple groups via many-to-many
+//   - AI facts stored as natural sentences, not key-value pairs
+// =============================================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["relationJoins"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================================
+// PROGRAMS + GROUPS
+// =============================================================================
+
+enum ProgramType {
+  challenge
+  game
+  group_coaching
+  personal_coaching
+}
+
+enum GroupStatus {
+  active
+  inactive
+}
+
+model Program {
+  id          String      @id @default(cuid())
+  name        String
+  type        ProgramType
+  description String?
+  isActive    Boolean     @default(true)
+  // Separate from isActive: hides the row from daily-use lists and
+  // pickers entirely. Admin can toggle "הצג פריטים מוסתרים" to bring
+  // hidden rows back into view. Intended for test/retired items the
+  // admin wants to clear from clutter without losing history.
+  isHidden    Boolean     @default(false)
+  groups      Group[]
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  // Game engine
+  gameActions           GameAction[]
+  userActionLogs        UserActionLog[]
+  scoreEvents           ScoreEvent[]
+  gameRules             GameRule[]
+  participantGameStates ParticipantGameState[]
+  feedEvents            FeedEvent[]
+  // Phase 3.2: reusable context library is scoped to a program.
+  contextDefinitions    ContextDefinition[]
+  // Phase 4.3: centralized analytics groups, also program-scoped.
+  analyticsGroups       AnalyticsGroup[]
+
+  // Leaderboard visibility controls
+  showIndividualLeaderboard    Boolean @default(true)
+  showGroupComparison          Boolean @default(true)
+  showOtherGroupsCharts        Boolean @default(true)
+  showOtherGroupsMemberDetails Boolean @default(false)
+
+  questionnaireTemplates QuestionnaireTemplate[]
+  // Public registration — offers, waitlist, and communication templates
+  // all hang off Program. Program IS the product: its `type` column is the
+  // productType discriminator (game / challenge / group_coaching /
+  // personal_coaching) and its `id` is the productRefId.
+  paymentOffers          PaymentOffer[]
+  waitlistEntries        ProgramWaitlistEntry[]
+  // Unified email + whatsapp templates. Replaces the old
+  // ProgramMessageTemplate (whatsapp-only, plain content) — rows were
+  // migrated into communication_templates with channel='whatsapp'.
+  communicationTemplates CommunicationTemplate[]
+
+  // Rich content shown in participant portal rules tab (HTML)
+  rulesContent   String?
+  rulesPublished Boolean @default(false)
+
+  // ── Phase 6.8 insight selection strategy (per-program scope) ─────────────
+  // Controls how the insights engine ranks candidates for this program's
+  // participants. Per-program so two coexisting programs don't interfere.
+  //   "pure_score"            → no diversity re-ranking
+  //   "score_with_diversity"  → apply the diversity weight formula below
+  // Default preserves prior behavior for existing data.
+  insightSelectionStrategy String                    @default("score_with_diversity")
+  // Diversity penalty tuning. 0.0 disables the effect (equivalent to
+  // pure_score); higher values suppress repeated insight types more aggressively.
+  //   weight(usage) = 1 / (1 + usage * insightDiversityStrength)
+  insightDiversityStrength Float                     @default(0.3)
+  insightTypeUsages        ProgramInsightTypeUsage[]
+
+  // Phase 7 — participant-portal "פרטים אישיים" tab.
+  // Hidden from participants until the admin flips this flag per program.
+  // Default false so the field configuration can be staged without
+  // exposing a half-finished form to participants.
+  profileTabEnabled Boolean                   @default(false)
+  // ProgramProfileField configures which fields appear; values are stored
+  // either on Participant (for system fields like firstName) or in
+  // ParticipantProfileValue (for custom fields like personalGoal).
+  profileFields     ProgramProfileField[]
+  profileValues     ParticipantProfileValue[]
+
+  // ── Catch-up mode (post-Shabbat / post-holiday backdated reporting) ─────
+  // Master kill switch. When false: button never shown, start endpoint
+  // refuses, even if availability dates include today.
+  catchUpEnabled         Boolean  @default(false)
+  // Participant-facing button label and modal copy. All Hebrew, no
+  // hardcoded religious wording in the backend — the admin controls
+  // every word the participant sees.
+  catchUpButtonLabel     String   @default("דיווח השלמה")
+  catchUpConfirmTitle    String?
+  catchUpConfirmBody     String?
+  // Session length in wall-clock minutes. Snapshotted onto the session
+  // row at start so changing this value mid-session never shortens or
+  // extends a running countdown.
+  catchUpDurationMinutes Int      @default(10)
+  // How many calendar days back (Asia/Jerusalem) a participant may
+  // backdate. allowedDaysBack=2 gives chips היום / אתמול / שלשום.
+  // Validated >= 1 (0 would be meaningless — same as turning off).
+  catchUpAllowedDaysBack Int      @default(2)
+  // Banner text displayed during an active session. {time} is replaced
+  // with mm:ss countdown on the client.
+  catchUpBannerText      String?
+  // Asia/Jerusalem YYYY-MM-DD strings on which the button is allowed
+  // to appear. Empty array = button never appears (safe default).
+  catchUpAvailableDates  String[] @default([])
+
+  catchUpSessions        CatchUpSession[]
+
+  @@map("programs")
+}
+
+// Phase 6.8 — Per-program per-type usage counter for the diversity weight.
+// Replaces the previous global in-memory singleton. Each row records how
+// many times a specific insight type has been SELECTED for a participant
+// in this program. Key is (programId, insightType) so a program can hold
+// one row per type; counts are monotonically incremented during selection.
+//
+// Explainability: admins can query this table to see exactly why one
+// insight type was suppressed vs another.
+model ProgramInsightTypeUsage {
+  id          String   @id @default(cuid())
+  programId   String
+  program     Program  @relation(fields: [programId], references: [id], onDelete: Cascade)
+  insightType String
+  count       Int      @default(0)
+  updatedAt   DateTime @updatedAt
+
+  @@unique([programId, insightType])
+  @@index([programId])
+  @@map("program_insight_type_usages")
+}
+
+// =============================================================================
+// CONFIGURATION TABLES
+// All display values live here. System logic references IDs only — never names.
+// =============================================================================
+
+model ChallengeType {
+  id          String      @id @default(cuid())
+  name        String
+  description String?
+  isActive    Boolean     @default(true)
+  sortOrder   Int         @default(0)
+  challenges  Challenge[]
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@map("challenge_types")
+}
+
+model SignupSource {
+  id            String         @id @default(cuid())
+  name          String
+  isActive      Boolean        @default(true)
+  sortOrder     Int            @default(0)
+  registrations Registration[]
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@map("signup_sources")
+}
+
+model Gender {
+  id            String         @id @default(cuid())
+  name          String
+  isActive      Boolean        @default(true)
+  sortOrder     Int            @default(0)
+  registrations Registration[]
+  participants  Participant[]
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@map("genders")
+}
+
+// =============================================================================
+// REGISTRATION TABLE
+// Entry point into the system. Created on form submission.
+// A Participant record is created only after they join the WhatsApp group.
+// =============================================================================
+
+model Registration {
+  id                String       @id @default(cuid())
+  fullName          String
+  phoneNumber       String
+  genderId          String
+  gender            Gender       @relation(fields: [genderId], references: [id])
+  signupSourceId    String
+  signupSource      SignupSource @relation(fields: [signupSourceId], references: [id])
+  registeredAt      DateTime     @default(now())
+  assignedGroupId   String?
+  assignedGroup     Group?       @relation(fields: [assignedGroupId], references: [id])
+  hasJoinedWhatsapp Boolean      @default(false)
+  joinedWhatsappAt  DateTime?
+
+  participant Participant?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("registrations")
+}
+
+// =============================================================================
+// CORE TABLES
+// =============================================================================
+
+model Challenge {
+  id                           String                  @id @default(cuid())
+  name                         String
+  challengeTypeId              String
+  challengeType                ChallengeType           @relation(fields: [challengeTypeId], references: [id])
+  startDate                    DateTime
+  endDate                      DateTime
+  isActive                     Boolean                 @default(true)
+  groups                       Group[]
+  // Public registration — templates and offers can point at a challenge.
+  linkedQuestionnaireTemplates QuestionnaireTemplate[]
+  paymentOffers                PaymentOffer[]
+  createdAt                    DateTime                @default(now())
+  updatedAt                    DateTime                @updatedAt
+
+  @@map("challenges")
+}
+
+model Group {
+  id                  String               @id @default(cuid())
+  name                String
+  challengeId         String
+  challenge           Challenge            @relation(fields: [challengeId], references: [id])
+  programId           String?
+  program             Program?             @relation(fields: [programId], references: [id])
+  status              GroupStatus          @default(active)
+  whatsappGroupId     String?
+  startDate           DateTime?
+  endDate             DateTime?
+  isActive            Boolean              @default(true)
+  // See Program.isHidden — separate clutter-control flag. Hidden groups
+  // never appear in /admin/groups or Program → קבוצות without the
+  // "הצג פריטים מוסתרים" toggle.
+  isHidden            Boolean              @default(false)
+  registrations       Registration[]
+  participantGroups   ParticipantGroup[]
+  messages            Message[]
+  dailyActivities     DailyActivity[]
+  aiGroupSummaries    AiGroupSummary[]
+  participantInsights ParticipantInsight[]
+  chatLinks           GroupChatLink[]
+
+  // Game engine
+  scoreEvents      ScoreEvent[]
+  groupGameState   GroupGameState?
+  groupRuleUnlocks GroupRuleUnlock[]
+  feedEvents       FeedEvent[]
+
+  // Task engine — controls whether the personal task portal is available for this group's participants
+  taskEngineEnabled Boolean @default(false)
+
+  // Participant portal opening flow (both nullable — null means portal is always open)
+  // portalCallTime: the scheduled opening-call moment (State A countdown target)
+  // portalOpenTime: when the portal actually becomes accessible (State C unlock)
+  // Stored as UTC. Frontend sends ISO UTC strings; comparison is always UTC vs UTC.
+  portalCallTime DateTime?
+  portalOpenTime DateTime?
+
+  // Public registration — reverse sides of the new relations. Named
+  // relations are required because PaymentOffer and QuestionnaireTemplate
+  // each reference Group as an OPTIONAL default/link.
+  linkedQuestionnaireTemplates QuestionnaireTemplate[] @relation("QuestionnaireTemplateLinkedGroup")
+  paymentOffersAsDefault       PaymentOffer[]          @relation("PaymentOfferDefaultGroup")
+  payments                     Payment[]               @relation("PaymentGroup")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("groups")
+}
+
+model Participant {
+  id              String    @id @default(cuid())
+  firstName       String
+  lastName        String?
+  phoneNumber     String    @unique
+  email           String?
+  genderId        String
+  gender          Gender    @relation(fields: [genderId], references: [id])
+  isActive        Boolean   @default(true)
+  isMock          Boolean   @default(false)
+  birthDate       DateTime?
+  city            String?
+  profileImageUrl String?
+  source          String?
+  status          String?
+  notes           String?
+  nextAction      String?
+
+  // Optional — null when participant is added directly by admin (no registration flow)
+  registrationId String?       @unique
+  registration   Registration? @relation(fields: [registrationId], references: [id])
+
+  joinedAt                 DateTime                    @default(now())
+  participantGroups        ParticipantGroup[]
+  messages                 Message[]
+  dailyActivities          DailyActivity[]
+  participantInsights      ParticipantInsight[]
+  suggestedResponses       SuggestedResponse[]
+  profile                  ParticipantProfile?
+  facts                    ParticipantFact[]
+  chatLinks                GroupChatLink[]
+  questionnaireSubmissions QuestionnaireSubmission[]
+  formSubmissions          ParticipantFormSubmission[]
+
+  // Game engine
+  userActionLogs        UserActionLog[]
+  scoreEvents           ScoreEvent[]
+  participantGameStates ParticipantGameState[]
+  feedEvents            FeedEvent[]
+  catchUpSessions       CatchUpSession[]
+
+  // Task engine
+  weeklyPlans     WeeklyPlan[]
+  planTasks       PlanTask[]
+  taskAssignments TaskAssignment[]
+  deferralEvents  DeferralEvent[]
+  deferralConfigs DeferralTriggerConfig[]
+  taskNotes       ParticipantTaskNote[]
+
+  // Projects Tracking (Phase 1)
+  // Binary permission — when true the participant can create and structurally
+  // manage their own projects. When false they can still fill logs and notes
+  // on projects assigned to them by an admin, but cannot create/edit structure.
+  canManageProjects Boolean           @default(false)
+  // Phase 8 — explicit opt-in for the participant-portal group switcher.
+  // When false (default), the portal only ever shows the primary
+  // (oldest active) group context and never reveals the participant's
+  // other memberships, even if she has multiple active groups in the
+  // same program. Admin flips this for managers / assistants who
+  // legitimately need to see several group leaderboards from one URL.
+  multiGroupEnabled Boolean           @default(false)
+  projects          Project[]
+  projectItemLogs   ProjectItemLog[]
+  projectNotes      ProjectNote[]
+  dailyContextLogs  DailyContextLog[]
+
+  // Onboarding & payments (Phase 1 public registration)
+  payments Payment[]
+
+  // Phase 3: participant-scoped portal token. Stable across group moves —
+  // the old ParticipantGroup.accessToken stays for backward compat (read
+  // fallback) but new generations write here so the /tg/:token link is
+  // permanent per participant regardless of cohort changes.
+  accessToken String? @unique
+
+  // Phase 4: per-program waitlist tracking. One row per (program, participant).
+  programWaitlistEntries ProgramWaitlistEntry[]
+
+  // iCount webhook logs resolved to this participant. 0..N; useful for
+  // audit trails when verifying which invoice created the Payment row.
+  icountLogs IcountWebhookLog[]
+
+  // Phase 7 — participant-portal "פרטים אישיים" profile data.
+  profileValues ParticipantProfileValue[]
+  uploadedFiles ParticipantUploadedFile[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("participants")
+}
+
+// Immutable snapshot of any form data attached to a participant
+// source: "import" | "manual"
+// data: arbitrary key-value pairs (JSON)
+model ParticipantFormSubmission {
+  id            String      @id @default(cuid())
+  participantId String
+  participant   Participant @relation(fields: [participantId], references: [id])
+  source        String      @default("import")
+  title         String
+  data          Json
+  importKey     String?     @unique
+  createdAt     DateTime    @default(now())
+
+  @@index([participantId])
+  @@map("participant_form_submissions")
+}
+
+// =============================================================================
+// PROGRAM PROFILE FIELDS (Phase 7 — "פרטים אישיים" tab in participant portal)
+// =============================================================================
+// Two-tier model:
+//   - System fields (isSystemField=true) — fieldKey maps to a real Participant
+//     column (firstName, lastName, email, phoneNumber, birthDate, city,
+//     profileImageUrl). Writes go directly to the Participant row, so the
+//     existing CRM stays the source of truth and no data is duplicated.
+//   - Custom fields (isSystemField=false) — value lives in
+//     ParticipantProfileValue, keyed by (participantId, programId, fieldKey).
+//     This is where things like "personalGoal", "startingWeight",
+//     "bodyMeasurements", "beforePhotos" live.
+//
+// Configuration is per-Program: each program decides which fields appear,
+// in what order, and whether they are required.
+// =============================================================================
+
+model ProgramProfileField {
+  id            String  @id @default(cuid())
+  programId     String
+  program       Program @relation(fields: [programId], references: [id])
+  // Stable key the API/UI use to look up the field. For system fields this
+  // matches the Participant column name (e.g. "firstName", "profileImageUrl").
+  // For custom fields it's any admin-chosen identifier (e.g. "personalGoal").
+  fieldKey      String
+  // Hebrew label shown to the participant.
+  label         String
+  helperText    String?
+  // "text" | "textarea" | "number" | "date" | "image" | "imageGallery"
+  fieldType     String
+  isRequired    Boolean @default(false)
+  sortOrder     Int     @default(0)
+  // When true, fieldKey maps to a column on Participant — submissions update
+  // that column directly. When false, value is stored in ParticipantProfileValue.
+  isSystemField Boolean @default(false)
+  // Soft-delete: hidden from portal but historical values remain.
+  isActive      Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([programId, fieldKey])
+  @@index([programId, isActive])
+  @@map("program_profile_fields")
+}
+
+// Stored values for non-system fields. System fields write to Participant
+// columns directly and have no row here. One row per
+// (participant, program, fieldKey) — upserts on save.
+model ParticipantProfileValue {
+  id            String      @id @default(cuid())
+  participantId String
+  participant   Participant @relation(fields: [participantId], references: [id])
+  programId     String
+  program       Program     @relation(fields: [programId], references: [id])
+  fieldKey      String
+  // Json so the same column can hold a string, number, file id, or array
+  // of file ids (for imageGallery). Server validates shape per field type
+  // before write.
+  value         Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([participantId, programId, fieldKey])
+  @@index([participantId])
+  @@index([programId, fieldKey])
+  @@map("participant_profile_values")
+}
+
+// Catalog row for every uploaded file owned by a participant. Records
+// metadata (size, mimeType) so the admin can audit and we can clean up
+// orphans later. Image / imageGallery profile values reference these by id.
+model ParticipantUploadedFile {
+  id            String      @id @default(cuid())
+  participantId String
+  participant   Participant @relation(fields: [participantId], references: [id])
+  // "avatar" | "before" | "profile_field:<fieldKey>" — free-form so future
+  // categories don't require a migration.
+  category      String
+  // Path served by the API's static-asset middleware: "/uploads/<filename>".
+  url           String
+  mimeType      String
+  sizeBytes     Int
+  uploadedAt    DateTime    @default(now())
+
+  @@index([participantId, category])
+  @@map("participant_uploaded_files")
+}
+
+// Many-to-many bridge: one participant can belong to multiple groups
+model ParticipantGroup {
+  id            String      @id @default(cuid())
+  participantId String
+  participant   Participant @relation(fields: [participantId], references: [id])
+  groupId       String
+  group         Group       @relation(fields: [groupId], references: [id])
+  joinedAt      DateTime    @default(now())
+  leftAt        DateTime?
+  isActive      Boolean     @default(true)
+  accessToken   String?     @unique // Personal link token for /t/:token participant portal
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  // A participant can only have one active record per group
+  @@unique([participantId, groupId])
+  @@index([groupId])
+  @@map("participant_groups")
+}
+
+model Message {
+  id            String      @id @default(cuid())
+  participantId String
+  participant   Participant @relation(fields: [participantId], references: [id])
+  groupId       String
+  group         Group       @relation(fields: [groupId], references: [id])
+  content       String
+  sentAt        DateTime
+  createdAt     DateTime    @default(now())
+
+  @@map("messages")
+}
+
+model DailyActivity {
+  id            String      @id @default(cuid())
+  participantId String
+  participant   Participant @relation(fields: [participantId], references: [id])
+  groupId       String
+  group         Group       @relation(fields: [groupId], references: [id])
+  date          DateTime    @db.Date
+  messageCount  Int         @default(0)
+  didSubmit     Boolean     @default(false)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  // One record per participant per group per day
+  @@unique([participantId, groupId, date])
+  @@map("daily_activities")
+}
+
+model AiGroupSummary {
+  id                String   @id @default(cuid())
+  groupId           String
+  group             Group    @relation(fields: [groupId], references: [id])
+  date              DateTime @db.Date
+  totalParticipants Int
+  activeCount       Int
+  inactiveCount     Int
+  summaryText       String
+  recommendations   String?
+  createdAt         DateTime @default(now())
+
+  // One summary per group per day
+  @@unique([groupId, date])
+  @@map("ai_group_summaries")
+}
+
+model ParticipantInsight {
+  id                 String              @id @default(cuid())
+  participantId      String
+  participant        Participant         @relation(fields: [participantId], references: [id])
+  groupId            String
+  group              Group               @relation(fields: [groupId], references: [id])
+  date               DateTime            @db.Date
+  description        String
+  // "ai" or "admin" — no hardcoded enum, stays flexible for future sources
+  createdBy          String
+  suggestedResponses SuggestedResponse[]
+  createdAt          DateTime            @default(now())
+
+  @@map("participant_insights")
+}
+
+model SuggestedResponse {
+  id            String             @id @default(cuid())
+  participantId String
+  participant   Participant        @relation(fields: [participantId], references: [id])
+  insightId     String
+  insight       ParticipantInsight @relation(fields: [insightId], references: [id])
+  suggestedText String
+  isUsed        Boolean            @default(false)
+  createdAt     DateTime           @default(now())
+
+  @@map("suggested_responses")
+}
+
+// =============================================================================
+// AI PROFILE TABLES
+// Facts are stored as natural sentences, not key-value pairs.
+// The profile summary is rebuilt from active facts periodically.
+// =============================================================================
+
+model ParticipantProfile {
+  id            String      @id @default(cuid())
+  participantId String      @unique
+  participant   Participant @relation(fields: [participantId], references: [id])
+  summaryText   String
+  lastUpdatedAt DateTime    @default(now())
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  @@map("participant_profiles")
+}
+
+model ParticipantFact {
+  id              String            @id @default(cuid())
+  participantId   String
+  participant     Participant       @relation(fields: [participantId], references: [id])
+  // Optional classification for display/filtering — no logic depends on this value
+  category        String?
+  // Human-readable sentence: "She has two children" not "children=2"
+  fullSentence    String
+  // 0.0–1.0 — how confident the AI is in this fact
+  confidenceScore Float?
+  // "ai" or "admin"
+  source          String
+  // false when superseded by a newer/refined fact
+  isActive        Boolean           @default(true)
+  // Self-referencing chain: points to the fact that replaced this one
+  supersededById  String?
+  supersededBy    ParticipantFact?  @relation("FactSupersession", fields: [supersededById], references: [id])
+  supersedes      ParticipantFact[] @relation("FactSupersession")
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@map("participant_facts")
+}
+
+// =============================================================================
+// WHATSAPP INBOX
+// Structured chat + message layer on top of raw Wassenger webhooks.
+// =============================================================================
+
+model WhatsAppChat {
+  id             String            @id @default(cuid())
+  externalChatId String            @unique
+  // "group" | "private"
+  type           String            @default("private")
+  name           String?
+  phoneNumber    String?
+  lastMessageAt  DateTime?
+  messages       WhatsAppMessage[]
+  groupLinks     GroupChatLink[]
+  // Source provider for this chat. "wassenger" for legacy rows;
+  // "baileys" for new Baileys-bridge rows. Coexists during the
+  // direct-replacement cutover and lets reports stay queryable
+  // afterward.
+  provider       String            @default("wassenger")
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  @@map("whatsapp_chats")
+}
+
+model WhatsAppMessage {
+  id                  String       @id @default(cuid())
+  externalMessageId   String?      @unique
+  chatId              String
+  chat                WhatsAppChat @relation(fields: [chatId], references: [id])
+  // "incoming" | "outgoing" | null (unknown)
+  direction           String?
+  senderName          String?
+  senderPhone         String?
+  // "text" | "image" | "audio" | "video" | "document" | "sticker" | "system"
+  messageType         String       @default("text")
+  textContent         String?
+  mediaUrl            String?
+  timestampFromSource DateTime
+  rawPayload          Json
+  // Source provider — same semantics as WhatsAppChat.provider.
+  provider            String       @default("wassenger")
+  // Baileys quoted-reply target. Null for non-replies and for legacy
+  // Wassenger rows.
+  quotedExternalId    String?
+  // Richer media metadata, populated by Baileys ingestion. Wassenger
+  // path leaves these null; queries should fall back to
+  // rawPayload-derived values for legacy rows.
+  mediaMimeType       String?
+  mediaSizeBytes      Int?
+  mediaOriginalName   String?
+  createdAt           DateTime     @default(now())
+
+  @@map("whatsapp_messages")
+}
+
+// Baileys reactions. WhatsApp delivers these as separate events that
+// reference the target message by id. emoji='' indicates a reaction
+// removal — same primary-key tuple, just with cleared emoji.
+model WhatsAppMessageReaction {
+  id                String   @id @default(cuid())
+  externalMessageId String
+  reactorPhone      String
+  reactorName       String?
+  emoji             String
+  reactedAt         DateTime
+  createdAt         DateTime @default(now())
+
+  @@unique([externalMessageId, reactorPhone])
+  @@index([externalMessageId])
+  @@map("whatsapp_message_reactions")
+}
+
+// Baileys auth state. Mirrors the shape `useMultiFileAuthState` would
+// write to disk: one 'creds' singleton row plus one row per signal
+// key. The bridge reads/writes via a custom AuthenticationState
+// implementation. data is JSON-serialised with the standard
+// BufferJSON replacer/reviver so binary keys round-trip losslessly.
+model WhatsAppSession {
+  id        String   @id @default(cuid())
+  // 'creds' for the singleton. Otherwise one of:
+  //   'pre-key', 'session', 'sender-key',
+  //   'app-state-sync-key', 'app-state-sync-version',
+  //   'sender-key-memory'
+  kind      String
+  // Composite key inside the kind. 'singleton' for kind='creds'.
+  keyId     String
+  data      Json
+  updatedAt DateTime @updatedAt
+
+  @@unique([kind, keyId])
+  @@index([kind])
+  @@map("whatsapp_sessions")
+}
+
+// Bridge connection lifecycle. Single row maintained by the bridge,
+// id='singleton'. Surfaces "is the bridge connected?" + "when did it
+// last sync?" to the admin UI without touching Baileys directly.
+model WhatsAppConnection {
+  id                   String    @id @default("singleton")
+  // "disconnected" | "qr_required" | "pairing" | "connecting" | "connected"
+  status               String    @default("disconnected")
+  // The currently-displayed QR string (raw value from Baileys'
+  // connection.update qr field). Null when not in qr_required state.
+  // Rotates every ~20s while pairing.
+  qr                   String?
+  phoneJid             String?
+  deviceName           String?
+  lastQrAt             DateTime?
+  lastConnectedAt      DateTime?
+  lastDisconnectAt     DateTime?
+  lastDisconnectReason String?
+  // Heartbeat — set on every inbound or outbound message.
+  lastMessageAt        DateTime?
+  reconnectAttempts    Int       @default(0)
+  updatedAt            DateTime  @updatedAt
+
+  @@map("whatsapp_connection")
+}
+
+// Manual link between an internal Group and a WhatsApp chat.
+// linkType = "group_chat"              → the group's WhatsApp group chat
+// linkType = "private_participant_chat" → a private chat with one participant
+model GroupChatLink {
+  id             String       @id @default(cuid())
+  groupId        String
+  group          Group        @relation(fields: [groupId], references: [id])
+  whatsappChatId String
+  whatsappChat   WhatsAppChat @relation(fields: [whatsappChatId], references: [id])
+  // "group_chat" | "private_participant_chat"
+  linkType       String
+  // null unless linkType = "private_participant_chat"
+  participantId  String?
+  participant    Participant? @relation(fields: [participantId], references: [id])
+  createdAt      DateTime     @default(now())
+
+  // Each WhatsApp chat can only be linked once per group
+  @@unique([groupId, whatsappChatId])
+  @@map("group_chat_links")
+}
+
+// =============================================================================
+// WHATSAPP EVENTS (raw inbound webhooks from Wassenger)
+// Every POST to /wassenger is stored here in full for later processing.
+// =============================================================================
+
+model WhatsAppEvent {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  // Top-level event type from Wassenger (e.g. "message:in:new")
+  eventType String?
+
+  // Full raw payload — always stored regardless of parsing success
+  rawPayload Json
+
+  // Extracted sender / chat fields (best-effort, may be null)
+  phoneNumber String?
+  senderName  String?
+  chatId      String?
+  chatName    String?
+
+  // Message content fields
+  messageText String?
+  messageType String? // "text", "image", "audio", etc.
+  mediaUrl    String?
+
+  // Unix timestamp as reported by Wassenger source
+  timestampFromSource BigInt?
+
+  @@map("whatsapp_events")
+}
+
+// =============================================================================
+// ADMIN / SYSTEM USERS
+// =============================================================================
+
+model AdminUser {
+  id           String   @id @default(cuid())
+  fullName     String
+  email        String   @unique
+  passwordHash String?
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  sessions       AdminSession[]
+  authCodes      AdminAuthCode[]
+  passwordResets AdminPasswordReset[]
+
+  @@map("admin_users")
+}
+
+model AdminSession {
+  id        String    @id @default(cuid())
+  adminId   String
+  admin     AdminUser @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  token     String    @unique @default(cuid())
+  expiresAt DateTime
+  createdAt DateTime  @default(now())
+
+  @@map("admin_sessions")
+}
+
+model AdminAuthCode {
+  id        String    @id @default(cuid())
+  adminId   String
+  admin     AdminUser @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  code      String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@map("admin_auth_codes")
+}
+
+model AdminPasswordReset {
+  id        String    @id @default(cuid())
+  adminId   String
+  admin     AdminUser @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  token     String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@map("admin_password_resets")
+}
+
+// =============================================================================
+// QUESTIONNAIRE ENGINE
+// Dynamic admin-controlled questionnaire system.
+// Templates → Questions → Options (config)
+// External tracked links per template (one template, many links with UTMs)
+// Submissions → Answers (data)
+// Answers store a snapshot of the question at submission time for historical safety.
+// =============================================================================
+
+model QuestionnaireTemplate {
+  id                         String  @id @default(cuid())
+  internalName               String
+  publicTitle                String
+  introRichText              String?
+  // "internal" | "external" | "both"
+  usageType                  String  @default("both")
+  isActive                   Boolean @default(true)
+  // Legacy column, pre-refactor. Kept for data compatibility but the
+  // service no longer branches on it — `participantMatchingMode` drives
+  // participant creation behavior now.
+  // "none" | "create_new_participant" | "attach_or_create"
+  submitBehavior             String  @default("none")
+  // "step_by_step" | "full_list" — controls public fill page layout
+  displayMode                String  @default("step_by_step")
+  // Shown after phone identification in public fill. Supports {firstName} placeholder.
+  // Falls back to "נעבור לכמה שאלות קצרות:" when empty.
+  postIdentificationGreeting String?
+  // Shown on the thank-you screen after external submission. Falls back to generic text when empty.
+  postSubmitText             String?
+
+  // ── Post-submit configuration (replaces hardcoded waitlist stamping) ──────
+  // "waitlist" | "onboarding" | "mid_program" | "feedback" | "internal"
+  // Semantic label only — doesn't drive behavior by itself. Drives analytics
+  // filtering + intent signalling to the admin.
+  submissionPurpose         String     @default("internal")
+  // "match_by_phone" | "always_create" | "manual_review"
+  //   match_by_phone — default; phone-upsert (existing behavior)
+  //   always_create  — skip lookup; still collides on the phoneNumber unique
+  //                    and reuses the existing row in that case
+  //   manual_review  — never touch participants; submission lands orphan and
+  //                    admin attaches via /admin UI
+  participantMatchingMode   String     @default("match_by_phone")
+  // Values to stamp on a FRESHLY-CREATED participant. Null = leave alone.
+  // Free-form strings so future lifecycle/source values don't require a
+  // schema change. Validation lives in the shared taxonomy constants.
+  onSubmitParticipantStatus String?
+  onSubmitSource            String?
+  // Optional links — used both for the post-submit auto-assign and for
+  // reporting ("which program does this form feed?"). linkedGroupId is
+  // the "auto-add participant to this group" hook; leave null to skip.
+  linkedChallengeId         String?
+  linkedChallenge           Challenge? @relation(fields: [linkedChallengeId], references: [id])
+  linkedGroupId             String?
+  linkedGroup               Group?     @relation("QuestionnaireTemplateLinkedGroup", fields: [linkedGroupId], references: [id])
+
+  // Program association — this is the product link. When set +
+  // submissionPurpose='waitlist', a ProgramWaitlistEntry is written
+  // on external submission. Also used to show related questionnaires on
+  // the group screen.
+  programId String?
+  program   Program? @relation(fields: [programId], references: [id])
+
+  questions     QuestionnaireQuestion[]
+  submissions   QuestionnaireSubmission[]
+  externalLinks QuestionnaireExternalLink[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("questionnaire_templates")
+}
+
+model QuestionnaireQuestion {
+  id            String                @id @default(cuid())
+  templateId    String
+  template      QuestionnaireTemplate @relation(fields: [templateId], references: [id])
+  internalKey   String
+  label         String
+  helperText    String?
+  // "text" | "number" | "choice" | "multi" | "scale" | "date" | "yesno"
+  questionType  String
+  sortOrder     Int                   @default(0)
+  isRequired    Boolean               @default(false)
+  allowOther    Boolean               @default(false)
+  // "sm" | "md" | "lg" — controls input rendering size
+  fieldSize     String?               @default("md")
+  // true when this question maps to a built-in participant field (first_name, phone_number, etc.)
+  isSystemField Boolean               @default(false)
+  // false = soft-deleted; answers still reference this record via snapshot
+  isActive      Boolean               @default(true)
+
+  options QuestionnaireQuestionOption[]
+  answers QuestionnaireAnswer[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([templateId])
+  @@map("questionnaire_questions")
+}
+
+model QuestionnaireQuestionOption {
+  id         String                @id @default(cuid())
+  questionId String
+  question   QuestionnaireQuestion @relation(fields: [questionId], references: [id])
+  label      String
+  value      String
+  sortOrder  Int                   @default(0)
+
+  createdAt DateTime @default(now())
+
+  @@map("questionnaire_question_options")
+}
+
+model QuestionnaireSubmission {
+  id              String                     @id @default(cuid())
+  templateId      String
+  template        QuestionnaireTemplate      @relation(fields: [templateId], references: [id])
+  participantId   String?
+  participant     Participant?               @relation(fields: [participantId], references: [id])
+  // "internal" | "external"
+  submittedByMode String
+  // "draft" | "completed"
+  status          String                     @default("draft")
+  // Set when status transitions to "completed"
+  submittedAt     DateTime?
+  // Explicit link reference — kept even if link is later deactivated
+  externalLinkId  String?
+  externalLink    QuestionnaireExternalLink? @relation(fields: [externalLinkId], references: [id])
+  // Denormalized UTM values from the link at time of submission — for reporting
+  utmSource       String?
+  utmMedium       String?
+  utmCampaign     String?
+  utmContent      String?
+  utmTerm         String?
+
+  answers QuestionnaireAnswer[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([templateId])
+  @@index([participantId])
+  @@index([externalLinkId])
+  @@map("questionnaire_submissions")
+}
+
+model QuestionnaireAnswer {
+  id               String                  @id @default(cuid())
+  submissionId     String
+  submission       QuestionnaireSubmission @relation(fields: [submissionId], references: [id])
+  questionId       String
+  question         QuestionnaireQuestion   @relation(fields: [questionId], references: [id])
+  // Unified answer value: string, number, string[] (multi), null
+  value            Json?
+  // Captured at submission time: { label, questionType, helperText, internalKey }
+  // Allows reading old submissions even after template/question edits or soft-delete
+  questionSnapshot Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([submissionId])
+  @@index([questionId])
+  @@map("questionnaire_answers")
+}
+
+// =============================================================================
+// GAME ENGINE
+// Data-driven scoring, rule evaluation, ledger, and social feed.
+// Every point earned creates an immutable ScoreEvent — no overwrites.
+// =============================================================================
+
+// Actions an admin defines for a game program (drink water, walk steps, etc.)
+model GameAction {
+  id                      String   @id @default(cuid())
+  programId               String
+  program                 Program  @relation(fields: [programId], references: [id])
+  name                    String
+  description             String?
+  // "boolean" | "number" | "select"
+  inputType               String   @default("boolean")
+  // "none" | "latest_value" | "incremental_sum"
+  // none          → flat points per submission (boolean / select actions)
+  // latest_value  → participant reports their running total; each new value replaces previous; must not decrease
+  // incremental_sum → participant reports what they added now; system sums all submissions for the day
+  aggregationMode         String   @default("none")
+  // Optional display unit, e.g. "steps", "floors", "minutes"
+  unit                    String?
+  points                  Int      @default(0)
+  // ── Phase 6.7 explicit base scoring strategy ──────────────────────────────
+  // Required discriminator. The scoring engine dispatches by this value —
+  // there is NO "magic activation" by presence of optional fields.
+  //   "flat"                       — action.points per submission (flat).
+  //   "quantity_multiplier"        — action.points * submitted quantity.
+  //                                  Requires inputType='number' + aggMode='incremental_sum'.
+  //   "latest_value_flat"          — action.points per submission, with
+  //                                  running-total (monotonic) semantics.
+  //                                  Requires inputType='number' + aggMode='latest_value'.
+  //   "latest_value_units_delta"   — generic unit-progress scoring.
+  //                                  pointsForThisLog = deltaUnits * basePointsPerUnit
+  //                                  Requires inputType='number' + aggMode='latest_value'
+  //                                  + unitSize + basePointsPerUnit + maxPerDay=1.
+  // Default 'flat' keeps boolean/select actions correct without any config.
+  baseScoringType         String   @default("flat")
+  // ── Parameters used by specific strategies ────────────────────────────────
+  // Both nullable because most strategies don't need them. Server-side
+  // validation enforces presence only when baseScoringType='latest_value_units_delta'.
+  // Generic names — NOT domain-specific (not "stepSize", not "pointsPerStep").
+  unitSize                Int?
+  basePointsPerUnit       Int?
+  maxPerDay               Int?
+  // Whether this action appears in the participant-facing portal
+  showInPortal            Boolean  @default(true)
+  // Custom message shown to participant when daily limit is reached (null = use system default)
+  blockedMessage          String?
+  // Rich HTML explanation shown in participant portal rules tab
+  explanationContent      String?
+  // Phase 3.4: admin-editable participant-facing question. When null the portal
+  // derives a default label from the action's aggregation mode (existing
+  // behavior). Lets admins replace the default prompt with something specific
+  // to this action (e.g. "כמה כוסות מים שתית?").
+  participantPrompt       String?
+  // Phase 4.1: optional free-text question the participant answers alongside
+  // the main action submission. Intentionally separate from the context system
+  // — this field is NOT used in analytics aggregation (it's for colour /
+  // journaling). When null, the text input is not rendered.
+  participantTextPrompt   String?
+  // Phase 4.4: when true AND participantTextPrompt is set, submission is
+  // blocked until the participant fills the text field. Default false keeps
+  // existing behavior unchanged.
+  participantTextRequired Boolean  @default(false)
+  // Built-in sound played on the participant portal after a successful action
+  // "none" | "ding" | "celebration" | "applause"
+  soundKey                String   @default("none")
+  // Optional schema describing extra dimensions captured per submission (meal_period,
+  // location, mood, etc.). Shape:
+  //   { "dimensions": [{ "key": string, "label": string, "type": "select"|"text"|"number"|"time",
+  //                      "required": boolean, "options"?: [{"value": string, "label": string}] }] }
+  // Captured values land in UserActionLog.contextJson. Validation: see validateContext().
+  contextSchemaJson       Json?
+  // Monotonically increasing version number of contextSchemaJson. Stamped onto each new
+  // UserActionLog at write time so historical rows remain interpretable after schema edits.
+  contextSchemaVersion    Int      @default(1)
+  isActive                Boolean  @default(true)
+  sortOrder               Int      @default(0)
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  logs        UserActionLog[]
+  // Phase 3.2: reusable context definitions attached to this action.
+  contextUses GameActionContextUse[]
+
+  @@index([programId])
+  @@map("game_actions")
+}
+
+// ─── Phase 3.2: Reusable context library ───────────────────────────────────
+//
+// ContextDefinition: a reusable dimension (e.g. "meal_period", "location")
+// defined once per program and attached to many GameActions via
+// GameActionContextUse. The `key` is auto-generated from the admin-provided
+// label and is stable across edits to keep historical UserActionLog.contextJson
+// rows resolvable to the same dimension.
+//
+// Archiving (isActive=false) keeps the row + its uses intact — historical logs
+// remain interpretable — but it disappears from admin attachment pickers.
+// Physical deletion is deliberately NOT exposed: it would orphan any log that
+// already captured a value under this dimension's key.
+
+model ContextDefinition {
+  id                            String          @id @default(cuid())
+  programId                     String
+  program                       Program         @relation(fields: [programId], references: [id])
+  label                         String
+  // Auto-generated slug (program-wide unique). Never exposed to admins.
+  key                           String
+  // "select" | "text" | "number"
+  type                          String
+  // Default required setting when attached. Individual uses may override.
+  requiredByDefault             Boolean         @default(false)
+  // Default participant visibility. Individual uses may override.
+  // Semantically equivalent to `participantVisible` in the Phase 3.3 model —
+  // the legacy column name is kept to avoid a migration rename.
+  visibleToParticipantByDefault Boolean         @default(true)
+  // For type='select' only. Shape: [{ value: string, label: string }]
+  optionsJson                   Json?
+  // ── Phase 3.3 context behavior model ─────────────────────────────────────
+  // `participant`   — participant fills the value in the submission sheet.
+  // `system_fixed`  — backend auto-injects `fixedValue` on every submission.
+  //                   Participant never sees or sends this field.
+  inputMode                     String          @default("participant")
+  // When false, this dimension is excluded from analytics toggles/breakdowns,
+  // even if data is captured. Useful for system dimensions that exist for
+  // downstream integrations but shouldn't clutter the participant analytics UI.
+  analyticsVisible              Boolean         @default(true)
+  // Mandatory when inputMode='system_fixed'; ignored otherwise. The string
+  // value is what the backend writes into UserActionLog.contextJson[key].
+  fixedValue                    String?
+  // ── Phase 4.3 analytics presentation layer ───────────────────────────────
+  // Optional FK into the centralized AnalyticsGroup table. Multiple context
+  // definitions pointing at the same group aggregate together in analytics.
+  // Null = standalone (no presentation group).
+  analyticsGroupId              String?
+  analyticsGroup                AnalyticsGroup? @relation(fields: [analyticsGroupId], references: [id])
+  // Optional shorter label for THIS context inside the analytics UI (falls
+  // back to `label` when null). Survived from the previous phase — still
+  // useful independently of groups.
+  analyticsDisplayLabel         String?
+  // Archived contexts don't appear in attachment pickers. Existing uses keep
+  // resolving so historical data stays interpretable.
+  isActive                      Boolean         @default(true)
+  sortOrder                     Int             @default(0)
+  createdAt                     DateTime        @default(now()) @db.Timestamptz
+  updatedAt                     DateTime        @updatedAt
+
+  uses GameActionContextUse[]
+
+  @@unique([programId, key])
+  @@index([programId])
+  @@index([analyticsGroupId])
+  @@map("context_definitions")
+}
+
+// ─── Phase 4.3: Centralized analytics groups ───────────────────────────────
+//
+// Presentation-layer grouping for context definitions. Admins create groups
+// once per program; any number of context definitions can point at the same
+// group via ContextDefinition.analyticsGroupId.
+//
+// The label is what participants see in the analytics grouping UI. Group
+// label is unique per program so admins can't accidentally create two
+// "תזונה" entries.
+
+model AnalyticsGroup {
+  id        String   @id @default(cuid())
+  programId String
+  program   Program  @relation(fields: [programId], references: [id])
+  label     String
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt
+
+  definitions ContextDefinition[]
+
+  @@unique([programId, label])
+  @@index([programId])
+  @@map("analytics_groups")
+}
+
+// Join row attaching a ContextDefinition to a GameAction, with optional
+// per-use overrides on required/visible (ONLY those two — type, options, etc.
+// must be edited in the library itself).
+// Deleting a definition is blocked while uses exist; admins archive instead.
+
+model GameActionContextUse {
+  id                           String            @id @default(cuid())
+  actionId                     String
+  action                       GameAction        @relation(fields: [actionId], references: [id], onDelete: Cascade)
+  definitionId                 String
+  definition                   ContextDefinition @relation(fields: [definitionId], references: [id])
+  // null = inherit the definition's default.
+  requiredOverride             Boolean?
+  visibleToParticipantOverride Boolean?
+  sortOrder                    Int               @default(0)
+  createdAt                    DateTime          @default(now()) @db.Timestamptz
+
+  @@unique([actionId, definitionId])
+  @@index([definitionId])
+  @@map("game_action_context_uses")
+}
+
+// One record per participant action report.
+// Supersession (edits/voids) is expressed via status + supersedesId + chainRootId.
+// Reads filtering "active submissions" MUST use `status = 'active'`.
+model UserActionLog {
+  id                 String      @id @default(cuid())
+  participantId      String
+  participant        Participant @relation(fields: [participantId], references: [id])
+  programId          String
+  program            Program     @relation(fields: [programId], references: [id])
+  actionId           String
+  action             GameAction  @relation(fields: [actionId], references: [id])
+  // Raw reported value: "true", "5000", "option_a", etc.
+  value              String      @default("true")
+  // Parsed numeric value for "number" actions (null for boolean/select).
+  effectiveValue     Decimal?    @db.Decimal(20, 6)
+  // Dimension values conforming to action.contextSchemaJson.
+  contextJson        Json?
+  // "active" | "superseded" | "voided"
+  status             String      @default("active")
+  // If this log replaces another log (edit), points to the replaced log.
+  // @unique prevents forked supersession chains.
+  supersedesId       String?     @unique
+  // Idempotency key from the submitting client; prevents duplicate scoring on retries.
+  clientSubmissionId String?     @unique
+  // Audit fields for corrections.
+  editedAt           DateTime?   @db.Timestamptz
+  editedByRole       String? // "participant" | "admin"
+  // Version stamp of the action.contextSchemaJson at write time (for future schema versioning).
+  schemaVersion      Int?
+  // All logs in a supersession chain share the same chainRootId (= first log's id).
+  // Active-head lookup: WHERE chainRootId = ? AND status = 'active'.
+  chainRootId        String
+  // Phase 4.1: optional free-text participant note captured alongside the
+  // submission. Kept OUT of contextJson intentionally — this is action-scoped
+  // extra data, not a queryable dimension.
+  extraText          String?
+  // For catch-up backdated reports: createdAt is rewritten to the credited
+  // day at 12:00 Asia/Jerusalem so existing "today" queries credit the
+  // report against the correct day. occurredAt always reflects wall-clock
+  // submission time, populated for every new row. For non-catch-up rows
+  // they're approximately equal; the divergence on backdated rows is the
+  // audit-trail signal.
+  occurredAt         DateTime    @default(now()) @db.Timestamptz
+  createdAt          DateTime    @default(now()) @db.Timestamptz
+
+  @@index([participantId, programId])
+  @@index([actionId])
+  @@index([chainRootId])
+  @@index([participantId, programId, createdAt])
+  @@map("user_action_logs")
+}
+
+// Immutable append-only ledger. Never updated.
+// Deletion is also disallowed by application convention (hard enforcement deferred to a
+// later phase — see Phase 1 decision Q2: legacy deleteFeedEvent retained).
+//
+// Dependency graph:
+//   parentEventId      → single parent link (e.g. compensating event → compensated event).
+//   ScoreEventDependency → many-to-many fan-in (rule event → all action events it depended on).
+//
+// Uniqueness for rule firings is enforced at DB level via a partial unique index on
+//   (participant_id, source_id, bucket_key) WHERE source_type = 'rule'
+// created in the migration (Prisma cannot express partial unique indexes natively).
+model ScoreEvent {
+  id            String      @id @default(cuid())
+  participantId String
+  participant   Participant @relation(fields: [participantId], references: [id])
+  programId     String
+  program       Program     @relation(fields: [programId], references: [id])
+  groupId       String?
+  group         Group?      @relation(fields: [groupId], references: [id])
+  // "action" | "rule" | "bonus" | "admin" | "correction"
+  sourceType    String
+  // actionId or ruleId; null for bonus/admin
+  sourceId      String?
+  points        Int
+  // For sourceType='action': the UserActionLog this event scores.
+  // Enforced via CHECK constraint: sourceType='action' ⇒ logId IS NOT NULL.
+  logId         String?
+  // Single-parent link. Used for: correction→compensated, rule→trigger-action.
+  // Cross-participant/cross-program parentage is forbidden (application invariant).
+  parentEventId String?
+  // Deterministic dedup key for rule firings (e.g. "YYYY-MM-DD" for once-per-day rules).
+  // Unique index is partial: enforced only when sourceType='rule' AND bucketKey IS NOT NULL.
+  bucketKey     String?
+  metadata      Json?
+  // See UserActionLog.occurredAt — same semantics. Present on every row.
+  occurredAt    DateTime    @default(now()) @db.Timestamptz
+  createdAt     DateTime    @default(now()) @db.Timestamptz
+
+  dependents   ScoreEventDependency[] @relation("event")
+  dependencies ScoreEventDependency[] @relation("dependsOn")
+
+  @@index([participantId, programId])
+  @@index([groupId])
+  @@index([participantId, programId, createdAt])
+  @@index([logId])
+  @@index([parentEventId])
+  @@map("score_events")
+}
+
+// Many-to-many fan-in: one ScoreEvent (usually a rule/bonus/correction) depends on
+// many other ScoreEvents (typically action events). Used by the correction cascade
+// to find all downstream events that must be compensated when a dependency is voided.
+//
+// Traversal pattern: start at voided event, walk dependents recursively, emit a
+// compensating event per dependent. Dependency rows themselves are immutable.
+model ScoreEventDependency {
+  id               String @id @default(cuid())
+  eventId          String
+  dependsOnEventId String
+
+  event     ScoreEvent @relation("event", fields: [eventId], references: [id])
+  dependsOn ScoreEvent @relation("dependsOn", fields: [dependsOnEventId], references: [id])
+
+  createdAt DateTime @default(now()) @db.Timestamptz
+
+  @@unique([eventId, dependsOnEventId])
+  @@index([eventId])
+  @@index([dependsOnEventId])
+  @@map("score_event_dependencies")
+}
+
+// Admin-defined rules that fire automatically based on conditions
+model GameRule {
+  id                    String   @id @default(cuid())
+  programId             String
+  program               Program  @relation(fields: [programId], references: [id])
+  name                  String
+  // "daily_bonus" | "streak" | "conditional"
+  type                  String
+  // JSON — condition definition (flexible, not hardcoded)
+  conditionJson         Json     @default("{}")
+  // JSON — reward definition, e.g. { "points": 10 }
+  rewardJson            Json     @default("{\"points\":0}")
+  // "immediate" | "after_days" | "admin_unlock"
+  activationType        String   @default("immediate")
+  activationDays        Int?
+  requiresAdminApproval Boolean  @default(false)
+  isActive              Boolean  @default(true)
+  sortOrder             Int      @default(0)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  groupUnlocks GroupRuleUnlock[]
+
+  @@index([programId])
+  @@map("game_rules")
+}
+
+// Tracks per-group admin unlock for rules requiring approval
+model GroupRuleUnlock {
+  id         String   @id @default(cuid())
+  groupId    String
+  group      Group    @relation(fields: [groupId], references: [id])
+  ruleId     String
+  rule       GameRule @relation(fields: [ruleId], references: [id])
+  unlockedAt DateTime @default(now())
+  unlockedBy String? // admin identifier (free-text for now)
+
+  @@unique([groupId, ruleId])
+  @@map("group_rule_unlocks")
+}
+
+// Tracks the current "day" counter for a group's game instance
+model GroupGameState {
+  id         String   @id @default(cuid())
+  groupId    String   @unique
+  group      Group    @relation(fields: [groupId], references: [id])
+  currentDay Int      @default(1)
+  startDate  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@map("group_game_states")
+}
+
+// Per-participant game state for streak tracking and shields
+model ParticipantGameState {
+  id               String      @id @default(cuid())
+  participantId    String
+  participant      Participant @relation(fields: [participantId], references: [id])
+  programId        String
+  program          Program     @relation(fields: [programId], references: [id])
+  currentStreak    Int         @default(0)
+  bestStreak       Int         @default(0)
+  lastActionDate   DateTime?
+  shieldsRemaining Int         @default(0)
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  @@unique([participantId, programId])
+  @@index([programId])
+  @@map("participant_game_states")
+}
+
+// Social feed events visible inside a group.
+// logId / scoreEventId are the canonical links to the triggering UserActionLog / ScoreEvent.
+// They supersede the older `metadata.logId` / `metadata.scoreEventId` JSON payload, which is
+// retained for legacy rows only (see backfill in migration).
+model FeedEvent {
+  id            String      @id @default(cuid())
+  participantId String
+  participant   Participant @relation(fields: [participantId], references: [id])
+  groupId       String
+  group         Group       @relation(fields: [groupId], references: [id])
+  programId     String
+  program       Program     @relation(fields: [programId], references: [id])
+  // "action" | "rare" | "system"
+  type          String
+  message       String
+  points        Int         @default(0)
+  isPublic      Boolean     @default(true)
+  // Direct FKs (set by logAction + evaluateRules; legacy rows may be null).
+  logId         String?
+  scoreEventId  String?     @unique
+  // Legacy payload — new writes prefer the dedicated columns above.
+  metadata      Json?
+  // See UserActionLog.occurredAt — same semantics. Present on every row.
+  occurredAt    DateTime    @default(now()) @db.Timestamptz
+  createdAt     DateTime    @default(now()) @db.Timestamptz
+
+  @@index([groupId])
+  @@index([programId])
+  @@index([logId])
+  @@map("feed_events")
+}
+
+// Catch-up mode session — gates backdated reporting for a participant
+// in a specific program. Started by the participant pressing the
+// admin-configured "catch-up" button on an availability date; expires
+// after the snapshotted duration. The (participantId, programId,
+// availabilityDate) uniqueness constraint enforces "one activation per
+// participant per program per available date" at the database layer.
+//
+// Audit-friendly: rows survive expiry. "Active" is derived
+// (expiresAt > now() AND endedAt IS NULL). The snapshot of
+// duration / allowedDaysBack / bannerText insulates a running session
+// from admin config edits made while it's still ticking.
+model CatchUpSession {
+  id               String      @id @default(cuid())
+  participantId    String
+  participant      Participant @relation(fields: [participantId], references: [id])
+  programId        String
+  program          Program     @relation(fields: [programId], references: [id])
+  // Asia/Jerusalem YYYY-MM-DD on which the session was opened. The
+  // visibility + start endpoints both check membership in
+  // program.catchUpAvailableDates against this same string.
+  availabilityDate String
+  startedAt        DateTime    @default(now()) @db.Timestamptz
+  expiresAt        DateTime    @db.Timestamptz
+  // Snapshot — never read live from program after creation.
+  durationMinutes  Int
+  allowedDaysBack  Int
+  bannerText       String?
+  endedAt          DateTime?   @db.Timestamptz
+  createdAt        DateTime    @default(now())
+
+  @@unique([participantId, programId, availabilityDate])
+  @@index([programId])
+  @@map("catch_up_sessions")
+}
+
+model QuestionnaireExternalLink {
+  id           String                @id @default(cuid())
+  templateId   String
+  template     QuestionnaireTemplate @relation(fields: [templateId], references: [id])
+  internalName String
+  // Unique URL token — auto-generated in service as 8-char alphanumeric
+  slugOrToken  String                @unique
+  utmSource    String?
+  utmMedium    String?
+  utmCampaign  String?
+  utmContent   String?
+  utmTerm      String?
+  // false = soft-deleted; submissions still reference this record
+  isActive     Boolean               @default(true)
+
+  submissions QuestionnaireSubmission[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([templateId])
+  @@map("questionnaire_external_links")
+}
+
+// =============================================================================
+// SYSTEM SETTINGS
+// =============================================================================
+// Generic key-value store for admin-controlled feature flags and config.
+// All values stored as strings; booleans use "true" / "false".
+
+model SystemSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+
+  @@map("system_settings")
+}
+
+// =============================================================================
+// TASK ENGINE
+// Weekly personal planning: goals → tasks → day assignments → completion.
+// History is immutable: carry-forward creates a new assignment while marking the
+// old one as "carried_forward". Deferral vs planning-change is tracked per event.
+// =============================================================================
+
+// One plan per participant per calendar week.
+// weekStart is always the Sunday of the week at 00:00:00 UTC (Israeli convention).
+model WeeklyPlan {
+  id            String       @id @default(cuid())
+  participantId String
+  participant   Participant  @relation(fields: [participantId], references: [id])
+  // Always Sunday 00:00:00 UTC for the week
+  weekStart     DateTime
+  status        String       @default("active") // "active" | "closed"
+  goals         WeeklyGoal[]
+  tasks         PlanTask[]
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@unique([participantId, weekStart])
+  @@index([participantId])
+  @@map("weekly_plans")
+}
+
+model WeeklyGoal {
+  id          String     @id @default(cuid())
+  planId      String
+  plan        WeeklyPlan @relation(fields: [planId], references: [id])
+  title       String
+  description String?
+  sortOrder   Int        @default(0)
+  isAbandoned Boolean    @default(false)
+  tasks       PlanTask[]
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([planId])
+  @@map("weekly_goals")
+}
+
+// The task itself. Separate from its day assignment.
+// goalId = null → ungoaled (directly under the plan's task pool).
+model PlanTask {
+  id                  String           @id @default(cuid())
+  planId              String
+  plan                WeeklyPlan       @relation(fields: [planId], references: [id])
+  goalId              String?
+  goal                WeeklyGoal?      @relation(fields: [goalId], references: [id])
+  participantId       String
+  participant         Participant      @relation(fields: [participantId], references: [id])
+  title               String
+  notes               String?
+  estimatedMinutes    Int?
+  sortOrder           Int              @default(0)
+  isAbandoned         Boolean          @default(false)
+  // Phase 6.16 recurrence. CSV of weekday indices (0=Sun..6=Sat). When non-null,
+  // the week-plan fetcher lazily materializes an assignment for each matching
+  // weekday in the current week that doesn't already have one (deleted-by-user
+  // assignments count as existing, preventing regeneration). Null = not recurring.
+  recurrenceWeekdays  String?
+  recurrenceStartTime String?
+  recurrenceEndTime   String?
+  assignments         TaskAssignment[]
+  deferralEvents      DeferralEvent[]
+  // Phase 2 reverse side of the 1:1 bidirectional link. Present when a
+  // ProjectItem has this task's id in linkedPlanTaskId.
+  linkedProjectItem   ProjectItem?
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+
+  @@index([planId])
+  @@index([participantId])
+  @@map("plan_tasks")
+}
+
+// A task's presence on a specific day. One task may have many assignments
+// (original + carried-forward chain). Old assignments are never deleted —
+// status = "carried_forward" marks history.
+model TaskAssignment {
+  id             String           @id @default(cuid())
+  taskId         String
+  task           PlanTask         @relation(fields: [taskId], references: [id])
+  participantId  String
+  participant    Participant      @relation(fields: [participantId], references: [id])
+  // Day-level date: always midnight UTC of the target day
+  scheduledDate  DateTime
+  // Optional time window, stored as "HH:MM" strings
+  startTime      String?
+  endTime        String?
+  isCompleted    Boolean          @default(false)
+  completedAt    DateTime?
+  // "scheduled" | "completed" | "carried_forward" | "abandoned"
+  status         String           @default("scheduled")
+  // Linked list: carried_forward assignments point to the replacement
+  carriedToId    String?
+  carriedTo      TaskAssignment?  @relation("CarryChain", fields: [carriedToId], references: [id])
+  carriedFrom    TaskAssignment[] @relation("CarryChain")
+  deferralEvents DeferralEvent[]
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@index([participantId, scheduledDate])
+  @@index([taskId])
+  // Supports carry-forward streak query: findFirst(taskId, isCompleted=true) ORDER BY completedAt DESC
+  @@index([taskId, completedAt])
+  @@map("task_assignments")
+}
+
+// Written every time carry-forward is executed.
+// isDeferral = true when scheduledDate <= today at time of carry (same-day or past).
+// isDeferral = false for future rescheduling (planning change, not avoidance).
+model DeferralEvent {
+  id                        String         @id @default(cuid())
+  taskId                    String
+  task                      PlanTask       @relation(fields: [taskId], references: [id])
+  participantId             String
+  participant               Participant    @relation(fields: [participantId], references: [id])
+  fromAssignmentId          String
+  fromAssignment            TaskAssignment @relation(fields: [fromAssignmentId], references: [id])
+  fromDate                  DateTime
+  toDate                    DateTime?
+  // "daily" = moved to another day | "weekly" = moved to another week
+  deferralType              String
+  // true = task was due today or earlier (avoidance); false = future planning change
+  isDeferral                Boolean
+  // Snapshot of the streak at the time of this event
+  consecutiveDailyDeferrals Int            @default(0)
+  consecutiveWeeklyCarries  Int            @default(0)
+  createdAt                 DateTime       @default(now())
+
+  @@index([participantId])
+  @@index([taskId])
+  @@map("deferral_events")
+}
+
+// Future hook: configures when a deferral streak triggers a questionnaire.
+// participantId = null → global default; specific participantId → override.
+model DeferralTriggerConfig {
+  id                      String       @id @default(cuid())
+  participantId           String?
+  participant             Participant? @relation(fields: [participantId], references: [id])
+  dailyDeferralThreshold  Int          @default(3)
+  weeklyCarryThreshold    Int          @default(2)
+  // FK to QuestionnaireTemplate if/when questionnaire triggering is activated
+  questionnaireTemplateId String?
+  isActive                Boolean      @default(true)
+  createdAt               DateTime     @default(now())
+  updatedAt               DateTime     @updatedAt
+
+  @@map("deferral_trigger_configs")
+}
+
+// ─── Coach ↔ Participant chat (scoped per participant) ────────────────────────
+// Separate from task notes (task-specific) and goal descriptions (goal-specific).
+// This is a human communication thread between coach and participant.
+model ParticipantTaskNote {
+  id            String      @id @default(cuid())
+  participantId String
+  participant   Participant @relation(fields: [participantId], references: [id])
+  content       String
+  senderType    String // "coach" | "participant"
+  senderName    String?
+  createdAt     DateTime    @default(now())
+
+  @@index([participantId])
+  @@map("participant_task_notes")
+}
+
+// =============================================================================
+// PROJECTS TRACKING (Phase 1)
+// Admin- or participant-owned projects composed of manual-metric items
+// (boolean / number / select). Each (item, day) pair defaults to "not completed"
+// when no log row exists — only an explicit log overrides that default.
+// No task linkage in Phase 1. Phase 2 will introduce itemType='linked_task'
+// and a sourceProjectItemId column on PlanTask; neither exists yet.
+// =============================================================================
+
+model Project {
+  id            String      @id @default(cuid())
+  participantId String
+  participant   Participant @relation(fields: [participantId], references: [id])
+  title         String
+  description   String?
+  colorHex      String?
+  // "active" | "archived" | "cancelled"
+  status        String      @default("active")
+  // "admin" | "participant" — who originally created the project
+  createdByRole String      @default("admin")
+
+  items ProjectItem[]
+  notes ProjectNote[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([participantId])
+  @@map("projects")
+}
+
+model ProjectItem {
+  id                String  @id @default(cuid())
+  projectId         String
+  project           Project @relation(fields: [projectId], references: [id])
+  title             String
+  // "boolean" | "number" | "select"
+  // Phase 2 allows boolean items to optionally link to a PlanTask (1:1); number
+  // and select goals are explicitly blocked from linking in validation.
+  itemType          String
+  // Display unit for number items (e.g. "כוסות", "ק״מ"). Null for boolean/select.
+  unit              String?
+  // Optional daily target for number items. Null for boolean/select.
+  targetValue       Float?
+  // Array of { value, label } for select items; null otherwise.
+  selectOptionsJson Json?
+  sortOrder         Int     @default(0)
+  isArchived        Boolean @default(false)
+
+  // Phase 2 bidirectional link. Only valid for itemType='boolean'. 1:1 with
+  // PlanTask — @unique guarantees a given task is linked to at most one goal.
+  // Cleared on goal archive, on admin hard-delete (cascade), and on task
+  // delete (explicit update before the task row disappears).
+  linkedPlanTaskId String?   @unique
+  linkedPlanTask   PlanTask? @relation(fields: [linkedPlanTaskId], references: [id])
+
+  // Phase 3 scheduling intent. Drives the per-week status chip
+  // (planned/missing/suggested). Correctness of completion counts still
+  // depends solely on TaskAssignment rows — this is a *planning* layer,
+  // never a data-recording layer.
+  //   frequencyType   "none" | "daily" | "weekly"  (default "none" keeps
+  //                   pre-Phase-3 goals behaving identically)
+  //   timesPerWeek    required 1..7 when type='weekly'; null otherwise.
+  //                   Server normalizes timesPerWeek=7 → type='daily'.
+  //   preferredWeekdays  CSV of 0..6 (Sun..Sat), optional soft preference
+  //                      for suggested-days algorithm.
+  // Only allowed when itemType='boolean'. Validation rejects other types.
+  scheduleFrequencyType     String  @default("none")
+  scheduleTimesPerWeek      Int?
+  schedulePreferredWeekdays String?
+
+  // Phase 4 optional end-of-life date for the goal. Date-only (no time).
+  //   null  → indefinite (default)
+  //   set   → scheduler caps suggestions; status becomes 'ended' past this
+  // Validation: must be >= item.createdAt's civil day (can't end before it
+  // existed). Allowed to be < today — historical goals that have finished.
+  endDate DateTime? @db.Date
+
+  logs ProjectItemLog[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([projectId])
+  @@map("project_items")
+}
+
+model ProjectItemLog {
+  id            String      @id @default(cuid())
+  itemId        String
+  item          ProjectItem @relation(fields: [itemId], references: [id])
+  participantId String
+  participant   Participant @relation(fields: [participantId], references: [id])
+  // Day-only date in Asia/Jerusalem. Stored as a DATE column — no time component.
+  logDate       DateTime    @db.Date
+  // "completed" | "skipped_today" | "committed" | "value"
+  //   completed      → boolean item marked done, OR select item with chosen value,
+  //                    OR number item reported and ≥ targetValue (set by server).
+  //   value          → number item reported but below target (or no target set).
+  //   skipped_today  → explicit one-day skip (counts against completion).
+  //   committed      → participant acknowledges the miss and commits to do it
+  //                    next time (counts against completion, distinct from skip).
+  status        String
+  numericValue  Float?
+  selectValue   String?
+  skipNote      String?
+  commitNote    String?
+  editedAt      DateTime?
+  // "participant" | "admin" | "system" — who last edited this row.
+  // "system" is used when the sync service mirrors a task-side completion.
+  editedByRole  String?
+  // Phase 2 audit/presentation only: how this log was produced.
+  //   "direct" — user action in the Projects surface.
+  //   "task"   — mirrored from a TaskAssignment completion via sync service.
+  // CORRECTNESS MUST NOT depend on this field. It only drives subtitle text.
+  syncSource    String      @default("direct")
+  createdAt     DateTime    @default(now())
+
+  // One log per (item, day). Upsert on conflict keeps the row immutable-at-key
+  // so "today's state" is always unambiguous.
+  @@unique([itemId, logDate])
+  @@index([participantId, logDate])
+  @@index([itemId])
+  @@map("project_item_logs")
+}
+
+model ProjectNote {
+  id            String      @id @default(cuid())
+  projectId     String
+  project       Project     @relation(fields: [projectId], references: [id])
+  participantId String
+  participant   Participant @relation(fields: [participantId], references: [id])
+  content       String
+  // "admin" | "participant" — surface label only; no permission effect.
+  authorRole    String      @default("participant")
+  createdAt     DateTime    @default(now())
+
+  @@index([projectId])
+  @@map("project_notes")
+}
+
+// Phase 4: Product is NOT a separate entity. Each Program IS a product —
+// Program.type is the productType discriminator. Waitlists, offers, and
+// communication templates all hang off Program via programId.
+//
+// Per-program waitlist. One row per (program, participant). Created on
+// submit of a waitlist questionnaire that has a programId and
+// submissionPurpose='waitlist'. Shows "who's waiting for the next cycle
+// of this product" without conflating with Participant.status.
+model ProgramWaitlistEntry {
+  id            String      @id @default(cuid())
+  programId     String
+  program       Program     @relation(fields: [programId], references: [id])
+  participantId String
+  participant   Participant @relation(fields: [participantId], references: [id])
+  // Free-form — mirrors PARTICIPANT_SOURCES. Copy of onSubmitSource from
+  // the template that created this entry.
+  source        String?
+  // Optional free-form notes (admin-only).
+  notes         String?
+  // Soft-delete: admin can remove a row without losing history.
+  isActive      Boolean     @default(true)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  @@unique([programId, participantId])
+  @@index([programId, isActive])
+  @@map("program_waitlist_entries")
+}
+
+// Program-scoped email/whatsapp templates with product-level variables.
+// Single unified model for all admin → participant messaging templates.
+model CommunicationTemplate {
+  id        String   @id @default(cuid())
+  programId String
+  program   Program  @relation(fields: [programId], references: [id])
+  // "email" | "whatsapp"
+  channel   String
+  title     String // admin-facing name, e.g. "ברוכה הבאה אחרי תשלום"
+  subject   String? // email only; ignored for whatsapp
+  body      String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([programId, channel, isActive])
+  @@map("communication_templates")
+}
+
+// Reusable product / offer catalog. An "offer" is a buyable thing
+// (a cycle of a program, a single coaching call, a package) with a
+// public iCount payment page URL. Admin manages these from /admin/offers.
+// Payments can optionally reference an offer — it gives every payment
+// a product context (challenge, program, default group) for reporting.
+model PaymentOffer {
+  id                String     @id @default(cuid())
+  title             String
+  description       String?
+  amount            Decimal    @db.Decimal(12, 2)
+  currency          String     @default("ILS")
+  // Full URL of the iCount (or other provider) checkout page. Copy-paste
+  // target for the admin. NOT auto-generated.
+  iCountPaymentUrl  String?
+  // Auto-match keys used by the iCount webhook ingester. Any one of
+  // these matching against the incoming payload's corresponding field
+  // resolves the payment to this offer. Tried in priority order:
+  //   iCountPageId          — payment-page identifier (most precise)
+  //   iCountExternalId      — any other provider-side identifier
+  //   iCountItemName        — line-item name on the invoice
+  //   iCountPaymentUrl      — fallback; substring match
+  //   amount + currency     — last resort, only if exactly one active
+  //                           offer matches.
+  iCountPageId      String?
+  iCountItemName    String?
+  iCountExternalId  String?
+  linkedChallengeId String?
+  linkedChallenge   Challenge? @relation(fields: [linkedChallengeId], references: [id])
+  linkedProgramId   String?
+  linkedProgram     Program?   @relation(fields: [linkedProgramId], references: [id])
+  // When a payment is recorded with this offer, the admin is nudged to
+  // move the participant to this group by default. Overridable per row.
+  defaultGroupId    String?
+  defaultGroup      Group?     @relation("PaymentOfferDefaultGroup", fields: [defaultGroupId], references: [id])
+  isActive          Boolean    @default(true)
+  payments          Payment[]
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  // iCount webhook audit rows that resolved to this offer (0..N).
+  webhookLogs IcountWebhookLog[]
+
+  @@index([isActive])
+  @@index([iCountPageId])
+  @@map("payment_offers")
+}
+
+// Payment records attached to a participant. Manual-entry only in Phase 1;
+// `provider` is free-form so a future iCount webhook can write its own
+// value ("icount") alongside the existing manual rows without a schema
+// change. `rawPayload` is reserved for future webhook/debug use.
+//
+// Money: amount is stored as Decimal with 2 fractional digits (ILS
+// agorot precision). currency is ISO 4217; defaults to ILS but the
+// column exists so a future USD/EUR row doesn't need a migration.
+//
+// Business-context relations:
+//   offerId — preferred; gives challenge/program/default-group context
+//             via the PaymentOffer join. Optional: manual one-off payments
+//             don't need an offer row.
+//   groupId — explicit cohort assignment for this payment. Set manually
+//             when admin moves participant to a cohort via the "Move to
+//             group" flow; may differ from offer.defaultGroupId.
+model Payment {
+  id                String             @id @default(cuid())
+  participantId     String
+  participant       Participant        @relation(fields: [participantId], references: [id])
+  // "icount" | "manual" | "other" — free-form.
+  provider          String             @default("manual")
+  externalPaymentId String?
+  amount            Decimal            @db.Decimal(12, 2)
+  currency          String             @default("ILS")
+  paidAt            DateTime
+  // "paid" | "pending" | "refunded" | "failed" — free-form.
+  status            String             @default("paid")
+  itemName          String
+  invoiceNumber     String?
+  invoiceUrl        String?
+  rawPayload        Json?
+  notes             String?
+  offerId           String?
+  offer             PaymentOffer?      @relation(fields: [offerId], references: [id])
+  groupId           String?
+  group             Group?             @relation("PaymentGroup", fields: [groupId], references: [id])
+  // Set by admin via "mark as verified" when the bank statement has been
+  // reconciled against the payment row. Orthogonal to `status` (which can
+  // be "paid" without being reconciled).
+  verifiedAt        DateTime?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  // Reverse — each Payment has at most one iCount log that produced
+  // it (zero for manually-entered payments).
+  icountLogs        IcountWebhookLog[]
+
+  @@index([participantId])
+  @@index([offerId])
+  @@index([groupId])
+  @@index([provider, externalPaymentId])
+  @@map("payments")
+}
+
+// Audit log for every POST from iCount's payment webhook. We write ONE
+// row per incoming request (successful or not) before attempting any
+// matching, so nothing is ever lost — even if the payload is malformed
+// or every matching rule fails, admins can review and recover from here.
+//
+// status values:
+//   "processed"    — fully matched, Payment row created/updated
+//   "needs_review" — stored, but offer or participant could not be
+//                    resolved automatically; admin attaches manually
+//   "duplicate"    — externalPaymentId matched an existing Payment row;
+//                    webhook acknowledged idempotently
+//   "error"        — exception during processing; errorMessage populated
+model IcountWebhookLog {
+  id                   String        @id @default(cuid())
+  rawPayload           Json
+  status               String        @default("needs_review")
+  // Convenience projections of common iCount fields pulled out at
+  // ingestion time so admins can scan the list without unfolding JSON.
+  extDocNumber         String?
+  extTransactionId     String?
+  extAmount            Decimal?      @db.Decimal(12, 2)
+  extCurrency          String?
+  extCustomerName      String?
+  extCustomerPhone     String?
+  extCustomerEmail     String?
+  extPageId            String?
+  extItemName          String?
+  // Outcome fields — populated when ingestion succeeds or on manual
+  // attach/reprocess.
+  matchedPaymentId     String?
+  matchedPayment       Payment?      @relation(fields: [matchedPaymentId], references: [id])
+  matchedOfferId       String?
+  matchedOffer         PaymentOffer? @relation(fields: [matchedOfferId], references: [id])
+  matchedParticipantId String?
+  matchedParticipant   Participant?  @relation(fields: [matchedParticipantId], references: [id])
+  errorMessage         String?
+  adminNotes           String?
+  processedAt          DateTime?
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  @@index([status, createdAt])
+  @@index([extTransactionId])
+  @@map("icount_webhook_logs")
+}
+
+// Daily self-report panel rendered at the top of the portal's "המעקב שלי"
+// tab. One row per participant per civil day (Asia/Jerusalem). Arrays hold
+// short string tags from a fixed, UI-driven vocabulary (cravings/states).
+// Upserted on every chip toggle — the row is always the participant's
+// latest state for that day.
+model DailyContextLog {
+  id            String      @id @default(cuid())
+  participantId String
+  participant   Participant @relation(fields: [participantId], references: [id])
+  logDate       DateTime    @db.Date
+  hasPeriod     Boolean     @default(false)
+  cravings      String[]    @default([])
+  states        String[]    @default([])
+  note          String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  @@unique([participantId, logDate])
+  @@index([participantId, logDate])
+  @@map("daily_context_logs")
+}
