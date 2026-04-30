@@ -22,6 +22,9 @@ import {
   SignalDataTypeMap,
 } from '@whiskeysockets/baileys';
 import type { Prisma, PrismaClient } from '@prisma/client';
+import pino from 'pino';
+
+const log = pino({ level: process.env['LOG_LEVEL'] ?? 'info', name: 'auth-store' });
 
 const CREDS_KIND = 'creds';
 const CREDS_KEY_ID = 'singleton';
@@ -55,6 +58,12 @@ export interface PostgresAuthHandle {
   // Wipe ALL auth rows (creds + every signal key). Used by the admin
   // "Sign out / forget device" action. Idempotent.
   clear: () => Promise<void>;
+  // Diagnostic — what was loaded from Postgres at construction time.
+  // Surfaced by the bridge's startup log so we can tell at a glance
+  // whether a deploy resumed an existing session or had to pair from
+  // scratch.
+  hasCreds: boolean;
+  keyCount: number;
 }
 
 export async function makePostgresAuthState(
@@ -68,7 +77,25 @@ export async function makePostgresAuthState(
     ? decode<AuthenticationCreds>(credsRow.data)
     : initAuthCreds();
 
+  // Count signal-key rows by kind so the load log is useful for
+  // debugging "did creds + keys actually persist?". groupBy is one
+  // indexed query — no sensitive data is read.
+  const counts = await prisma.whatsAppSession.groupBy({
+    by: ['kind'],
+    _count: { _all: true },
+  });
+  const keyCount = counts.reduce(
+    (sum, row) => sum + (row.kind === CREDS_KIND ? 0 : row._count._all),
+    0,
+  );
+  log.info(
+    { hasCreds: !!credsRow, keyCount, byKind: counts.map((c) => ({ kind: c.kind, count: c._count._all })) },
+    'loaded auth state from postgres',
+  );
+
   return {
+    hasCreds: !!credsRow,
+    keyCount,
     state: {
       creds,
       keys: {
@@ -151,10 +178,16 @@ export async function makePostgresAuthState(
         create: { kind: CREDS_KIND, keyId: CREDS_KEY_ID, data: encode(creds) },
         update: { data: encode(creds) },
       });
+      log.debug('creds.update saved');
     },
 
     clear: async () => {
-      await prisma.whatsAppSession.deleteMany({});
+      // Explicit wipe. Only the admin "Sign out" path calls this;
+      // the connection.update loggedOut handler intentionally does
+      // NOT, because the same protocol code is used for benign
+      // deploy-overlap kicks and we'd lose valid creds either way.
+      const { count } = await prisma.whatsAppSession.deleteMany({});
+      log.warn({ deletedRows: count }, 'auth state wiped');
     },
   };
 }

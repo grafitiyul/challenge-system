@@ -137,6 +137,51 @@ that catches stale-copy pushes at PR review time.
 Health check: `GET /health` returns `{ ok: true }`. Use this for
 Railway's health probe.
 
+**Critical: replicas=1 only.** WhatsApp's multi-device protocol allows
+exactly one active socket per linked-device slot. Two bridge replicas
+trying to connect with the same persisted creds will see one of them
+kicked with status code 401 (`DisconnectReason.loggedOut`) — and
+since real "admin removed device on phone" produces the same code,
+they're indistinguishable at the protocol layer. The bridge has been
+hardened against this (see "Auth + loggedOut handling" below) but the
+correct config is: never run more than one bridge instance.
+
+If you're on a Railway plan that defaults to rolling deploys, the
+overlap window between "new container booting" and "old container
+shutting down" can briefly trigger this same condition. The new
+bridge code keeps creds intact across that window so the next clean
+boot resumes the session — but if you can switch the Railway service
+to "recreate" (stop old, then start new) instead of "rolling", do
+that to eliminate the overlap entirely.
+
+### Auth + loggedOut handling
+
+Phase 1 invariants for credential safety:
+
+- **Creds are wiped only by the explicit admin "Sign out" button.**
+  The connection.update handler does NOT auto-clear creds when
+  WhatsApp closes the socket with code 401 — those closes are
+  ambiguous (real unlink vs. deploy-overlap kick produce the same
+  code) and auto-wiping was the root cause of the
+  `disconnected/loggedOut/attempts=1` loop the bridge was stuck in.
+- **On loggedOut, the bridge stops reconnecting** (no exponential
+  retry that would just hammer WhatsApp) and surfaces the state via
+  `WhatsAppConnection.lastDisconnectReason='loggedOut'`. The admin
+  page renders a red banner ("WhatsApp ניתק את הגשר וצריך לחבר
+  מחדש") with a prominent "התנתקי וחברי מחדש" button that calls the
+  explicit sign-out + re-pair flow.
+- **For deploy-overlap kicks:** the operator does nothing. The next
+  bridge boot loads the same creds, the conflicting socket has
+  already been torn down, and the connection comes up cleanly. The
+  startup log confirms what was loaded:
+
+      {"name":"auth-store","msg":"loaded auth state from postgres",
+       "hasCreds":true,"keyCount":42,"byKind":[...]}
+
+  If `hasCreds:false` shows up unexpectedly, the wipe path was
+  triggered — check Railway logs for an explicit `auth state wiped`
+  warning, which only fires from the admin sign-out button.
+
 Schema location: `prisma generate` reads `../api/prisma/schema.prisma`
 relative to `apps/whatsapp-bridge`. Railway clones the full repo so
 that relative path resolves at build time. If you ever change the

@@ -93,6 +93,17 @@ export class BaileysClient {
     await connState.setConnecting(prisma);
     this.auth = await makePostgresAuthState(prisma);
 
+    // Surface what we actually loaded from Postgres. If hasCreds is
+    // false here we'll need to pair (Baileys will emit a QR shortly);
+    // if it's true, we should be able to resume without QR. The
+    // keyCount field tracks how many signal-key rows came along —
+    // anything < ~10 on a previously-paired account is a smell that
+    // some keys got wiped between sessions.
+    log.info(
+      { hasCreds: this.auth.hasCreds, keyCount: this.auth.keyCount },
+      'auth state loaded',
+    );
+
     // Pull the recommended Baileys protocol version. Bundled fallback
     // is fine if WhatsApp's update endpoint is unreachable; Baileys
     // returns a sensible default.
@@ -138,6 +149,26 @@ export class BaileysClient {
   ): Promise<void> {
     const { connection, lastDisconnect, qr } = update;
 
+    // Structured raw log of every connection.update — captures the
+    // exact statusCode + Boom error shape that's driving our branch
+    // selection below. No credential content is logged. This is what
+    // we read when "the bridge says loggedOut but I didn't unlink".
+    if (connection || lastDisconnect || qr) {
+      const code = (lastDisconnect?.error as Boom | undefined)?.output?.statusCode;
+      const errMsg = lastDisconnect?.error?.message;
+      log.info(
+        {
+          connection,
+          hasQr: !!qr,
+          disconnectCode: code,
+          disconnectReasonName: code !== undefined ? describeReason(code) : null,
+          disconnectErrMsg: errMsg,
+          isLoggedOut: code === DisconnectReason.loggedOut,
+        },
+        'connection.update',
+      );
+    }
+
     if (qr) {
       log.info('qr code emitted; waiting for scan');
       await connState.setQrRequired(prisma, qr);
@@ -164,16 +195,42 @@ export class BaileysClient {
       const code = (lastDisconnect?.error as Boom | undefined)?.output?.statusCode;
       const reason = describeReason(code);
 
-      // loggedOut means the phone forced a sign-out (admin removed the
-      // linked device, or WhatsApp banned the session). Don't loop —
-      // wipe creds and surface qr_required so the admin re-pairs.
+      // loggedOut (status code 401) is ambiguous at the protocol level:
+      //   (a) Real unlink — admin removed the linked device on the
+      //       phone, or WhatsApp banned the session. Re-pair required.
+      //   (b) Deploy overlap — Railway started the new container while
+      //       the old one was still connected. WhatsApp allows only
+      //       ONE active socket per linked-device slot, so it kicks one
+      //       with 401. As soon as the old container finishes shutting
+      //       down, the same creds work again on the next reconnect.
+      //
+      // The previous implementation auto-wiped creds on loggedOut.
+      // Combined with rolling deploys that produced (b), this destroyed
+      // valid creds the admin had just paired with — leaving the bridge
+      // permanently in `disconnected, reason=loggedOut, attempts=1`
+      // because every restart loaded creds-less state and emitted a
+      // fresh QR (or the admin saw "disconnected" indefinitely if no
+      // one watched the page during the wipe).
+      //
+      // New policy: NEVER auto-wipe creds. Stop reconnecting and
+      // surface the state to the admin. The two outcomes:
+      //   - If it was a real unlink: subsequent connects will keep
+      //     getting loggedOut. Admin clicks "Sign out / Forget device"
+      //     in the UI, which IS the explicit wipe path, then re-pairs.
+      //   - If it was a deploy overlap: the next bridge boot loads the
+      //     same creds and connects cleanly (the conflicting socket is
+      //     gone by then). No admin action needed.
       if (code === DisconnectReason.loggedOut) {
-        log.warn({ code, reason }, 'connection closed (loggedOut)');
+        log.warn(
+          { code, reason },
+          'connection closed (loggedOut) — keeping creds; admin must click Sign out to wipe + re-pair',
+        );
         this.socket = null;
-        if (this.auth) {
-          await this.auth.clear();
-          this.auth = null;
-        }
+        // Do NOT call this.auth.clear(). Do NOT scheduleReconnect()
+        // — repeatedly bouncing off a real loggedOut would just hammer
+        // WhatsApp. Set status to disconnected with reason='loggedOut'
+        // and stop the loop. The admin UI keys on this exact reason
+        // to render the re-pair affordance.
         await connState.setDisconnected(prisma, reason, {
           incrementAttempts: false,
         });

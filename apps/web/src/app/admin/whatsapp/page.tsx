@@ -179,17 +179,21 @@ export default function WhatsAppBridgePage() {
                   </span>
                 )}
               </div>
-              {data.status === 'connected' && (
+              {(data.status === 'connected' || data.lastDisconnectReason === 'loggedOut') && (
                 <button
                   onClick={() => setSignOutOpen(true)}
                   style={{
                     padding: '7px 14px', fontSize: 13, fontWeight: 600,
-                    background: '#fff', color: '#b91c1c',
-                    border: '1px solid #fecaca', borderRadius: 8,
+                    background: data.lastDisconnectReason === 'loggedOut' ? '#dc2626' : '#fff',
+                    color: data.lastDisconnectReason === 'loggedOut' ? '#fff' : '#b91c1c',
+                    border: data.lastDisconnectReason === 'loggedOut' ? '1px solid #dc2626' : '1px solid #fecaca',
+                    borderRadius: 8,
                     cursor: 'pointer',
                   }}
                 >
-                  התנתקי / שכחי מכשיר
+                  {data.lastDisconnectReason === 'loggedOut'
+                    ? 'התנתקי וחברי מחדש'
+                    : 'התנתקי / שכחי מכשיר'}
                 </button>
               )}
             </div>
@@ -245,7 +249,23 @@ export default function WhatsAppBridgePage() {
               מתחבר ל-WhatsApp...
             </div>
           )}
-          {data.status === 'disconnected' && (
+          {data.status === 'disconnected' && data.lastDisconnectReason === 'loggedOut' && (
+            <div
+              style={{
+                background: '#fef2f2', color: '#991b1b', padding: 14,
+                borderRadius: 10, fontSize: 13, marginBottom: 16, lineHeight: 1.6,
+                border: '1px solid #fecaca',
+              }}
+            >
+              <strong>WhatsApp ניתק את הגשר וצריך לחבר מחדש.</strong>
+              <div style={{ marginTop: 4 }}>
+                ההרשאה לקישור הוסרה (ייתכן שהמכשיר נמחק מ"מכשירים מקושרים" בטלפון, או
+                שהיה התנגשות סשן). לחצי <strong>"התנתקי וחברי מחדש"</strong> למעלה כדי
+                לנקות את האימות הישן ולסרוק קוד QR חדש.
+              </div>
+            </div>
+          )}
+          {data.status === 'disconnected' && data.lastDisconnectReason !== 'loggedOut' && (
             <div style={{ background: '#fef3c7', color: '#92400e', padding: 12, borderRadius: 8, fontSize: 13, marginBottom: 16, lineHeight: 1.55 }}>
               הגשר מנותק. הוא ינסה להתחבר אוטומטית.
               {data.reconnectAttempts > 0 && ` (ניסיון ${data.reconnectAttempts})`}
