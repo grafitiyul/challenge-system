@@ -53,6 +53,14 @@ export const connState = {
       deviceName: info.deviceName ?? null,
       lastConnectedAt: new Date(),
       reconnectAttempts: 0,
+      // Clear the previous disconnect reason once we've recovered.
+      // Without this, a routine post-pairing restartRequired (or any
+      // transient close) lingers in the UI alongside status='connected',
+      // making it look like something is wrong when it isn't.
+      // lastDisconnectAt is intentionally NOT cleared — the admin
+      // benefits from seeing "we had a blip at 14:30 (recovered)" as
+      // historical breadcrumb.
+      lastDisconnectReason: null,
     });
   },
 

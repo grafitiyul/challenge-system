@@ -163,12 +163,12 @@ export class BaileysClient {
       this.clearHealthyTimer();
       const code = (lastDisconnect?.error as Boom | undefined)?.output?.statusCode;
       const reason = describeReason(code);
-      log.warn({ code, reason }, 'connection closed');
 
       // loggedOut means the phone forced a sign-out (admin removed the
       // linked device, or WhatsApp banned the session). Don't loop —
       // wipe creds and surface qr_required so the admin re-pairs.
       if (code === DisconnectReason.loggedOut) {
+        log.warn({ code, reason }, 'connection closed (loggedOut)');
         this.socket = null;
         if (this.auth) {
           await this.auth.clear();
@@ -180,6 +180,31 @@ export class BaileysClient {
         return;
       }
 
+      // restartRequired (status code 515) is a routine WhatsApp protocol
+      // signal — emitted right after the multi-device pairing handshake
+      // completes ("now reopen on the encrypted channel") and
+      // occasionally mid-session when WhatsApp wants the socket
+      // renegotiated. It's not a fault: we shouldn't bump the backoff
+      // counter, shouldn't record it as a disconnect reason in the UI,
+      // and shouldn't wait — Baileys is already telling us the right
+      // thing to do is reopen immediately. Treating it as a regular
+      // disconnect made the admin UI permanently show "סיבת ניתוק:
+      // restartRequired" even on a perfectly stable connection.
+      if (code === DisconnectReason.restartRequired) {
+        log.info({ code }, 'restartRequired — reopening socket immediately (routine post-handshake signal)');
+        this.socket = null;
+        // No setDisconnected, no backoff increment, no scheduleReconnect.
+        // Connect straight through. If the immediate reconnect itself
+        // fails, fall back to the normal backoff path.
+        void this.connect().catch((err) => {
+          log.error({ err }, 'restartRequired reconnect failed; entering backoff');
+          void connState.setDisconnected(prisma, 'restartRequired_reconnect_failed');
+          this.scheduleReconnect();
+        });
+        return;
+      }
+
+      log.warn({ code, reason }, 'connection closed');
       this.socket = null;
       await connState.setDisconnected(prisma, reason);
       this.scheduleReconnect();
