@@ -26,6 +26,7 @@ import { PaymentsModule } from './modules/payments/payments.module';
 import { OffersModule } from './modules/offers/offers.module';
 import { IcountWebhookModule } from './modules/icount-webhook/icount-webhook.module';
 import { AdminUsersModule } from './modules/admin-users/admin-users.module';
+import { WhatsappBridgeModule } from './modules/whatsapp-bridge/whatsapp-bridge.module';
 
 @Module({
   imports: [
@@ -54,6 +55,7 @@ import { AdminUsersModule } from './modules/admin-users/admin-users.module';
     OffersModule,
     IcountWebhookModule,
     AdminUsersModule,
+    WhatsappBridgeModule,
   ],
   controllers: [HealthController],
   providers: [SeederService],

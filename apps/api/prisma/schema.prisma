@@ -656,6 +656,11 @@ model WhatsAppChat {
   lastMessageAt  DateTime?
   messages       WhatsAppMessage[]
   groupLinks     GroupChatLink[]
+  // Source provider for this chat. "wassenger" for legacy rows;
+  // "baileys" for new Baileys-bridge rows. Coexists during the
+  // direct-replacement cutover and lets reports stay queryable
+  // afterward.
+  provider       String            @default("wassenger")
   createdAt      DateTime          @default(now())
   updatedAt      DateTime          @updatedAt
 
@@ -671,15 +676,90 @@ model WhatsAppMessage {
   direction           String?
   senderName          String?
   senderPhone         String?
-  // "text" | "image" | "audio" | "video" | "document" | "system"
+  // "text" | "image" | "audio" | "video" | "document" | "sticker" | "system"
   messageType         String       @default("text")
   textContent         String?
   mediaUrl            String?
   timestampFromSource DateTime
   rawPayload          Json
+  // Source provider — same semantics as WhatsAppChat.provider.
+  provider            String       @default("wassenger")
+  // Baileys quoted-reply target. Null for non-replies and for legacy
+  // Wassenger rows.
+  quotedExternalId    String?
+  // Richer media metadata, populated by Baileys ingestion. Wassenger
+  // path leaves these null; queries should fall back to
+  // rawPayload-derived values for legacy rows.
+  mediaMimeType       String?
+  mediaSizeBytes      Int?
+  mediaOriginalName   String?
   createdAt           DateTime     @default(now())
 
   @@map("whatsapp_messages")
+}
+
+// Baileys reactions. WhatsApp delivers these as separate events that
+// reference the target message by id. emoji='' indicates a reaction
+// removal — same primary-key tuple, just with cleared emoji.
+model WhatsAppMessageReaction {
+  id                String   @id @default(cuid())
+  externalMessageId String
+  reactorPhone      String
+  reactorName       String?
+  emoji             String
+  reactedAt         DateTime
+  createdAt         DateTime @default(now())
+
+  @@unique([externalMessageId, reactorPhone])
+  @@index([externalMessageId])
+  @@map("whatsapp_message_reactions")
+}
+
+// Baileys auth state. Mirrors the shape `useMultiFileAuthState` would
+// write to disk: one 'creds' singleton row plus one row per signal
+// key. The bridge reads/writes via a custom AuthenticationState
+// implementation. data is JSON-serialised with the standard
+// BufferJSON replacer/reviver so binary keys round-trip losslessly.
+model WhatsAppSession {
+  id        String   @id @default(cuid())
+  // 'creds' for the singleton. Otherwise one of:
+  //   'pre-key', 'session', 'sender-key',
+  //   'app-state-sync-key', 'app-state-sync-version',
+  //   'sender-key-memory'
+  kind      String
+  // Composite key inside the kind. 'singleton' for kind='creds'.
+  keyId     String
+  data      Json
+  updatedAt DateTime @updatedAt
+
+  @@unique([kind, keyId])
+  @@index([kind])
+  @@map("whatsapp_sessions")
+}
+
+// Bridge connection lifecycle. Single row maintained by the bridge,
+// id='singleton'. Surfaces "is the bridge connected?" + "when did it
+// last sync?" to the admin UI without touching Baileys directly.
+model WhatsAppConnection {
+  id                   String    @id @default("singleton")
+  // "disconnected" | "qr_required" | "pairing" | "connecting" | "connected"
+  status               String    @default("disconnected")
+  // The currently-displayed QR string (raw value from Baileys'
+  // connection.update qr field). Null when not in qr_required state.
+  // Rotates every ~20s while pairing.
+  qr                   String?
+  phoneJid             String?
+  deviceName           String?
+  lastQrAt             DateTime?
+  lastConnectedAt      DateTime?
+  lastDisconnectAt     DateTime?
+  lastDisconnectReason String?
+  // Heartbeat — set on every inbound or outbound message.
+  lastMessageAt        DateTime?
+  reconnectAttempts    Int       @default(0)
+  updatedAt            DateTime  @updatedAt
+
+  @@map("whatsapp_connection")
 }
 
 // Manual link between an internal Group and a WhatsApp chat.

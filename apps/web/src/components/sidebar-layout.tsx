@@ -104,6 +104,15 @@ function IconShield() {
   );
 }
 
+function IconLink() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+      <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.72-1.71" />
+    </svg>
+  );
+}
+
 function IconMenu() {
   return (
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -127,6 +136,7 @@ const NAV_MAIN: NavItemDef[] = [
 ];
 
 const NAV_BOTTOM: NavItemDef[] = [
+  { href: '/admin/whatsapp', label: 'WhatsApp', icon: <IconLink /> },
   { href: '/admin/admins', label: 'מנהלים', icon: <IconShield /> },
   { href: '/admin/settings', label: 'הגדרות', icon: <IconSettings /> },
 ];

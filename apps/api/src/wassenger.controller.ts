@@ -2,6 +2,23 @@ import { BadRequestException, Body, Controller, DefaultValuePipe, Get, HttpCode,
 import { IsString } from 'class-validator';
 import { WassengerService } from './wassenger.service';
 
+// Phase-1 cutover gate: when WASSENGER_ENABLED=false, every endpoint in
+// this controller short-circuits before touching the service. The
+// outbound side returns 410 Gone with a clear Hebrew message; the
+// webhook side keeps returning 200 (so Wassenger Cloud doesn't retry
+// indefinitely) but discards the payload. The flag is checked at call
+// time, not at module init, so flipping the env var on Railway takes
+// effect on the next request without a redeploy.
+//
+// Disabling Wassenger before pairing the Baileys bridge with the same
+// number is REQUIRED to avoid duplicate inbound rows and to free up
+// the WhatsApp multi-device session slot.
+function isWassengerEnabled(): boolean {
+  const v = process.env['WASSENGER_ENABLED'];
+  if (v === undefined) return true;
+  return v.toLowerCase() !== 'false' && v !== '0';
+}
+
 @Controller('wassenger')
 export class WassengerController {
   constructor(private readonly wassengerService: WassengerService) {}
@@ -11,7 +28,12 @@ export class WassengerController {
   @HttpCode(200)
   async handleWebhook(
     @Body() body: Record<string, unknown>,
-  ): Promise<{ ok: boolean }> {
+  ): Promise<{ ok: boolean; disabled?: boolean }> {
+    if (!isWassengerEnabled()) {
+      // Cutover state: ack the webhook so Wassenger Cloud stops retrying,
+      // but discard the payload. Set the flag back to true to re-enable.
+      return { ok: true, disabled: true };
+    }
     try {
       await this.wassengerService.ingestWebhook(body);
     } catch (err) {
@@ -29,6 +51,12 @@ export class WassengerController {
   async runBackfill(
     @Query('days', new DefaultValuePipe(30), ParseIntPipe) days: number,
   ) {
+    if (!isWassengerEnabled()) {
+      throw new HttpException(
+        'Wassenger מבוטל. השתמשי בגשר WhatsApp החדש (Baileys).',
+        HttpStatus.GONE,
+      );
+    }
     if (days < 1 || days > 365) {
       throw new HttpException('days must be between 1 and 365', HttpStatus.BAD_REQUEST);
     }
@@ -45,6 +73,12 @@ export class WassengerController {
   // POST /api/wassenger/send  { phone: "972...", message: "..." }
   @Post('send')
   async sendMessage(@Body() body: { phone?: string; message?: string }) {
+    if (!isWassengerEnabled()) {
+      throw new HttpException(
+        'Wassenger מבוטל. השתמשי בגשר WhatsApp החדש (Baileys).',
+        HttpStatus.GONE,
+      );
+    }
     if (!body.phone || !body.message) {
       throw new BadRequestException('מספר טלפון והודעה הם שדות חובה');
     }
