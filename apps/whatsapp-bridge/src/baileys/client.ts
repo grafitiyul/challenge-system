@@ -32,6 +32,13 @@ import { config } from '../config';
 import { prisma } from '../db';
 import { makePostgresAuthState, PostgresAuthHandle } from './auth-store';
 import { connState } from './connection-state';
+import { buildMediaStorage } from '../media/factory';
+import {
+  handleMessagesUpsert,
+  handleHistorySync,
+  handleReactions,
+  IngestServices,
+} from '../handlers/messages';
 
 const log = pino({ level: config.logLevel, name: 'baileys' });
 
@@ -55,6 +62,10 @@ export class BaileysClient {
   // Backoff attempt counter. Lives in memory; the persisted version on
   // WhatsAppConnection.reconnectAttempts is for the admin UI only.
   private attempt = 0;
+  // Phase 2 — media storage backend resolved once at boot from env.
+  // Reused across every reconnect so we don't re-instantiate an S3
+  // client per socket cycle.
+  private readonly storage = buildMediaStorage();
 
   async start(): Promise<void> {
     this.stopped = false;
@@ -142,6 +153,31 @@ export class BaileysClient {
     socket.ev.on('connection.update', async (update) => {
       await this.handleConnectionUpdate(update);
     });
+
+    // ── Phase 2 — message ingestion ──────────────────────────────────
+    // Handlers don't throw upward; one bad message never poisons the
+    // batch (each ingest is wrapped) and the socket is independent of
+    // ingest progress. Storage backend is shared across the lifetime
+    // of the bridge process; the socket reference is captured per
+    // handler-bind so a reconnect uses the fresh socket.
+    const ingestServices: IngestServices = {
+      prisma,
+      socket,
+      storage: this.storage,
+      log: pino({ level: config.logLevel, name: 'ingest' }),
+    };
+
+    socket.ev.on('messages.upsert', (payload) => {
+      void handleMessagesUpsert(ingestServices, payload);
+    });
+    socket.ev.on('messages.reaction', (reactions) => {
+      void handleReactions(ingestServices, reactions);
+    });
+    socket.ev.on('messaging-history.set', (history) => {
+      void handleHistorySync(ingestServices, history);
+    });
+
+    log.info({ mediaStorage: this.storage.kind }, 'message handlers wired');
   }
 
   private async handleConnectionUpdate(

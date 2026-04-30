@@ -41,7 +41,26 @@ export async function startHttpServer(client: BaileysClient): Promise<FastifyIns
   fastify.get('/health', async () => ({ ok: true }));
 
   fastify.get('/status', async () => {
-    const row = await connState.snapshot(prisma);
+    // Roll up everything the admin UI shows in one call:
+    //   - the singleton WhatsAppConnection row (status, qr, errors)
+    //   - today's message + media counters by provider='baileys'
+    // Two queries; both are indexed and run in parallel. If we ever
+    // need more metrics the right place is here, not separate routes.
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const [row, messagesToday, mediaToday] = await Promise.all([
+      connState.snapshot(prisma),
+      prisma.whatsAppMessage.count({
+        where: { provider: 'baileys', createdAt: { gte: todayStart } },
+      }),
+      prisma.whatsAppMessage.count({
+        where: {
+          provider: 'baileys',
+          createdAt: { gte: todayStart },
+          mediaUrl: { not: null },
+        },
+      }),
+    ]);
     if (!row) {
       return {
         status: 'disconnected',
@@ -55,6 +74,10 @@ export async function startHttpServer(client: BaileysClient): Promise<FastifyIns
         lastDisconnectReason: null,
         lastMessageAt: null,
         reconnectAttempts: 0,
+        lastMediaError: null,
+        lastMediaErrorAt: null,
+        messagesToday: 0,
+        mediaToday: 0,
       };
     }
     // Render the QR string into a data URL so the admin UI can render
@@ -84,6 +107,10 @@ export async function startHttpServer(client: BaileysClient): Promise<FastifyIns
       lastDisconnectReason: row.lastDisconnectReason,
       lastMessageAt: row.lastMessageAt?.toISOString() ?? null,
       reconnectAttempts: row.reconnectAttempts,
+      lastMediaError: row.lastMediaError,
+      lastMediaErrorAt: row.lastMediaErrorAt?.toISOString() ?? null,
+      messagesToday,
+      mediaToday,
     };
   });
 

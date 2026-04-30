@@ -757,6 +757,13 @@ model WhatsAppConnection {
   // Heartbeat — set on every inbound or outbound message.
   lastMessageAt        DateTime?
   reconnectAttempts    Int       @default(0)
+  // Phase 2 — most recent media-download / media-upload failure
+  // surfaced to the admin UI. Cleared on the next successful media
+  // store. The error string is the message only; raw stack traces
+  // and message content stay out (per the "no message contents in
+  // logs" rule) — store summary form like "downloadMedia: stream-error".
+  lastMediaError       String?
+  lastMediaErrorAt     DateTime? @db.Timestamptz
   updatedAt            DateTime  @updatedAt
 
   @@map("whatsapp_connection")

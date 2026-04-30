@@ -34,6 +34,13 @@ interface BridgeStatus {
   lastDisconnectReason: string | null;
   lastMessageAt: string | null;
   reconnectAttempts: number;
+  // Phase 2 — present when the API was redeployed with the matching
+  // bridge build. Pre-Phase-2 deployments leave these undefined so we
+  // optional-chain everywhere they're consumed.
+  lastMediaError?: string | null;
+  lastMediaErrorAt?: string | null;
+  messagesToday?: number;
+  mediaToday?: number;
 }
 
 interface BridgeUnavailable {
@@ -210,6 +217,45 @@ export default function WhatsAppBridgePage() {
               )}
             </div>
           </div>
+
+          {/* ── Phase 2 — message + media metrics ──
+              Only renders when the API + bridge are on Phase 2 builds
+              (the new fields are present). Pre-Phase-2 status payloads
+              omit them and the block is hidden. */}
+          {(data.messagesToday !== undefined || data.mediaToday !== undefined || data.lastMediaError) && (
+            <div
+              style={{
+                background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12,
+                padding: 18, marginBottom: 16,
+              }}
+            >
+              <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a', marginBottom: 10 }}>
+                פעילות היום
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, fontSize: 13 }}>
+                <Field label="הודעות היום" value={String(data.messagesToday ?? 0)} />
+                <Field label="מדיה היום" value={String(data.mediaToday ?? 0)} />
+              </div>
+              {data.lastMediaError && (
+                <div
+                  style={{
+                    marginTop: 12, padding: '8px 10px',
+                    background: '#fef2f2', color: '#991b1b',
+                    border: '1px solid #fecaca', borderRadius: 8,
+                    fontSize: 12, lineHeight: 1.5,
+                  }}
+                >
+                  <div style={{ fontWeight: 600 }}>שגיאת מדיה אחרונה</div>
+                  <div style={{ fontFamily: 'monospace', marginTop: 2, wordBreak: 'break-all' }}>
+                    {data.lastMediaError}
+                  </div>
+                  {data.lastMediaErrorAt && (
+                    <div style={{ marginTop: 2, color: '#7f1d1d' }}>{formatTime(data.lastMediaErrorAt)}</div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* QR pairing pane — only when needed */}
           {data.status === 'qr_required' && data.qrDataUrl && (

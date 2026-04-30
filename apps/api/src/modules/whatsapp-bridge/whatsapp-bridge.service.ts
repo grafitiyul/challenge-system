@@ -26,6 +26,11 @@ export interface BridgeStatusPayload {
   lastDisconnectReason: string | null;
   lastMessageAt: string | null;
   reconnectAttempts: number;
+  // Phase 2 — message + media metrics for the admin status card.
+  lastMediaError: string | null;
+  lastMediaErrorAt: string | null;
+  messagesToday: number;
+  mediaToday: number;
 }
 
 function bridgeUrl(): string | null {

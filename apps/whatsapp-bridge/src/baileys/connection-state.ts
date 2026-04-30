@@ -102,6 +102,26 @@ export const connState = {
     });
   },
 
+  // Phase 2 — surface the most recent media-handling failure to the
+  // admin UI. Cleared by the next successful media store. The string
+  // is a SUMMARY only ("downloadMedia: stream-error") — never the raw
+  // stack and never message contents.
+  async setMediaError(prisma: PrismaClient, summary: string): Promise<void> {
+    await upsert(prisma, {
+      lastMediaError: summary,
+      lastMediaErrorAt: new Date(),
+    });
+  },
+
+  async clearMediaError(prisma: PrismaClient): Promise<void> {
+    await upsert(prisma, {
+      lastMediaError: null,
+      // Intentionally keep lastMediaErrorAt — it's a "last incident"
+      // breadcrumb; the cleared-error state is signalled by
+      // lastMediaError === null alone.
+    });
+  },
+
   async snapshot(prisma: PrismaClient) {
     return prisma.whatsAppConnection.findUnique({ where: { id: SINGLETON_ID } });
   },

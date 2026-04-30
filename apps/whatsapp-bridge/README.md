@@ -4,22 +4,81 @@ Baileys-backed WhatsApp bridge service. Replaces the legacy Wassenger
 integration. Lives in its own Railway service; shares Postgres with
 the API but runs as an independent process.
 
-## Phase 1 scope (this commit)
+## Phases shipped
 
-- Postgres-backed Baileys auth state (`WhatsAppSession`).
-- Connection lifecycle persisted to `WhatsAppConnection` (singleton row).
-- Reconnect with exponential backoff; loggedOut → wipe creds + wait
-  for re-pair.
-- Internal HTTP server: `GET /health`, `GET /status`, `POST /sign-out`.
-- Admin UI at `/admin/whatsapp` proxies via the API.
+**Phase 1** — Postgres-backed Baileys auth, connection lifecycle, QR
+admin UI. See "Auth + loggedOut handling" below.
 
-NOT in Phase 1 (deliberately):
+**Phase 2 (current)** — read-only message ingestion + media archive.
+The bridge now subscribes to `messages.upsert`, `messages.reaction`,
+and `messaging-history.set`, upserts into the existing
+`WhatsAppChat` / `WhatsAppMessage` / `WhatsAppMessageReaction`
+tables, and downloads media into a configurable storage backend
+(R2 / disk / disabled).
 
-- `messages.upsert` ingestion to `WhatsAppMessage`.
-- Outbound `/send`.
-- Media download / R2 upload.
-- History sync replay.
-- Group sync.
+NOT in Phase 2 (deliberately):
+
+- Outbound `/send` (Phase 3).
+- Group membership sync events (Phase 4).
+- Wassenger code retirement (Phase 6).
+
+### Phase 2 — message ingestion
+
+Every Baileys event (`messages.upsert` for live + `append`,
+`messaging-history.set` for post-reconnect catchup) routes through
+the same ingest function. Dedup is automatic: messages key on
+`WhatsAppMessage.externalMessageId` which is `@unique`, so
+re-deliveries (live + history-sync of the same id) are no-ops.
+
+Supported message types — text, image, video, audio (incl. voice
+notes), document, sticker, plus reactions via the dedicated event.
+Unknown / protocol-level / ephemeral receipt messages are skipped.
+
+Logging policy is strict: never `textContent`, never captions,
+never bytes. Allowed log fields: `msgId`, `chatId`, `mediaType`,
+status string, summarised error (first line, capped at 240 chars).
+
+### Phase 2 — media storage (R2 / disk / disabled)
+
+Selection via `MEDIA_STORAGE` env var:
+
+| value | behaviour |
+|---|---|
+| `r2` | Cloudflare R2 (S3-compatible). Required env: `R2_ENDPOINT`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`. Optional `MEDIA_PUBLIC_URL_BASE` to return public URLs (custom-domain-fronted bucket); without it, store() returns `r2://bucket/key` placeholders that a future Phase-3 admin route can resolve via signed URLs. |
+| `disk` | Writes under `<UPLOADS_DIR>/whatsapp/<key>`. Same persistent volume the participant-portal already uses. **Temporary/dev only** — R2 is the production target. |
+| `disabled` (default) | No media downloaded. Messages still ingest with `mediaUrl` left null. Safe default for fresh deploys. |
+
+Storage key shape: `whatsapp/<YYYY>/<MM>/<chatId>/<messageId>.<ext>`.
+Date-partitioned so any directory stays under a few thousand files;
+chatId/messageId neutralised to URL-safe characters.
+
+If a download/upload fails, the message row is still created with
+`mediaUrl=null`. The error summary (no contents) is recorded on
+`WhatsAppConnection.lastMediaError` + `lastMediaErrorAt` and shown in
+the admin UI; the next successful media store clears it.
+
+### Phase 2 — admin metrics
+
+`/admin/whatsapp` shows a new "פעילות היום" card alongside the existing
+status card:
+
+- `הודעות היום` — `WhatsAppMessage` count where `provider='baileys'`
+  and `createdAt >= today midnight`.
+- `מדיה היום` — same scope, restricted to rows with non-null
+  `mediaUrl`.
+- Last media error banner — only when `lastMediaError` is non-null.
+  Cleared on the next successful media store.
+
+Pre-Phase-2 status payloads omit these fields; the UI optional-chains
+so older bridge builds keep working with the new web bundle.
+
+### Phase 2 — Wassenger coexistence
+
+Wassenger archive rows stay intact. Every new row from this Phase 2
+bridge is tagged `provider='baileys'`; legacy rows keep
+`provider='wassenger'`. The existing `/admin/chats` UI, which reads
+from `WhatsAppMessage` regardless of provider, will start showing
+Baileys messages alongside historical Wassenger ones automatically.
 
 ## Cutover from Wassenger
 
