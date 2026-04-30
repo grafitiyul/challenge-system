@@ -29,12 +29,23 @@ const CREDS_KEY_ID = 'singleton';
 type SignalDataKind = keyof SignalDataTypeMap;
 
 // Round-trip a value through BufferJSON so the resulting object is a
-// pure-JSON tree. Prisma's Json column accepts that directly.
-function encode(value: unknown): Prisma.InputJsonValue {
+// pure-JSON tree. Prisma's Json column accepts that directly at
+// runtime, but the *types* `Prisma.InputJsonValue` and
+// `Prisma.JsonValue` are not exposed in the `@prisma/client/default`
+// export path used by Railway's build (Prisma 6.x reorganised those
+// exports). Returning `any` from encode and `unknown` for the decode
+// input keeps this helper portable across Prisma client generations
+// without forcing every call site to cast.
+//
+// The values themselves come from JSON.parse, so the runtime shape is
+// always a JSON-safe tree regardless of the static type.
+//
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function encode(value: unknown): any {
   return JSON.parse(JSON.stringify(value, BufferJSON.replacer));
 }
 
-function decode<T>(json: Prisma.JsonValue): T {
+function decode<T>(json: unknown): T {
   return JSON.parse(JSON.stringify(json), BufferJSON.reviver) as T;
 }
 
