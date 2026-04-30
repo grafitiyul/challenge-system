@@ -74,7 +74,16 @@ Optional Phase 2 env vars (declared now, ignored until Phase 2):
 Create a new Railway service in the same project as the API:
 
 1. New service → connect to this repo → root directory `apps/whatsapp-bridge`.
-2. Build command: `npm install --workspaces=false && npm run build`.
+2. Build command: `npm install && npm run build`.
+   - The bridge's `postinstall` runs `prisma generate
+     --schema=../api/prisma/schema.prisma`, which generates the
+     Prisma client into `apps/whatsapp-bridge/node_modules/@prisma/client`
+     using the API's shared schema. The `build` script also runs
+     `prisma:generate` first as a belt-and-braces, so the client
+     exists even if Railway happens to skip postinstall.
+   - Do NOT pass `--workspaces=false` — that flag was the original
+     cause of "@prisma/client did not initialize yet" because it
+     suppressed the postinstall hook.
 3. Start command: `npm run start`.
 4. Env vars: copy `DATABASE_URL` from the API service. Set
    `INTERNAL_API_SECRET` (same value on both services). Set `PORT` to
@@ -85,6 +94,13 @@ Create a new Railway service in the same project as the API:
 
 Health check: `GET /health` returns `{ ok: true }`. Use this for
 Railway's health probe.
+
+Schema location: `prisma generate` reads `../api/prisma/schema.prisma`
+relative to `apps/whatsapp-bridge`. Railway clones the full repo so
+that relative path resolves at build time. If you ever change the
+service to a sparse checkout that excludes `apps/api`, the bridge
+build will fail at `prisma generate` — copy the schema in or restore
+the full checkout.
 
 ## Pairing
 
