@@ -104,6 +104,21 @@ function fmt(iso: string, opts?: Intl.DateTimeFormatOptions): string {
   return new Date(iso).toLocaleDateString('he-IL', opts ?? { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
+// Strict DD/MM/YYYY formatter for date-only fields (birthDate, custom
+// `date` profile fields). Accepts:
+//   - canonical YYYY-MM-DD       ("1995-04-13" → "13/04/1995")
+//   - legacy ISO datetime prefix ("1995-04-13T00:00:00.000Z" → "13/04/1995")
+// Returns the original string when the input doesn't match either shape,
+// so unexpected legacy values surface as themselves rather than as an
+// empty cell. Pure string parse — never goes through `new Date()`, so
+// no UTC↔local drift can shift the displayed day.
+function formatDateOnly(value: unknown): string {
+  if (typeof value !== 'string' || !value) return '';
+  const m = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return value;
+  return `${m[3]}/${m[2]}/${m[1]}`;
+}
+
 // Legacy freetext values kept for backwards compatibility — rows created
 // before the lifecycle refactor use these Hebrew strings. The edit modal
 // renders them as an extra "(ערך קודם)" option when the current value
@@ -144,15 +159,25 @@ function sourceLabel(source?: string | null): string {
   return source;
 }
 
-// Returns { years, months, label } or null if no birthDate
+// Returns { years, months, label } or null if no birthDate.
+// Accepts either YYYY-MM-DD (canonical wire shape) or ISO datetime
+// (legacy stored values). Parses the YMD components directly so the
+// age computation never depends on the server/browser timezone — the
+// previous version went through `new Date(...)` and then `.getDate()`
+// (local), so a UTC midnight birthDate could read as the wrong day on
+// browsers west of UTC.
 function calcAge(birthDateIso?: string): { years: number; months: number; short: string; long: string } | null {
   if (!birthDateIso) return null;
-  const birth = new Date(birthDateIso);
+  const m = birthDateIso.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return null;
+  const by = Number(m[1]);
+  const bm = Number(m[2]);
+  const bd = Number(m[3]);
   const now = new Date();
-  let years = now.getFullYear() - birth.getFullYear();
-  let months = now.getMonth() - birth.getMonth();
+  let years = now.getFullYear() - by;
+  let months = now.getMonth() + 1 - bm; // getMonth is 0-indexed
   if (months < 0) { years--; months += 12; }
-  if (now.getDate() < birth.getDate()) { months--; if (months < 0) { years--; months += 11; } }
+  if (now.getDate() < bd) { months--; if (months < 0) { years--; months += 11; } }
   return { years, months, short: `${years}.${months}`, long: `${years} שנים ו-${months} חודשים` };
 }
 
@@ -1312,7 +1337,7 @@ function CollectedInfoTab({ participant }: { participant: Participant }) {
     { label: 'טלפון', value: participant.phoneNumber, ltr: true },
     { label: 'אימייל', value: participant.email, ltr: true },
     { label: 'מגדר', value: participant.gender?.name },
-    { label: 'תאריך לידה', value: participant.birthDate ? `${fmt(participant.birthDate)}${age ? ` (גיל ${age.short})` : ''}` : undefined },
+    { label: 'תאריך לידה', value: participant.birthDate ? `${formatDateOnly(participant.birthDate)}${age ? ` (גיל ${age.short})` : ''}` : undefined, ltr: true },
     { label: 'עיר', value: participant.city },
     { label: 'מקור', value: sourceLabel(participant.source) },
     { label: 'סטטוס', value: statusLabel(participant.status) },
@@ -1857,9 +1882,22 @@ function renderAdminValue(
 ): React.ReactNode {
   const empty = <span style={{ color: '#94a3b8', fontSize: 13, fontStyle: 'italic' }}>— ריק —</span>;
 
-  if (fieldType === 'text' || fieldType === 'textarea' || fieldType === 'date') {
+  if (fieldType === 'text' || fieldType === 'textarea') {
     if (typeof value !== 'string' || !value) return empty;
     return <div style={{ fontSize: 13, color: '#0f172a', whiteSpace: 'pre-wrap' }}>{value}</div>;
+  }
+  if (fieldType === 'date') {
+    if (typeof value !== 'string' || !value) return empty;
+    // Defensive: format both canonical YYYY-MM-DD and any legacy ISO
+    // datetime that may already be persisted (the wire shape is now
+    // canonicalized server-side, but this keeps stale data readable
+    // until a re-save canonicalizes it). dir=ltr keeps "13/04/1995"
+    // visually adjacent across the row's RTL flow.
+    return (
+      <div dir="ltr" style={{ fontSize: 13, color: '#0f172a', textAlign: 'right' }}>
+        {formatDateOnly(value)}
+      </div>
+    );
   }
   if (fieldType === 'number') {
     if (typeof value !== 'number') return empty;

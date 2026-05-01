@@ -394,6 +394,20 @@ function FieldRow(props: {
       }
       return;
     }
+    // Date inputs fire one onChange per pick — there's no
+    // "user is still typing" window, so the 700ms debounce that
+    // protects text-field saves only creates a window where a
+    // quick close (modal dismiss / route change) cancels the
+    // save before it fires. Persist immediately for dates so the
+    // value is durably stored regardless of how fast the user
+    // leaves the screen. Cancels any pending debounced save from
+    // a prior text edit on the same row (defensive — date and
+    // text fields don't share a row in practice).
+    if (field.fieldType === 'date') {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      void persist(next || null);
+      return;
+    }
     scheduleAutosave(next || null);
   }
 

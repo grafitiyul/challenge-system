@@ -50,6 +50,18 @@ export interface FileMeta {
 // hand-crafted PATCH cannot exceed it.
 const GALLERY_MAX_FILES = 30;
 
+// Format a Date as YYYY-MM-DD using UTC components. Used for the wire
+// representation of date-only fields (birthDate is the only one today)
+// — matches the storage shape `writeSystemField` produces from
+// `new Date("YYYY-MM-DD")` (UTC midnight) so the round-trip preserves
+// the calendar day regardless of the server's wall-clock timezone.
+function formatYmdUtc(d: Date): string {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 const SYSTEM_FIELD_PARTICIPANT_COLUMNS: Record<string, keyof Prisma.ParticipantUpdateInput> = {
   firstName: 'firstName',
   lastName: 'lastName',
@@ -134,10 +146,27 @@ export class ParticipantProfilePortalService {
 
     // Build fieldKey -> raw value, sourced from Participant for system
     // fields and from ParticipantProfileValue for custom fields.
+    //
+    // Wire-shape contract for date fields: ALWAYS YYYY-MM-DD strings,
+    // regardless of whether the source is a Participant column
+    // (DateTime in Postgres) or a ParticipantProfileValue.value
+    // (already a string). Without this normalization, system fields
+    // surface as ISO datetimes (e.g. "1995-04-13T00:00:00.000Z")
+    // which the admin tab renders verbatim as "weird format" and the
+    // <input type="date"> would refuse to pre-fill cleanly.
+    //
+    // Date columns are stored as UTC midnight (the value writeSystemField
+    // produces from `new Date("1995-04-13")`); using UTC parts here
+    // round-trips the same calendar day with no timezone drift.
     const values: Record<string, unknown> = {};
     for (const f of fields) {
       if (f.isSystemField) {
-        values[f.fieldKey] = (participant as Record<string, unknown>)[f.fieldKey] ?? null;
+        const raw = (participant as Record<string, unknown>)[f.fieldKey] ?? null;
+        if (f.fieldType === 'date' && raw instanceof Date) {
+          values[f.fieldKey] = formatYmdUtc(raw);
+        } else {
+          values[f.fieldKey] = raw;
+        }
       } else {
         const row = valueRows.find((v) => v.fieldKey === f.fieldKey);
         values[f.fieldKey] = row?.value ?? null;
@@ -294,7 +323,15 @@ export class ParticipantProfilePortalService {
     if (fieldKey === 'birthDate') {
       if (value == null || value === '') coerced = null;
       else {
-        const d = new Date(String(value));
+        // Force YYYY-MM-DD interpretation. `new Date("1995-04-13")`
+        // already yields UTC midnight, but if the caller hands us a
+        // longer ISO datetime ("...T00:00:00+02:00") we want to lock
+        // the calendar day to the YYYY-MM-DD prefix so the stored
+        // value reflects the participant's intent, not the
+        // submitter's wall-clock timezone. Trim, validate, anchor.
+        const ymdMatch = String(value).match(/^(\d{4}-\d{2}-\d{2})/);
+        if (!ymdMatch) throw new BadRequestException('Invalid date');
+        const d = new Date(`${ymdMatch[1]}T00:00:00.000Z`);
         if (Number.isNaN(d.getTime())) throw new BadRequestException('Invalid date');
         coerced = d;
       }
