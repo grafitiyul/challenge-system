@@ -44,9 +44,15 @@ export const config = {
   // BRIDGE_HTTP_HOST env override stays in place for non-Railway envs
   // that need explicit IPv4 binding (rare).
   //
+  // Port default is 3000 to match the standard
+  //   WHATSAPP_BRIDGE_URL = http://whatsapp-bridge.railway.internal:3000
+  // shape the API uses. Railway sets PORT itself when configured;
+  // when it isn't (or for local dev), the fallback is 3000 so the URL
+  // and the listener agree out of the box. The previous 4001 fallback
+  // produced "fetch failed" silently when only the URL was set.
   // Endpoints: /health, /status, /sign-out, /send.
   httpHost: optional('BRIDGE_HTTP_HOST', '::')!,
-  httpPort: int('PORT', int('BRIDGE_HTTP_PORT', 4001)),
+  httpPort: int('PORT', int('BRIDGE_HTTP_PORT', 3000)),
 
   // Shared secret for API → bridge auth. Both services must agree on
   // the same value. Sent as `Authorization: Bearer <secret>`.

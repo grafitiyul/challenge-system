@@ -45,7 +45,16 @@ export async function startHttpServer(client: BaileysClient): Promise<FastifyIns
     }
   });
 
-  fastify.get('/health', async () => ({ ok: true }));
+  // GET /health — Railway probe + reachability test from the API.
+  // No auth; intentionally cheap so it can be polled aggressively.
+  // `connected` mirrors BaileysClient.isConnected() so a `curl`
+  // against /health from the API service answers two questions in
+  // one shot: "is the bridge process up?" (HTTP 200 at all) and
+  // "is WhatsApp currently linked?" (the boolean).
+  fastify.get('/health', async () => ({
+    ok: true,
+    connected: client.isConnected(),
+  }));
 
   fastify.get('/status', async () => {
     // Roll up everything the admin UI shows in one call:
@@ -308,7 +317,15 @@ export async function startHttpServer(client: BaileysClient): Promise<FastifyIns
   });
 
   await fastify.listen({ host: config.httpHost, port: config.httpPort });
-  log.info({ host: config.httpHost, port: config.httpPort }, 'http server listening');
+  // Explicit string format so the line is greppable in plain-text
+  // logs (Railway's default rendering shows pino structured logs as
+  // JSON; the host/port fields are still present but a literal
+  // "host=… port=…" line is faster to spot when triaging
+  // reachability issues like "fetch failed").
+  log.info(
+    { host: config.httpHost, port: config.httpPort },
+    `http server listening host=${config.httpHost} port=${config.httpPort}`,
+  );
   return fastify;
 }
 
