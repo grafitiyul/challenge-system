@@ -1,4 +1,4 @@
-import { IsArray, IsBoolean, IsInt, IsOptional, IsString, Matches, Min } from 'class-validator';
+import { IsArray, IsBoolean, IsInt, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
 
 export class UpdateProgramDto {
   @IsOptional()
@@ -94,11 +94,20 @@ export class UpdateProgramDto {
   catchUpBannerText?: string;
 
   // Asia/Jerusalem YYYY-MM-DD strings on which the button is allowed
-  // to appear. Empty array = button never appears (safe default).
-  // Each entry validated as YYYY-MM-DD; service dedups + sorts.
+  // to appear. Combined with catchUpAllowedWeekdays via the shared
+  // availability helper — both empty = button never appears.
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
   @Matches(/^\d{4}-\d{2}-\d{2}$/, { each: true })
   catchUpAvailableDates?: string[];
+
+  // JS-style weekday numbers (0=Sun..6=Sat) on which the catch-up
+  // button is available. Service dedups + sorts on write.
+  @IsOptional()
+  @IsArray()
+  @IsInt({ each: true })
+  @Min(0, { each: true })
+  @Max(6, { each: true })
+  catchUpAllowedWeekdays?: number[];
 }

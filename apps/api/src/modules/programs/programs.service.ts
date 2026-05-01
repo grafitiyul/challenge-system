@@ -100,6 +100,17 @@ export class ProgramsService {
     if (dto.catchUpAvailableDates !== undefined) {
       data.catchUpAvailableDates = Array.from(new Set(dto.catchUpAvailableDates)).sort();
     }
+    if (dto.catchUpAllowedWeekdays !== undefined) {
+      // Dedup + sort + clamp to valid weekday range so the column always
+      // holds a canonical 0..6 list (or empty).
+      data.catchUpAllowedWeekdays = Array.from(
+        new Set(
+          dto.catchUpAllowedWeekdays.filter(
+            (n) => Number.isInteger(n) && n >= 0 && n <= 6,
+          ),
+        ),
+      ).sort((a, b) => a - b);
+    }
 
     return this.prisma.program.update({ where: { id }, data });
   }

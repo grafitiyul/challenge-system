@@ -1,4 +1,4 @@
-import { IsBoolean, IsIn, IsInt, IsObject, IsOptional, IsString, Min, ValidateIf, ValidateNested, IsArray } from 'class-validator';
+import { IsBoolean, IsIn, IsInt, IsObject, IsOptional, IsString, Matches, Max, Min, ValidateIf, ValidateNested, IsArray } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ActionContextUseDto } from './context-definition.dto';
 
@@ -142,6 +142,31 @@ export class CreateActionDto {
   @ValidateNested({ each: true })
   @Type(() => ActionContextUseDto)
   contextUses?: ActionContextUseDto[];
+
+  /**
+   * Availability schedule — admin restricts which weekdays the action
+   * surfaces on. JS weekday numbers (0=Sun..6=Sat) in Asia/Jerusalem.
+   * Empty/omitted = no weekday restriction (combined with empty
+   * extraAllowedDates → action available every day, preserving legacy
+   * behavior for actions created before this feature).
+   */
+  @IsOptional()
+  @IsArray()
+  @IsInt({ each: true })
+  @Min(0, { each: true })
+  @Max(6, { each: true })
+  allowedWeekdays?: number[];
+
+  /**
+   * Manually-picked specific calendar dates on which the action is
+   * ALSO available, regardless of the weekday rule. YYYY-MM-DD strings
+   * (Asia/Jerusalem local day). Empty/omitted = no extra dates.
+   */
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { each: true })
+  extraAllowedDates?: string[];
 }
 
 export class UpdateActionDto {
@@ -253,4 +278,19 @@ export class UpdateActionDto {
   @ValidateNested({ each: true })
   @Type(() => ActionContextUseDto)
   contextUses?: ActionContextUseDto[];
+
+  /** See CreateActionDto.allowedWeekdays. Pass [] to clear the weekday rule. */
+  @IsOptional()
+  @IsArray()
+  @IsInt({ each: true })
+  @Min(0, { each: true })
+  @Max(6, { each: true })
+  allowedWeekdays?: number[];
+
+  /** See CreateActionDto.extraAllowedDates. Pass [] to clear the extra dates. */
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { each: true })
+  extraAllowedDates?: string[];
 }

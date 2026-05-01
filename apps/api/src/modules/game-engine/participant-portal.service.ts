@@ -3,6 +3,10 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { GameEngineService, resolveEffectiveContextSchema } from './game-engine.service';
+import {
+  isAvailableOnLocalDate,
+  jerusalemDateString,
+} from './availability';
 
 const DAY_MS = 86_400_000;
 
@@ -576,10 +580,24 @@ export class ParticipantPortalService {
 
     const programId = pg.group.programId;
 
-    const actions = await this.prisma.gameAction.findMany({
+    const allActions = await this.prisma.gameAction.findMany({
       where: { programId, isActive: true, showInPortal: true },
       orderBy: { sortOrder: 'asc' },
     });
+
+    // Availability filter (weekday + extra-date schedule, Asia/Jerusalem).
+    // Empty arrays = unrestricted (every day) — preserves legacy behavior
+    // for actions created before this feature shipped. The same helper
+    // also gates the /log endpoint below so a participant can't bypass
+    // a hidden action by submitting against the API directly.
+    const todayYmd = jerusalemDateString(new Date());
+    const actions = allActions.filter((a) =>
+      isAvailableOnLocalDate(todayYmd, {
+        allowedWeekdays: a.allowedWeekdays,
+        extraAllowedDates: a.extraAllowedDates,
+        whenUnconfigured: 'available',
+      }),
+    );
 
     // Phase 3.2: resolve the effective schema (reusable + local merged) for
     // each action in a single pass, then hand the merged schema to the
@@ -642,13 +660,23 @@ export class ParticipantPortalService {
           },
         },
       });
-      const todayInList = (program.catchUpAvailableDates ?? []).includes(todayLocal);
+      // Catch-up availability shares the GameAction availability helper.
+      // Defaulting to 'unavailable' when both arrays are empty keeps the
+      // pre-feature semantics: admins must explicitly list dates and/or
+      // weekdays for the button to appear (the master `catchUpEnabled`
+      // toggle is the feature opt-in, not the day picker).
+      const availableByRule = isAvailableOnLocalDate(todayLocal, {
+        allowedWeekdays: program.catchUpAllowedWeekdays,
+        extraAllowedDates: program.catchUpAvailableDates,
+        whenUnconfigured: 'unavailable',
+      });
       catchUp = {
         enabled: true,
-        // "Available" requires the master flag, today in the configured
-        // dates, AND no session row already exists for today (one
-        // activation per participant per program per available date).
-        availableToday: todayInList && !sessionToday,
+        // "Available" requires the master flag, today within the
+        // configured weekday/date schedule, AND no session row already
+        // exists for today (one activation per participant per program
+        // per available date).
+        availableToday: availableByRule && !sessionToday,
         buttonLabel: program.catchUpButtonLabel,
         confirmTitle: program.catchUpConfirmTitle,
         confirmBody: program.catchUpConfirmBody,
@@ -736,6 +764,7 @@ export class ParticipantPortalService {
         catchUpDurationMinutes: true,
         catchUpAllowedDaysBack: true,
         catchUpAvailableDates: true,
+        catchUpAllowedWeekdays: true,
         catchUpBannerText: true,
       },
     });
@@ -744,7 +773,16 @@ export class ParticipantPortalService {
       throw new BadRequestException('מצב השלמה אינו פעיל');
     }
     const todayLocal = formatLocalDate(new Date());
-    if (!(program.catchUpAvailableDates ?? []).includes(todayLocal)) {
+    // Use the shared availability helper so /catch-up/start matches
+    // exactly what `availableToday` shows in getPortalContext. Both the
+    // explicit dates list AND the weekday list are honored here.
+    if (
+      !isAvailableOnLocalDate(todayLocal, {
+        allowedWeekdays: program.catchUpAllowedWeekdays,
+        extraAllowedDates: program.catchUpAvailableDates,
+        whenUnconfigured: 'unavailable',
+      })
+    ) {
       throw new BadRequestException('מצב השלמה לא מופעל היום');
     }
     if (program.catchUpAllowedDaysBack < 1) {
@@ -932,6 +970,44 @@ export class ParticipantPortalService {
       }
       creditedAt = jerusalemNoonUtc(dto.effectiveDate);
       messageSuffix = backdatedDaySuffix(daysBack);
+    }
+
+    // ── Action availability enforcement ────────────────────────────────────
+    // Block submission when the action's weekday/extra-date schedule
+    // says the credited date is unavailable. Evaluated in Asia/Jerusalem
+    // local terms — same source-of-truth helper that the portal listing
+    // uses, so a participant cannot bypass UI hiding by hand-crafting a
+    // /log POST with an actionId that wouldn't show up today.
+    //
+    // creditedAt is set above only on catch-up backdated submissions; in
+    // that case the relevant calendar day is dto.effectiveDate, NOT
+    // todayLocal. For normal real-time submissions the relevant day is
+    // todayLocal.
+    const submissionLocalDate =
+      dto.effectiveDate && dto.effectiveDate !== todayLocal
+        ? dto.effectiveDate
+        : todayLocal;
+    const submittedAction = await this.prisma.gameAction.findUnique({
+      where: { id: dto.actionId },
+      select: {
+        id: true,
+        programId: true,
+        isActive: true,
+        allowedWeekdays: true,
+        extraAllowedDates: true,
+      },
+    });
+    if (!submittedAction || submittedAction.programId !== programId || !submittedAction.isActive) {
+      throw new BadRequestException('הפעולה לא נמצאה או אינה פעילה');
+    }
+    if (
+      !isAvailableOnLocalDate(submissionLocalDate, {
+        allowedWeekdays: submittedAction.allowedWeekdays,
+        extraAllowedDates: submittedAction.extraAllowedDates,
+        whenUnconfigured: 'available',
+      })
+    ) {
+      throw new BadRequestException('הפעולה אינה זמינה בתאריך הזה');
     }
 
     // Resolve fan-out target set:

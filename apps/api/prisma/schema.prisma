@@ -129,8 +129,17 @@ model Program {
   // with mm:ss countdown on the client.
   catchUpBannerText      String?
   // Asia/Jerusalem YYYY-MM-DD strings on which the button is allowed
-  // to appear. Empty array = button never appears (safe default).
+  // to appear. Empty array combined with empty catchUpAllowedWeekdays
+  // means the button never appears (safe default — matches the
+  // pre-weekday-feature behavior).
   catchUpAvailableDates  String[] @default([])
+  // JS-style weekday numbers (0=Sun..6=Sat) in Asia/Jerusalem on which
+  // the catch-up button is available. Combined with catchUpAvailableDates
+  // via the same shared helper as GameAction availability:
+  //   weekday in list OR today's date in extra-dates list → available
+  // Default empty preserves the historical "only the explicit dates"
+  // behavior so existing programs are unaffected.
+  catchUpAllowedWeekdays Int[]    @default([])
 
   catchUpSessions        CatchUpSession[]
 
@@ -1121,6 +1130,32 @@ model GameAction {
   // Monotonically increasing version number of contextSchemaJson. Stamped onto each new
   // UserActionLog at write time so historical rows remain interpretable after schema edits.
   contextSchemaVersion    Int      @default(1)
+
+  // ── Availability schedule (admin-controlled per action) ────────────────────
+  // Restrict the days on which this action is available to participants.
+  // BOTH arrays empty (the default) preserves the legacy "available every
+  // day" behavior — existing rows therefore keep working unchanged.
+  //
+  // allowedWeekdays — JS-style weekday numbers in Asia/Jerusalem:
+  //   0=Sunday, 1=Monday, … 5=Friday, 6=Saturday. Order in the array is
+  //   irrelevant; service stores a sorted, deduped list.
+  // extraAllowedDates — YYYY-MM-DD strings (Asia/Jerusalem local day).
+  //   Manually-picked specific calendar days that should ALSO make the
+  //   action available, regardless of allowedWeekdays. Useful for
+  //   one-off exceptions (e.g. "also enable on this Wednesday").
+  //
+  // Availability rule (shared by participant portal + log submission):
+  //   no rules configured        → available
+  //   today's weekday in list    → available
+  //   today's date in extra list → available
+  //   otherwise                  → unavailable
+  //
+  // The same shape is mirrored on Program.catchUpAllowedWeekdays /
+  // Program.catchUpAvailableDates for the completion-mode (מצב השלמה)
+  // surface, evaluated through the same shared helper.
+  allowedWeekdays    Int[]    @default([])
+  extraAllowedDates  String[] @default([])
+
   isActive                Boolean  @default(true)
   sortOrder               Int      @default(0)
   createdAt               DateTime @default(now())

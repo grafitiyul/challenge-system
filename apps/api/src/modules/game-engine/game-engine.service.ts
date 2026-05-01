@@ -11,6 +11,33 @@ import { InitGroupStateDto } from './dto/init-group-state.dto';
 import { CorrectLogDto, VoidLogDto } from './dto/correct-log.dto';
 import { validateContext, validateContextSchemaShape } from './context-validation';
 
+/**
+ * Normalise an availability weekday list: int-only, in 0..6, deduped,
+ * sorted. Keeps stored arrays canonical so equality / chip rendering
+ * are stable across edits.
+ */
+function normaliseWeekdays(input: number[] | null | undefined): number[] {
+  if (!input || !Array.isArray(input)) return [];
+  const seen = new Set<number>();
+  for (const n of input) {
+    if (Number.isInteger(n) && n >= 0 && n <= 6) seen.add(n);
+  }
+  return Array.from(seen).sort((a, b) => a - b);
+}
+
+/**
+ * Normalise an availability YYYY-MM-DD list: regex-validated, deduped,
+ * sorted lexicographically (which is also chronological for ISO YMD).
+ */
+function normaliseYmdList(input: string[] | null | undefined): string[] {
+  if (!input || !Array.isArray(input)) return [];
+  const seen = new Set<string>();
+  for (const s of input) {
+    if (typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s)) seen.add(s);
+  }
+  return Array.from(seen).sort();
+}
+
 /** Narrow check for Postgres unique-violation errors surfaced by Prisma. */
 function isUniqueViolation(e: unknown): boolean {
   return e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002';
@@ -384,6 +411,11 @@ export class GameEngineService {
           participantTextRequired: dto.participantTextRequired ?? false,
           contextSchemaJson:
             (dto.contextSchemaJson ?? undefined) as Prisma.InputJsonValue | undefined,
+          // Availability schedule: dedup + sort on write so the stored
+          // arrays are always canonical. Empty arrays preserve the
+          // default "available every day" semantics.
+          allowedWeekdays: normaliseWeekdays(dto.allowedWeekdays),
+          extraAllowedDates: normaliseYmdList(dto.extraAllowedDates),
           sortOrder: count,
         },
       });
@@ -506,6 +538,15 @@ export class GameEngineService {
           ...(dto.participantPrompt !== undefined ? { participantPrompt: dto.participantPrompt } : {}),
           ...(dto.participantTextPrompt !== undefined ? { participantTextPrompt: dto.participantTextPrompt } : {}),
           ...(dto.participantTextRequired !== undefined ? { participantTextRequired: dto.participantTextRequired } : {}),
+          // Availability schedule — only written when the admin sent a
+          // value. Sending [] clears the rule (back to "every day" for
+          // game actions). Omitting the field leaves storage untouched.
+          ...(dto.allowedWeekdays !== undefined
+            ? { allowedWeekdays: normaliseWeekdays(dto.allowedWeekdays) }
+            : {}),
+          ...(dto.extraAllowedDates !== undefined
+            ? { extraAllowedDates: normaliseYmdList(dto.extraAllowedDates) }
+            : {}),
           ...schemaPatch,
         },
       });

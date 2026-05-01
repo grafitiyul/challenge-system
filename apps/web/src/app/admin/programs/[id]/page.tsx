@@ -49,6 +49,7 @@ interface Program {
   catchUpAllowedDaysBack: number;
   catchUpBannerText: string | null;
   catchUpAvailableDates: string[];
+  catchUpAllowedWeekdays: number[];
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -324,6 +325,7 @@ function CatchUpSettings({ program, onSaved }: { program: Program; onSaved: (p: 
     catchUpAllowedDaysBack: program.catchUpAllowedDaysBack ?? 2,
     catchUpBannerText:      program.catchUpBannerText ?? '',
     catchUpAvailableDates:  [...(program.catchUpAvailableDates ?? [])].sort(),
+    catchUpAllowedWeekdays: [...(program.catchUpAllowedWeekdays ?? [])].sort((a, b) => a - b),
   });
   const [newDate, setNewDate] = useState('');
   const [saving, setSaving] = useState(false);
@@ -382,6 +384,9 @@ function CatchUpSettings({ program, onSaved }: { program: Program; onSaved: (p: 
         catchUpAllowedDaysBack: Math.max(1, Number(form.catchUpAllowedDaysBack) || 1),
         catchUpBannerText:      form.catchUpBannerText.trim(),
         catchUpAvailableDates:  datesToSave,
+        // Weekday rule for the catch-up button. Combined with the dates
+        // list via the shared availability helper on the backend.
+        catchUpAllowedWeekdays: [...form.catchUpAllowedWeekdays].sort((a, b) => a - b),
       };
       const updated = await apiFetch(`${BASE_URL}/programs/${program.id}`, {
         method: 'PATCH',
@@ -402,6 +407,7 @@ function CatchUpSettings({ program, onSaved }: { program: Program; onSaved: (p: 
         catchUpAllowedDaysBack: updated.catchUpAllowedDaysBack ?? 2,
         catchUpBannerText:      updated.catchUpBannerText ?? '',
         catchUpAvailableDates:  [...(updated.catchUpAvailableDates ?? [])].sort(),
+        catchUpAllowedWeekdays: [...(updated.catchUpAllowedWeekdays ?? [])].sort((a, b) => a - b),
       });
       setNewDate('');
       onSaved({ ...program, ...updated });
@@ -512,15 +518,67 @@ function CatchUpSettings({ program, onSaved }: { program: Program; onSaved: (p: 
           </div>
         </div>
 
+        {/* Available weekdays selector — shares semantics with GameAction
+            scheduling so the same Asia/Jerusalem helper decides
+            availability across both surfaces. */}
+        <div>
+          <label style={labelStyle}>זמינות לפי יום בשבוע</label>
+          <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8, lineHeight: 1.5 }}>
+            סמני את הימים בהם הכפתור יופיע. ניתן לשלב עם תאריכים בודדים בהמשך — שניהם נחשבים יחד.
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 4 }}>
+            {WEEKDAY_LABELS_HE.map((w) => {
+              const checked = form.catchUpAllowedWeekdays.includes(w.value);
+              return (
+                <button
+                  key={w.value}
+                  type="button"
+                  onClick={() => {
+                    setForm((p) => ({
+                      ...p,
+                      catchUpAllowedWeekdays: checked
+                        ? p.catchUpAllowedWeekdays.filter((x) => x !== w.value)
+                        : [...p.catchUpAllowedWeekdays, w.value].sort((a, b) => a - b),
+                    }));
+                    setSaved(false);
+                  }}
+                  style={{
+                    background: checked ? '#2563eb' : '#fff',
+                    color: checked ? '#fff' : '#1d4ed8',
+                    border: `1px solid ${checked ? '#2563eb' : '#bfdbfe'}`,
+                    borderRadius: 999, padding: '6px 14px',
+                    fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                  }}
+                >
+                  {w.label}
+                </button>
+              );
+            })}
+            {form.catchUpAllowedWeekdays.length > 0 && (
+              <button
+                type="button"
+                onClick={() => { setForm((p) => ({ ...p, catchUpAllowedWeekdays: [] })); setSaved(false); }}
+                style={{
+                  background: 'none', border: '1px dashed #cbd5e1',
+                  borderRadius: 999, padding: '6px 12px',
+                  fontSize: 12, color: '#64748b', cursor: 'pointer',
+                }}
+              >נקה ימים</button>
+            )}
+          </div>
+        </div>
+
         {/* Available dates chip list */}
         <div>
           <label style={labelStyle}>תאריכי זמינות (זמן ישראל)</label>
           <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8, lineHeight: 1.5 }}>
-            הכפתור יופיע למשתתפות רק בתאריכים שכאן. הסרה אינה מבטלת סשנים שכבר רצים.
+            הכפתור יופיע למשתתפות בתאריכים שכאן (בנוסף לימים שנבחרו למעלה). הסרה אינה מבטלת סשנים שכבר רצים.
           </div>
           {form.catchUpAvailableDates.length === 0 ? (
             <div style={{ fontSize: 13, color: '#94a3b8', padding: '8px 0' }}>
-              אין תאריכים מוגדרים — הכפתור לא יופיע.
+              {form.catchUpAllowedWeekdays.length === 0
+                ? 'אין תאריכים ואין ימי שבוע מוגדרים — הכפתור לא יופיע.'
+                : 'אין תאריכים בודדים. הכפתור יופיע בימים שסומנו למעלה בלבד.'}
             </div>
           ) : (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
@@ -1039,6 +1097,20 @@ function GroupHardDeleteModal(props: { group: RelatedGroupRow; onClose: () => vo
 
 // ─── Game Engine Tab ──────────────────────────────────────────────────────────
 
+// Hebrew labels for the weekday selector, keyed by JS getDay() index
+// (0=Sun..6=Sat). Used both by the action editor and the catch-up
+// settings tab to keep the source-of-truth aligned with the backend
+// availability helper.
+const WEEKDAY_LABELS_HE: { value: number; label: string }[] = [
+  { value: 0, label: 'ראשון' },
+  { value: 1, label: 'שני' },
+  { value: 2, label: 'שלישי' },
+  { value: 3, label: 'רביעי' },
+  { value: 4, label: 'חמישי' },
+  { value: 5, label: 'שישי' },
+  { value: 6, label: 'שבת' },
+];
+
 interface GameAction {
   id: string;
   name: string;
@@ -1075,6 +1147,10 @@ interface GameAction {
   contextSchemaVersion: number;
   // Phase 3.2: reusable context definitions attached to this action.
   contextUses?: ActionContextUse[];
+  // Availability schedule. Empty arrays = action is available every day
+  // (preserves legacy behavior for actions created before this feature).
+  allowedWeekdays?: number[];
+  extraAllowedDates?: string[];
 }
 
 // ─── Context schema shapes (Phase 3) ─────────────────────────────────────────
@@ -1798,7 +1874,15 @@ function ActionModal({
     participantTextRequired: action?.participantTextRequired ?? false,
     contextFields: initialContextFields,
     attachedContexts: initialAttached,
+    // Availability schedule — sorted on init so the dirty-tracker
+    // doesn't flag spurious changes when the admin reorders chips.
+    allowedWeekdays: [...(action?.allowedWeekdays ?? [])].sort((a, b) => a - b),
+    extraAllowedDates: [...(action?.extraAllowedDates ?? [])].sort(),
   });
+  // Local state for the "add specific date" picker — outside `form` so
+  // typing into it doesn't mark the form dirty until it's actually
+  // converted into a chip.
+  const [extraDateDraft, setExtraDateDraft] = useState('');
   const [form, setForm] = useState(initialForm.current);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -1960,6 +2044,18 @@ function ActionModal({
           requiredOverride: u.requiredOverride,
           visibleToParticipantOverride: u.visibleToParticipantOverride,
         })),
+        // Availability schedule — replace-all on every save. Empty
+        // arrays explicitly clear any previous restriction (action
+        // becomes available every day again). Pending date in
+        // extraDateDraft is auto-flushed so the admin doesn't lose it
+        // by clicking "Save" without first hitting "+ הוסף תאריך".
+        allowedWeekdays: [...form.allowedWeekdays].sort((a, b) => a - b),
+        extraAllowedDates: (
+          /^\d{4}-\d{2}-\d{2}$/.test(extraDateDraft.trim()) &&
+          !form.extraAllowedDates.includes(extraDateDraft.trim())
+            ? [...form.extraAllowedDates, extraDateDraft.trim()].sort()
+            : [...form.extraAllowedDates].sort()
+        ),
       };
       const url = action
         ? `${BASE_URL}/game/programs/${programId}/actions/${action.id}`
@@ -2245,6 +2341,126 @@ function ActionModal({
                 </div>
               </div>
             </label>
+          </div>
+
+          {/* ── Availability schedule (weekday + extra dates) ── */}
+          <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={sectionHead}>זמינות לפי יום בשבוע</div>
+            <div style={{ fontSize: 12, color: '#64748b', lineHeight: 1.5 }}>
+              סמני את הימים בהם הפעולה תופיע למשתתפות. בלי בחירה — הפעולה זמינה כל יום.
+              ניתן להוסיף תאריכים בודדים נוספים בהמשך.
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {WEEKDAY_LABELS_HE.map((w) => {
+                const checked = form.allowedWeekdays.includes(w.value);
+                return (
+                  <button
+                    key={w.value}
+                    type="button"
+                    onClick={() => {
+                      setForm((p) => ({
+                        ...p,
+                        allowedWeekdays: checked
+                          ? p.allowedWeekdays.filter((x) => x !== w.value)
+                          : [...p.allowedWeekdays, w.value].sort((a, b) => a - b),
+                      }));
+                    }}
+                    style={{
+                      background: checked ? '#2563eb' : '#fff',
+                      color: checked ? '#fff' : '#1d4ed8',
+                      border: `1px solid ${checked ? '#2563eb' : '#bfdbfe'}`,
+                      borderRadius: 999, padding: '6px 14px',
+                      fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                    }}
+                  >
+                    {w.label}
+                  </button>
+                );
+              })}
+              {form.allowedWeekdays.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setForm((p) => ({ ...p, allowedWeekdays: [] }))}
+                  style={{
+                    background: 'none', border: '1px dashed #cbd5e1',
+                    borderRadius: 999, padding: '6px 12px',
+                    fontSize: 12, color: '#64748b', cursor: 'pointer',
+                  }}
+                >נקה ימים</button>
+              )}
+            </div>
+            {form.allowedWeekdays.length === 0 && form.extraAllowedDates.length === 0 && (
+              <div style={{ fontSize: 12, color: '#94a3b8', lineHeight: 1.5 }}>
+                ללא הגדרות — הפעולה זמינה כל יום.
+              </div>
+            )}
+
+            <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: 12, marginTop: 4 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 6 }}>
+                תאריכים בודדים נוספים (זמן ישראל)
+              </div>
+              <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8, lineHeight: 1.5 }}>
+                התאריכים האלה גורמים לפעולה להופיע גם אם הם לא בימים שנבחרו למעלה.
+              </div>
+              {form.extraAllowedDates.length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+                  {form.extraAllowedDates.map((d) => (
+                    <div
+                      key={d}
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 6,
+                        background: '#eff6ff', color: '#1d4ed8',
+                        border: '1px solid #bfdbfe', borderRadius: 999,
+                        padding: '4px 10px', fontSize: 12, fontWeight: 600,
+                      }}
+                    >
+                      📅 {d}
+                      <button
+                        type="button"
+                        onClick={() => setForm((p) => ({
+                          ...p,
+                          extraAllowedDates: p.extraAllowedDates.filter((x) => x !== d),
+                        }))}
+                        aria-label={`הסר ${d}`}
+                        style={{ background: 'none', border: 'none', color: '#1d4ed8', cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: 0 }}
+                      >×</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input
+                  type="date"
+                  value={extraDateDraft}
+                  onChange={(e) => setExtraDateDraft(e.target.value)}
+                  style={{ ...inputStyle, width: 'auto' }}
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    const v = extraDateDraft.trim();
+                    if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return;
+                    setForm((p) => p.extraAllowedDates.includes(v) ? p : ({
+                      ...p, extraAllowedDates: [...p.extraAllowedDates, v].sort(),
+                    }));
+                    setExtraDateDraft('');
+                  }}
+                  disabled={!/^\d{4}-\d{2}-\d{2}$/.test(extraDateDraft)}
+                  style={{
+                    padding: '8px 14px', fontSize: 13, fontWeight: 600,
+                    background: '#fff', color: '#1d4ed8',
+                    border: '1px solid #bfdbfe', borderRadius: 8,
+                    cursor: /^\d{4}-\d{2}-\d{2}$/.test(extraDateDraft) ? 'pointer' : 'not-allowed',
+                    opacity: /^\d{4}-\d{2}-\d{2}$/.test(extraDateDraft) ? 1 : 0.5,
+                  }}
+                >+ הוסף תאריך</button>
+              </div>
+              {/^\d{4}-\d{2}-\d{2}$/.test(extraDateDraft) && !form.extraAllowedDates.includes(extraDateDraft) && (
+                <div style={{ fontSize: 11, color: '#92400e', marginTop: 6, lineHeight: 1.5 }}>
+                  ⚠ {extraDateDraft} עוד לא נוסף לרשימה. לחצי על &ldquo;+ הוסף תאריך&rdquo; או על &ldquo;שמירה&rdquo; — שניהם יוסיפו אותו.
+                </div>
+              )}
+            </div>
           </div>
 
           {/* ── Sound feedback ── */}
