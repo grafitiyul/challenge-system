@@ -33,6 +33,23 @@ export class WhatsappBridgeController {
     return this.svc.restartSocket();
   }
 
+  // POST /api/admin/whatsapp/debug-send  { phone, message? }
+  // Diagnostic: exercises each step of the send pipeline
+  // independently and returns per-step timings + status. Different
+  // from /send: bypasses the sendChain lock, never triggers
+  // markStaleAndReconnect on timeout, never persists an outbound
+  // row. Use to pinpoint exactly which step (normalize / readiness /
+  // onWhatsApp / sendMessage) is the source of the timeout the
+  // user is seeing. Always returns 200 — the diagnostic shape is
+  // in the body.
+  @Post('debug-send')
+  debugSend(@Body() body: { phone?: string; message?: string }) {
+    if (!body?.phone) {
+      throw new BadRequestException('מספר טלפון הוא שדה חובה');
+    }
+    return this.svc.debugSend(body.phone, body.message);
+  }
+
   // POST /api/admin/whatsapp/hard-reset-session
   // Nuke + repair: deletes every row in whatsapp_sessions (creds +
   // signal keys), resets the WhatsAppConnection singleton, and spawns

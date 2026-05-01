@@ -79,7 +79,7 @@ export async function startHttpServer(client: BaileysClient): Promise<FastifyIns
       url: req.url,
       // List the routes the bridge DOES expose so the operator can
       // see at a glance whether their probe URL matches anything.
-      registeredRoutes: ['GET /health', 'GET /status', 'POST /send', 'POST /sign-out', 'POST /restart-socket', 'POST /hard-reset-session'],
+      registeredRoutes: ['GET /health', 'GET /status', 'POST /send', 'POST /debug-send', 'POST /sign-out', 'POST /restart-socket', 'POST /hard-reset-session'],
     });
   });
 
@@ -282,6 +282,32 @@ export async function startHttpServer(client: BaileysClient): Promise<FastifyIns
         reply.code(504).send({ error: 'send_timeout', reconnect_started: true });
         return;
       }
+      if (code === 'whatsapp_number_not_found') {
+        // Number genuinely isn't on WhatsApp. 404 so the API proxy
+        // can render a specific Hebrew message instead of the generic
+        // "send failed" — distinct from a socket fault.
+        log.warn(
+          { elapsedMs: Date.now() - startedAt, jidShape: shapeFor(jid) },
+          '[/send] whatsapp_number_not_found',
+        );
+        reply.code(404).send({ error: 'whatsapp_number_not_found' });
+        return;
+      }
+      if (code === 'on_whatsapp_timeout' || code === 'on_whatsapp_failed') {
+        // The protocol-level query that runs BEFORE sendMessage
+        // timed out / threw. The socket has been marked stale (see
+        // BaileysClient.sendTextInner); reply 504 with a precise
+        // reason so the operator sees this is NOT just sendMessage.
+        log.error(
+          { elapsedMs: Date.now() - startedAt, code, reconnect_started: code === 'on_whatsapp_timeout' },
+          '[/send] onWhatsApp probe failed',
+        );
+        reply.code(504).send({
+          error: code,
+          reconnect_started: code === 'on_whatsapp_timeout',
+        });
+        return;
+      }
       // Anything else: capture name + message + stack at error level
       // for the operator. The HTTP body carries a SAFE error message
       // (no stack, no sensitive details) so the admin UI shows it.
@@ -358,6 +384,121 @@ export async function startHttpServer(client: BaileysClient): Promise<FastifyIns
       '[/send] complete',
     );
     reply.code(200).send({ ok: true, externalMessageId });
+  });
+
+  // POST /debug-send — diagnostic-only outbound that exercises each
+  // step independently and returns per-step timing + status. Same
+  // auth as /send. Differs from /send in three important ways:
+  //
+  //   1. Bypasses the sendChain lock so a hung regular send doesn't
+  //      block the diagnostic from running.
+  //   2. Does NOT call markStaleAndReconnect on a timeout — pure
+  //      observation, no side-effect reconnect.
+  //   3. Does NOT persist an outbound WhatsAppMessage row even on
+  //      success — keeps the admin's audit log clean.
+  //
+  // Use it to pinpoint the exact stage where send_timeout fires:
+  //   step normalize    — phone normalization itself
+  //   step readiness    — socket isn't actually ready
+  //   step onWhatsApp   — protocol query hangs / number not on WA
+  //   step sendMessage  — Baileys sendMessage itself hangs
+  //
+  // Response shape (always 200, the steps[] array is the diagnostic):
+  //   { ok: <true on full success>,
+  //     failedAt: '<step name>' | null,
+  //     steps: [
+  //       { name, ok, ms, ...extra step-specific fields }
+  //     ] }
+  fastify.post<{
+    Body: { phone?: string; message?: string };
+  }>('/debug-send', async (req, reply) => {
+    log.info('[/debug-send] received');
+    const overall = Date.now();
+    const steps: Array<Record<string, unknown>> = [];
+    const note = (s: Record<string, unknown>) => { steps.push(s); };
+
+    const { phone, message } = req.body ?? {};
+    if (!phone || typeof phone !== 'string' || !phone.trim()) {
+      reply.code(400).send({ ok: false, failedAt: 'input', error: 'phone_required' });
+      return;
+    }
+    const text = (typeof message === 'string' && message.trim())
+      ? message.trim()
+      : 'בדיקת גשר';
+
+    // 1. Normalize
+    const t0 = Date.now();
+    const jid = normaliseToJid(phone.trim());
+    note({ name: 'normalize', ok: !!jid, ms: Date.now() - t0, jid, jidShape: jid ? shapeFor(jid) : null });
+    if (!jid) {
+      reply.code(200).send({ ok: false, failedAt: 'normalize', steps });
+      return;
+    }
+
+    // 2. Readiness
+    const t1 = Date.now();
+    const readiness = client.getReadiness();
+    note({ name: 'readiness', ok: readiness.ok, ms: Date.now() - t1, readiness });
+    if (!readiness.ok) {
+      reply.code(200).send({ ok: false, failedAt: 'readiness', steps });
+      return;
+    }
+
+    // 3. onWhatsApp
+    const t2 = Date.now();
+    let resolvedJid = jid;
+    try {
+      const onWa = await client.checkOnWhatsApp(jid);
+      note({
+        name: 'onWhatsApp', ok: true, ms: Date.now() - t2,
+        registered: onWa.registered, resolvedJid: onWa.resolvedJid,
+      });
+      if (!onWa.registered) {
+        reply.code(200).send({ ok: false, failedAt: 'onWhatsApp', reason: 'whatsapp_number_not_found', steps });
+        return;
+      }
+      resolvedJid = onWa.resolvedJid ?? jid;
+    } catch (err) {
+      const errCode = err instanceof Error ? err.message : 'on_whatsapp_failed';
+      note({ name: 'onWhatsApp', ok: false, ms: Date.now() - t2, error: errCode });
+      reply.code(200).send({ ok: false, failedAt: 'onWhatsApp', reason: errCode, steps });
+      return;
+    }
+
+    // 4. sendMessage — direct call, no lock, no markStaleAndReconnect
+    const t3 = Date.now();
+    const SEND_TIMEOUT_MS = 12_000;
+    let timer: NodeJS.Timeout | null = null;
+    const innerSocket = (client as unknown as { socket: { sendMessage: (jid: string, content: { text: string }) => Promise<{ key?: { id?: string } }> } | null }).socket;
+    if (!innerSocket) {
+      note({ name: 'sendMessage', ok: false, ms: Date.now() - t3, error: 'no_socket' });
+      reply.code(200).send({ ok: false, failedAt: 'sendMessage', reason: 'no_socket', steps });
+      return;
+    }
+    try {
+      const sendPromise = innerSocket.sendMessage(resolvedJid, { text });
+      sendPromise.catch(() => undefined);
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('send_timeout')), SEND_TIMEOUT_MS);
+      });
+      const result = await Promise.race([sendPromise, timeoutPromise]);
+      const externalMessageId = result?.key?.id ?? null;
+      note({
+        name: 'sendMessage', ok: !!externalMessageId, ms: Date.now() - t3,
+        externalMessageId, hasKey: !!result?.key,
+      });
+      if (!externalMessageId) {
+        reply.code(200).send({ ok: false, failedAt: 'sendMessage', reason: 'send_no_message_id', steps });
+        return;
+      }
+      reply.code(200).send({ ok: true, failedAt: null, totalMs: Date.now() - overall, steps });
+    } catch (err) {
+      const errCode = err instanceof Error ? err.message : 'send_failed';
+      note({ name: 'sendMessage', ok: false, ms: Date.now() - t3, error: errCode });
+      reply.code(200).send({ ok: false, failedAt: 'sendMessage', reason: errCode, steps });
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   });
 
   // POST /hard-reset-session — admin nuke + repair. Different from

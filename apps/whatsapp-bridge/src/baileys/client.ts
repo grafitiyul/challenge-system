@@ -502,6 +502,53 @@ export class BaileysClient {
     return next;
   }
 
+  // Probe whether a JID is registered on WhatsApp via socket.onWhatsApp.
+  // Wraps the call in our own timeout so a hung protocol query (the
+  // common failure mode behind send_timeout — Baileys' sendMessage
+  // waits for an ACK over the same channel) surfaces as a distinct
+  // 'on_whatsapp_timeout' code instead of looking like a generic
+  // sendMessage hang. Group JIDs are skipped because @g.us isn't a
+  // member-resolvable target — onWhatsApp only validates personal
+  // numbers; we treat groups as "registered" so the gate passes
+  // through to sendMessage.
+  //
+  // Returned shape:
+  //   { registered: true,  resolvedJid: '<canonical jid>' } — number is on WA
+  //   { registered: false, resolvedJid: null              } — confirmed not on WA
+  //   throws Error('on_whatsapp_timeout') — query did not return in 6s
+  //   throws Error('on_whatsapp_failed')  — Baileys threw (auth issue, etc.)
+  async checkOnWhatsApp(jid: string): Promise<{ registered: boolean; resolvedJid: string | null }> {
+    if (!this.socket) throw new Error('whatsapp_not_connected');
+    if (jid.endsWith('@g.us')) {
+      return { registered: true, resolvedJid: jid };
+    }
+    const ON_WA_TIMEOUT_MS = 6_000;
+    let timer: NodeJS.Timeout | null = null;
+    const probe = this.socket.onWhatsApp(jid);
+    // Suppress late rejection of the probe so a post-timeout failure
+    // doesn't bubble up as an unhandled rejection.
+    probe.catch(() => undefined);
+    try {
+      const result = await Promise.race([
+        probe,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('on_whatsapp_timeout')), ON_WA_TIMEOUT_MS);
+        }),
+      ]);
+      const first = Array.isArray(result) ? result[0] : null;
+      const exists = !!first?.exists;
+      const resolved = (first as { jid?: string } | null)?.jid ?? null;
+      return { registered: exists, resolvedJid: resolved };
+    } catch (err) {
+      if (err instanceof Error && err.message === 'on_whatsapp_timeout') throw err;
+      // Anything else from Baileys is wrapped so the HTTP layer can
+      // distinguish "query timed out" from "Baileys threw".
+      throw new Error('on_whatsapp_failed');
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   // Phase 3 — outbound text send. Returns the WhatsApp-assigned
   // message id so the API can write an outbound WhatsAppMessage row
   // and dedupe against the upcoming messages.upsert echo via
@@ -560,13 +607,59 @@ export class BaileysClient {
         wsState: readiness.wsState,
         lastUpdate: readiness.lastUpdate,
         lastDisconnectReason: readiness.lastDisconnectReason,
+        userJid: this.socket?.user?.id ?? null,
       },
-      'sendText starting socket.sendMessage',
+      'sendText: pre-flight ok',
     );
 
+    // ── onWhatsApp gate (private JIDs only) ─────────────────────────
+    // The single highest-leverage diagnostic for the "send_timeout
+    // even on a fresh paired session" pattern: distinguish "this
+    // number is not on WhatsApp" / "the protocol can't even resolve
+    // a query" from "sendMessage itself hangs". onWhatsApp uses the
+    // same Noise channel as sendMessage; if it can't return in 6s,
+    // the channel is unhealthy and sendMessage would hang anyway.
+    const onWaStart = Date.now();
+    let onWa: { registered: boolean; resolvedJid: string | null };
+    try {
+      onWa = await this.checkOnWhatsApp(jid);
+    } catch (err) {
+      const code = err instanceof Error ? err.message : 'on_whatsapp_failed';
+      log.error(
+        { jid, code, elapsedMs: Date.now() - onWaStart },
+        'sendText: onWhatsApp failed',
+      );
+      // The protocol query died; the socket is effectively unusable
+      // for sends. Trigger a reconnect so the next attempt either
+      // succeeds on a healthy socket or fails fast on readiness.
+      if (code === 'on_whatsapp_timeout') {
+        void this.markStaleAndReconnect('on_whatsapp_timeout');
+      }
+      throw new Error(code);
+    }
+    log.info(
+      {
+        jid, registered: onWa.registered, resolvedJid: onWa.resolvedJid,
+        elapsedMs: Date.now() - onWaStart,
+      },
+      'sendText: onWhatsApp result',
+    );
+    if (!onWa.registered) {
+      // Number genuinely isn't on WhatsApp. Caller maps to 404
+      // (whatsapp_number_not_found). Never call sendMessage in this
+      // branch — Baileys' sendMessage to a non-WA JID is one of the
+      // observed timeout sources.
+      throw new Error('whatsapp_number_not_found');
+    }
+    const targetJid = onWa.resolvedJid ?? jid;
+
+    // ── sendMessage (with timing + late-rejection suppression) ──────
     const SEND_TIMEOUT_MS = 12_000;
+    const sendStart = Date.now();
+    log.info({ targetJid, len: text.length }, 'sendText: socket.sendMessage starting');
+
     let timer: NodeJS.Timeout | null = null;
-    const sendPromise = this.socket!.sendMessage(jid, { text });
+    const sendPromise = this.socket!.sendMessage(targetJid, { text });
     // Suppress late rejection: if the race times out and the underlying
     // sendMessage eventually rejects (e.g. socket closed), the rejection
     // is irrelevant to this caller and otherwise becomes an uncaught
@@ -580,11 +673,20 @@ export class BaileysClient {
     let result;
     try {
       result = await Promise.race([sendPromise, timeoutPromise]);
+      log.info(
+        { targetJid, elapsedMs: Date.now() - sendStart, hasKey: !!result?.key, hasId: !!result?.key?.id },
+        'sendText: socket.sendMessage returned',
+      );
     } catch (err) {
       if (err instanceof Error && err.message === 'send_timeout') {
         log.error(
-          { ageMs: readiness.ageMs, lastUpdate: readiness.lastUpdate },
-          'sendText send_timeout — marking socket stale and triggering reconnect',
+          {
+            targetJid,
+            elapsedMs: Date.now() - sendStart,
+            ageMs: readiness.ageMs,
+            lastUpdate: readiness.lastUpdate,
+          },
+          'sendText: socket.sendMessage TIMEOUT — marking socket stale and triggering reconnect',
         );
         // Fire-and-forget: we want the 504 response to go out immediately.
         // markStaleAndReconnect is idempotent.

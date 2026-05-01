@@ -205,6 +205,28 @@ export class WhatsappBridgeService {
         `שליחה ל-WhatsApp לא הסתיימה בזמן (timeout בגשר).${tail}`,
       );
     }
+    if (res.status === 404 && body.error === 'whatsapp_number_not_found') {
+      // Pre-send onWhatsApp probe confirmed the number is not on
+      // WhatsApp. Distinct from "send timed out" — the admin needs
+      // to verify the number, not the connection.
+      throw new BadRequestException('המספר אינו רשום ב-WhatsApp.');
+    }
+    if (res.status === 504 && body.error === 'on_whatsapp_timeout') {
+      // The protocol-level query before sendMessage hung — the
+      // socket is "open" but its Noise channel can't even resolve
+      // a contact lookup. Different from sendMessage hanging.
+      const tail = body.reconnect_started
+        ? ' החיבור מתחדש אוטומטית. נסי שוב בעוד מספר שניות.'
+        : '';
+      throw new ServiceUnavailableException(
+        `בדיקת חברות ה-WhatsApp לא הסתיימה בזמן (הסוקט פתוח אבל לא מגיב).${tail}`,
+      );
+    }
+    if (res.status === 504 && body.error === 'on_whatsapp_failed') {
+      throw new ServiceUnavailableException(
+        'בדיקת חברות ה-WhatsApp נכשלה (Baileys זרק). נסי איפוס מלא וסריקת QR מחדש.',
+      );
+    }
     if (res.status === 500 && body.error === 'send_failed') {
       // body.detail is the safe single-line error message from the
       // bridge; never the raw stack.
@@ -260,6 +282,39 @@ export class WhatsappBridgeService {
         readiness?: unknown;
       };
       return { ok: true, restart_started: true, readiness: json.readiness ?? null };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'unknown';
+      return { bridgeUnavailable: true, reason: message };
+    }
+  }
+
+  // POST /api/admin/whatsapp/debug-send → bridge POST /debug-send.
+  // Diagnostic: runs the per-step send pipeline (normalize → readiness
+  // → onWhatsApp → sendMessage) and returns step-by-step timings.
+  // Bypasses the regular sendChain lock and never triggers reconnect,
+  // so the response is pure observation. Use to pinpoint exactly
+  // where send_timeout fires.
+  async debugSend(phone: string, message?: string): Promise<unknown> {
+    const base = bridgeUrl();
+    if (!base) return { bridgeUnavailable: true, reason: 'WHATSAPP_BRIDGE_URL not configured' };
+    try {
+      const res = await fetch(`${base}/debug-send`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${bridgeSecret()}`,
+        },
+        body: JSON.stringify({ phone, message }),
+        // Generous: each internal step has its own 6–12s timeout, so
+        // worst-case the bridge response back to us is ~25s. Longer
+        // than the regular send timeout because /debug-send is a
+        // human-driven diagnostic, not an end-user operation.
+        signal: AbortSignal.timeout(30_000),
+      });
+      const json = await res.json().catch(() => ({}));
+      // Pass through whatever the bridge returned; the bridge already
+      // shapes the response as { ok, failedAt, steps, ... }.
+      return json;
     } catch (err) {
       const message = err instanceof Error ? err.message : 'unknown';
       return { bridgeUnavailable: true, reason: message };
