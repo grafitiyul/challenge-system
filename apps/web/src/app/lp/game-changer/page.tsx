@@ -148,7 +148,7 @@ const landingContent = {
       { icon: '📅', label: 'כמה זמן?', value: '11 ימים, עד יום רביעי 20/05' },
       { icon: '📋', label: 'דרישות נוספות', value: 'לפני ובמהלך הדרך יהיו כמה שאלונים שחובה למלא כחלק מההשתתפות.' },
     ],
-    priceAmount: '197 ש"ח',
+    priceAmount: '247 ש"ח',
     priceSub: 'עלות',
   },
 
