@@ -4884,7 +4884,21 @@ function OfferModalInline(props: {
       }
       props.onSaved();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'שמירה נכשלה');
+      // apiFetch throws either a real Error (network failures) or a
+      // plain object { status, message } (non-2xx responses with the
+      // server's reason — e.g. class-validator validation errors). The
+      // previous `e instanceof Error` check fell through to the generic
+      // Hebrew fallback for the plain-object case, which hid every
+      // useful message — that's the real reason the symptom looked
+      // like an opaque "שמירה נכשלה" instead of "property X should
+      // not exist". Read both shapes.
+      const msg =
+        e instanceof Error
+          ? e.message
+          : (typeof e === 'object' && e !== null && typeof (e as { message?: unknown }).message === 'string')
+          ? (e as { message: string }).message
+          : '';
+      setErr(msg && msg.trim() ? msg : 'שמירה נכשלה');
     } finally { setBusy(false); }
   }
 

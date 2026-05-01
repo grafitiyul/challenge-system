@@ -6,6 +6,15 @@ import {
   IsUrl,
 } from 'class-validator';
 
+// All four iCount fields are kept in lockstep with the schema's
+// PaymentOffer columns (iCountPaymentUrl / iCountPageId /
+// iCountItemName / iCountExternalId). The global ValidationPipe
+// runs with `forbidNonWhitelisted: true`, so any column that's
+// missing from this DTO causes the entire save to be rejected as
+// "property X should not exist" — the cause of the
+// "שמירה נכשלה" symptom on the admin edit modal. Add a field here
+// whenever a column is added to PaymentOffer.
+
 export class CreateOfferDto {
   @IsString()
   title: string;
@@ -24,6 +33,18 @@ export class CreateOfferDto {
   @IsOptional()
   @IsUrl({ require_protocol: true })
   iCountPaymentUrl?: string | null;
+
+  @IsOptional()
+  @IsString()
+  iCountPageId?: string | null;
+
+  @IsOptional()
+  @IsString()
+  iCountItemName?: string | null;
+
+  @IsOptional()
+  @IsString()
+  iCountExternalId?: string | null;
 
   @IsOptional()
   @IsString()
@@ -62,6 +83,18 @@ export class UpdateOfferDto {
   @IsOptional()
   @IsUrl({ require_protocol: true })
   iCountPaymentUrl?: string | null;
+
+  @IsOptional()
+  @IsString()
+  iCountPageId?: string | null;
+
+  @IsOptional()
+  @IsString()
+  iCountItemName?: string | null;
+
+  @IsOptional()
+  @IsString()
+  iCountExternalId?: string | null;
 
   @IsOptional()
   @IsString()

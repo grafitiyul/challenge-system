@@ -47,6 +47,12 @@ export class OffersService {
         amount: new Prisma.Decimal(dto.amount),
         currency: (dto.currency ?? 'ILS').trim() || 'ILS',
         iCountPaymentUrl: dto.iCountPaymentUrl ?? null,
+        // iCount auto-match keys, used by the webhook ingester to
+        // resolve incoming payments to this offer. Persisted alongside
+        // the URL so a NEW offer's match keys aren't silently dropped.
+        iCountPageId: dto.iCountPageId ?? null,
+        iCountItemName: dto.iCountItemName ?? null,
+        iCountExternalId: dto.iCountExternalId ?? null,
         linkedChallengeId: dto.linkedChallengeId ?? null,
         linkedProgramId: dto.linkedProgramId ?? null,
         defaultGroupId: dto.defaultGroupId ?? null,
@@ -63,6 +69,12 @@ export class OffersService {
     if (dto.amount !== undefined) data.amount = new Prisma.Decimal(dto.amount);
     if (dto.currency !== undefined) data.currency = dto.currency.trim() || 'ILS';
     if (dto.iCountPaymentUrl !== undefined) data.iCountPaymentUrl = dto.iCountPaymentUrl ?? null;
+    // iCount auto-match keys. Sent by the admin edit modal as part of
+    // the standard payload; without these fields in the writer, edits
+    // that touch these inputs would silently lose them on save.
+    if (dto.iCountPageId !== undefined) data.iCountPageId = dto.iCountPageId ?? null;
+    if (dto.iCountItemName !== undefined) data.iCountItemName = dto.iCountItemName ?? null;
+    if (dto.iCountExternalId !== undefined) data.iCountExternalId = dto.iCountExternalId ?? null;
     if (dto.linkedChallengeId !== undefined) {
       data.linkedChallenge = dto.linkedChallengeId
         ? { connect: { id: dto.linkedChallengeId } } : { disconnect: true };
