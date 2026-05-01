@@ -35,10 +35,19 @@ interface UploadedFileInfo {
 }
 
 // Per-mime size budgets. Images get 15 MB — generous enough for
-// straight-from-camera phone shots without re-encoding. Videos get
-// 50 MB so short clips for "before photos" land cleanly.
+// straight-from-camera phone shots without re-encoding.
+//
+// Videos get 25 MB. The previous 50 MB cap exceeded what the
+// browser→API→R2 path can deliver inside a sane mobile upload
+// timeout: at 1-3 Mbps mobile upstream a 50 MB body takes 2-7 minutes
+// just to reach the API, on top of the 5-15 s the API then spends
+// pushing it through to R2. Combined with the client's 240 s timeout
+// (raised from 120 s in the same change set), 25 MB is the largest
+// size that lands reliably on slow mobile without false timeouts.
+// Participants who need bigger clips compress on-device first; the
+// Hebrew error names the cap explicitly so the cause is clear.
 const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
-const MAX_VIDEO_BYTES = 50 * 1024 * 1024;
+const MAX_VIDEO_BYTES = 25 * 1024 * 1024;
 
 // ── Token-authorised participant routes ─────────────────────────────────────
 //

@@ -127,11 +127,18 @@ function errMessage(e: unknown, fallback: string): string {
 //   browser actually streams them out, which is the only way we can
 //   render a real percent.
 //
-// The 120-second timeout (xhr.timeout) is preserved exactly. Optional
-// AbortSignal is honored via xhr.abort() so callers that already wire
-// AbortController stay compatible. Same /api-proxy URL pattern as
-// apiFetch — the Next.js rewrite still routes to the API.
-const UPLOAD_TIMEOUT_MS = 120_000;
+// Per-mime upload timeout. Images fit comfortably in 120 s (15 MB cap
+// + browser-side compression usually drops them well below that).
+// Videos get 240 s — at typical mobile upstream of 1-3 Mbps, a 25 MB
+// video body takes 70-200 s to push to the API, BEFORE the API's own
+// time pushing it through to R2. 120 s would fire false timeouts on
+// the slow end of that range.
+//
+// Optional AbortSignal is honored via xhr.abort() so callers that
+// already wire AbortController stay compatible. Same /api-proxy URL
+// pattern as apiFetch — the Next.js rewrite still routes to the API.
+const UPLOAD_TIMEOUT_IMAGE_MS = 120_000;
+const UPLOAD_TIMEOUT_VIDEO_MS = 240_000;
 interface UploadCallbacks {
   onProgress?: (percent: number) => void;
   signal?: AbortSignal;
@@ -143,7 +150,9 @@ function uploadOneFile(
 ): Promise<ProfileFileMeta> {
   return new Promise<ProfileFileMeta>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.timeout = UPLOAD_TIMEOUT_MS;
+    const isVideo = /^video\//i.test(file.type);
+    const timeoutMs = isVideo ? UPLOAD_TIMEOUT_VIDEO_MS : UPLOAD_TIMEOUT_IMAGE_MS;
+    xhr.timeout = timeoutMs;
     xhr.responseType = 'json';
 
     xhr.upload.addEventListener('progress', (e) => {
@@ -173,7 +182,7 @@ function uploadOneFile(
     });
     xhr.addEventListener('timeout', () => reject({
       message:
-        `ההעלאה ארכה זמן רב מדי (יותר מ-${Math.round(UPLOAD_TIMEOUT_MS / 1000)} שניות). ` +
+        `ההעלאה ארכה זמן רב מדי (יותר מ-${Math.round(timeoutMs / 1000)} שניות). ` +
         `בדקי את החיבור ונסי שוב.`,
     }));
     xhr.addEventListener('error', () => reject({ message: 'שגיאת רשת בזמן ההעלאה.' }));
@@ -675,11 +684,15 @@ function ImageField(props: {
 // before-photos field can hold a mix of stills and short clips.
 
 // Caps mirror server constants (see participant-profile-portal.service +
-// participant-profile-portal.controller).
+// participant-profile-portal.controller). Video cap dropped from 50 MB
+// to 25 MB: the previous ceiling exceeded what the API path can deliver
+// inside a reasonable mobile upload timeout. 25 MB is the largest file
+// that lands reliably end-to-end on a 1-3 Mbps mobile uplink within
+// 240 s. Participants with longer footage compress on-device.
 const GALLERY_MAX_FILES   = 30;                  // server hard ceiling
 const GALLERY_VISIBLE     = 10;                  // initially-rendered cells; "load more" reveals the rest
 const MAX_IMAGE_BYTES     = 15 * 1024 * 1024;    // 15 MB per image
-const MAX_VIDEO_BYTES     = 50 * 1024 * 1024;    // 50 MB per video
+const MAX_VIDEO_BYTES     = 25 * 1024 * 1024;    // 25 MB per video
 
 function ImageGalleryField(props: {
   token: string;
@@ -900,15 +913,9 @@ function ImageGalleryField(props: {
             return (
               <div key={id} style={s.galleryItem}>
                 {isVideo ? (
-                  <video
-                    src={srcOf(meta.url)}
-                    style={s.galleryImg}
-                    controls
-                    preload="metadata"
-                    playsInline
-                  />
+                  <LazyVideoCell src={srcOf(meta.url)} style={s.galleryImg} />
                 ) : (
-                  <img src={srcOf(meta.url)} alt="" style={s.galleryImg} />
+                  <img src={srcOf(meta.url)} alt="" style={s.galleryImg} loading="lazy" />
                 )}
                 <button
                   type="button"
@@ -969,10 +976,14 @@ function ImageGalleryField(props: {
             // misleading "99%" for that whole stretch reads as "stuck".
             // Switch to "מעבד..." so the participant knows progress IS
             // happening, just on the server side.
+            // Distinct text for videos so the participant knows the
+            // wait is the video specifically (often 30-60+ seconds on
+            // mobile uplink at the 25 MB cap), not a generic stall.
+            const verb = u.isVideo ? 'מעלה סרטון' : 'מעלה';
             const statusText =
               u.status === 'queued'    ? 'ממתין'   :
               u.status === 'uploading'
-                ? (u.percent >= 95 ? 'מעבד...' : `מעלה... ${u.percent}%`)
+                ? (u.percent >= 95 ? 'מעבד...' : `${verb}... ${u.percent}%`)
               : u.status === 'done'    ? 'הועלה ✓' :
                                          (u.error ? `שגיאה: ${u.error}` : 'שגיאה');
             return (
@@ -1059,6 +1070,86 @@ function ImageGalleryField(props: {
       </p>
       {errMsg && <p style={s.fieldErr}>{errMsg}</p>}
     </div>
+  );
+}
+
+// Gallery video cell that ONLY mounts a real <video> element when it
+// scrolls into the viewport. Off-screen cells render a tiny static
+// placeholder, so the page no longer fires N parallel
+// "preload=metadata" range requests against R2 the moment the gallery
+// renders — that simultaneous burst was the dominant cause of the
+// "videos hang on load" symptom in big galleries.
+//
+// Once a cell becomes visible we KEEP the <video> mounted (don't
+// unmount on scroll-out) so the participant doesn't lose playback
+// state if they scroll away mid-watch. The IntersectionObserver
+// disconnects after the first reveal — same memory profile as before
+// for galleries that fit on one screen, much smaller cost on long
+// scroll-back-far galleries.
+function LazyVideoCell({ src, style }: { src: string; style: React.CSSProperties }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    if (visible) return; // already revealed; nothing to do
+    const node = ref.current;
+    if (!node || typeof IntersectionObserver === 'undefined') {
+      // Old browsers without IntersectionObserver: render straight
+      // away. Functional fallback — same behaviour as before this
+      // change, no regression for the long tail.
+      setVisible(true);
+      return;
+    }
+    const obs = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (e.isIntersecting) {
+            setVisible(true);
+            obs.disconnect();
+            break;
+          }
+        }
+      },
+      // 200px rootMargin so the metadata fetch starts a moment BEFORE
+      // the cell is fully on-screen — by the time the user finishes
+      // scrolling the poster frame is ready, no visible flash.
+      { rootMargin: '200px' },
+    );
+    obs.observe(node);
+    return () => obs.disconnect();
+  }, [visible]);
+  if (!visible) {
+    // Placeholder cell — same dimensions as the real video so the
+    // grid layout doesn't reflow when it's swapped in. Plain dark
+    // tile + small play glyph so the participant sees "this is a
+    // video" before any network activity.
+    return (
+      <div
+        ref={ref}
+        style={{
+          ...style,
+          background: '#0f172a',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: '#cbd5e1',
+          fontSize: 26,
+        }}
+      >
+        ▶
+      </div>
+    );
+  }
+  return (
+    <video
+      src={src}
+      style={style}
+      controls
+      // metadata only — first-frame poster + duration. Never preload
+      // the full body; that would defeat the lazy-mount purpose for
+      // a participant who scrolls past without playing.
+      preload="metadata"
+      playsInline
+    />
   );
 }
 
