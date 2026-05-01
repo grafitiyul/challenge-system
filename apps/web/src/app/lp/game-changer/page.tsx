@@ -43,7 +43,7 @@ const landingContent = {
   // Single source of truth for "is the current cycle taking signups?".
   // Flip to 'open' when a new cycle opens — both CTAs and the stamp
   // change automatically. No other text needs to be touched.
-  registrationState: 'closed' as 'open' | 'closed',
+  registrationState: 'open' as 'open' | 'closed',
 
   // Two CTA shapes preserved side-by-side so flipping the state is the
   // only edit needed. Original iCount label/URL kept verbatim under
@@ -143,9 +143,9 @@ const landingContent = {
   // ── Details ──────────────────────────────────────────────────────────
   details: {
     rows: [
-      { icon: '💻', label: 'שיחת פתיחה בזום', value: 'יום ראשון הקרוב, 26/04 בשעה 21:15' },
-      { icon: '🚀', label: 'מתחילות בפועל', value: 'למחרת, יום שני על הבוקר' },
-      { icon: '📅', label: 'כמה זמן?', value: '11 ימים, עד יום חמישי 07/05' },
+      { icon: '💻', label: 'שיחת פתיחה בזום', value: 'מוצ"ש הקרוב, 09/05 בשעה 21:00' },
+      { icon: '🚀', label: 'מתחילות בפועל', value: 'למחרת, יום ראשון על הבוקר' },
+      { icon: '📅', label: 'כמה זמן?', value: '11 ימים, עד יום רביעי 20/05' },
       { icon: '📋', label: 'דרישות נוספות', value: 'לפני ובמהלך הדרך יהיו כמה שאלונים שחובה למלא כחלק מההשתתפות.' },
     ],
     priceAmount: '197 ש"ח',
