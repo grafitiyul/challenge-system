@@ -79,7 +79,7 @@ export async function startHttpServer(client: BaileysClient): Promise<FastifyIns
       url: req.url,
       // List the routes the bridge DOES expose so the operator can
       // see at a glance whether their probe URL matches anything.
-      registeredRoutes: ['GET /health', 'GET /status', 'POST /send', 'POST /sign-out', 'POST /restart-socket'],
+      registeredRoutes: ['GET /health', 'GET /status', 'POST /send', 'POST /sign-out', 'POST /restart-socket', 'POST /hard-reset-session'],
     });
   });
 
@@ -358,6 +358,34 @@ export async function startHttpServer(client: BaileysClient): Promise<FastifyIns
       '[/send] complete',
     );
     reply.code(200).send({ ok: true, externalMessageId });
+  });
+
+  // POST /hard-reset-session — admin nuke + repair. Different from
+  // /restart-socket (keeps creds) and /sign-out (calls socket.logout
+  // which can hang against a corrupt session). This route locally
+  // tears down the socket, deletes every row in whatsapp_sessions,
+  // resets the WhatsAppConnection singleton, and immediately opens a
+  // fresh socket so a new QR appears for the admin to scan.
+  //
+  // Use when restart-socket has not recovered the bridge — usually
+  // after repeated send_timeout / failed-decrypt / restartRequired /
+  // connectionReplaced loops indicating the persisted session state
+  // is corrupt.
+  fastify.post('/hard-reset-session', async (_req, reply) => {
+    log.warn('[/hard-reset-session] requested');
+    try {
+      // Fire-and-forget: the actual reset can take a couple of seconds
+      // (auth wipe + new socket start). The admin UI re-polls /status
+      // afterwards and the new QR appears within one poll cycle (~2s).
+      void client.hardResetSession().catch((err) => {
+        log.error({ err: errSummary(err) }, '[/hard-reset-session] async failure');
+      });
+      const readiness = client.getReadiness();
+      reply.code(202).send({ ok: true, hard_reset_started: true, readiness });
+    } catch (err) {
+      log.error({ err: errSummary(err) }, '[/hard-reset-session] failed');
+      reply.code(500).send({ error: 'hard_reset_failed', detail: errSummary(err) });
+    }
   });
 
   // POST /restart-socket — admin-triggered socket rebuild WITHOUT

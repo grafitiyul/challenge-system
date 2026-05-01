@@ -345,6 +345,154 @@ export class BaileysClient {
     await this.reopenSocket('admin_restart', { markStale: true });
   }
 
+  // Admin-triggered HARD RESET. Materially different from restartSocket
+  // and signOut:
+  //
+  //   restartSocket — keeps the persisted Baileys auth (creds + signal
+  //                   keys); just rebuilds the live socket. Use when
+  //                   the socket is wedged but the session is healthy.
+  //
+  //   signOut       — calls socket.logout() (talks to WhatsApp servers
+  //                   to revoke the linked-device slot), THEN wipes
+  //                   creds, THEN sets stopped=true. Good UX when the
+  //                   session is healthy and you want a clean unlink.
+  //                   But socket.logout() has no timeout and routinely
+  //                   hangs against a broken session — exactly when we
+  //                   need a wipe path the most.
+  //
+  //   hardResetSession — what this method does. NO logout call. NO
+  //                   "stopped" flag. Tear the socket down locally,
+  //                   delete every row in whatsapp_sessions, reset the
+  //                   WhatsAppConnection singleton to a fresh-pair
+  //                   state, immediately open a new socket which will
+  //                   emit a fresh QR.
+  //
+  // Funnels through the same withReconnectLock + reopenInFlight guards
+  // as the rest of the lifecycle so it serializes cleanly with any
+  // ongoing reopen / scheduleReconnect.
+  async hardResetSession(): Promise<void> {
+    log.warn('hard-reset-session requested');
+    if (this.stopped) {
+      log.warn('hard-reset deferred: client.stopped=true; un-stopping for the reset');
+      this.stopped = false;
+    }
+    return this.withReconnectLock(async () => {
+      this.reopenInFlight = true;
+      try {
+        const oldSocketId = this.activeSocketId;
+        this.reconnecting = true;
+        this.connected = false;
+        // Tag staleReason so getReadiness reports a clean recovery
+        // signal during the brief gap between the wipe and the new
+        // QR; cleared on the next connection.update('open') (or on
+        // qr_required, which is the next state after the wipe).
+        this.staleReason = 'hard_reset';
+        this.lastDisconnectReason = null;
+        log.warn({ oldSocketId }, 'hard-reset: tearing down current socket (no logout call)');
+
+        // Detach our listeners + end the socket. Crucially, we do NOT
+        // call socket.logout() — that's the bit that hangs on a
+        // broken session and is the reason we need this command at all.
+        const old = this.socket;
+        this.socket = null;
+        this.socketOpenedAt = null;
+        if (old) {
+          try {
+            old.ev.removeAllListeners('connection.update');
+            old.ev.removeAllListeners('creds.update');
+            old.ev.removeAllListeners('messages.upsert');
+            old.ev.removeAllListeners('messages.reaction');
+            old.ev.removeAllListeners('messaging-history.set');
+          } catch { /* ignore */ }
+          try {
+            old.end(new Error('bridge_hard_reset'));
+            log.info({ oldSocketId }, 'hard-reset: old socket closed');
+          } catch (err) {
+            log.warn(
+              { err: errMessage(err), oldSocketId },
+              'hard-reset: old socket end() threw; proceeding',
+            );
+          }
+        }
+
+        // Wipe persisted auth — creds + every signal key in the
+        // whatsapp_sessions table. If the auth handle isn't loaded yet
+        // (e.g., bridge was mid-boot), open a transient one just to
+        // perform the wipe.
+        try {
+          if (this.auth) {
+            await this.auth.clear();
+          } else {
+            const handle = await makePostgresAuthState(prisma);
+            await handle.clear();
+          }
+          log.warn('hard-reset: persisted auth state wiped');
+        } catch (err) {
+          log.error(
+            { err: errMessage(err) },
+            'hard-reset: auth.clear() failed; continuing — corrupt rows will be overwritten by fresh pair',
+          );
+        }
+        this.auth = null;
+
+        // Reset the WhatsAppConnection singleton so the admin UI shows
+        // a clean fresh-pair state rather than stale connected/JID.
+        // Keep the row (id='singleton' is referenced everywhere) but
+        // null out every transient field. lastConnectedAt /
+        // lastDisconnectAt are also cleared because after a hard reset
+        // the prior history is no longer this device's history.
+        try {
+          await prisma.whatsAppConnection.upsert({
+            where: { id: 'singleton' },
+            create: {
+              id: 'singleton', status: 'disconnected', qr: null,
+              phoneJid: null, deviceName: null,
+              lastQrAt: null, lastConnectedAt: null, lastDisconnectAt: null,
+              lastDisconnectReason: 'hard_reset', reconnectAttempts: 0,
+            },
+            update: {
+              status: 'disconnected', qr: null,
+              phoneJid: null, deviceName: null,
+              lastQrAt: null, lastConnectedAt: null, lastDisconnectAt: null,
+              lastDisconnectReason: 'hard_reset', reconnectAttempts: 0,
+            },
+          });
+          log.warn('hard-reset: WhatsAppConnection singleton reset');
+        } catch (err) {
+          log.error(
+            { err: errMessage(err) },
+            'hard-reset: WhatsAppConnection reset failed; continuing — connect() will reset on its own',
+          );
+        }
+
+        // Reset in-memory backoff/timer state. clearTimers also kills
+        // any pending healthy/reconnect timers from the dead socket.
+        this.attempt = 0;
+        this.clearTimers();
+
+        // Spin up a fresh socket. With auth wiped, Baileys will emit
+        // a fresh QR within ~1s; the existing connection.update
+        // handler persists it via connState.setQrRequired and the
+        // admin UI's poll picks it up.
+        try {
+          await this.connect();
+          log.info(
+            { newSocketId: this.activeSocketId },
+            'hard-reset: connect() returned (awaiting QR)',
+          );
+        } catch (err) {
+          log.error(
+            { err: errMessage(err) },
+            'hard-reset: connect() failed; falling back to scheduled backoff',
+          );
+          this.scheduleReconnect();
+        }
+      } finally {
+        this.reopenInFlight = false;
+      }
+    });
+  }
+
   // Serialize ALL connect/reopen work through a single Promise chain.
   // Errors are swallowed at the chain boundary so one failed reopen
   // doesn't poison the queue for subsequent calls.

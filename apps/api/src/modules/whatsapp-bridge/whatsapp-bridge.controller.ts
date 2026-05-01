@@ -33,6 +33,20 @@ export class WhatsappBridgeController {
     return this.svc.restartSocket();
   }
 
+  // POST /api/admin/whatsapp/hard-reset-session
+  // Nuke + repair: deletes every row in whatsapp_sessions (creds +
+  // signal keys), resets the WhatsAppConnection singleton, and spawns
+  // a fresh Baileys socket so a new QR appears for re-pairing.
+  // Different from sign-out (which calls socket.logout() and hangs on
+  // broken sessions) and restart-socket (which keeps the auth state).
+  // Used when restart-socket has not recovered the bridge from
+  // repeated send_timeout / decrypt failures — strong signal that the
+  // persisted session is corrupt.
+  @Post('hard-reset-session')
+  hardResetSession() {
+    return this.svc.hardResetSession();
+  }
+
   // POST /api/admin/whatsapp/send  { phone | chatId, message }
   //
   // Replaces the legacy /api/wassenger/send endpoint that the admin

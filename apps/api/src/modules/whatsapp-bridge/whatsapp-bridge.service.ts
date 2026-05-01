@@ -266,6 +266,39 @@ export class WhatsappBridgeService {
     }
   }
 
+  // POST /api/admin/whatsapp/hard-reset-session → bridge POST
+  // /hard-reset-session. Wipes persisted Baileys auth + resets the
+  // WhatsAppConnection singleton + spawns a fresh socket so a new
+  // QR appears. Different from signOut (which tries to talk to
+  // WhatsApp servers and hangs when the session is broken — the
+  // exact case where this command is needed).
+  async hardResetSession(): Promise<
+    | { ok: true; hard_reset_started: true; readiness: unknown }
+    | { bridgeUnavailable: true; reason: string }
+  > {
+    const base = bridgeUrl();
+    if (!base) return { bridgeUnavailable: true, reason: 'WHATSAPP_BRIDGE_URL not configured' };
+    try {
+      const res = await fetch(`${base}/hard-reset-session`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${bridgeSecret()}` },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!res.ok) {
+        return { bridgeUnavailable: true, reason: `bridge returned ${res.status}` };
+      }
+      const json = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        hard_reset_started?: boolean;
+        readiness?: unknown;
+      };
+      return { ok: true, hard_reset_started: true, readiness: json.readiness ?? null };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'unknown';
+      return { bridgeUnavailable: true, reason: message };
+    }
+  }
+
   async signOut(): Promise<{ ok: true } | { bridgeUnavailable: true; reason: string }> {
     const base = bridgeUrl();
     if (!base) return { bridgeUnavailable: true, reason: 'WHATSAPP_BRIDGE_URL not configured' };

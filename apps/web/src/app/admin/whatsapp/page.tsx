@@ -177,9 +177,11 @@ export default function WhatsAppBridgePage() {
   const [signOutOpen, setSignOutOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const [restarting, setRestarting] = useState(false);
-  // Latched message from the last restart attempt — shown next to the
-  // pill until the next status response either confirms recovery
-  // (readiness.ok=true) or surfaces a fresh failure reason.
+  const [hardResetOpen, setHardResetOpen] = useState(false);
+  const [hardResetting, setHardResetting] = useState(false);
+  // Latched message from the last restart/hard-reset attempt — shown
+  // next to the pill until the next status response either confirms
+  // recovery (readiness.ok=true) or surfaces a fresh failure reason.
   const [restartHint, setRestartHint] = useState<string | null>(null);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -230,6 +232,31 @@ export default function WhatsAppBridgePage() {
       setErr(e instanceof Error ? e.message : 'התנתקות נכשלה');
     } finally {
       setSigningOut(false);
+    }
+  }
+
+  // POST /api/admin/whatsapp/hard-reset-session — nuke + repair.
+  // Deletes the persisted Baileys auth (creds + every signal key),
+  // resets the WhatsAppConnection singleton, and spawns a fresh
+  // socket so a new QR appears. Use when restart-socket hasn't
+  // recovered the bridge from repeated send_timeout / decrypt
+  // failures — strong signal that the persisted session is corrupt.
+  async function confirmHardReset() {
+    setHardResetting(true);
+    setRestartHint('שולח בקשת איפוס מלא...');
+    try {
+      await apiFetch(`${BASE_URL}/admin/whatsapp/hard-reset-session`, { method: 'POST' });
+      setHardResetOpen(false);
+      setRestartHint('הסשן אופס — ממתין שיופיע קוד QR חדש לסריקה...');
+      // Bridge takes ~1–2s to wipe + open the fresh socket. Two
+      // staggered refreshes catch the QR within one poll cycle.
+      setTimeout(() => void load(), 600);
+      setTimeout(() => void load(), 2000);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'איפוס מלא נכשל';
+      setRestartHint(`איפוס מלא נכשל: ${msg}`);
+    } finally {
+      setHardResetting(false);
     }
   }
 
@@ -374,6 +401,22 @@ export default function WhatsAppBridgePage() {
                       : 'התנתקי / שכחי מכשיר'}
                   </button>
                 )}
+                {/* Hard reset — always available. Different from the
+                    restart button (which keeps the auth) and the
+                    sign-out button (which calls socket.logout and can
+                    hang on a corrupt session). Use when restart-socket
+                    has failed to recover from repeated send_timeout. */}
+                <button
+                  onClick={() => setHardResetOpen(true)}
+                  style={{
+                    padding: '7px 14px', fontSize: 13, fontWeight: 600,
+                    background: '#fff', color: '#7c2d12',
+                    border: '1px dashed #c2410c', borderRadius: 8,
+                    cursor: 'pointer',
+                  }}
+                >
+                  איפוס מלא וחיבור מחדש
+                </button>
               </div>
             </div>
             {/* Readiness diagnostic strip — shown only when not ready,
@@ -519,6 +562,68 @@ export default function WhatsAppBridgePage() {
 
       {loading && !data && (
         <div style={{ textAlign: 'center', color: '#94a3b8', padding: 40, fontSize: 14 }}>טוען...</div>
+      )}
+
+      {/* Hard-reset confirm modal */}
+      {hardResetOpen && (
+        <div
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            zIndex: 1100, padding: 16,
+          }}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div style={{ background: '#fff', borderRadius: 12, padding: 22, width: '100%', maxWidth: 460 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
+              <h3 style={{ fontSize: 17, fontWeight: 700, margin: 0, color: '#0f172a' }}>
+                לבצע איפוס מלא של חיבור ה-WhatsApp?
+              </h3>
+              <button
+                type="button"
+                onClick={() => setHardResetOpen(false)}
+                disabled={hardResetting}
+                aria-label="סגור"
+                style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: hardResetting ? 'not-allowed' : 'pointer', lineHeight: 1 }}
+              >×</button>
+            </div>
+            <p style={{ fontSize: 14, color: '#475569', lineHeight: 1.6, margin: '0 0 8px' }}>
+              זה ימחק את חיבור ה-WhatsApp השמור וידרוש סריקת QR מחדש.
+            </p>
+            <p style={{ fontSize: 13, color: '#64748b', lineHeight: 1.6, margin: '0 0 14px' }}>
+              להבדיל מ-&ldquo;איפוס חיבור&rdquo; — שמשאיר את החיבור השמור — האיפוס המלא מוחק את כל המידע שנשמר ב-Postgres
+              (creds + signal keys), מאפס את שורת מצב החיבור, ומפעיל סוקט חדש שיציג קוד QR חדש לסריקה.
+              נדרש כשהסשן השמור פגום וההודעות לא נשלחות גם אחרי איפוס חיבור רגיל.
+            </p>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setHardResetOpen(false)}
+                disabled={hardResetting}
+                style={{
+                  padding: '8px 16px', fontSize: 13, fontWeight: 600,
+                  background: '#f1f5f9', color: '#374151',
+                  border: '1px solid #e2e8f0', borderRadius: 8,
+                  cursor: hardResetting ? 'not-allowed' : 'pointer',
+                }}
+              >
+                ביטול
+              </button>
+              <button
+                onClick={() => { void confirmHardReset(); }}
+                disabled={hardResetting}
+                style={{
+                  padding: '8px 16px', fontSize: 13, fontWeight: 700,
+                  background: hardResetting ? '#fdba74' : '#c2410c',
+                  color: '#fff', border: 'none', borderRadius: 8,
+                  cursor: hardResetting ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {hardResetting ? 'מאפס...' : 'כן, אפס מלא'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Sign-out confirm modal */}
