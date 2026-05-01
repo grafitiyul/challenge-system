@@ -66,6 +66,12 @@ export class BaileysClient {
   // Reused across every reconnect so we don't re-instantiate an S3
   // client per socket cycle.
   private readonly storage = buildMediaStorage();
+  // In-memory connection flag. Source of truth for "is the socket
+  // currently usable for sending" — set true on connection.update
+  // 'open', cleared on 'close'. Cheaper than reading
+  // WhatsAppConnection.status from Postgres on every send, and
+  // avoids the race window where the DB row is mid-write.
+  private connected = false;
 
   async start(): Promise<void> {
     this.stopped = false;
@@ -76,22 +82,51 @@ export class BaileysClient {
     await this.connect();
   }
 
+  // Returns the in-memory connection flag without touching the socket
+  // or the DB. Used by /send to fast-fail with a precise 503 instead
+  // of waiting for socket.sendMessage to time out.
+  isConnected(): boolean {
+    return this.connected && !!this.socket?.user;
+  }
+
+  hasSocket(): boolean {
+    return this.socket !== null;
+  }
+
   // Phase 3 — outbound text send. Returns the WhatsApp-assigned
   // message id so the API can write an outbound WhatsAppMessage row
   // and dedupe against the upcoming messages.upsert echo via
-  // externalMessageId @unique. Throws if the socket isn't open;
-  // callers translate that into a 503 the admin UI can render as
-  // "WhatsApp לא מחובר כרגע".
+  // externalMessageId @unique.
+  //
+  // Distinct error.message strings (callers map these to HTTP codes):
+  //   'whatsapp_not_connected' — no usable socket. 503.
+  //   'send_timeout'           — Baileys sendMessage hung past the
+  //                              internal timeout. 504.
+  //   'send_no_message_id'     — Baileys returned without a key.id.
+  //   anything else            — Baileys threw. 500 with the raw msg.
+  //
+  // The internal timeout is set well below the API's 15 s
+  // AbortSignal.timeout so the bridge always responds (with a clear
+  // code) before the API gives up — eliminating the
+  // "operation aborted by timeout" symptom that hides the real cause.
   async sendText(jid: string, text: string): Promise<{ externalMessageId: string }> {
-    if (!this.socket || !this.socket.user) {
+    if (!this.isConnected()) {
       throw new Error('whatsapp_not_connected');
     }
-    const result = await this.socket.sendMessage(jid, { text });
+    const SEND_TIMEOUT_MS = 12_000;
+    let timer: NodeJS.Timeout | null = null;
+    const sendPromise = this.socket!.sendMessage(jid, { text });
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('send_timeout')), SEND_TIMEOUT_MS);
+    });
+    let result;
+    try {
+      result = await Promise.race([sendPromise, timeoutPromise]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
     const id = result?.key?.id;
     if (!id) {
-      // Baileys returned without a key.id — extremely rare, treat as
-      // soft-fail so the API can return a clear error rather than
-      // claiming success.
       throw new Error('send_no_message_id');
     }
     return { externalMessageId: id };
@@ -103,6 +138,7 @@ export class BaileysClient {
   async signOut(): Promise<void> {
     log.warn('admin sign-out requested');
     this.stopped = true;
+    this.connected = false;
     this.clearTimers();
     try {
       await this.socket?.logout('admin sign-out');
@@ -233,6 +269,7 @@ export class BaileysClient {
 
     if (connection === 'open') {
       this.attempt = 0;
+      this.connected = true;
       const me = this.socket?.user;
       log.info({ jid: me?.id, name: me?.name }, 'connected');
       await connState.setConnected(prisma, {
@@ -248,6 +285,7 @@ export class BaileysClient {
     }
 
     if (connection === 'close') {
+      this.connected = false;
       this.clearHealthyTimer();
       const code = (lastDisconnect?.error as Boom | undefined)?.output?.statusCode;
       const reason = describeReason(code);

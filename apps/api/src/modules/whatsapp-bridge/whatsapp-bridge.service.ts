@@ -136,15 +136,19 @@ export class WhatsappBridgeService {
       return { ok: true, externalMessageId: json.externalMessageId };
     }
 
-    // Map bridge error codes to user-facing Hebrew messages. The bridge
-    // returns 503 with { error: 'whatsapp_not_connected' } when the
-    // socket is down — this is the case the admin UI should render as
-    // "WhatsApp לא מחובר כרגע".
-    const body = (await res.json().catch(() => ({}))) as { error?: string; detail?: string };
+    // Map bridge response codes to distinct exceptions / Hebrew
+    // messages. Each branch corresponds to one of the bridge's named
+    // failure modes (bridge_auth_failed / invalid_payload /
+    // whatsapp_not_connected / send_timeout / send_failed). Generic
+    // fallbacks at the bottom catch anything outside this contract
+    // — they shouldn't fire in production but exist so a future
+    // bridge change doesn't crash the proxy.
+    const body = (await res.json().catch(() => ({}))) as { error?: string; reason?: string; detail?: string };
     // eslint-disable-next-line no-console
-    console.warn('[whatsapp-send] bridge non-2xx status=%d error=%s detail=%s',
-      res.status, body.error ?? '<none>', body.detail ?? '<none>');
-    if (res.status === 401 || res.status === 403) {
+    console.warn('[whatsapp-send] bridge non-2xx status=%d error=%s reason=%s detail=%s',
+      res.status, body.error ?? '<none>', body.reason ?? '<none>', body.detail ?? '<none>');
+
+    if (res.status === 401 && body.error === 'bridge_auth_failed') {
       throw new ServiceUnavailableException(
         'הגשר דחה את הבקשה (סוד שירות לא תואם). ודאי ש-INTERNAL_API_SECRET / BAILEYS_BRIDGE_SECRET זהה ב-API ובגשר.',
       );
@@ -152,13 +156,35 @@ export class WhatsappBridgeService {
     if (res.status === 503 && body.error === 'whatsapp_not_connected') {
       throw new ServiceUnavailableException('WhatsApp לא מחובר כרגע. פתחי את "מצב חיבור" וסרקי קוד QR.');
     }
-    if (res.status === 400) {
-      if (body.error === 'phone_invalid') {
+    if (res.status === 504 && body.error === 'send_timeout') {
+      throw new ServiceUnavailableException(
+        'שליחה ל-WhatsApp לא הסתיימה בזמן (timeout בגשר). ייתכן שהסוקט תקוע — בדקי את "מצב חיבור" ונסי שוב.',
+      );
+    }
+    if (res.status === 500 && body.error === 'send_failed') {
+      // body.detail is the safe single-line error message from the
+      // bridge; never the raw stack.
+      throw new ServiceUnavailableException(
+        `שליחה נכשלה: ${body.detail ?? 'שגיאה לא ידועה'}.`,
+      );
+    }
+    if (res.status === 400 && body.error === 'invalid_payload') {
+      if (body.reason === 'phone_invalid') {
         throw new BadRequestException('מספר טלפון לא תקין.');
       }
-      if (body.error === 'phone_required' || body.error === 'message_required') {
+      if (body.reason === 'phone_required' || body.reason === 'message_required') {
         throw new BadRequestException('מספר טלפון והודעה הם שדות חובה.');
       }
+      throw new BadRequestException(`קלט לא תקין (${body.reason ?? '?'}).`);
+    }
+
+    // Generic fallbacks. Auth failures with the OLD error code, or any
+    // unmapped status, end up here so the admin UI doesn't render an
+    // empty toast.
+    if (res.status === 401 || res.status === 403) {
+      throw new ServiceUnavailableException(
+        'הגשר דחה את הבקשה (סוד שירות לא תואם).',
+      );
     }
     throw new ServiceUnavailableException(
       `שליחה דרך הגשר נכשלה (${res.status}${body.detail ? `: ${body.detail}` : ''}).`,

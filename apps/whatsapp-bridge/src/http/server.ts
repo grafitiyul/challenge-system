@@ -29,13 +29,19 @@ export async function startHttpServer(client: BaileysClient): Promise<FastifyIns
   // Auth hook for everything except /health. Constant-time compare via
   // === is sufficient here: the secret is high-entropy, the network
   // surface is private, and we're not protecting against side-channel
-  // attacks at this layer.
+  // attacks at this layer. Auth failures are logged so a misconfigured
+  // INTERNAL_API_SECRET on the API side doesn't manifest as silent
+  // 401s — the bridge log shows exactly which path was attempted.
   fastify.addHook('onRequest', async (req, reply) => {
     if (req.url === '/health') return;
     const header = req.headers.authorization ?? '';
     const expected = `Bearer ${config.internalApiSecret}`;
     if (header !== expected) {
-      reply.code(401).send({ error: 'unauthorized' });
+      log.warn(
+        { path: req.url, method: req.method, hasHeader: !!req.headers.authorization },
+        'bridge auth rejected',
+      );
+      reply.code(401).send({ error: 'bridge_auth_failed' });
     }
   });
 
@@ -117,56 +123,120 @@ export async function startHttpServer(client: BaileysClient): Promise<FastifyIns
 
   // POST /send  { phone: "972..." | "...@s.whatsapp.net" | "...@g.us", message: string }
   //
-  // Phase 3 — outbound text. Normalises a raw phone number into a
-  // WhatsApp JID, hands it to BaileysClient.sendText, and writes an
-  // outbound WhatsAppMessage row tagged provider='baileys' so the row
-  // is visible in /admin/chats immediately. Baileys will later echo
-  // the same message via messages.upsert with key.fromMe=true; the
-  // ingest path's findUnique short-circuit on externalMessageId
-  // dedupes against the row we just wrote — no duplicates.
+  // Phase 3 — outbound text. Each request walks through a fixed
+  // sequence of checkpoints, each emitting one INFO line (or one
+  // ERROR line on failure). The Railway log for a single attempt
+  // therefore tells the full story:
   //
-  // Logging policy continues to apply: chatId/messageId/length only,
-  // never message contents.
+  //   [/send] received                     (HTTP entered, auth passed)
+  //   [/send] payload jidShape=… phoneTail=… len=…
+  //   [/send] socket present=true connected=true
+  //   [/send] socket.sendMessage starting
+  //   [/send] socket.sendMessage succeeded externalMessageId=…
+  //   [/send] outbound row persisted
+  //
+  // Or one of the failure paths:
+  //   [/send] invalid_payload reason=…             → 400 invalid_payload
+  //   [/send] whatsapp_not_connected hasSocket=…   → 503 whatsapp_not_connected
+  //   [/send] send_timeout after Nms               → 504 send_timeout
+  //   [/send] send_failed name=… message=…         → 500 send_failed
+  //
+  // Logging policy: phone is masked to last-4-digits + jidShape;
+  // message contents NEVER logged; only length + the externalMessageId.
   fastify.post<{
     Body: { phone?: string; message?: string };
   }>('/send', async (req, reply) => {
+    const startedAt = Date.now();
+    log.info('[/send] received');
+
+    // ── Step 1: payload validation ───────────────────────────────────
     const { phone, message } = req.body ?? {};
     if (!phone || typeof phone !== 'string' || !phone.trim()) {
-      reply.code(400).send({ error: 'phone_required' });
+      log.warn({ reason: 'phone_required' }, '[/send] invalid_payload');
+      reply.code(400).send({ error: 'invalid_payload', reason: 'phone_required' });
       return;
     }
     if (!message || typeof message !== 'string' || !message.trim()) {
-      reply.code(400).send({ error: 'message_required' });
+      log.warn({ reason: 'message_required' }, '[/send] invalid_payload');
+      reply.code(400).send({ error: 'invalid_payload', reason: 'message_required' });
       return;
     }
-
     const trimmedMessage = message.trim();
     const jid = normaliseToJid(phone.trim());
     if (!jid) {
-      reply.code(400).send({ error: 'phone_invalid' });
+      log.warn({ reason: 'phone_invalid', phoneTail: lastFourDigits(phone) }, '[/send] invalid_payload');
+      reply.code(400).send({ error: 'invalid_payload', reason: 'phone_invalid' });
+      return;
+    }
+    log.info(
+      { jidShape: shapeFor(jid), phoneTail: lastFourDigits(jid), length: trimmedMessage.length },
+      '[/send] payload',
+    );
+
+    // ── Step 2: socket / connection state ────────────────────────────
+    const hasSocket = client.hasSocket();
+    const isConnected = client.isConnected();
+    log.info({ hasSocket, connected: isConnected }, '[/send] socket state');
+    if (!isConnected) {
+      log.warn({ hasSocket }, '[/send] whatsapp_not_connected');
+      reply.code(503).send({ error: 'whatsapp_not_connected' });
       return;
     }
 
+    // ── Step 3: hand off to Baileys (with internal timeout) ──────────
     let externalMessageId: string;
     try {
+      log.info('[/send] socket.sendMessage starting');
       const result = await client.sendText(jid, trimmedMessage);
       externalMessageId = result.externalMessageId;
+      log.info(
+        { externalMessageId, elapsedMs: Date.now() - startedAt },
+        '[/send] socket.sendMessage succeeded',
+      );
     } catch (err) {
       const code = err instanceof Error ? err.message : 'send_failed';
+      // Distinct branches per code so the bridge logs and the HTTP
+      // status code line up with the API proxy's mapping.
       if (code === 'whatsapp_not_connected') {
+        // Race: socket dropped between the isConnected() check and
+        // sendText. Treat as 503, same surface as Step 2.
+        log.warn('[/send] whatsapp_not_connected (raced after isConnected check)');
         reply.code(503).send({ error: 'whatsapp_not_connected' });
         return;
       }
-      log.error({ err: errSummary(err), jidShape: shapeFor(jid) }, 'send failed');
-      reply.code(500).send({ error: 'send_failed', detail: errSummary(err) });
+      if (code === 'send_timeout') {
+        log.error(
+          { elapsedMs: Date.now() - startedAt },
+          '[/send] send_timeout — Baileys socket.sendMessage did not resolve within bridge timeout',
+        );
+        reply.code(504).send({ error: 'send_timeout' });
+        return;
+      }
+      // Anything else: capture name + message + stack at error level
+      // for the operator. The HTTP body carries a SAFE error message
+      // (no stack, no sensitive details) so the admin UI shows it.
+      const errName = err instanceof Error ? err.name : 'unknown';
+      const errMessage = err instanceof Error ? err.message : String(err);
+      const errStack = err instanceof Error ? err.stack : undefined;
+      log.error(
+        {
+          jidShape: shapeFor(jid),
+          name: errName,
+          message: errMessage,
+          stack: errStack,
+          elapsedMs: Date.now() - startedAt,
+        },
+        '[/send] send_failed',
+      );
+      reply.code(500).send({
+        error: 'send_failed',
+        // safe message: first line of the error, capped, no stack.
+        detail: errMessage.split('\n')[0]?.slice(0, 240) ?? 'send_failed',
+      });
       return;
     }
 
-    // Persist the outbound row. Use upsert by externalMessageId so a
-    // race against the messages.upsert echo can never produce a
-    // duplicate row (the schema's @unique constraint on
-    // externalMessageId already guarantees this; the upsert is just
-    // explicit about it).
+    // ── Step 4: persist outbound row (non-fatal if it fails) ─────────
     try {
       const chat = await upsertOutboundChat(jid);
       await prisma.whatsAppMessage.upsert({
@@ -198,22 +268,24 @@ export async function startHttpServer(client: BaileysClient): Promise<FastifyIns
         where: { id: chat.id },
         data: { lastMessageAt: new Date() },
       });
-      // Heartbeat — same path the ingest handlers use.
       await prisma.whatsAppConnection.updateMany({
         where: { id: 'singleton' },
         data: { lastMessageAt: new Date() },
       });
+      log.info({ externalMessageId }, '[/send] outbound row persisted');
     } catch (err) {
       // The send already succeeded on WhatsApp's side; persistence
-      // failure is non-fatal for the API contract. Log and continue
-      // — the messages.upsert echo will create the row when the
-      // response comes back.
-      log.warn({ err: errSummary(err), externalMessageId }, 'outbound row persist failed; relying on echo');
+      // failure is non-fatal for the API contract. The messages.upsert
+      // echo will create the row when the response comes back.
+      log.warn(
+        { err: errSummary(err), externalMessageId },
+        '[/send] outbound row persist failed; relying on echo',
+      );
     }
 
     log.info(
-      { jidShape: shapeFor(jid), externalMessageId, length: trimmedMessage.length },
-      'message sent',
+      { externalMessageId, elapsedMs: Date.now() - startedAt },
+      '[/send] complete',
     );
     reply.code(200).send({ ok: true, externalMessageId });
   });
@@ -288,6 +360,10 @@ function shapeFor(jid: string): 'private' | 'group' | 'unknown' {
   if (jid.endsWith('@s.whatsapp.net')) return 'private';
   if (jid.endsWith('@g.us')) return 'group';
   return 'unknown';
+}
+
+function lastFourDigits(input: string): string {
+  return input.replace(/\D/g, '').slice(-4) || '????';
 }
 
 function errSummary(err: unknown): string {
