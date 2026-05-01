@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
@@ -126,6 +127,12 @@ export class ParticipantProfilePortalController {
     });
     return this.svc.recordUpload(ctx.participantId, {
       url: stored.url,
+      // Persist the R2 key so the admin delete path can later remove
+      // the underlying object. For the disk fallback this is the
+      // bare filename, which the admin delete uses to unlink the
+      // local file. Either way: storageKey is the truth, url is the
+      // display string.
+      storageKey: stored.key,
       mimeType: file.mimetype,
       sizeBytes: stored.size,
     });
@@ -148,5 +155,27 @@ export class ParticipantProfileAdminController {
     @Param('programId') programId: string,
   ): Promise<ProfileSnapshot> {
     return this.svc.getProfileForParticipant(participantId, programId);
+  }
+}
+
+// ── Admin: hard-delete a single uploaded file ──────────────────────────
+// Authoritative cleanup: drops the catalog row, strips dangling
+// references in profile values + the avatar column, and (for R2-backed
+// uploads) deletes the underlying object. This is the ONLY path that
+// physically removes from R2 — the participant portal "remove from
+// gallery" path never calls storage.remove() per the operator policy
+// (participant edits may be temporary; admin delete is the cleanup).
+
+@UseGuards(AdminSessionGuard)
+@Controller('admin/participants/:participantId/files')
+export class ParticipantUploadedFileAdminController {
+  constructor(private readonly svc: ParticipantProfilePortalService) {}
+
+  @Delete(':fileId')
+  delete(
+    @Param('participantId') participantId: string,
+    @Param('fileId') fileId: string,
+  ): Promise<{ ok: true; storageRemoved: boolean; storageReason?: string }> {
+    return this.svc.adminDeleteUploadedFile(participantId, fileId);
   }
 }

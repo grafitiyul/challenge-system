@@ -502,8 +502,18 @@ model ParticipantUploadedFile {
   // "avatar" | "before" | "profile_field:<fieldKey>" — free-form so future
   // categories don't require a migration.
   category      String
-  // Path served by the API's static-asset middleware: "/uploads/<filename>".
+  // Public URL the browser fetches. For R2-backed uploads this is
+  // MEDIA_PUBLIC_URL_BASE/<storageKey>; for legacy / dev-disk uploads
+  // it's "/uploads/<filename>" served by the API's static-asset
+  // middleware. Renderers handle both shapes.
   url           String
+  // Bucket-relative key for R2-backed uploads (e.g.
+  // "profile/<participantId>/<ts>_<rand>.jpg"). Used by the admin
+  // delete flow to remove the underlying R2 object. Nullable so
+  // pre-cutover rows (and dev-disk uploads where there's no remote
+  // bucket to clean up) keep working — admin delete simply skips the
+  // R2 remove step in that case.
+  storageKey    String?
   mimeType      String
   sizeBytes     Int
   uploadedAt    DateTime    @default(now())

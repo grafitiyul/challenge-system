@@ -3,6 +3,7 @@ import { AuthModule } from '../auth/auth.module';
 import {
   ParticipantProfilePortalController,
   ParticipantProfileAdminController,
+  ParticipantUploadedFileAdminController,
 } from './participant-profile-portal.controller';
 import { ParticipantProfilePortalService } from './participant-profile-portal.service';
 
@@ -11,6 +12,7 @@ import { ParticipantProfilePortalService } from './participant-profile-portal.se
   controllers: [
     ParticipantProfilePortalController,
     ParticipantProfileAdminController,
+    ParticipantUploadedFileAdminController,
   ],
   providers: [ParticipantProfilePortalService],
 })

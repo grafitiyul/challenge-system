@@ -1,6 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { getMediaStorage } from '../upload/media-storage';
 
 // Shape served to both /api/portal/profile/:token and the admin read-only
 // view. Keeps the two surfaces identical so admins see exactly what
@@ -278,13 +279,25 @@ export class ParticipantProfilePortalService {
   // the row + metadata so missing-checks and gallery views work.
   async recordUpload(
     participantId: string,
-    info: { url: string; mimeType: string; sizeBytes: number; category?: string },
+    info: {
+      url: string;
+      // Bucket-relative key for R2-backed uploads. Persisted alongside
+      // url so the admin delete path can call storage.remove() without
+      // having to parse the URL back into a key. null/undefined for
+      // legacy or dev-disk uploads — admin delete then just drops the
+      // DB row and skips the remote remove.
+      storageKey?: string | null;
+      mimeType: string;
+      sizeBytes: number;
+      category?: string;
+    },
   ): Promise<FileMeta> {
     const row = await this.prisma.participantUploadedFile.create({
       data: {
         participantId,
         category: info.category ?? 'profile_field',
         url: info.url,
+        storageKey: info.storageKey ?? null,
         mimeType: info.mimeType,
         sizeBytes: info.sizeBytes,
       },
@@ -307,6 +320,102 @@ export class ParticipantProfilePortalService {
       id: row.id, url: row.url, mimeType: row.mimeType,
       sizeBytes: row.sizeBytes, uploadedAt: row.uploadedAt.toISOString(),
     };
+  }
+
+  // ── Admin: hard-delete an uploaded file ──────────────────────────────
+  // Authoritative cleanup path. Distinct from the participant-portal
+  // "remove from gallery" flow which only updates the value array
+  // (detach, no R2 touch). When the admin clicks delete:
+  //   1. Look up the file row scoped to the participant.
+  //   2. Strip its id (or url) from any ParticipantProfileValue still
+  //      referencing it — image fields cleared, imageGallery arrays
+  //      filtered. Also clear Participant.profileImageUrl if it
+  //      points at the soon-to-be-deleted url. Without this step,
+  //      orphan references would render as broken thumbs in the UI.
+  //   3. Delete the ParticipantUploadedFile row.
+  //   4. Best-effort R2 remove via storageKey. Failures are logged
+  //      but don't block the response — the DB is already cleaned up.
+  //   5. Skip the R2 remove for legacy rows (storageKey null) or
+  //      anything that looks like a /uploads/* legacy path.
+  async adminDeleteUploadedFile(
+    participantId: string,
+    fileId: string,
+  ): Promise<{ ok: true; storageRemoved: boolean; storageReason?: string }> {
+    const file = await this.prisma.participantUploadedFile.findFirst({
+      where: { id: fileId, participantId },
+    });
+    if (!file) throw new NotFoundException('הקובץ לא נמצא');
+
+    // 1. Detach references in profile values that mention this id (gallery
+    //    arrays) or this url (image fields persisted as the url string).
+    const values = await this.prisma.participantProfileValue.findMany({
+      where: { participantId },
+    });
+    for (const v of values) {
+      if (Array.isArray(v.value)) {
+        const filtered = (v.value as unknown[]).filter(
+          (entry) => entry !== fileId,
+        );
+        if (filtered.length !== v.value.length) {
+          await this.prisma.participantProfileValue.update({
+            where: { id: v.id },
+            data: { value: filtered as Prisma.InputJsonValue },
+          });
+        }
+      } else if (typeof v.value === 'string' && (v.value === fileId || v.value === file.url)) {
+        await this.prisma.participantProfileValue.update({
+          where: { id: v.id },
+          data: { value: Prisma.JsonNull },
+        });
+      }
+    }
+
+    // 2. If the avatar (Participant.profileImageUrl) points at this
+    //    file's url, clear it. profileImageUrl stores the resolved
+    //    URL string (set via writeSystemField), not the file id.
+    const participant = await this.prisma.participant.findUnique({
+      where: { id: participantId },
+      select: { profileImageUrl: true },
+    });
+    if (participant?.profileImageUrl === file.url) {
+      await this.prisma.participant.update({
+        where: { id: participantId },
+        data: { profileImageUrl: null },
+      });
+    }
+
+    // 3. Drop the file row from the catalog.
+    await this.prisma.participantUploadedFile.delete({ where: { id: fileId } });
+
+    // 4. Best-effort R2 remove. Skip when there's no key (legacy)
+    //    OR when the url looks like a legacy local-disk path — those
+    //    aren't in R2 and the storage layer's disk fallback would
+    //    only remove a local file we don't want to surprise-delete
+    //    during what's primarily an R2-cleanup operation.
+    if (!file.storageKey || file.url.startsWith('/uploads/')) {
+      this.logger.log(
+        `[media] admin delete fileId=${fileId} url=${file.url} skipping storage remove ` +
+        `(${!file.storageKey ? 'no storageKey' : 'legacy /uploads url'})`,
+      );
+      return { ok: true, storageRemoved: false, storageReason: !file.storageKey ? 'no_storage_key' : 'legacy_uploads_path' };
+    }
+
+    const storage = getMediaStorage();
+    const result = await storage.remove(file.storageKey);
+    if (result.ok) {
+      this.logger.log(
+        `[media] admin delete fileId=${fileId} key=${file.storageKey} removed from ${storage.kind}`,
+      );
+      return { ok: true, storageRemoved: true };
+    }
+    // R2 returned an error (e.g. 404 — already gone, or transient
+    // network). Log it but don't fail the response — the DB is
+    // already authoritative and the orphan object is harmless cost.
+    this.logger.warn(
+      `[media] admin delete fileId=${fileId} key=${file.storageKey} ` +
+      `storage.remove failed reason=${result.reason ?? 'unknown'} — continuing`,
+    );
+    return { ok: true, storageRemoved: false, storageReason: result.reason ?? 'remove_failed' };
   }
 
   // ── Internals ───────────────────────────────────────────────────────────

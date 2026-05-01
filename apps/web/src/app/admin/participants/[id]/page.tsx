@@ -1738,10 +1738,13 @@ function AdminProfileTab({ participant }: { participant: Participant }) {
   const [snapshots, setSnapshots] = useState<Record<string, AdminProfileSnapshot | { error: string }>>({});
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => {
+  // Reload all program snapshots for this participant. Pulled out as
+  // a callable so the file-delete button can refresh after a
+  // successful DELETE without forcing the admin to reload the page.
+  const reloadSnapshots = useCallback(async () => {
     if (programIds.length === 0) return;
     setLoading(true);
-    Promise.all(programIds.map(async (pid) => {
+    const rows = await Promise.all(programIds.map(async (pid) => {
       try {
         const r = await apiFetch<AdminProfileSnapshot>(
           `${BASE_URL}/admin/participants/${participant.id}/profile/${pid}`,
@@ -1751,12 +1754,16 @@ function AdminProfileTab({ participant }: { participant: Participant }) {
       } catch (e) {
         return [pid, { error: e instanceof Error ? e.message : 'טעינה נכשלה' }] as const;
       }
-    })).then((rows) => {
-      const next: Record<string, AdminProfileSnapshot | { error: string }> = {};
-      for (const [pid, snap] of rows) next[pid] = snap;
-      setSnapshots(next);
-    }).finally(() => setLoading(false));
+    }));
+    const next: Record<string, AdminProfileSnapshot | { error: string }> = {};
+    for (const [pid, snap] of rows) next[pid] = snap;
+    setSnapshots(next);
+    setLoading(false);
   }, [programIds, participant.id]);
+
+  useEffect(() => {
+    void reloadSnapshots();
+  }, [reloadSnapshots]);
 
   if (programIds.length === 0) {
     return (
@@ -1781,13 +1788,24 @@ function AdminProfileTab({ participant }: { participant: Participant }) {
             </div>
           );
         }
-        return <AdminProfileProgramCard key={pid} snapshot={snap} />;
+        return (
+          <AdminProfileProgramCard
+            key={pid}
+            snapshot={snap}
+            participantId={participant.id}
+            onChanged={() => { void reloadSnapshots(); }}
+          />
+        );
       })}
     </div>
   );
 }
 
-function AdminProfileProgramCard({ snapshot }: { snapshot: AdminProfileSnapshot }) {
+function AdminProfileProgramCard({ snapshot, participantId, onChanged }: {
+  snapshot: AdminProfileSnapshot;
+  participantId: string;
+  onChanged: () => void;
+}) {
   // Programs without configured fields show an empty-state message
   // rather than render a card with nothing in it.
   if (snapshot.fields.length === 0) {
@@ -1831,6 +1849,8 @@ function AdminProfileProgramCard({ snapshot }: { snapshot: AdminProfileSnapshot 
             value={snapshot.values[f.fieldKey]}
             files={snapshot.files}
             isMissing={snapshot.missingRequiredKeys.includes(f.fieldKey)}
+            participantId={participantId}
+            onChanged={onChanged}
           />
         ))}
       </div>
@@ -1843,9 +1863,13 @@ function AdminProfileField(props: {
   value: unknown;
   files: AdminProfileSnapshot['files'];
   isMissing: boolean;
+  participantId: string;
+  onChanged: () => void;
 }) {
-  const { field, value, files, isMissing } = props;
-  const display = renderAdminValue(field.fieldType, value, field.isSystemField, files);
+  const { field, value, files, isMissing, participantId, onChanged } = props;
+  const display = renderAdminValue(
+    field.fieldType, value, field.isSystemField, files, participantId, onChanged,
+  );
   return (
     <div style={{
       display: 'flex', alignItems: 'flex-start', gap: 10,
@@ -1879,6 +1903,8 @@ function renderAdminValue(
   value: unknown,
   isSystemField: boolean,
   files: AdminProfileSnapshot['files'],
+  participantId: string,
+  onChanged: () => void,
 ): React.ReactNode {
   const empty = <span style={{ color: '#94a3b8', fontSize: 13, fontStyle: 'italic' }}>— ריק —</span>;
 
@@ -1908,10 +1934,24 @@ function renderAdminValue(
     const url = isSystemField ? value : files[value]?.url;
     if (!url) return empty;
     const src = url.startsWith('/uploads') ? `${API_BASE}${url}` : url;
+    // Delete affordance only when the value is a file id (custom
+    // image fields). The system profileImageUrl stores a raw URL
+    // string, not a file id — so we can't reach the catalog row
+    // from here. Operators wanting to remove the avatar should do
+    // it via the existing system-field clear flow.
     return (
-      <a href={src} target="_blank" rel="noopener noreferrer">
-        <img src={src} alt="" style={{ maxHeight: 120, borderRadius: 8, border: '1px solid #e2e8f0' }} />
-      </a>
+      <div style={{ position: 'relative', display: 'inline-block' }}>
+        <a href={src} target="_blank" rel="noopener noreferrer">
+          <img src={src} alt="" style={{ maxHeight: 120, borderRadius: 8, border: '1px solid #e2e8f0' }} />
+        </a>
+        {!isSystemField && typeof value === 'string' && (
+          <FileDeleteButton
+            participantId={participantId}
+            fileId={value}
+            onChanged={onChanged}
+          />
+        )}
+      </div>
     );
   }
   if (fieldType === 'imageGallery') {
@@ -1928,26 +1968,93 @@ function renderAdminValue(
           if (!meta) return null;
           const src = meta.url.startsWith('/uploads') ? `${API_BASE}${meta.url}` : meta.url;
           const isVideo = /^video\//i.test(meta.mimeType);
-          if (isVideo) {
-            return (
-              <video
-                key={id}
-                src={src}
-                style={{ height: 80, width: 80, objectFit: 'cover', borderRadius: 8, border: '1px solid #e2e8f0', background: '#0f172a' }}
-                controls
-                preload="metadata"
-                playsInline
-              />
-            );
-          }
           return (
-            <a key={id} href={src} target="_blank" rel="noopener noreferrer">
-              <img src={src} alt="" style={{ height: 80, width: 80, objectFit: 'cover', borderRadius: 8, border: '1px solid #e2e8f0' }} />
-            </a>
+            <div key={id} style={{ position: 'relative' }}>
+              {isVideo ? (
+                <video
+                  src={src}
+                  style={{ height: 80, width: 80, objectFit: 'cover', borderRadius: 8, border: '1px solid #e2e8f0', background: '#0f172a' }}
+                  controls
+                  preload="metadata"
+                  playsInline
+                />
+              ) : (
+                <a href={src} target="_blank" rel="noopener noreferrer">
+                  <img src={src} alt="" style={{ height: 80, width: 80, objectFit: 'cover', borderRadius: 8, border: '1px solid #e2e8f0' }} />
+                </a>
+              )}
+              <FileDeleteButton
+                participantId={participantId}
+                fileId={id}
+                onChanged={onChanged}
+              />
+            </div>
           );
         })}
       </div>
     );
   }
   return empty;
+}
+
+// Admin-only delete button overlaid on a profile / gallery file. On
+// confirm, calls DELETE /api/admin/participants/:id/files/:fileId
+// which: drops the catalog row, strips dangling references in
+// profile values + the avatar column, and (for R2-backed uploads)
+// physically removes the underlying R2 object. This is the ONLY UI
+// path that triggers a physical R2 delete — the participant portal
+// "remove from gallery" flow is detach-only by design.
+function FileDeleteButton({
+  participantId, fileId, onChanged,
+}: { participantId: string; fileId: string; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  async function onClick(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (busy) return;
+    if (!window.confirm('למחוק קובץ זה? המחיקה אינה הפיכה ותמחק גם את הקובץ מהאחסון.')) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await apiFetch(
+        `${BASE_URL}/admin/participants/${participantId}/files/${fileId}`,
+        { method: 'DELETE' },
+      );
+      onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'מחיקה נכשלה');
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <>
+      <button
+        type="button"
+        onClick={(e) => { void onClick(e); }}
+        disabled={busy}
+        title="מחיקה"
+        aria-label="מחיקה"
+        style={{
+          position: 'absolute', top: -6, right: -6,
+          width: 22, height: 22, borderRadius: 999,
+          background: busy ? '#fca5a5' : '#dc2626', color: '#fff',
+          border: '2px solid #fff', cursor: busy ? 'not-allowed' : 'pointer',
+          fontSize: 13, lineHeight: 1, padding: 0,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          boxShadow: '0 2px 4px rgba(0,0,0,0.2)',
+        }}
+      >×</button>
+      {error && (
+        <div style={{
+          position: 'absolute', top: 18, right: 0,
+          background: '#fee2e2', color: '#991b1b', fontSize: 11,
+          padding: '3px 6px', borderRadius: 6,
+          border: '1px solid #fecaca', whiteSpace: 'nowrap',
+          zIndex: 10,
+        }}>{error}</div>
+      )}
+    </>
+  );
 }
