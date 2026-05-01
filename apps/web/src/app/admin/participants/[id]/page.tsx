@@ -1468,7 +1468,16 @@ function WhatsappComposeModal(props: {
       setSent(true);
       setTimeout(props.onClose, 800);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'שליחה נכשלה');
+      // apiFetch throws an ApiError plain object ({ status, message }),
+      // NOT an Error instance — so `e instanceof Error` was false and
+      // the real server message ("WhatsApp לא מחובר כרגע", "שירות
+      // WhatsApp לא מוגדר", etc.) was being swallowed by the generic
+      // fallback. Duck-type the message field so the operator sees
+      // exactly what the API said.
+      const msg = (typeof e === 'object' && e !== null && 'message' in e)
+        ? String((e as { message: unknown }).message)
+        : (e instanceof Error ? e.message : 'שליחה נכשלה');
+      setErr(msg || 'שליחה נכשלה');
     } finally { setBusy(false); }
   }
 

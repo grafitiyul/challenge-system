@@ -38,16 +38,24 @@ export interface BridgeStatusPayload {
   mediaToday: number;
 }
 
+// Accept both env-var name pairs:
+//   WHATSAPP_BRIDGE_URL + INTERNAL_API_SECRET   (Phase 1 names; in
+//                                                production today)
+//   BAILEYS_BRIDGE_URL  + BAILEYS_BRIDGE_SECRET (Phase 3 spec names)
+// First non-empty wins. This avoids a config-rename race where the
+// operator follows the Phase 3 doc literally and sets the *_BRIDGE_*
+// names but the API was still reading WHATSAPP_BRIDGE_URL — silently
+// failing with "שירות WhatsApp לא מוגדר".
 function bridgeUrl(): string | null {
-  const v = process.env['WHATSAPP_BRIDGE_URL'];
+  const v = process.env['WHATSAPP_BRIDGE_URL'] ?? process.env['BAILEYS_BRIDGE_URL'];
   if (!v || !v.trim()) return null;
   return v.trim().replace(/\/+$/, '');
 }
 
 function bridgeSecret(): string {
-  const v = process.env['INTERNAL_API_SECRET'];
+  const v = process.env['INTERNAL_API_SECRET'] ?? process.env['BAILEYS_BRIDGE_SECRET'];
   if (!v) {
-    throw new ServiceUnavailableException('INTERNAL_API_SECRET not configured');
+    throw new ServiceUnavailableException('INTERNAL_API_SECRET / BAILEYS_BRIDGE_SECRET not configured');
   }
   return v;
 }
@@ -84,8 +92,21 @@ export class WhatsappBridgeService {
   async sendMessage(phoneOrJid: string, message: string): Promise<{ ok: true; externalMessageId: string }> {
     const base = bridgeUrl();
     if (!base) {
+      // eslint-disable-next-line no-console
+      console.warn('[whatsapp-send] bridge URL not configured (checked WHATSAPP_BRIDGE_URL + BAILEYS_BRIDGE_URL)');
       throw new ServiceUnavailableException('שירות WhatsApp לא מוגדר. פנה למנהל המערכת.');
     }
+    // Log attempts so the next failure leaves a trail in Railway logs.
+    // Phone is partially redacted (last 4 digits + jid suffix only) per
+    // the strict "no message contents in logs" policy.
+    const jidShape = phoneOrJid.endsWith('@g.us') ? 'group'
+      : phoneOrJid.endsWith('@s.whatsapp.net') ? 'private'
+      : 'phone';
+    const phoneTail = phoneOrJid.replace(/\D/g, '').slice(-4);
+    // eslint-disable-next-line no-console
+    console.log('[whatsapp-send] attempt base=%s jidShape=%s phoneTail=%s len=%d',
+      base, jidShape, phoneTail, message.length);
+
     let res: Response;
     try {
       res = await fetch(`${base}/send`, {
@@ -99,13 +120,19 @@ export class WhatsappBridgeService {
       });
     } catch (err) {
       const reason = err instanceof Error ? err.message : 'unknown';
+      // eslint-disable-next-line no-console
+      console.error('[whatsapp-send] bridge unreachable base=%s reason=%s', base, reason);
       throw new ServiceUnavailableException(`גשר WhatsApp לא זמין (${reason}).`);
     }
     if (res.ok) {
       const json = (await res.json().catch(() => ({}))) as { externalMessageId?: string };
       if (!json.externalMessageId) {
+        // eslint-disable-next-line no-console
+        console.warn('[whatsapp-send] bridge returned 200 without externalMessageId');
         throw new ServiceUnavailableException('הגשר החזיר תגובה ללא מזהה הודעה.');
       }
+      // eslint-disable-next-line no-console
+      console.log('[whatsapp-send] ok externalMessageId=%s', json.externalMessageId);
       return { ok: true, externalMessageId: json.externalMessageId };
     }
 
@@ -114,6 +141,14 @@ export class WhatsappBridgeService {
     // socket is down — this is the case the admin UI should render as
     // "WhatsApp לא מחובר כרגע".
     const body = (await res.json().catch(() => ({}))) as { error?: string; detail?: string };
+    // eslint-disable-next-line no-console
+    console.warn('[whatsapp-send] bridge non-2xx status=%d error=%s detail=%s',
+      res.status, body.error ?? '<none>', body.detail ?? '<none>');
+    if (res.status === 401 || res.status === 403) {
+      throw new ServiceUnavailableException(
+        'הגשר דחה את הבקשה (סוד שירות לא תואם). ודאי ש-INTERNAL_API_SECRET / BAILEYS_BRIDGE_SECRET זהה ב-API ובגשר.',
+      );
+    }
     if (res.status === 503 && body.error === 'whatsapp_not_connected') {
       throw new ServiceUnavailableException('WhatsApp לא מחובר כרגע. פתחי את "מצב חיבור" וסרקי קוד QR.');
     }
