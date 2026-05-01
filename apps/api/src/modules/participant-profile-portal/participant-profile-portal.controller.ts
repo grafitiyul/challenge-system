@@ -12,43 +12,32 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import * as path from 'path';
-import * as fs from 'fs';
-import { resolveUploadsDir } from '../upload/uploads-dir';
 import { AdminSessionGuard } from '../auth/admin-session.guard';
 import { ParticipantProfilePortalService, ProfileSnapshot } from './participant-profile-portal.service';
 import { SetProfileValueDto } from './dto/set-value.dto';
 import { MulterExceptionFilter } from './multer-exception.filter';
+import { getMediaStorage, generateStorageKey } from '../upload/media-storage';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const multer = require('multer');
 
-// Mirrors the local UploadedFileInfo type used by the admin upload
-// controller; avoids pulling in @types/multer.
+// Mirrors the multer file shape; avoids pulling in @types/multer.
+// IMPORTANT: with memoryStorage, `buffer` carries the full file body
+// and the disk-only fields (filename / path) are absent.
 interface UploadedFileInfo {
   fieldname: string;
   originalname: string;
   encoding: string;
   mimetype: string;
-  filename: string;
-  path: string;
+  buffer: Buffer;
   size: number;
 }
-
-const UPLOADS_DIR = resolveUploadsDir();
 
 // Per-mime size budgets. Images get 15 MB — generous enough for
 // straight-from-camera phone shots without re-encoding. Videos get
 // 50 MB so short clips for "before photos" land cleanly.
 const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
 const MAX_VIDEO_BYTES = 50 * 1024 * 1024;
-
-function generateFilename(originalname: string): string {
-  const ext = path.extname(originalname).toLowerCase();
-  const ts = Date.now();
-  const rand = Math.random().toString(36).slice(2, 8);
-  return `${ts}_${rand}${ext}`;
-}
 
 // ── Token-authorised participant routes ─────────────────────────────────────
 //
@@ -81,16 +70,14 @@ export class ParticipantProfilePortalController {
   @UseFilters(new MulterExceptionFilter(MAX_IMAGE_BYTES, MAX_VIDEO_BYTES))
   @UseInterceptors(
     FileInterceptor('file', {
-      storage: multer.diskStorage({
-        destination: UPLOADS_DIR,
-        filename: (_req: unknown, file: { originalname: string }, cb: (err: null, name: string) => void) => {
-          cb(null, generateFilename(file.originalname));
-        },
-      }),
+      // memoryStorage keeps the file body in a Buffer instead of
+      // writing to disk — we then stream that buffer to R2. Required
+      // for production: Railway's container filesystem is ephemeral,
+      // so any disk write disappears on the next redeploy. The
+      // memory cost is bounded by the limits.fileSize cap below.
+      storage: multer.memoryStorage(),
       // 50 MB ceiling — videos can run to 50 MB; we then re-check
-      // image uploads against the tighter 10 MB image budget AFTER
-      // multer wrote the file (multer's fileFilter runs before any
-      // bytes arrive, so size + mime can't be cross-checked there).
+      // image uploads against the tighter 15 MB image budget below.
       limits: { fileSize: MAX_VIDEO_BYTES },
       fileFilter: (_req: unknown, file: { originalname: string; mimetype: string }, cb: (err: Error | null, accept: boolean) => void) => {
         // Images: jpg/jpeg/png/gif/webp.  Videos: mp4/mov/webm.
@@ -115,20 +102,32 @@ export class ParticipantProfilePortalController {
     @UploadedFile() file: UploadedFileInfo,
   ): Promise<{ id: string; url: string; mimeType: string; sizeBytes: number; uploadedAt: string }> {
     if (!file) throw new BadRequestException('No file uploaded');
-    // Per-mime budget — images stay small (10 MB), videos may run to
+    // Per-mime budget — images stay small (15 MB), videos may run to
     // 50 MB. multer's fileFilter only sees the mime, not the size, so
-    // the cross-check happens here AFTER the file landed on disk.
-    // On a violation we delete the temporary file so we don't leak
-    // bytes under UPLOADS_DIR.
+    // the cross-check happens here AFTER the bytes are in the buffer.
+    // No disk file to clean up — memoryStorage drops the buffer on
+    // throw via the GC.
     if (/^image\//i.test(file.mimetype) && file.size > MAX_IMAGE_BYTES) {
-      try { fs.unlinkSync(file.path); } catch { /* file may already be gone */ }
       throw new BadRequestException(`קובץ תמונה חורג מ-${MAX_IMAGE_BYTES / 1024 / 1024} MB`);
     }
     const ctx = await this.svc.resolveByToken(token);
-    return this.svc.recordUpload(ctx.participantId, {
-      url: `/uploads/${file.filename}`,
+    // Stream the buffer to whichever backend is active (R2 in
+    // production, disk fallback in dev). The returned URL is the
+    // canonical address — public R2 URL when MEDIA_PUBLIC_URL_BASE
+    // is set, /uploads/<filename> otherwise. Both shapes are already
+    // handled by the admin + portal renderers (see frontend's
+    // url.startsWith('/uploads') ternary).
+    const storage = getMediaStorage();
+    const key = generateStorageKey('profile', ctx.participantId, file.originalname);
+    const stored = await storage.store({
+      key,
       mimeType: file.mimetype,
-      sizeBytes: file.size,
+      data: file.buffer,
+    });
+    return this.svc.recordUpload(ctx.participantId, {
+      url: stored.url,
+      mimeType: file.mimetype,
+      sizeBytes: stored.size,
     });
   }
 }
