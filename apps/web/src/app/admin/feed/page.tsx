@@ -38,8 +38,31 @@ interface FeedPage {
   hasMore: boolean;
 }
 
-interface ProgramLite { id: string; name: string }
-interface GroupLite { id: string; name: string; programId?: string | null; program?: { id: string; name: string } | null }
+// Optional active-flag fields are typed but not required, because the
+// /api/programs and /api/groups endpoints used to omit them and we
+// don't want a stale API build to crash the page. Defensive client-
+// side filtering below treats absence as "active" (best-effort fallback)
+// while present-but-false values are excluded — the server-side rule
+// is the source of truth, this is just belt-and-braces against any
+// listing path that bypasses it.
+interface ProgramLite {
+  id: string;
+  name: string;
+  isActive?: boolean;
+  isHidden?: boolean;
+}
+interface GroupLite {
+  id: string;
+  name: string;
+  programId?: string | null;
+  program?: { id: string; name: string } | null;
+  isActive?: boolean;
+  isHidden?: boolean;
+  // GroupStatus enum on the server: 'active' | 'inactive'. Independent
+  // of isActive; was the production bug surface that let inactive
+  // groups appear in the feed dropdown despite isActive=true.
+  status?: string;
+}
 interface ParticipantLite { id: string; firstName: string; lastName?: string | null }
 interface ActionLite { id: string; name: string; programId: string; programName: string; isActive: boolean }
 
@@ -157,20 +180,32 @@ export default function AdminFeedPage() {
   }, []);
 
   // Validate persisted filter ids against the loaded option lists.
-  // Any saved id that doesn't exist (or no longer active for groups
-  // /programs) is silently dropped — the state moves to '', the next
-  // localStorage write removes the stale value, and the dropdown lands
-  // on "Everything" without surprising the admin with an error.
-  // Runs whenever an option list arrives; skips when the list is still
-  // empty (we don't want to wipe a valid restored id just because the
-  // fetch hasn't returned yet).
+  // Any saved id that doesn't exist OR points at an inactive entity
+  // is silently dropped — the state moves to '', the next localStorage
+  // write removes the stale value, and the dropdown lands on
+  // "Everything" without surprising the admin with an error.
+  //
+  // The active-flag predicates here mirror the activePrograms /
+  // activeGroups derivations below so a previously-saved id for a
+  // program/group that's since been deactivated (isActive=false,
+  // isHidden=true, or status='inactive') is cleared. Runs whenever an
+  // option list arrives; skips when the list is still empty (we don't
+  // want to wipe a valid restored id just because the fetch hasn't
+  // returned yet).
   const optionsValidatedRef = useRef(false);
   useEffect(() => {
     if (optionsValidatedRef.current) return;
     if (programs.length === 0 || groups.length === 0) return;
     optionsValidatedRef.current = true;
-    if (programId && !programs.some((p) => p.id === programId)) setProgramId('');
-    if (groupId && !groups.some((g) => g.id === groupId)) setGroupId('');
+    const programActive = (p: ProgramLite) => p.isActive !== false && p.isHidden !== true;
+    const groupActive = (g: GroupLite) =>
+      g.isActive !== false && g.isHidden !== true && g.status !== 'inactive';
+    if (programId && !programs.some((p) => p.id === programId && programActive(p))) {
+      setProgramId('');
+    }
+    if (groupId && !groups.some((g) => g.id === groupId && groupActive(g))) {
+      setGroupId('');
+    }
     if (participantId && participants.length > 0 && !participants.some((p) => p.id === participantId)) {
       setParticipantId('');
     }
@@ -193,10 +228,26 @@ export default function AdminFeedPage() {
     }
   }, [programId, groupId, participantId, actionId, type, visibility, pageSize]);
 
+  // Defensive client-side active-only guard. The server-side rule in
+  // ProgramsService.listAll / GroupsService.findAll is the source of
+  // truth (filtering by isActive / isHidden / GroupStatus), but if a
+  // future code path bypasses it, this strip prevents inactive entries
+  // from leaking into the dropdown. Treats `undefined` as "trust it"
+  // (older API builds that didn't return these fields) and only
+  // excludes when the field is present-and-false / present-and-truthy.
+  const activePrograms = useMemo(
+    () => programs.filter((p) => p.isActive !== false && p.isHidden !== true),
+    [programs],
+  );
+  const activeGroups = useMemo(
+    () => groups.filter((g) => g.isActive !== false && g.isHidden !== true && g.status !== 'inactive'),
+    [groups],
+  );
+
   const filteredGroups = useMemo(() => {
-    if (!programId) return groups;
-    return groups.filter((g) => (g.program?.id ?? g.programId) === programId);
-  }, [groups, programId]);
+    if (!programId) return activeGroups;
+    return activeGroups.filter((g) => (g.program?.id ?? g.programId) === programId);
+  }, [activeGroups, programId]);
 
   // Action dropdown is filtered to the selected program when one is
   // chosen; otherwise it shows every action across every program with
@@ -263,7 +314,7 @@ export default function AdminFeedPage() {
           setProgramId(e.target.value); setGroupId(''); setActionId(''); setSkip(0);
         }}>
           <option value="">תוכנית: הכל</option>
-          {programs.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          {activePrograms.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
         <select style={select} value={groupId} onChange={(e) => { setGroupId(e.target.value); setSkip(0); }}>
           <option value="">קבוצה: הכל</option>

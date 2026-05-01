@@ -21,10 +21,23 @@ export class GroupsService {
   // existing pickers don't suddenly surface archived cohorts. The admin
   // groups list sets it to `true` — archived groups stay discoverable with
   // an "archived" chip instead of disappearing.
+  //
+  // "Archived" here is BOTH soft-delete (isActive=false, set by the delete
+  // route's softDelete) AND status='inactive' (set by the edit UI via the
+  // GroupStatus enum). Two independent fields express the same semantic;
+  // both must be excluded by default or the admin/feed dropdown leaks
+  // groups the admin manually marked inactive but never actually deleted.
+  // This was the production bug behind "inactive groups still appear in
+  // /admin/feed" — only isActive was being checked.
   findAll(challengeId?: string, includeArchived = false, includeHidden = false) {
     return this.prisma.group.findMany({
       where: {
-        ...(includeArchived ? {} : { isActive: true }),
+        ...(includeArchived
+          ? {}
+          : {
+              isActive: true,
+              status: 'active',
+            }),
         ...(includeHidden ? {} : { isHidden: false }),
         ...(challengeId ? { challengeId } : {}),
       },
