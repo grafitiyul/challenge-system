@@ -26,12 +26,26 @@ export async function startHttpServer(client: BaileysClient): Promise<FastifyIns
     bodyLimit: 1 * 1024 * 1024, // 1 MB — Phase 1 has no media-in payloads
   });
 
-  // Auth hook for everything except /health. Constant-time compare via
-  // === is sufficient here: the secret is high-entropy, the network
-  // surface is private, and we're not protecting against side-channel
-  // attacks at this layer. Auth failures are logged so a misconfigured
-  // INTERNAL_API_SECRET on the API side doesn't manifest as silent
-  // 401s — the bridge log shows exactly which path was attempted.
+  // ── Global incoming-request log ─────────────────────────────────
+  // Fires on EVERY request, before the auth hook below. Lets us see
+  // 404s, malformed paths, and Railway-edge probes that the auth
+  // hook would otherwise short-circuit invisibly. The line shape is
+  // deliberately greppable: "incoming method=GET url=/health".
+  fastify.addHook('onRequest', async (req) => {
+    log.info(
+      { method: req.method, url: req.url },
+      `incoming method=${req.method} url=${req.url}`,
+    );
+  });
+
+  // ── Auth hook ───────────────────────────────────────────────────
+  // Runs after the incoming-log hook. Bypassed for /health so the
+  // Railway probe + curl reachability test work without a secret.
+  // Constant-time compare via === is sufficient here: the secret is
+  // high-entropy, the network surface is private, and we're not
+  // protecting against side-channel attacks at this layer. Auth
+  // failures are logged so a misconfigured INTERNAL_API_SECRET on the
+  // API side doesn't manifest as silent 401s.
   fastify.addHook('onRequest', async (req, reply) => {
     if (req.url === '/health') return;
     const header = req.headers.authorization ?? '';
@@ -45,16 +59,43 @@ export async function startHttpServer(client: BaileysClient): Promise<FastifyIns
     }
   });
 
+  // ── 404 handler ─────────────────────────────────────────────────
+  // Fastify's default 404 response is a JSON body, but Railway's
+  // edge proxy / browser intermediaries can transform empty
+  // responses into plain "Not Found" text — making it look like
+  // the route doesn't exist when actually the request never reached
+  // it (proxy mismatch, port mismatch, etc.). Explicit handler with
+  // a clear log line + structured JSON body so the operator can
+  // tell from the bridge log whether the request actually hit the
+  // app or was lost upstream.
+  fastify.setNotFoundHandler((req, reply) => {
+    log.warn(
+      { method: req.method, url: req.url },
+      `404 not_found method=${req.method} url=${req.url}`,
+    );
+    reply.code(404).send({
+      error: 'not_found',
+      method: req.method,
+      url: req.url,
+      // List the routes the bridge DOES expose so the operator can
+      // see at a glance whether their probe URL matches anything.
+      registeredRoutes: ['GET /health', 'GET /status', 'POST /send', 'POST /sign-out'],
+    });
+  });
+
   // GET /health — Railway probe + reachability test from the API.
   // No auth; intentionally cheap so it can be polled aggressively.
   // `connected` mirrors BaileysClient.isConnected() so a `curl`
   // against /health from the API service answers two questions in
   // one shot: "is the bridge process up?" (HTTP 200 at all) and
   // "is WhatsApp currently linked?" (the boolean).
-  fastify.get('/health', async () => ({
-    ok: true,
-    connected: client.isConnected(),
-  }));
+  fastify.get('/health', async () => {
+    log.info('[/health] received');
+    return {
+      ok: true,
+      connected: client.isConnected(),
+    };
+  });
 
   fastify.get('/status', async () => {
     // Roll up everything the admin UI shows in one call:
@@ -326,6 +367,14 @@ export async function startHttpServer(client: BaileysClient): Promise<FastifyIns
     { host: config.httpHost, port: config.httpPort },
     `http server listening host=${config.httpHost} port=${config.httpPort}`,
   );
+
+  // Authoritative dump of every registered route. If the production
+  // /health endpoint ever returns "Not Found" again, the boot log
+  // immediately answers "was the route registered or not". The
+  // printed format is multi-line; we log it inside a single log
+  // entry so Railway's renderer keeps it together.
+  const routesTable = fastify.printRoutes({ commonPrefix: false });
+  log.info(`registered routes:\n${routesTable}`);
   return fastify;
 }
 
