@@ -262,10 +262,26 @@ export default function GroupDetailPage() {
   const [msgSending, setMsgSending] = useState(false);
   const [msgError, setMsgError] = useState('');
   const [msgSuccess, setMsgSuccess] = useState(false);
+  // In-app confirm: closing the composer with unsaved edits asks
+  // "are you sure?" instead of dropping the text silently. Replaces
+  // any window.confirm — none used in this surface.
+  const [msgCloseConfirm, setMsgCloseConfirm] = useState(false);
   // Template picker
   const [templates, setTemplates] = useState<{ id: string; name: string; content: string }[]>([]);
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
   const [templateConfirm, setTemplateConfirm] = useState<{ content: string } | null>(null);
+
+  // Composer close gate. Routes through the in-app confirm when the
+  // textarea has unsent content; otherwise closes immediately. Used by
+  // X / ביטול / Modal's onClose.
+  const requestMsgClose = () => {
+    if (msgSending) return;
+    if (msgText.trim() && !msgSuccess) {
+      setMsgCloseConfirm(true);
+      return;
+    }
+    setMsgModalOpen(false);
+  };
 
   // Add participant modal
   const [addParticipantOpen, setAddParticipantOpen] = useState(false);
@@ -2096,7 +2112,7 @@ export default function GroupDetailPage() {
           MODAL — GROUP MESSAGE COMPOSER (WhatsAppEditor)
       ══════════════════════════════════════════════════════════════════════ */}
       {msgModalOpen && (
-        <Modal onClose={() => setMsgModalOpen(false)} disableBackdropClose showCloseButton>
+        <Modal onClose={requestMsgClose} disableBackdropClose showCloseButton>
           <h3 style={S.modalTitle}>הודעה לקבוצה</h3>
           {groupChatLink ? (
             <p style={{ fontSize: 13, color: '#6b7280', margin: '0 0 16px' }}>
@@ -2160,7 +2176,7 @@ export default function GroupDetailPage() {
           {msgError && <p style={{ color: '#ef4444', fontSize: 13, margin: '8px 0 0' }}>{msgError}</p>}
           {msgSuccess && <p style={{ color: '#16a34a', fontSize: 13, margin: '8px 0 0', fontWeight: 600 }}>ההודעה נשלחה!</p>}
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 16 }}>
-            <button onClick={() => setMsgModalOpen(false)} style={S.btnSecondary}>ביטול</button>
+            <button onClick={requestMsgClose} style={S.btnSecondary}>ביטול</button>
             <button
               onClick={sendGroupMessage}
               disabled={msgSending || !groupChatLink || !msgText.trim()}
@@ -2170,6 +2186,37 @@ export default function GroupDetailPage() {
             </button>
           </div>
         </Modal>
+      )}
+
+      {/* ── Close-with-unsaved-edits confirmation ──
+          Only path for closing the composer when msgText is non-empty.
+          The Modal has disableBackdropClose so accidental clicks are
+          already blocked; this gate kicks in for explicit X / ביטול. */}
+      {msgCloseConfirm && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 1200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+          <div style={{ background: '#fff', borderRadius: 12, padding: 24, maxWidth: 360, width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+            <p style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', margin: '0 0 6px' }}>
+              לסגור בלי לשלוח?
+            </p>
+            <p style={{ fontSize: 13, color: '#475569', margin: '0 0 20px', lineHeight: 1.5 }}>
+              יש טקסט שנערך ולא נשלח. אם תסגרי כעת — הוא יאבד.
+            </p>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setMsgCloseConfirm(false)}
+                style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 7, padding: '9px 18px', fontSize: 13, cursor: 'pointer' }}
+              >
+                המשך לערוך
+              </button>
+              <button
+                onClick={() => { setMsgCloseConfirm(false); setMsgModalOpen(false); }}
+                style={{ background: '#dc2626', color: '#fff', border: 'none', borderRadius: 7, padding: '9px 18px', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
+              >
+                סגור ואבד שינויים
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* ── Template overwrite confirmation ── */}

@@ -5,7 +5,7 @@
 // public ones with a clear chip), no truncation. Filters by program,
 // group, participant, type, and visibility live above the list.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { BASE_URL, apiFetch } from '@lib/api';
 
@@ -56,6 +56,57 @@ const TYPE_LABEL: Record<string, string> = {
 const PAGE_SIZE_OPTIONS = [200, 500, 1000, 2000] as const;
 const DEFAULT_PAGE_SIZE = 500;
 
+// localStorage key for persisted filter selection. Bumping the suffix
+// invalidates everything older — useful if the filter shape changes
+// in a backwards-incompatible way (e.g. visibility enum changes).
+const FILTERS_STORAGE_KEY = 'admin-feed-filters-v1';
+
+interface PersistedFilters {
+  programId: string;
+  groupId: string;
+  participantId: string;
+  actionId: string;
+  type: string;
+  visibility: 'all' | 'public' | 'hidden';
+  pageSize: number;
+}
+
+const EMPTY_FILTERS: PersistedFilters = {
+  programId: '',
+  groupId: '',
+  participantId: '',
+  actionId: '',
+  type: '',
+  visibility: 'all',
+  pageSize: DEFAULT_PAGE_SIZE,
+};
+
+// Restore the saved filter shape from localStorage. Bad/legacy payloads
+// fall back to EMPTY_FILTERS — the validation step against the loaded
+// option lists then strips any restored ids that no longer exist or
+// are no longer active. Pure synchronous, runs at component mount.
+function loadPersistedFilters(): PersistedFilters {
+  if (typeof window === 'undefined') return EMPTY_FILTERS;
+  try {
+    const raw = window.localStorage.getItem(FILTERS_STORAGE_KEY);
+    if (!raw) return EMPTY_FILTERS;
+    const parsed = JSON.parse(raw) as Partial<PersistedFilters>;
+    return {
+      programId: typeof parsed.programId === 'string' ? parsed.programId : '',
+      groupId: typeof parsed.groupId === 'string' ? parsed.groupId : '',
+      participantId: typeof parsed.participantId === 'string' ? parsed.participantId : '',
+      actionId: typeof parsed.actionId === 'string' ? parsed.actionId : '',
+      type: typeof parsed.type === 'string' ? parsed.type : '',
+      visibility: parsed.visibility === 'public' || parsed.visibility === 'hidden' ? parsed.visibility : 'all',
+      pageSize: typeof parsed.pageSize === 'number' && (PAGE_SIZE_OPTIONS as readonly number[]).includes(parsed.pageSize)
+        ? parsed.pageSize
+        : DEFAULT_PAGE_SIZE,
+    };
+  } catch {
+    return EMPTY_FILTERS;
+  }
+}
+
 export default function AdminFeedPage() {
   const [rows, setRows] = useState<FeedRow[]>([]);
   const [total, setTotal] = useState(0);
@@ -68,14 +119,20 @@ export default function AdminFeedPage() {
   const [participants, setParticipants] = useState<ParticipantLite[]>([]);
   const [actions, setActions] = useState<ActionLite[]>([]);
 
-  const [programId, setProgramId] = useState('');
-  const [groupId, setGroupId] = useState('');
-  const [participantId, setParticipantId] = useState('');
-  const [actionId, setActionId] = useState('');
-  const [type, setType] = useState('');
-  const [visibility, setVisibility] = useState<'all' | 'public' | 'hidden'>('all');
-  const [skip, setSkip] = useState(0);
-  const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
+  // Hydrate filter state from localStorage on mount. Validation against
+  // the loaded option lists happens in a useEffect below — anything
+  // pointing at an inactive/missing program/group/participant/action
+  // is silently dropped after the lists arrive.
+  const persisted = useRef<PersistedFilters | null>(null);
+  if (persisted.current === null) persisted.current = loadPersistedFilters();
+  const [programId, setProgramId] = useState(persisted.current.programId);
+  const [groupId, setGroupId] = useState(persisted.current.groupId);
+  const [participantId, setParticipantId] = useState(persisted.current.participantId);
+  const [actionId, setActionId] = useState(persisted.current.actionId);
+  const [type, setType] = useState(persisted.current.type);
+  const [visibility, setVisibility] = useState<'all' | 'public' | 'hidden'>(persisted.current.visibility);
+  const [skip, setSkip] = useState(0); // pagination is intentionally NOT persisted
+  const [pageSize, setPageSize] = useState<number>(persisted.current.pageSize);
 
   // Row-action modals — both locked: no backdrop close, explicit X.
   // The shape carries the row so the modal text can spell out exactly
@@ -84,12 +141,57 @@ export default function AdminFeedPage() {
   const [editTarget, setEditTarget] = useState<FeedRow | null>(null);
 
   // Load filter options once.
+  // GET /api/programs and GET /api/groups both default to active-only
+  // (isActive=true && isHidden=false) on the server. We do NOT pass
+  // ?includeArchived=true here — admins must not be able to filter on
+  // groups that aren't actively in use (the historical FEED rows for
+  // those groups are still visible, this only restricts the dropdown).
+  // Actions list intentionally still includes inactive entries (tagged
+  // "(לא פעיל)" in the dropdown) because admins do need to filter on
+  // historically-deleted actions for audit lookups.
   useEffect(() => {
     apiFetch<ProgramLite[]>(`${BASE_URL}/programs`).then(setPrograms).catch(() => setPrograms([]));
-    apiFetch<GroupLite[]>(`${BASE_URL}/groups?includeArchived=true`).then(setGroups).catch(() => setGroups([]));
+    apiFetch<GroupLite[]>(`${BASE_URL}/groups`).then(setGroups).catch(() => setGroups([]));
     apiFetch<ParticipantLite[]>(`${BASE_URL}/participants`).then((r) => setParticipants(r.slice(0, 1000))).catch(() => setParticipants([]));
     apiFetch<ActionLite[]>(`${BASE_URL}/admin/feed-events/actions`).then(setActions).catch(() => setActions([]));
   }, []);
+
+  // Validate persisted filter ids against the loaded option lists.
+  // Any saved id that doesn't exist (or no longer active for groups
+  // /programs) is silently dropped — the state moves to '', the next
+  // localStorage write removes the stale value, and the dropdown lands
+  // on "Everything" without surprising the admin with an error.
+  // Runs whenever an option list arrives; skips when the list is still
+  // empty (we don't want to wipe a valid restored id just because the
+  // fetch hasn't returned yet).
+  const optionsValidatedRef = useRef(false);
+  useEffect(() => {
+    if (optionsValidatedRef.current) return;
+    if (programs.length === 0 || groups.length === 0) return;
+    optionsValidatedRef.current = true;
+    if (programId && !programs.some((p) => p.id === programId)) setProgramId('');
+    if (groupId && !groups.some((g) => g.id === groupId)) setGroupId('');
+    if (participantId && participants.length > 0 && !participants.some((p) => p.id === participantId)) {
+      setParticipantId('');
+    }
+    if (actionId && actions.length > 0 && !actions.some((a) => a.id === actionId)) setActionId('');
+  }, [programs, groups, participants, actions, programId, groupId, participantId, actionId]);
+
+  // Persist filter selection on every change. Pagination (`skip`) is
+  // intentionally excluded — restoring "page 5 of yesterday's filters"
+  // produces a confusing landing state. Saves are best-effort; quota
+  // exceptions are swallowed.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const payload: PersistedFilters = {
+      programId, groupId, participantId, actionId, type, visibility, pageSize,
+    };
+    try {
+      window.localStorage.setItem(FILTERS_STORAGE_KEY, JSON.stringify(payload));
+    } catch {
+      /* storage full / disabled / private-mode — non-fatal */
+    }
+  }, [programId, groupId, participantId, actionId, type, visibility, pageSize]);
 
   const filteredGroups = useMemo(() => {
     if (!programId) return groups;

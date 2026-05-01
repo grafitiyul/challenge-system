@@ -1376,9 +1376,25 @@ function WhatsappComposeModal(props: {
   type PendingAction =
     | { kind: 'restore' }                       // user clicked שחזר תבנית טקסט
     | { kind: 'pickTemplate'; templateId: string } // user picked a different template while edited
+    | { kind: 'close' }                         // user clicked X / ביטול while edits dirty
     | null;
   const [pending, setPending] = useState<PendingAction>(null);
   const editorIsDirty = rawBody.trim() !== '' && rawBody !== lastRenderedBody;
+
+  // Composer close gate. Used by the X button + ביטול button + any
+  // future close affordance. If the editor has unsaved edits, route
+  // through the in-app pending modal instead of dismissing — the
+  // backdrop-click close was removed entirely (was the source of the
+  // "tiny click eats my edits" UX bug), so this is the ONLY path that
+  // calls props.onClose with dirty state.
+  const requestClose = () => {
+    if (busy) return;
+    if (editorIsDirty) {
+      setPending({ kind: 'close' });
+      return;
+    }
+    props.onClose();
+  };
 
   useEffect(() => {
     apiFetch<Array<{ id: string; name: string }>>(`${BASE_URL}/programs`)
@@ -1492,13 +1508,19 @@ function WhatsappComposeModal(props: {
 
   return (
     <div
-      onClick={(e) => { if (e.target === e.currentTarget && !busy) props.onClose(); }}
+      // Modal is LOCKED: backdrop click no longer closes the composer.
+      // Tiny accidental clicks on the dim area, on dropdown overlays,
+      // on whitespace around the modal — none of these dismiss. Close
+      // happens only via X / ביטול / successful send. With dirty edits
+      // the close path goes through requestClose() which prompts.
       style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1200, padding: 16 }}
+      role="dialog"
+      aria-modal="true"
     >
       <div style={{ background: '#fff', borderRadius: 14, padding: 22, width: '100%', maxWidth: 560, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
           <div style={{ fontSize: 17, fontWeight: 700 }}>💬 שליחת WhatsApp</div>
-          <button aria-label="סגור" onClick={props.onClose} style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: 'pointer' }}>×</button>
+          <button aria-label="סגור" onClick={requestClose} style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: 'pointer' }}>×</button>
         </div>
         <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>
           נמען: <span dir="ltr" style={{ fontWeight: 600, color: '#0f172a' }}>{props.phoneNumber}</span>
@@ -1579,7 +1601,7 @@ function WhatsappComposeModal(props: {
 
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center', marginTop: 16, flexWrap: 'wrap' }}>
           {copiedFlash && <span style={{ fontSize: 12, color: '#15803d', fontWeight: 600 }}>הועתק ✓</span>}
-          <button onClick={props.onClose} disabled={busy} style={{ padding: '8px 18px', background: '#f1f5f9', border: '1px solid #e2e8f0', color: '#374151', borderRadius: 8, fontSize: 13, cursor: 'pointer' }}>ביטול</button>
+          <button onClick={requestClose} disabled={busy} style={{ padding: '8px 18px', background: '#f1f5f9', border: '1px solid #e2e8f0', color: '#374151', borderRadius: 8, fontSize: 13, cursor: 'pointer' }}>ביטול</button>
           <button
             type="button"
             onClick={() => { void onCopy(); }}
@@ -1612,7 +1634,11 @@ function WhatsappComposeModal(props: {
             <div style={{ background: '#fff', borderRadius: 12, padding: 22, width: '100%', maxWidth: 380, boxShadow: '0 20px 60px rgba(0,0,0,0.25)' }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
                 <div style={{ fontSize: 15, fontWeight: 700, color: '#0f172a' }}>
-                  {pending.kind === 'restore' ? 'לשחזר את הטקסט מהתבנית?' : 'להחליף את הטקסט הקיים בתבנית חדשה?'}
+                  {pending.kind === 'restore'
+                    ? 'לשחזר את הטקסט מהתבנית?'
+                    : pending.kind === 'pickTemplate'
+                      ? 'להחליף את הטקסט הקיים בתבנית חדשה?'
+                      : 'לסגור בלי לשלוח?'}
                 </div>
                 <button
                   aria-label="סגור"
@@ -1621,14 +1647,16 @@ function WhatsappComposeModal(props: {
                 >×</button>
               </div>
               <p style={{ fontSize: 13, color: '#475569', margin: '0 0 16px', lineHeight: 1.5 }}>
-                העריכות הידניות שלך בעורך יוחלפו בטקסט שהתבנית מפיקה. הפעולה אינה הפיכה דרך כפתור &ldquo;ביטול&rdquo;.
+                {pending.kind === 'close'
+                  ? 'יש לך טקסט שנערך ועדיין לא נשלח. אם תסגרי כעת, העריכות יאבדו.'
+                  : 'העריכות הידניות שלך בעורך יוחלפו בטקסט שהתבנית מפיקה. הפעולה אינה הפיכה דרך כפתור "ביטול".'}
               </p>
               <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                 <button
                   type="button"
                   onClick={() => setPending(null)}
                   style={{ padding: '8px 16px', background: '#f1f5f9', border: '1px solid #e2e8f0', color: '#374151', borderRadius: 8, fontSize: 13, cursor: 'pointer' }}
-                >בטל</button>
+                >{pending.kind === 'close' ? 'המשך לערוך' : 'בטל'}</button>
                 <button
                   type="button"
                   onClick={() => {
@@ -1636,9 +1664,10 @@ function WhatsappComposeModal(props: {
                     setPending(null);
                     if (action?.kind === 'restore') void applyTemplate(selectedTemplateId);
                     if (action?.kind === 'pickTemplate') void applyTemplate(action.templateId);
+                    if (action?.kind === 'close') props.onClose();
                   }}
                   style={{ padding: '8px 16px', background: '#dc2626', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
-                >החלף</button>
+                >{pending.kind === 'close' ? 'סגור ואבד שינויים' : 'החלף'}</button>
               </div>
             </div>
           </div>
