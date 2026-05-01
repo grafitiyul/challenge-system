@@ -1,4 +1,4 @@
-import { Controller, Get, Post, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
 import { AdminSessionGuard } from '../auth/admin-session.guard';
 import { WhatsappBridgeService } from './whatsapp-bridge.service';
 
@@ -21,5 +21,21 @@ export class WhatsappBridgeController {
   @Post('sign-out')
   signOut() {
     return this.svc.signOut();
+  }
+
+  // POST /api/admin/whatsapp/send  { phone | chatId, message }
+  //
+  // Replaces the legacy /api/wassenger/send endpoint that the admin
+  // group page was calling for group-chat sends. Same payload shape
+  // (phone or group JID, message) so the frontend swap is one URL
+  // change. Single-recipient only — the WhatsappBridgeService refuses
+  // anything that looks like a bulk request via the bridge's narrow
+  // /send contract.
+  @Post('send')
+  send(@Body() body: { phone?: string; message?: string }) {
+    if (!body?.phone || !body?.message) {
+      throw new BadRequestException('מספר טלפון והודעה הם שדות חובה');
+    }
+    return this.svc.sendMessage(body.phone, body.message);
   }
 }

@@ -76,6 +76,27 @@ export class BaileysClient {
     await this.connect();
   }
 
+  // Phase 3 — outbound text send. Returns the WhatsApp-assigned
+  // message id so the API can write an outbound WhatsAppMessage row
+  // and dedupe against the upcoming messages.upsert echo via
+  // externalMessageId @unique. Throws if the socket isn't open;
+  // callers translate that into a 503 the admin UI can render as
+  // "WhatsApp לא מחובר כרגע".
+  async sendText(jid: string, text: string): Promise<{ externalMessageId: string }> {
+    if (!this.socket || !this.socket.user) {
+      throw new Error('whatsapp_not_connected');
+    }
+    const result = await this.socket.sendMessage(jid, { text });
+    const id = result?.key?.id;
+    if (!id) {
+      // Baileys returned without a key.id — extremely rare, treat as
+      // soft-fail so the API can return a clear error rather than
+      // claiming success.
+      throw new Error('send_no_message_id');
+    }
+    return { externalMessageId: id };
+  }
+
   // Disconnect + wipe credentials. The socket is logged out on the
   // WhatsApp side too, freeing the multi-device slot. After this call
   // the bridge is in 'qr_required' state and ready for re-pairing.

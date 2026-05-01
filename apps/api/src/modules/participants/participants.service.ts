@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
-import { WassengerService } from '../../wassenger.service';
+import { WhatsappBridgeService } from '../whatsapp-bridge/whatsapp-bridge.service';
 import { CreateParticipantDto } from './dto/create-participant.dto';
 import { UpdateParticipantDto } from './dto/update-participant.dto';
 import { renderTemplate } from '../programs/template-render';
@@ -34,7 +34,12 @@ const DEFAULT_GENDERS = ['נקבה', 'זכר'];
 export class ParticipantsService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly wassenger: WassengerService,
+    // Phase 3 — outbound WhatsApp goes through the Baileys bridge
+    // proxy. The Wassenger send method is no longer called from
+    // anywhere in the API; the WassengerService class still exists
+    // for the legacy webhook receiver + chat archive read paths but
+    // its sendMessage() is dead code from this commit on.
+    private readonly whatsappBridge: WhatsappBridgeService,
   ) {}
 
   // ─── Messaging ────────────────────────────────────────────────────────────
@@ -109,8 +114,14 @@ export class ParticipantsService {
     return { channel, subject: renderedSubject, body: rendered };
   }
 
-  // Sends a WhatsApp message via Wassenger. Accepts either a template id
-  // (which is rendered against the participant context) or a raw body.
+  // Sends a WhatsApp message via the Baileys bridge. Accepts either
+  // a template id (which is rendered against the participant context)
+  // or a raw body. The bridge handles phone-to-JID normalisation,
+  // writes the outbound WhatsAppMessage row tagged provider='baileys',
+  // and dedups against the upcoming messages.upsert echo via
+  // externalMessageId @unique. If WhatsApp isn't currently connected,
+  // the bridge returns 503 → propagated as a Hebrew error toast in
+  // the admin UI.
   async sendWhatsapp(participantId: string, body: {
     templateId?: string | null;
     rawBody?: string | null;
@@ -122,8 +133,8 @@ export class ParticipantsService {
       select: { phoneNumber: true },
     });
     if (!participant) throw new NotFoundException(`Participant ${participantId} not found`);
-    await this.wassenger.sendMessage(participant.phoneNumber, preview.body);
-    return { ok: true, preview };
+    const sent = await this.whatsappBridge.sendMessage(participant.phoneNumber, preview.body);
+    return { ok: true, preview, externalMessageId: sent.externalMessageId };
   }
 
   // Finds a gender by name, or creates it if missing — never throws due to missing config

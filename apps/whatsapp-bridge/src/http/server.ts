@@ -1,7 +1,8 @@
-// Internal HTTP server for the bridge. Three endpoints in Phase 1:
+// Internal HTTP server for the bridge. Endpoints:
 //   GET  /health      — Railway health check, no auth.
 //   GET  /status      — current connection snapshot, auth required.
 //   POST /sign-out    — wipe credentials + force re-pair, auth required.
+//   POST /send        — outbound text message, auth required.
 //
 // Auth: every endpoint except /health requires
 //   Authorization: Bearer <INTERNAL_API_SECRET>
@@ -114,6 +115,109 @@ export async function startHttpServer(client: BaileysClient): Promise<FastifyIns
     };
   });
 
+  // POST /send  { phone: "972..." | "...@s.whatsapp.net" | "...@g.us", message: string }
+  //
+  // Phase 3 — outbound text. Normalises a raw phone number into a
+  // WhatsApp JID, hands it to BaileysClient.sendText, and writes an
+  // outbound WhatsAppMessage row tagged provider='baileys' so the row
+  // is visible in /admin/chats immediately. Baileys will later echo
+  // the same message via messages.upsert with key.fromMe=true; the
+  // ingest path's findUnique short-circuit on externalMessageId
+  // dedupes against the row we just wrote — no duplicates.
+  //
+  // Logging policy continues to apply: chatId/messageId/length only,
+  // never message contents.
+  fastify.post<{
+    Body: { phone?: string; message?: string };
+  }>('/send', async (req, reply) => {
+    const { phone, message } = req.body ?? {};
+    if (!phone || typeof phone !== 'string' || !phone.trim()) {
+      reply.code(400).send({ error: 'phone_required' });
+      return;
+    }
+    if (!message || typeof message !== 'string' || !message.trim()) {
+      reply.code(400).send({ error: 'message_required' });
+      return;
+    }
+
+    const trimmedMessage = message.trim();
+    const jid = normaliseToJid(phone.trim());
+    if (!jid) {
+      reply.code(400).send({ error: 'phone_invalid' });
+      return;
+    }
+
+    let externalMessageId: string;
+    try {
+      const result = await client.sendText(jid, trimmedMessage);
+      externalMessageId = result.externalMessageId;
+    } catch (err) {
+      const code = err instanceof Error ? err.message : 'send_failed';
+      if (code === 'whatsapp_not_connected') {
+        reply.code(503).send({ error: 'whatsapp_not_connected' });
+        return;
+      }
+      log.error({ err: errSummary(err), jidShape: shapeFor(jid) }, 'send failed');
+      reply.code(500).send({ error: 'send_failed', detail: errSummary(err) });
+      return;
+    }
+
+    // Persist the outbound row. Use upsert by externalMessageId so a
+    // race against the messages.upsert echo can never produce a
+    // duplicate row (the schema's @unique constraint on
+    // externalMessageId already guarantees this; the upsert is just
+    // explicit about it).
+    try {
+      const chat = await upsertOutboundChat(jid);
+      await prisma.whatsAppMessage.upsert({
+        where: { externalMessageId },
+        create: {
+          externalMessageId,
+          chatId: chat.id,
+          direction: 'outgoing',
+          senderName: null,
+          senderPhone: null,
+          messageType: 'text',
+          textContent: trimmedMessage,
+          mediaUrl: null,
+          mediaMimeType: null,
+          mediaSizeBytes: null,
+          mediaOriginalName: null,
+          quotedExternalId: null,
+          timestampFromSource: new Date(),
+          rawPayload: { source: 'bridge_send', jidShape: shapeFor(jid) } as never,
+          provider: 'baileys',
+        },
+        update: {
+          // Echo from messages.upsert may complete the row first; if
+          // so, we leave whatever's there alone. Both writes carry
+          // the same externalMessageId so the row exists either way.
+        },
+      });
+      await prisma.whatsAppChat.update({
+        where: { id: chat.id },
+        data: { lastMessageAt: new Date() },
+      });
+      // Heartbeat — same path the ingest handlers use.
+      await prisma.whatsAppConnection.updateMany({
+        where: { id: 'singleton' },
+        data: { lastMessageAt: new Date() },
+      });
+    } catch (err) {
+      // The send already succeeded on WhatsApp's side; persistence
+      // failure is non-fatal for the API contract. Log and continue
+      // — the messages.upsert echo will create the row when the
+      // response comes back.
+      log.warn({ err: errSummary(err), externalMessageId }, 'outbound row persist failed; relying on echo');
+    }
+
+    log.info(
+      { jidShape: shapeFor(jid), externalMessageId, length: trimmedMessage.length },
+      'message sent',
+    );
+    reply.code(200).send({ ok: true, externalMessageId });
+  });
+
   fastify.post('/sign-out', async (_req, reply) => {
     try {
       await client.signOut();
@@ -134,4 +238,61 @@ export async function startHttpServer(client: BaileysClient): Promise<FastifyIns
   await fastify.listen({ host: config.httpHost, port: config.httpPort });
   log.info({ host: config.httpHost, port: config.httpPort }, 'http server listening');
   return fastify;
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────
+
+// Convert a raw `phone` field into a WhatsApp JID. Accepted shapes:
+//   - "972501234567"            → "972501234567@s.whatsapp.net"
+//   - "+972-50-123-4567"        → "972501234567@s.whatsapp.net"
+//   - "972501234567@s.whatsapp.net" → kept as-is
+//   - "1234-5678@g.us"          → kept as-is (group JID)
+// Returns null if the input doesn't have enough digits to be a phone.
+function normaliseToJid(input: string): string | null {
+  const trimmed = input.trim();
+  if (trimmed.includes('@s.whatsapp.net') || trimmed.endsWith('@g.us')) {
+    return trimmed;
+  }
+  // Strip everything except digits.
+  const digits = trimmed.replace(/\D/g, '');
+  if (digits.length < 7) return null;
+  return `${digits}@s.whatsapp.net`;
+}
+
+// Find or create the outbound chat row. For private sends the chat may
+// not yet exist (we've never received from this number); we create it
+// with type='private' and no name. For groups the chat row should
+// already exist from inbound traffic; if not, we create a minimal row.
+async function upsertOutboundChat(jid: string): Promise<{ id: string }> {
+  const existing = await prisma.whatsAppChat.findUnique({
+    where: { externalChatId: jid },
+    select: { id: true },
+  });
+  if (existing) return existing;
+  const isGroup = jid.endsWith('@g.us');
+  const phoneNumber = isGroup ? null : jid.split('@')[0] ?? null;
+  return prisma.whatsAppChat.create({
+    data: {
+      externalChatId: jid,
+      type: isGroup ? 'group' : 'private',
+      name: null,
+      phoneNumber,
+      lastMessageAt: new Date(),
+      provider: 'baileys',
+    },
+    select: { id: true },
+  });
+}
+
+function shapeFor(jid: string): 'private' | 'group' | 'unknown' {
+  if (jid.endsWith('@s.whatsapp.net')) return 'private';
+  if (jid.endsWith('@g.us')) return 'group';
+  return 'unknown';
+}
+
+function errSummary(err: unknown): string {
+  if (err instanceof Error) {
+    return err.message.split('\n')[0]?.slice(0, 240) ?? 'unknown';
+  }
+  return String(err).slice(0, 240);
 }

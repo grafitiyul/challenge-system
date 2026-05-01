@@ -669,7 +669,12 @@ export default function GroupDetailPage() {
     setMsgSending(true);
     setMsgError('');
     try {
-      await apiFetch(`${BASE_URL}/wassenger/send`, {
+      // Phase 3 — sends via the Baileys bridge proxy. Same payload
+      // shape as the legacy /wassenger/send route the group page
+      // used to call (phone OR group JID + message). The proxy
+      // returns 503 with a Hebrew message when WhatsApp isn't
+      // connected; we propagate it verbatim into the toast.
+      await apiFetch(`${BASE_URL}/admin/whatsapp/send`, {
         method: 'POST',
         body: JSON.stringify({ phone: groupChatLink.whatsappChat.externalChatId, message: msgText.trim() }),
       });
