@@ -50,6 +50,33 @@ const makeWASocket = (
   baileys as unknown as { default: typeof baileys } & typeof baileys
 ).default ?? baileys;
 
+// One-line description of what readiness reports for log rendering.
+export interface ReadinessSnapshot {
+  ok: boolean;
+  reason: string | null;          // human-grade reason when !ok ("ws_CLOSED", "stale: send_timeout", …)
+  hasSocket: boolean;
+  connected: boolean;             // the in-memory flag from connection.update('open')
+  hasUser: boolean;               // socket.user is populated post-handshake
+  wsState: WsStateName;           // direct read of the underlying websocket
+  ageMs: number | null;           // ms since the current socket opened; null when not opened
+  lastUpdate: 'open' | 'close' | 'connecting' | null; // last connection.update we observed
+  lastDisconnectReason: string | null;                // mirrored from the last close event
+  staleReason: string | null;                         // set when this layer marks the socket unusable
+  reconnecting: boolean;                              // true while markStaleAndReconnect/restart is in flight
+}
+
+type WsStateName = 'CONNECTING' | 'OPEN' | 'CLOSING' | 'CLOSED' | 'unknown';
+
+function wsStateName(raw: unknown): WsStateName {
+  switch (raw) {
+    case 0: return 'CONNECTING';
+    case 1: return 'OPEN';
+    case 2: return 'CLOSING';
+    case 3: return 'CLOSED';
+    default: return 'unknown';
+  }
+}
+
 export class BaileysClient {
   private socket: WASocket | null = null;
   private auth: PostgresAuthHandle | null = null;
@@ -73,6 +100,29 @@ export class BaileysClient {
   // avoids the race window where the DB row is mid-write.
   private connected = false;
 
+  // ── Readiness diagnostics ───────────────────────────────────────
+  // Tracked alongside `connected` so the /send route can log a full
+  // socket-state snapshot, and so getReadiness() can fail closed when
+  // the underlying ws is dead even though Baileys hasn't yet emitted
+  // a connection.update('close').
+  private socketOpenedAt: Date | null = null;
+  private lastConnectionUpdate: 'open' | 'close' | 'connecting' | null = null;
+  private lastDisconnectReason: string | null = null;
+  // Set when this layer (e.g. send_timeout, admin restart) decided
+  // the socket is unusable. Cleared on the next connection.update('open').
+  private staleReason: string | null = null;
+  // True while markStaleAndReconnect/restartSocket is in flight, so
+  // concurrent sends or repeated triggers don't pile up multiple
+  // socket-rebuild attempts.
+  private reconnecting = false;
+
+  // ── Send serialization ──────────────────────────────────────────
+  // Baileys is single-socket; concurrent sendMessage calls can
+  // interleave key writes against the auth state. Serialize all
+  // sendText() invocations through a single Promise chain so at most
+  // one socket.sendMessage is ever in flight at once.
+  private sendChain: Promise<unknown> = Promise.resolve();
+
   async start(): Promise<void> {
     this.stopped = false;
     if (this.socket) {
@@ -82,15 +132,120 @@ export class BaileysClient {
     await this.connect();
   }
 
-  // Returns the in-memory connection flag without touching the socket
-  // or the DB. Used by /send to fast-fail with a precise 503 instead
-  // of waiting for socket.sendMessage to time out.
+  // Stronger than the old in-memory boolean: also inspects the
+  // underlying websocket's readyState and a "we marked it stale"
+  // flag, so a zombie socket (TCP dead but Baileys hasn't yet emitted
+  // 'close') is reported as not-ready instead of letting sendMessage
+  // hang for 12s and fire the bridge's send_timeout.
   isConnected(): boolean {
-    return this.connected && !!this.socket?.user;
+    return this.getReadiness().ok;
   }
 
   hasSocket(): boolean {
     return this.socket !== null;
+  }
+
+  // Full snapshot of every signal we use to decide whether the socket
+  // is usable. Returned as-is by /send so a single bridge log line
+  // captures the exact state at attempt time. `reason` is null when
+  // ok=true; otherwise a short tag pinpointing the failing check.
+  getReadiness(): ReadinessSnapshot {
+    const socket = this.socket;
+    const hasSocket = socket !== null;
+    const hasUser = !!socket?.user;
+    // Baileys' WASocket exposes `.ws` (the node ws instance) but the
+    // public type doesn't include it. Cast narrowly here so we can
+    // read readyState without `any`-poisoning the rest of the file.
+    const ws = (socket as unknown as { ws?: { readyState?: unknown } } | null)?.ws;
+    const wsState = wsStateName(ws?.readyState);
+    const ageMs = this.socketOpenedAt
+      ? Date.now() - this.socketOpenedAt.getTime()
+      : null;
+
+    let reason: string | null = null;
+    if (this.reconnecting)        reason = 'reconnecting';
+    else if (this.staleReason)    reason = `stale:${this.staleReason}`;
+    else if (!hasSocket)          reason = 'no_socket';
+    else if (!this.connected)     reason = 'not_connected_flag';
+    else if (!hasUser)            reason = 'no_user';
+    else if (wsState !== 'OPEN')  reason = `ws_${wsState}`;
+
+    return {
+      ok: reason === null,
+      reason,
+      hasSocket,
+      connected: this.connected,
+      hasUser,
+      wsState,
+      ageMs,
+      lastUpdate: this.lastConnectionUpdate,
+      lastDisconnectReason: this.lastDisconnectReason,
+      staleReason: this.staleReason,
+      reconnecting: this.reconnecting,
+    };
+  }
+
+  // Force the socket into a known-bad state and start a fresh connect.
+  // Idempotent: concurrent callers see the second call return immediately.
+  // Does NOT wait for the new socket to reach 'open' — that happens
+  // asynchronously via connection.update; the next send retry checks
+  // readiness and either succeeds or fails fast with a fresh reason.
+  async markStaleAndReconnect(reason: string): Promise<void> {
+    if (this.reconnecting) {
+      log.info({ reason }, 'reconnect already in progress; ignoring');
+      return;
+    }
+    if (this.stopped) {
+      log.warn({ reason }, 'client stopped; refusing to auto-reconnect');
+      return;
+    }
+    this.reconnecting = true;
+    this.connected = false;
+    this.staleReason = reason;
+    const ageMs = this.socketOpenedAt ? Date.now() - this.socketOpenedAt.getTime() : null;
+    log.warn({ reason, ageMs, lastUpdate: this.lastConnectionUpdate }, 'reconnect started');
+
+    // Best-effort socket teardown. We null the field FIRST so any
+    // sendText racing with us sees no_socket. Calling end() on an
+    // already-dead socket can throw; swallow it.
+    const old = this.socket;
+    this.socket = null;
+    this.socketOpenedAt = null;
+    try {
+      old?.end(new Error(`bridge_force_reconnect:${reason}`));
+    } catch (err) {
+      log.warn({ err: errMessage(err) }, 'old socket.end() threw; continuing');
+    }
+
+    await connState.setDisconnected(prisma, `stale_socket:${reason}`, {
+      incrementAttempts: false,
+    });
+
+    // Reset backoff so we connect immediately rather than waiting on
+    // the previous attempt counter.
+    this.attempt = 0;
+    this.clearTimers();
+
+    try {
+      await this.connect();
+      log.info({ reason }, 'reconnect completed (connect() returned; awaiting open)');
+    } catch (err) {
+      log.error({ err: errMessage(err), reason }, 'reconnect connect() failed; falling back to scheduled backoff');
+      this.scheduleReconnect();
+    } finally {
+      this.reconnecting = false;
+      // staleReason is cleared by connection.update('open') so a
+      // pending send doesn't see false-positive readiness during the
+      // window between connect() returning and 'open' firing.
+    }
+  }
+
+  // Admin-triggered restart. Same teardown path as the timeout-driven
+  // reconnect; separate method only so the log line and the calling
+  // surface are distinct in audit logs.
+  async restartSocket(): Promise<void> {
+    log.warn('admin restart-socket requested');
+    await this.markStaleAndReconnect('admin_restart');
   }
 
   // Phase 3 — outbound text send. Returns the WhatsApp-assigned
@@ -101,7 +256,11 @@ export class BaileysClient {
   // Distinct error.message strings (callers map these to HTTP codes):
   //   'whatsapp_not_connected' — no usable socket. 503.
   //   'send_timeout'           — Baileys sendMessage hung past the
-  //                              internal timeout. 504.
+  //                              internal timeout. 504. The socket has
+  //                              been marked stale and a reconnect was
+  //                              kicked off; subsequent sends will
+  //                              either succeed or fail fast with a
+  //                              fresh, accurate readiness reason.
   //   'send_no_message_id'     — Baileys returned without a key.id.
   //   anything else            — Baileys threw. 500 with the raw msg.
   //
@@ -110,21 +269,78 @@ export class BaileysClient {
   // code) before the API gives up — eliminating the
   // "operation aborted by timeout" symptom that hides the real cause.
   async sendText(jid: string, text: string): Promise<{ externalMessageId: string }> {
-    if (!this.isConnected()) {
+    // Pre-flight readiness — outside the lock so concurrent senders
+    // fail fast on a known-stale socket without serializing first.
+    const pre = this.getReadiness();
+    if (!pre.ok) {
+      log.warn({ readiness: pre }, 'sendText pre-flight readiness failed');
       throw new Error('whatsapp_not_connected');
     }
+    return this.withSendLock(() => this.sendTextInner(jid, text));
+  }
+
+  // Serializes all sends through a single Promise chain. The chain
+  // is `.catch`-suppressed so one failed send doesn't poison the
+  // queue and freeze every subsequent caller.
+  private withSendLock<T>(fn: () => Promise<T>): Promise<T> {
+    const next = this.sendChain.then(fn, fn);
+    this.sendChain = next.catch(() => undefined);
+    return next;
+  }
+
+  private async sendTextInner(
+    jid: string,
+    text: string,
+  ): Promise<{ externalMessageId: string }> {
+    // Re-check readiness inside the lock. If a previous queued send
+    // hit send_timeout, the socket is now stale and we should fail
+    // fast rather than push a doomed sendMessage onto a dying ws.
+    const readiness = this.getReadiness();
+    if (!readiness.ok) {
+      log.warn({ readiness }, 'sendText post-lock readiness failed');
+      throw new Error('whatsapp_not_connected');
+    }
+    log.info(
+      {
+        ageMs: readiness.ageMs,
+        wsState: readiness.wsState,
+        lastUpdate: readiness.lastUpdate,
+        lastDisconnectReason: readiness.lastDisconnectReason,
+      },
+      'sendText starting socket.sendMessage',
+    );
+
     const SEND_TIMEOUT_MS = 12_000;
     let timer: NodeJS.Timeout | null = null;
     const sendPromise = this.socket!.sendMessage(jid, { text });
+    // Suppress late rejection: if the race times out and the underlying
+    // sendMessage eventually rejects (e.g. socket closed), the rejection
+    // is irrelevant to this caller and otherwise becomes an uncaught
+    // promise rejection.
+    sendPromise.catch(() => undefined);
+
     const timeoutPromise = new Promise<never>((_, reject) => {
       timer = setTimeout(() => reject(new Error('send_timeout')), SEND_TIMEOUT_MS);
     });
+
     let result;
     try {
       result = await Promise.race([sendPromise, timeoutPromise]);
+    } catch (err) {
+      if (err instanceof Error && err.message === 'send_timeout') {
+        log.error(
+          { ageMs: readiness.ageMs, lastUpdate: readiness.lastUpdate },
+          'sendText send_timeout — marking socket stale and triggering reconnect',
+        );
+        // Fire-and-forget: we want the 504 response to go out immediately.
+        // markStaleAndReconnect is idempotent.
+        void this.markStaleAndReconnect('send_timeout');
+      }
+      throw err;
     } finally {
       if (timer) clearTimeout(timer);
     }
+
     const id = result?.key?.id;
     if (!id) {
       throw new Error('send_no_message_id');
@@ -267,9 +483,15 @@ export class BaileysClient {
       await connState.setQrRequired(prisma, qr);
     }
 
+    if (connection) {
+      this.lastConnectionUpdate = connection;
+    }
+
     if (connection === 'open') {
       this.attempt = 0;
       this.connected = true;
+      this.staleReason = null;
+      this.socketOpenedAt = new Date();
       const me = this.socket?.user;
       log.info({ jid: me?.id, name: me?.name }, 'connected');
       await connState.setConnected(prisma, {
@@ -286,9 +508,11 @@ export class BaileysClient {
 
     if (connection === 'close') {
       this.connected = false;
+      this.socketOpenedAt = null;
       this.clearHealthyTimer();
       const code = (lastDisconnect?.error as Boom | undefined)?.output?.statusCode;
       const reason = describeReason(code);
+      this.lastDisconnectReason = reason;
 
       // loggedOut (status code 401) is ambiguous at the protocol level:
       //   (a) Real unlink — admin removed the linked device on the
@@ -403,4 +627,9 @@ function describeReason(code: number | undefined): string {
     if (typeof value === 'number' && value === code) return name;
   }
   return `code_${code}`;
+}
+
+function errMessage(err: unknown): string {
+  if (err instanceof Error) return err.message.split('\n')[0]?.slice(0, 240) ?? 'unknown';
+  return String(err).slice(0, 240);
 }

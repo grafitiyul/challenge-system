@@ -143,10 +143,15 @@ export class WhatsappBridgeService {
     // fallbacks at the bottom catch anything outside this contract
     // — they shouldn't fire in production but exist so a future
     // bridge change doesn't crash the proxy.
-    const body = (await res.json().catch(() => ({}))) as { error?: string; reason?: string; detail?: string };
+    const body = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      reason?: string;
+      detail?: string;
+      reconnect_started?: boolean;
+    };
     // eslint-disable-next-line no-console
-    console.warn('[whatsapp-send] bridge non-2xx status=%d error=%s reason=%s detail=%s',
-      res.status, body.error ?? '<none>', body.reason ?? '<none>', body.detail ?? '<none>');
+    console.warn('[whatsapp-send] bridge non-2xx status=%d error=%s reason=%s detail=%s reconnect_started=%s',
+      res.status, body.error ?? '<none>', body.reason ?? '<none>', body.detail ?? '<none>', body.reconnect_started ?? false);
 
     if (res.status === 401 && body.error === 'bridge_auth_failed') {
       throw new ServiceUnavailableException(
@@ -154,11 +159,27 @@ export class WhatsappBridgeService {
       );
     }
     if (res.status === 503 && body.error === 'whatsapp_not_connected') {
+      // body.reason is the bridge's readiness tag (e.g. 'reconnecting',
+      // 'stale:send_timeout', 'ws_CLOSED'). Surface a different message
+      // when a reconnect is already running so the admin doesn't think
+      // they need to scan a fresh QR.
+      if (body.reason === 'reconnecting' || (body.reason ?? '').startsWith('stale:')) {
+        throw new ServiceUnavailableException(
+          'חיבור WhatsApp מתחדש כעת (הסוקט היה תקוע). נסי שוב בעוד מספר שניות.',
+        );
+      }
       throw new ServiceUnavailableException('WhatsApp לא מחובר כרגע. פתחי את "מצב חיבור" וסרקי קוד QR.');
     }
     if (res.status === 504 && body.error === 'send_timeout') {
+      // The bridge already kicked off a reconnect when the timeout
+      // fired (reconnect_started=true). Tell the admin so the next
+      // retry attempt hits a fresh socket instead of re-hitting the
+      // same dead one.
+      const tail = body.reconnect_started
+        ? ' החיבור היה תקוע — מתחבר מחדש אוטומטית. נסי שוב בעוד מספר שניות.'
+        : ' ייתכן שהסוקט תקוע — בדקי את "מצב חיבור" ונסי שוב.';
       throw new ServiceUnavailableException(
-        'שליחה ל-WhatsApp לא הסתיימה בזמן (timeout בגשר). ייתכן שהסוקט תקוע — בדקי את "מצב חיבור" ונסי שוב.',
+        `שליחה ל-WhatsApp לא הסתיימה בזמן (timeout בגשר).${tail}`,
       );
     }
     if (res.status === 500 && body.error === 'send_failed') {
@@ -189,6 +210,37 @@ export class WhatsappBridgeService {
     throw new ServiceUnavailableException(
       `שליחה דרך הגשר נכשלה (${res.status}${body.detail ? `: ${body.detail}` : ''}).`,
     );
+  }
+
+  // Forwards POST /api/admin/whatsapp/restart-socket to the bridge.
+  // Bridge replies 202 immediately (the actual reconnect runs async)
+  // with the readiness snapshot at request time so the admin UI can
+  // render "reconnecting…" without polling /status separately.
+  async restartSocket(): Promise<
+    | { ok: true; restart_started: true; readiness: unknown }
+    | { bridgeUnavailable: true; reason: string }
+  > {
+    const base = bridgeUrl();
+    if (!base) return { bridgeUnavailable: true, reason: 'WHATSAPP_BRIDGE_URL not configured' };
+    try {
+      const res = await fetch(`${base}/restart-socket`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${bridgeSecret()}` },
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!res.ok) {
+        return { bridgeUnavailable: true, reason: `bridge returned ${res.status}` };
+      }
+      const json = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        restart_started?: boolean;
+        readiness?: unknown;
+      };
+      return { ok: true, restart_started: true, readiness: json.readiness ?? null };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'unknown';
+      return { bridgeUnavailable: true, reason: message };
+    }
   }
 
   async signOut(): Promise<{ ok: true } | { bridgeUnavailable: true; reason: string }> {

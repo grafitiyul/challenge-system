@@ -23,6 +23,16 @@ export class WhatsappBridgeController {
     return this.svc.signOut();
   }
 
+  // POST /api/admin/whatsapp/restart-socket
+  // Force the bridge to tear down its current Baileys socket and start
+  // a new one without wiping creds. Used when the connection appears
+  // healthy but sends hang (zombie ws). Returns 202 with
+  // { ok, restart_started, readiness } from the bridge.
+  @Post('restart-socket')
+  restartSocket() {
+    return this.svc.restartSocket();
+  }
+
   // POST /api/admin/whatsapp/send  { phone | chatId, message }
   //
   // Replaces the legacy /api/wassenger/send endpoint that the admin

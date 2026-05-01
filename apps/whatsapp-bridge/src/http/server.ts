@@ -79,7 +79,7 @@ export async function startHttpServer(client: BaileysClient): Promise<FastifyIns
       url: req.url,
       // List the routes the bridge DOES expose so the operator can
       // see at a glance whether their probe URL matches anything.
-      registeredRoutes: ['GET /health', 'GET /status', 'POST /send', 'POST /sign-out'],
+      registeredRoutes: ['GET /health', 'GET /status', 'POST /send', 'POST /sign-out', 'POST /restart-socket'],
     });
   });
 
@@ -224,12 +224,20 @@ export async function startHttpServer(client: BaileysClient): Promise<FastifyIns
     );
 
     // ── Step 2: socket / connection state ────────────────────────────
-    const hasSocket = client.hasSocket();
-    const isConnected = client.isConnected();
-    log.info({ hasSocket, connected: isConnected }, '[/send] socket state');
-    if (!isConnected) {
-      log.warn({ hasSocket }, '[/send] whatsapp_not_connected');
-      reply.code(503).send({ error: 'whatsapp_not_connected' });
+    // Full readiness snapshot for the bridge log. Includes wsState
+    // (raw websocket readyState), connection age, last
+    // connection.update, last disconnect reason, and any staleReason
+    // a previous send marked. ok=false → fast-fail with the precise
+    // reason instead of waiting for socket.sendMessage to time out.
+    const readiness = client.getReadiness();
+    log.info(readiness, '[/send] socket readiness');
+    if (!readiness.ok) {
+      log.warn({ readiness }, '[/send] whatsapp_not_connected');
+      reply.code(503).send({
+        error: 'whatsapp_not_connected',
+        reason: readiness.reason,
+        readiness,
+      });
       return;
     }
 
@@ -255,11 +263,15 @@ export async function startHttpServer(client: BaileysClient): Promise<FastifyIns
         return;
       }
       if (code === 'send_timeout') {
+        // BaileysClient.sendText already kicked off
+        // markStaleAndReconnect() before throwing. Surface that to
+        // the caller so the admin UI can render "WhatsApp connection
+        // was stale, reconnect started" instead of a generic timeout.
         log.error(
-          { elapsedMs: Date.now() - startedAt },
-          '[/send] send_timeout — Baileys socket.sendMessage did not resolve within bridge timeout',
+          { elapsedMs: Date.now() - startedAt, reconnect_started: true },
+          '[/send] send_timeout — socket marked stale; reconnect started',
         );
-        reply.code(504).send({ error: 'send_timeout' });
+        reply.code(504).send({ error: 'send_timeout', reconnect_started: true });
         return;
       }
       // Anything else: capture name + message + stack at error level
@@ -338,6 +350,28 @@ export async function startHttpServer(client: BaileysClient): Promise<FastifyIns
       '[/send] complete',
     );
     reply.code(200).send({ ok: true, externalMessageId });
+  });
+
+  // POST /restart-socket — admin-triggered socket rebuild WITHOUT
+  // wiping creds. Use case: the bridge says connected=true but
+  // sendMessage hangs (zombie ws), and the admin wants to recover
+  // without a redeploy. Internally identical to the timeout-driven
+  // reconnect path: tear down the current socket, drop the in-memory
+  // readiness flags, call connect() with backoff reset.
+  fastify.post('/restart-socket', async (_req, reply) => {
+    log.warn('[/restart-socket] requested');
+    try {
+      // Fire-and-forget: returning before the new socket reaches
+      // 'open' is fine — the admin UI re-checks /status afterward.
+      void client.restartSocket().catch((err) => {
+        log.error({ err: errSummary(err) }, '[/restart-socket] async failure');
+      });
+      const readiness = client.getReadiness();
+      reply.code(202).send({ ok: true, restart_started: true, readiness });
+    } catch (err) {
+      log.error({ err: errSummary(err) }, '[/restart-socket] failed');
+      reply.code(500).send({ error: 'restart_failed', detail: errSummary(err) });
+    }
   });
 
   fastify.post('/sign-out', async (_req, reply) => {
