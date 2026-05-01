@@ -162,6 +162,62 @@ Create a new Railway service in the same project as the API:
      ~500ms of startup time, which is negligible for a service that
      stays connected for days.
 
+### Internal networking — IPv6 binding (CRITICAL)
+
+The bridge MUST bind to `::` (IPv6 wildcard, dual-stack) — not
+`0.0.0.0` — for the API service to reach it on Railway's internal
+network. Railway's `*.railway.internal` DNS routes over IPv6 by
+default; a process listening on `0.0.0.0` hears nothing on the IPv6
+side, and the API's fetch sits silently for 15 seconds before
+AbortSignal.timeout fires with "The operation was aborted due to
+timeout". This was the bug in the bridge config before; default is
+now `::`. If you need to override (local dev, etc.), set
+`BRIDGE_HTTP_HOST=0.0.0.0`.
+
+After deploy, the bridge's startup log line should read:
+
+    {"name":"http","msg":"http server listening","host":"::","port":<PORT>}
+
+### How to set `WHATSAPP_BRIDGE_URL` on the API service
+
+Two correct values, in order of preference:
+
+1. **Use Railway's reference variables** (recommended — survives any
+   internal-port change):
+
+       WHATSAPP_BRIDGE_URL = http://${{whatsapp-bridge.RAILWAY_PRIVATE_DOMAIN}}:${{whatsapp-bridge.PORT}}
+
+   Where `whatsapp-bridge` is the exact name of the bridge Railway
+   service. This expands at deploy time to the real internal URL
+   and tracks any port change automatically.
+
+2. **Hardcode** (fragile if the bridge's PORT ever changes):
+
+       WHATSAPP_BRIDGE_URL = http://whatsapp-bridge.railway.internal:<PORT>
+
+   Where `<PORT>` is the value Railway shows under the bridge
+   service's "Variables" → `PORT`. Note: this is the bridge's
+   listening port, NOT the public-facing port.
+
+Either way, NO trailing slash. The proxy strips one if present, but
+clean URLs make the logs easier to read.
+
+`INTERNAL_API_SECRET` (or `BAILEYS_BRIDGE_SECRET` — the proxy reads
+either) MUST be byte-identical on both services. Generate once,
+paste into both. Mismatch surfaces as `הגשר דחה את הבקשה (סוד שירות
+לא תואם)` in the admin UI after this commit.
+
+### Quick reachability test from the API service
+
+If you ever want to confirm the API can reach the bridge without
+going through the send path, the bridge exposes `GET /health`
+(no auth). From a Railway shell on the API service:
+
+    curl -fsS "$WHATSAPP_BRIDGE_URL/health"
+
+Expected: `{"ok":true}`. A timeout here = same IPv6 / wrong-URL
+problem the send path hits.
+
 ### Keeping the bridge schema in sync
 
 Source of truth: **`apps/api/prisma/schema.prisma`**.

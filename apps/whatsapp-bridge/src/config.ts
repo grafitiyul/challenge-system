@@ -30,10 +30,22 @@ function int(name: string, defaultValue: number): number {
 export const config = {
   databaseUrl: required('DATABASE_URL'),
 
-  // Internal-only HTTP server. Bound to 0.0.0.0 inside Railway's private
-  // network; the API service reaches us via the railway-internal URL.
-  // Phase 1 only exposes /status, /health, /sign-out. Phase 3 adds /send.
-  httpHost: optional('BRIDGE_HTTP_HOST', '0.0.0.0')!,
+  // Internal-only HTTP server. Default '::' is the IPv6 wildcard, which
+  // on Linux dual-stacks to accept BOTH IPv6 and IPv4 traffic — strictly
+  // more permissive than '0.0.0.0' and required for Railway.
+  //
+  // Why '::' specifically: Railway's internal service-to-service network
+  // (`<service>.railway.internal`) routes over IPv6 by default. Binding
+  // to '0.0.0.0' (the previous default) means the bridge listens on IPv4
+  // only; IPv6 traffic from the API hits a kernel that has nothing
+  // listening, the syscall returns no SYN-ACK, and the API's fetch sits
+  // silently until AbortSignal.timeout fires after 15s — exactly the
+  // "The operation was aborted due to timeout" symptom seen in production.
+  // BRIDGE_HTTP_HOST env override stays in place for non-Railway envs
+  // that need explicit IPv4 binding (rare).
+  //
+  // Endpoints: /health, /status, /sign-out, /send.
+  httpHost: optional('BRIDGE_HTTP_HOST', '::')!,
   httpPort: int('PORT', int('BRIDGE_HTTP_PORT', 4001)),
 
   // Shared secret for API → bridge auth. Both services must agree on
