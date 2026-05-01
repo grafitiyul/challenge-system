@@ -183,6 +183,12 @@ export default function WhatsAppBridgePage() {
   // next to the pill until the next status response either confirms
   // recovery (readiness.ok=true) or surfaces a fresh failure reason.
   const [restartHint, setRestartHint] = useState<string | null>(null);
+  // Diagnostic send state — separate input + output so it doesn't
+  // interfere with the existing status / restart / hard-reset flows.
+  const [debugPhone, setDebugPhone] = useState('');
+  const [debugRunning, setDebugRunning] = useState(false);
+  const [debugResult, setDebugResult] = useState<unknown>(null);
+  const [debugError, setDebugError] = useState<string | null>(null);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = useCallback(async () => {
@@ -232,6 +238,33 @@ export default function WhatsAppBridgePage() {
       setErr(e instanceof Error ? e.message : 'התנתקות נכשלה');
     } finally {
       setSigningOut(false);
+    }
+  }
+
+  // POST /api/admin/whatsapp/debug-send — diagnostic-only outbound.
+  // Bypasses the regular send path's send-chain lock and reconnect
+  // side-effects; the response is a per-step JSON shape that
+  // pinpoints exactly which stage (normalize / readiness /
+  // onWhatsApp / sendMessage) is the source of the timeout. Pure
+  // observation — never persists an outbound row.
+  async function runDebugSend() {
+    if (!debugPhone.trim()) {
+      setDebugError('יש להזין מספר טלפון');
+      return;
+    }
+    setDebugRunning(true);
+    setDebugError(null);
+    setDebugResult(null);
+    try {
+      const json = await apiFetch<unknown>(`${BASE_URL}/admin/whatsapp/debug-send`, {
+        method: 'POST',
+        body: JSON.stringify({ phone: debugPhone.trim(), message: 'בדיקת גשר' }),
+      });
+      setDebugResult(json);
+    } catch (e) {
+      setDebugError(e instanceof Error ? e.message : 'בדיקה נכשלה');
+    } finally {
+      setDebugRunning(false);
     }
   }
 
@@ -557,6 +590,68 @@ export default function WhatsAppBridgePage() {
               {data.reconnectAttempts > 0 && ` (ניסיון ${data.reconnectAttempts})`}
             </div>
           )}
+
+          {/* ── Temporary diagnostic ────────────────────────────────────
+              Fires POST /api/admin/whatsapp/debug-send. Renders the
+              full server response so failedAt + reason + per-step
+              timings are visible without opening a Railway shell.
+              Bypasses the regular send path's lock + reconnect
+              side-effects, so running it is safe even when the
+              regular send is timing out. */}
+          <div
+            style={{
+              background: '#fff', border: '1px dashed #c2410c', borderRadius: 12,
+              padding: 18, marginBottom: 16,
+            }}
+          >
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#7c2d12', marginBottom: 4 }}>
+              בדיקת שליחה אבחונית
+            </div>
+            <div style={{ fontSize: 12, color: '#7c2d12', lineHeight: 1.5, marginBottom: 10 }}>
+              שולחת הודעת &ldquo;בדיקת גשר&rdquo; דרך הצינור האבחוני בלבד (לא נשמר log,
+              לא מפעיל reconnect). מציגה לאיזה שלב מגיע הביצוע — normalize / readiness /
+              onWhatsApp / sendMessage — וכמה זמן לקח.
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
+              <input
+                dir="ltr"
+                inputMode="tel"
+                placeholder="לדוגמה: 972504020000"
+                value={debugPhone}
+                onChange={(e) => setDebugPhone(e.target.value)}
+                disabled={debugRunning}
+                style={{
+                  flex: '1 1 220px', minWidth: 0,
+                  padding: '8px 10px', fontSize: 13,
+                  border: '1px solid #cbd5e1', borderRadius: 8,
+                  fontFamily: 'monospace',
+                }}
+              />
+              <button
+                onClick={() => { void runDebugSend(); }}
+                disabled={debugRunning || !debugPhone.trim()}
+                style={{
+                  padding: '8px 14px', fontSize: 13, fontWeight: 600,
+                  background: debugRunning ? '#fdba74' : '#c2410c',
+                  color: '#fff', border: 'none', borderRadius: 8,
+                  cursor: (debugRunning || !debugPhone.trim()) ? 'not-allowed' : 'pointer',
+                  opacity: (debugRunning || !debugPhone.trim()) ? 0.7 : 1,
+                }}
+              >
+                {debugRunning ? 'רץ...' : 'הרץ בדיקה'}
+              </button>
+            </div>
+
+            {debugError && (
+              <div style={{ background: '#fee2e2', color: '#991b1b', border: '1px solid #fecaca', borderRadius: 8, padding: 10, fontSize: 12, marginBottom: 10 }}>
+                {debugError}
+              </div>
+            )}
+
+            {debugResult !== null && (
+              <DebugResult result={debugResult} />
+            )}
+          </div>
         </>
       )}
 
@@ -683,6 +778,109 @@ export default function WhatsAppBridgePage() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// Renders the response of /admin/whatsapp/debug-send. Shows the
+// headline (ok / failedAt / reason) prominently, a per-step grid in
+// the middle, and the full raw JSON underneath for copy/paste into
+// triage notes. Defensive: any unexpected shape (e.g. bridge
+// returned bridgeUnavailable) still renders as the JSON dump so the
+// admin always sees the truth.
+function DebugResult({ result }: { result: unknown }) {
+  const r = (result ?? {}) as {
+    ok?: boolean;
+    failedAt?: string | null;
+    reason?: string;
+    totalMs?: number;
+    steps?: Array<{
+      name: string;
+      ok: boolean;
+      ms: number;
+      [key: string]: unknown;
+    }>;
+    bridgeUnavailable?: boolean;
+  };
+  const headlineBg = r.ok ? '#dcfce7' : '#fee2e2';
+  const headlineFg = r.ok ? '#15803d' : '#991b1b';
+  const headlineText = r.ok
+    ? `הצלחה — נשלח ב-${r.totalMs ?? '?'}ms`
+    : r.bridgeUnavailable
+    ? `הגשר לא זמין: ${(r as { reason?: string }).reason ?? 'לא ידוע'}`
+    : `נכשל בשלב ${r.failedAt ?? 'לא ידוע'}${r.reason ? ` — ${r.reason}` : ''}`;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div
+        style={{
+          background: headlineBg, color: headlineFg,
+          padding: '8px 12px', borderRadius: 8,
+          fontSize: 13, fontWeight: 700,
+        }}
+      >
+        {headlineText}
+      </div>
+
+      {Array.isArray(r.steps) && r.steps.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {r.steps.map((s, i) => {
+            const sFg = s.ok ? '#15803d' : '#b91c1c';
+            // Strip the keys that are already shown in the header row
+            // so the details object isn't redundant. Keys not in the
+            // strip set are dumped JSON-style for triage.
+            const SKIP = new Set(['name', 'ok', 'ms']);
+            const extras: Record<string, unknown> = {};
+            for (const [k, v] of Object.entries(s)) {
+              if (!SKIP.has(k)) extras[k] = v;
+            }
+            return (
+              <div
+                key={i}
+                style={{
+                  background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8,
+                  padding: '8px 10px', fontSize: 12,
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                  <span style={{ fontWeight: 700, color: sFg, fontFamily: 'monospace' }}>
+                    {s.ok ? '✓' : '✗'} {s.name}
+                  </span>
+                  <span style={{ color: '#64748b', fontFamily: 'monospace', fontSize: 11 }}>{s.ms}ms</span>
+                </div>
+                {Object.keys(extras).length > 0 && (
+                  <pre
+                    dir="ltr"
+                    style={{
+                      margin: 0, fontSize: 11, lineHeight: 1.5,
+                      whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+                      color: '#334155', fontFamily: 'monospace',
+                    }}
+                  >
+                    {JSON.stringify(extras, null, 2)}
+                  </pre>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <details>
+        <summary style={{ cursor: 'pointer', fontSize: 11, color: '#64748b' }}>
+          תשובה גולמית (JSON)
+        </summary>
+        <pre
+          dir="ltr"
+          style={{
+            margin: '8px 0 0', padding: 10, background: '#0f172a', color: '#e2e8f0',
+            borderRadius: 8, fontSize: 11, lineHeight: 1.55,
+            whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+            fontFamily: 'monospace', maxHeight: 320, overflowY: 'auto',
+          }}
+        >
+          {JSON.stringify(result, null, 2)}
+        </pre>
+      </details>
     </div>
   );
 }
