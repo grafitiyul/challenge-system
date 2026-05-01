@@ -19,6 +19,25 @@
 
 import { BadRequestException, Injectable, ServiceUnavailableException } from '@nestjs/common';
 
+// Live readiness snapshot from the bridge. Mirrors the
+// ReadinessSnapshot interface in apps/whatsapp-bridge/src/baileys/client.ts.
+// Surfaced through /status so the admin UI's "connected" indicator is
+// driven by the same source-of-truth that /send uses, not by a stale
+// persisted state.
+export interface BridgeReadiness {
+  ok: boolean;
+  reason: string | null;
+  hasSocket: boolean;
+  connected: boolean;
+  hasUser: boolean;
+  wsState: 'CONNECTING' | 'OPEN' | 'CLOSING' | 'CLOSED' | 'unknown';
+  ageMs: number | null;
+  lastUpdate: 'open' | 'close' | 'connecting' | null;
+  lastDisconnectReason: string | null;
+  staleReason: string | null;
+  reconnecting: boolean;
+}
+
 export interface BridgeStatusPayload {
   status: 'disconnected' | 'qr_required' | 'pairing' | 'connecting' | 'connected';
   qr: string | null;
@@ -36,6 +55,10 @@ export interface BridgeStatusPayload {
   lastMediaErrorAt: string | null;
   messagesToday: number;
   mediaToday: number;
+  // Live socket-readiness from the bridge. Optional only because a
+  // pre-deploy bridge build might not include it; new code paths
+  // require its presence and treat absence as "ready unknown".
+  readiness?: BridgeReadiness;
 }
 
 // Accept both env-var name pairs:

@@ -99,12 +99,18 @@ export async function startHttpServer(client: BaileysClient): Promise<FastifyIns
 
   fastify.get('/status', async () => {
     // Roll up everything the admin UI shows in one call:
-    //   - the singleton WhatsAppConnection row (status, qr, errors)
+    //   - the singleton WhatsAppConnection row (persisted status from
+    //     the last connection.update — what Baileys reported)
+    //   - the LIVE readiness snapshot from the in-memory client (what
+    //     /send would actually see right now — also covers ws.readyState,
+    //     staleReason, reconnecting). The two can disagree (zombie ws
+    //     after the persisted 'open' was written), and the admin UI
+    //     keys "is the bridge usable for sending?" off readiness.ok,
+    //     not the persisted status.
     //   - today's message + media counters by provider='baileys'
-    // Two queries; both are indexed and run in parallel. If we ever
-    // need more metrics the right place is here, not separate routes.
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
+    const readiness = client.getReadiness();
     const [row, messagesToday, mediaToday] = await Promise.all([
       connState.snapshot(prisma),
       prisma.whatsAppMessage.count({
@@ -135,6 +141,7 @@ export async function startHttpServer(client: BaileysClient): Promise<FastifyIns
         lastMediaErrorAt: null,
         messagesToday: 0,
         mediaToday: 0,
+        readiness,
       };
     }
     // Render the QR string into a data URL so the admin UI can render
@@ -168,6 +175,7 @@ export async function startHttpServer(client: BaileysClient): Promise<FastifyIns
       lastMediaErrorAt: row.lastMediaErrorAt?.toISOString() ?? null,
       messagesToday,
       mediaToday,
+      readiness,
     };
   });
 

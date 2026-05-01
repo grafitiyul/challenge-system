@@ -22,6 +22,24 @@ import { BASE_URL, apiFetch } from '@lib/api';
 
 type ConnStatus = 'disconnected' | 'qr_required' | 'pairing' | 'connecting' | 'connected';
 
+// Live readiness snapshot from the bridge — same shape that /send uses
+// to decide whether to even hand off to socket.sendMessage. Used here
+// to drive the admin "connected" pill so the UI never claims "מחובר"
+// while sends would actually fail.
+interface Readiness {
+  ok: boolean;
+  reason: string | null;
+  hasSocket: boolean;
+  connected: boolean;
+  hasUser: boolean;
+  wsState: 'CONNECTING' | 'OPEN' | 'CLOSING' | 'CLOSED' | 'unknown';
+  ageMs: number | null;
+  lastUpdate: 'open' | 'close' | 'connecting' | null;
+  lastDisconnectReason: string | null;
+  staleReason: string | null;
+  reconnecting: boolean;
+}
+
 interface BridgeStatus {
   status: ConnStatus;
   qr: string | null;
@@ -41,6 +59,9 @@ interface BridgeStatus {
   lastMediaErrorAt?: string | null;
   messagesToday?: number;
   mediaToday?: number;
+  // Optional only for backward compat with a stale bridge build that
+  // hasn't been redeployed yet. New code paths read it.
+  readiness?: Readiness;
 }
 
 interface BridgeUnavailable {
@@ -54,6 +75,9 @@ function isUnavailable(r: StatusResponse): r is BridgeUnavailable {
   return (r as BridgeUnavailable).bridgeUnavailable === true;
 }
 
+// Pure status pill — used as a fallback only when the bridge response
+// has no `readiness` field (older bridge build). Once readiness is
+// available, derivePill() below is the single source of truth.
 const STATUS_LABEL: Record<ConnStatus, { text: string; bg: string; fg: string }> = {
   disconnected: { text: 'מנותק',     bg: '#fee2e2', fg: '#b91c1c' },
   qr_required:  { text: 'ממתין לסריקה', bg: '#fef3c7', fg: '#92400e' },
@@ -61,6 +85,81 @@ const STATUS_LABEL: Record<ConnStatus, { text: string; bg: string; fg: string }>
   connecting:   { text: 'מתחבר',     bg: '#dbeafe', fg: '#1d4ed8' },
   connected:    { text: 'מחובר',     bg: '#dcfce7', fg: '#15803d' },
 };
+
+const PILL_GREEN  = { bg: '#dcfce7', fg: '#15803d' };
+const PILL_YELLOW = { bg: '#fef3c7', fg: '#92400e' };
+const PILL_BLUE   = { bg: '#dbeafe', fg: '#1d4ed8' };
+const PILL_RED    = { bg: '#fee2e2', fg: '#b91c1c' };
+
+interface Pill { text: string; bg: string; fg: string; ok: boolean }
+
+/**
+ * Map (readiness, persisted status) → the pill the admin sees and a
+ * boolean `ok` callers use to gate "is the bridge actually usable for
+ * sending right now?".
+ *
+ * Single source of truth: `ok` is `readiness.ok` when readiness is
+ * present; otherwise we fall back to the persisted status meaning
+ * "best we know" (older bridge build).
+ *
+ * Hebrew reason mapping is exhaustive across the reasons the bridge
+ * helper can emit (see ReadinessSnapshot in
+ * apps/whatsapp-bridge/src/baileys/client.ts):
+ *   reconnecting       → "מתחבר מחדש"
+ *   stale:<reason>     → "החיבור תקוע" + sub-reason
+ *   no_socket          → "אין סוקט פעיל" (or "ממתין לסריקה" when QR pending)
+ *   not_connected_flag → "לא מחובר ל-WhatsApp"
+ *   no_user            → "הסוקט עוד לא הסתנכרן"
+ *   ws_CONNECTING      → "הסוקט עדיין מתחבר"
+ *   ws_CLOSING         → "הסוקט בסגירה"
+ *   ws_CLOSED          → "הסוקט סגור"
+ */
+function derivePill(data: BridgeStatus): Pill {
+  const r = data.readiness;
+  if (r?.ok) return { text: 'מחובר ומוכן לשליחה', ...PILL_GREEN, ok: true };
+
+  if (r) {
+    const reason = r.reason ?? '';
+    if (reason === 'reconnecting') {
+      return { text: 'מתחבר מחדש...', ...PILL_BLUE, ok: false };
+    }
+    if (reason.startsWith('stale:')) {
+      const sub = reason.slice('stale:'.length);
+      return { text: `החיבור תקוע (${sub}) — נדרש איפוס`, ...PILL_RED, ok: false };
+    }
+    if (reason === 'no_socket') {
+      if (data.status === 'qr_required') return { text: 'ממתין לסריקת QR', ...PILL_YELLOW, ok: false };
+      if (data.status === 'connecting' || data.status === 'pairing') {
+        return { text: 'מתחבר...', ...PILL_BLUE, ok: false };
+      }
+      return { text: 'אין סוקט פעיל', ...PILL_RED, ok: false };
+    }
+    if (reason === 'not_connected_flag') {
+      if (data.status === 'qr_required') return { text: 'ממתין לסריקת QR', ...PILL_YELLOW, ok: false };
+      if (data.status === 'connecting' || data.status === 'pairing') {
+        return { text: 'מתחבר...', ...PILL_BLUE, ok: false };
+      }
+      return { text: 'לא מחובר ל-WhatsApp', ...PILL_RED, ok: false };
+    }
+    if (reason === 'no_user') {
+      return { text: 'הסוקט עוד לא הסתנכרן עם המשתמש', ...PILL_YELLOW, ok: false };
+    }
+    if (reason === 'ws_CONNECTING') {
+      return { text: 'הסוקט עדיין מתחבר', ...PILL_BLUE, ok: false };
+    }
+    if (reason === 'ws_CLOSING') {
+      return { text: 'הסוקט נסגר — נדרש איפוס', ...PILL_RED, ok: false };
+    }
+    if (reason === 'ws_CLOSED') {
+      return { text: 'הסוקט סגור — נדרש איפוס', ...PILL_RED, ok: false };
+    }
+    return { text: `לא מוכן (${reason || 'לא ידוע'})`, ...PILL_RED, ok: false };
+  }
+
+  // No readiness in payload → old bridge build. Fall back to persisted status.
+  const fallback = STATUS_LABEL[data.status];
+  return { ...fallback, ok: data.status === 'connected' };
+}
 
 function formatTime(iso: string | null): string {
   if (!iso) return '—';
@@ -77,6 +176,11 @@ export default function WhatsAppBridgePage() {
   const [err, setErr] = useState('');
   const [signOutOpen, setSignOutOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
+  const [restarting, setRestarting] = useState(false);
+  // Latched message from the last restart attempt — shown next to the
+  // pill until the next status response either confirms recovery
+  // (readiness.ok=true) or surfaces a fresh failure reason.
+  const [restartHint, setRestartHint] = useState<string | null>(null);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = useCallback(async () => {
@@ -100,8 +204,14 @@ export default function WhatsAppBridgePage() {
   useEffect(() => {
     if (pollTimer.current) clearTimeout(pollTimer.current);
     if (!data) return;
-    const isConnected = !isUnavailable(data) && data.status === 'connected';
-    const intervalMs = isConnected ? 15_000 : 2_000;
+    // Poll cadence is driven by readiness.ok (the same flag /send keys
+    // off). When NOT ready we poll every 2 s so a restart's recovery —
+    // and any new QR — surfaces immediately. When ready we drop to a
+    // 15 s heartbeat. Falls back to the persisted status only when the
+    // bridge response has no readiness field (older bridge build).
+    const ready = !isUnavailable(data)
+      && (data.readiness ? data.readiness.ok : data.status === 'connected');
+    const intervalMs = ready ? 15_000 : 2_000;
     pollTimer.current = setTimeout(() => void load(), intervalMs);
     return () => {
       if (pollTimer.current) clearTimeout(pollTimer.current);
@@ -123,8 +233,40 @@ export default function WhatsAppBridgePage() {
     }
   }
 
+  // POST /api/admin/whatsapp/restart-socket — tear down the current
+  // Baileys socket and rebuild it WITHOUT wiping creds. Recovery path
+  // for the zombie-socket case (bridge thinks it's connected, /send
+  // hangs). Bridge replies 202 immediately; the actual reopen happens
+  // async, so we lean on the existing 2 s poll loop to redraw the pill
+  // as readiness flips back to ok.
+  async function restartConnection() {
+    setRestarting(true);
+    setRestartHint('שולח בקשת איפוס...');
+    try {
+      await apiFetch(`${BASE_URL}/admin/whatsapp/restart-socket`, { method: 'POST' });
+      setRestartHint('בקשת איפוס נשלחה — ממתין שיחזור החיבור...');
+      // First refresh quickly to catch the "reconnecting" transient,
+      // then let the polling loop drive subsequent updates. Two
+      // staggered refreshes hide the brief gap between "connect()
+      // returned" and "connection.update('open')" without being chatty.
+      setTimeout(() => void load(), 400);
+      setTimeout(() => void load(), 1500);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'איפוס נכשל';
+      setRestartHint(`איפוס נכשל: ${msg}`);
+    } finally {
+      setRestarting(false);
+    }
+  }
+
   const status = data && !isUnavailable(data) ? data.status : null;
-  const pill = status ? STATUS_LABEL[status] : null;
+  const liveStatus = data && !isUnavailable(data) ? data : null;
+  const pill: Pill | null = liveStatus ? derivePill(liveStatus) : null;
+  // Clear the post-restart hint once the live readiness flips ok again,
+  // so the operator sees the green pill standalone.
+  if (pill?.ok && restartHint) {
+    setTimeout(() => setRestartHint(null), 0);
+  }
 
   return (
     <div className="page-wrapper" style={{ maxWidth: 720, margin: '0 auto' }}>
@@ -170,7 +312,7 @@ export default function WhatsAppBridgePage() {
               padding: 18, marginBottom: 16,
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
               <div>
                 <div style={{ fontSize: 13, color: '#64748b' }}>סטטוס</div>
                 {pill && (
@@ -185,25 +327,80 @@ export default function WhatsAppBridgePage() {
                     {pill.text}
                   </span>
                 )}
+                {/* Post-restart latched message — replaced as soon as
+                    the next /status response confirms recovery
+                    (pill.ok=true clears it via the effect above). */}
+                {restartHint && (
+                  <div style={{ marginTop: 6, fontSize: 12, color: '#1d4ed8' }}>
+                    {restartHint}
+                  </div>
+                )}
               </div>
-              {(data.status === 'connected' || data.lastDisconnectReason === 'loggedOut') && (
-                <button
-                  onClick={() => setSignOutOpen(true)}
-                  style={{
-                    padding: '7px 14px', fontSize: 13, fontWeight: 600,
-                    background: data.lastDisconnectReason === 'loggedOut' ? '#dc2626' : '#fff',
-                    color: data.lastDisconnectReason === 'loggedOut' ? '#fff' : '#b91c1c',
-                    border: data.lastDisconnectReason === 'loggedOut' ? '1px solid #dc2626' : '1px solid #fecaca',
-                    borderRadius: 8,
-                    cursor: 'pointer',
-                  }}
-                >
-                  {data.lastDisconnectReason === 'loggedOut'
-                    ? 'התנתקי וחברי מחדש'
-                    : 'התנתקי / שכחי מכשיר'}
-                </button>
-              )}
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {/* Restart connection — admin recovery path for the
+                    zombie-socket case. Visible whenever the bridge is
+                    NOT in a clean ready state, regardless of which
+                    sub-reason fired (stale, ws_CLOSED, reconnecting, …).
+                    Hidden once readiness.ok=true to avoid tempting an
+                    operator to "fix" an already-healthy bridge. */}
+                {pill && !pill.ok && (
+                  <button
+                    onClick={() => { void restartConnection(); }}
+                    disabled={restarting}
+                    style={{
+                      padding: '7px 14px', fontSize: 13, fontWeight: 600,
+                      background: restarting ? '#bfdbfe' : '#2563eb',
+                      color: '#fff', border: 'none', borderRadius: 8,
+                      cursor: restarting ? 'not-allowed' : 'pointer',
+                    }}
+                  >
+                    {restarting ? 'מאתחל...' : 'איפוס חיבור'}
+                  </button>
+                )}
+                {(data.status === 'connected' || data.lastDisconnectReason === 'loggedOut') && (
+                  <button
+                    onClick={() => setSignOutOpen(true)}
+                    style={{
+                      padding: '7px 14px', fontSize: 13, fontWeight: 600,
+                      background: data.lastDisconnectReason === 'loggedOut' ? '#dc2626' : '#fff',
+                      color: data.lastDisconnectReason === 'loggedOut' ? '#fff' : '#b91c1c',
+                      border: data.lastDisconnectReason === 'loggedOut' ? '1px solid #dc2626' : '1px solid #fecaca',
+                      borderRadius: 8,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {data.lastDisconnectReason === 'loggedOut'
+                      ? 'התנתקי וחברי מחדש'
+                      : 'התנתקי / שכחי מכשיר'}
+                  </button>
+                )}
+              </div>
             </div>
+            {/* Readiness diagnostic strip — shown only when not ready,
+                so a healthy connection stays visually clean. Surfaces
+                the four most-actionable bits from the live snapshot:
+                wsState, lastUpdate, lastDisconnectReason, staleReason.
+                These match exactly what /send sees, so the admin can
+                correlate "WhatsApp page says X" with "send returns Y". */}
+            {data.readiness && !data.readiness.ok && (
+              <div
+                style={{
+                  marginBottom: 12, padding: '10px 12px',
+                  background: '#fff7ed', border: '1px solid #fed7aa',
+                  borderRadius: 8, fontSize: 12, lineHeight: 1.6, color: '#7c2d12',
+                }}
+              >
+                <div style={{ fontWeight: 600, marginBottom: 4 }}>פרטי מצב הסוקט</div>
+                <div style={{ fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                  reason={data.readiness.reason ?? '—'} ·
+                  ws={data.readiness.wsState} ·
+                  lastUpdate={data.readiness.lastUpdate ?? '—'} ·
+                  lastDisconnect={data.readiness.lastDisconnectReason ?? '—'} ·
+                  stale={data.readiness.staleReason ?? '—'} ·
+                  reconnecting={String(data.readiness.reconnecting)}
+                </div>
+              </div>
+            )}
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, fontSize: 13 }}>
               <Field label="מכשיר" value={data.deviceName || '—'} />
