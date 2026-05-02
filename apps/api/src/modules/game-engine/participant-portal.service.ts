@@ -722,6 +722,13 @@ export class ParticipantPortalService {
         unit: a.unit,
         points: a.points,
         maxPerDay: a.maxPerDay,
+        // Numeric input safety limits — surfaced so the portal can
+        // mirror the server's validation pre-submit. Decimal columns
+        // are serialised to JSON as strings by Prisma; the portal
+        // re-parses with Number() before comparing. Null = no limit.
+        maxDigits: a.maxDigits,
+        maxValue: a.maxValue !== null ? a.maxValue.toString() : null,
+        minValue: a.minValue !== null ? a.minValue.toString() : null,
         participantPrompt: a.participantPrompt ?? null,
         participantTextPrompt: a.participantTextPrompt ?? null,
         participantTextRequired: a.participantTextRequired ?? false,

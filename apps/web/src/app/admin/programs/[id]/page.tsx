@@ -1129,6 +1129,13 @@ interface GameAction {
   unitSize: number | null;
   basePointsPerUnit: number | null;
   maxPerDay: number | null;
+  // Numeric input safety limits — generic guards against accidental
+  // extra-digit inputs. Server returns Decimal columns as JSON strings
+  // for max/min; we keep them as string|number in the type so both
+  // shapes parse cleanly.
+  maxDigits: number | null;
+  maxValue: number | string | null;
+  minValue: number | string | null;
   showInPortal: boolean;
   blockedMessage: string | null;
   explanationContent: string | null;
@@ -1865,6 +1872,11 @@ function ActionModal({
     basePointsPerUnit:
       action?.basePointsPerUnit != null ? String(action.basePointsPerUnit) : '',
     maxPerDay: action?.maxPerDay != null ? String(action.maxPerDay) : '',
+    // Numeric input safety limits — empty string = no restriction.
+    // Stored as strings in form state to keep the inputs controlled.
+    maxDigits: action?.maxDigits != null ? String(action.maxDigits) : '',
+    maxValue: action?.maxValue != null ? String(action.maxValue) : '',
+    minValue: action?.minValue != null ? String(action.minValue) : '',
     showInPortal: action?.showInPortal ?? true,
     blockedMessage: action?.blockedMessage ?? '',
     explanationContent: action?.explanationContent ?? '',
@@ -2025,6 +2037,16 @@ function ActionModal({
         // Phase 6.9: units-delta supports multiple same-day submissions.
         // No forced maxPerDay. Whatever the admin sets flows through.
         maxPerDay: form.maxPerDay.trim() ? parseInt(form.maxPerDay) : null,
+        // Numeric input safety — only meaningful when this action
+        // accepts numeric input. We still send (as null) when the
+        // input type is non-number, so toggling number → boolean
+        // clears any previously-stored limits server-side.
+        maxDigits: form.inputType === 'number' && form.maxDigits.trim()
+          ? parseInt(form.maxDigits) : null,
+        maxValue: form.inputType === 'number' && form.maxValue.trim()
+          ? parseFloat(form.maxValue.replace(',', '.')) : null,
+        minValue: form.inputType === 'number' && form.minValue.trim()
+          ? parseFloat(form.minValue.replace(',', '.')) : null,
         showInPortal: form.showInPortal,
         blockedMessage: form.blockedMessage.trim() || null,
         explanationContent: form.explanationContent.trim() || null,
@@ -2257,6 +2279,65 @@ function ActionModal({
                 </div>
               </div>
             </div>
+
+            {/* Numeric safety limits — visible only for actions that
+                accept numeric input. Generic per-action guards against
+                accidental extra-digit submissions; never references
+                specific use cases (steps / water / etc.). All three
+                fields are optional; empty = no restriction. */}
+            {form.inputType === 'number' && (
+              <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 10, padding: 14, display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: '#92400e' }}>
+                  מגבלות בטיחות לקלט מספרי
+                </div>
+                <div style={{ fontSize: 12, color: '#78350f', lineHeight: 1.55 }}>
+                  מונע טעויות הקלדה כמו ספרה מיותרת. אם השדות ריקים — אין מגבלה.
+                  המערכת אוכפת את אותם כללים גם בצד הלקוח וגם בצד השרת ולא תאפשר
+                  דיווח שחורג מהגבולות.
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+                  <div>
+                    <label style={labelStyle}>מקסימום ספרות</label>
+                    <input
+                      type="number" min={1}
+                      style={{ ...inputStyle, direction: 'ltr' }}
+                      value={form.maxDigits}
+                      onChange={(e) => setForm((p) => ({ ...p, maxDigits: e.target.value }))}
+                      placeholder="ללא הגבלה"
+                    />
+                    <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>
+                      ספרות בלבד, ללא נקודה/פסיק
+                    </div>
+                  </div>
+                  <div>
+                    <label style={labelStyle}>ערך מקסימלי</label>
+                    <input
+                      type="number" inputMode="decimal" step="any"
+                      style={{ ...inputStyle, direction: 'ltr' }}
+                      value={form.maxValue}
+                      onChange={(e) => setForm((p) => ({ ...p, maxValue: e.target.value }))}
+                      placeholder="ללא הגבלה"
+                    />
+                    <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>
+                      ערך מקסימלי מותר (כולל)
+                    </div>
+                  </div>
+                  <div>
+                    <label style={labelStyle}>ערך מינימלי</label>
+                    <input
+                      type="number" inputMode="decimal" step="any"
+                      style={{ ...inputStyle, direction: 'ltr' }}
+                      value={form.minValue}
+                      onChange={(e) => setForm((p) => ({ ...p, minValue: e.target.value }))}
+                      placeholder="ללא הגבלה"
+                    />
+                    <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>
+                      ערך מינימלי מותר (כולל)
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {form.maxPerDay && (
               <div>

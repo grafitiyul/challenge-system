@@ -51,6 +51,13 @@ interface Action {
   unit: string | null;
   points: number;
   maxPerDay: number | null;
+  // Numeric input safety limits — sent by the portal endpoint when the
+  // admin configured them. Decimal columns serialise as strings via
+  // Prisma; we accept either shape and parse with Number() at compare
+  // time. All three are nullable; null = no restriction.
+  maxDigits?: number | null;
+  maxValue?: number | string | null;
+  minValue?: number | string | null;
   soundKey: string;
   // Phase 3.4: admin-editable submission prompt. When null, getInputLabel()
   // falls back to the aggregation-mode default.
@@ -1910,6 +1917,35 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
       if (!value || isNaN(num) || num < 0) {
         setInputError('יש להזין מספר תקין');
         return;
+      }
+      // Generic per-action numeric safety limits. Mirrors the server's
+      // validateNumericInputLimits — same precedence (min → max →
+      // digits) so the message the participant sees matches what the
+      // server would have said. Server is the source of truth; this
+      // only saves a round-trip on obvious mistakes like "extra digit".
+      const minRaw = activeAction.minValue;
+      const maxRaw = activeAction.maxValue;
+      const maxDigits = activeAction.maxDigits;
+      if (minRaw !== null && minRaw !== undefined) {
+        const min = Number(minRaw);
+        if (Number.isFinite(min) && num < min) {
+          setInputError(`הערך שהוזן (${num}) נמוך מהמינימום המותר (${min}) לפעולה זו.`);
+          return;
+        }
+      }
+      if (maxRaw !== null && maxRaw !== undefined) {
+        const max = Number(maxRaw);
+        if (Number.isFinite(max) && num > max) {
+          setInputError(`המספר שהוזן (${num}) גבוה מדי. בדקי שלא נוספה ספרה בטעות (מקסימום מותר: ${max}).`);
+          return;
+        }
+      }
+      if (maxDigits !== null && maxDigits !== undefined && maxDigits > 0) {
+        const digitCount = value.replace(/[^0-9]/g, '').length;
+        if (digitCount > maxDigits) {
+          setInputError(`המספר שהוזן (${num}) ארוך מדי — מותר עד ${maxDigits} ספרות. בדקי שלא נוספה ספרה בטעות.`);
+          return;
+        }
       }
     }
 

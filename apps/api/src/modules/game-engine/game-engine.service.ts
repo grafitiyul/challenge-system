@@ -172,6 +172,74 @@ type ActionScoringShape = {
  *                   by latest_value_units_delta; safely passed as 0 for other
  *                   strategies.
  */
+/**
+ * Per-action numeric input safety check. Generic — never references
+ * specific action types (steps / water / etc.). Three independent
+ * guards, each null-checked so a partially-configured action is still
+ * partially protected:
+ *
+ *   maxDigits — counts NUMERIC digits in the parsed value's string
+ *               form (no separators, no decimal point, no sign). The
+ *               primary defense against the "extra digit" bug:
+ *               a participant who meant 8000 and typed 80000 is
+ *               immediately rejected even when no specific cap exists.
+ *   maxValue  — inclusive upper bound on the parsed number.
+ *   minValue  — inclusive lower bound on the parsed number.
+ *
+ * Throws BadRequestException with a Hebrew message when violated;
+ * caller is logAction (server-side only — frontend mirrors this).
+ * Never silently clamps — that would hide bad data instead of
+ * surfacing it.
+ */
+export function validateNumericInputLimits(
+  rawValue: string | null | undefined,
+  limits: {
+    maxDigits: number | null;
+    maxValue: { toString(): string } | null;
+    minValue: { toString(): string } | null;
+  },
+): void {
+  // Skip if no limits configured — preserves the legacy behavior for
+  // every action that hasn't opted in.
+  if (limits.maxDigits === null && limits.maxValue === null && limits.minValue === null) {
+    return;
+  }
+  const parsed = rawValue !== undefined && rawValue !== null ? parseFloat(rawValue) : NaN;
+  if (isNaN(parsed)) {
+    // No number to validate; the caller's separate parseFloat checks
+    // will surface a clearer message. Don't throw here — keep this
+    // helper single-purpose.
+    return;
+  }
+  if (limits.minValue !== null) {
+    const min = parseFloat(limits.minValue.toString());
+    if (parsed < min) {
+      throw new BadRequestException(
+        `הערך שהוזן (${parsed}) נמוך מהמינימום המותר (${min}) לפעולה זו.`,
+      );
+    }
+  }
+  if (limits.maxValue !== null) {
+    const max = parseFloat(limits.maxValue.toString());
+    if (parsed > max) {
+      throw new BadRequestException(
+        `המספר שהוזן (${parsed}) גבוה מדי. בדקי שלא נוספה ספרה בטעות (מקסימום מותר: ${max}).`,
+      );
+    }
+  }
+  if (limits.maxDigits !== null) {
+    // Count numeric digits only — strip every non-digit char, including
+    // the decimal point, sign, and any thousands separators a future
+    // input format might pass through. "8,000.5" → "80005" → 5 digits.
+    const digitCount = String(rawValue).replace(/[^0-9]/g, '').length;
+    if (digitCount > limits.maxDigits) {
+      throw new BadRequestException(
+        `המספר שהוזן (${parsed}) ארוך מדי — מותר עד ${limits.maxDigits} ספרות. בדקי שלא נוספה ספרה בטעות.`,
+      );
+    }
+  }
+}
+
 export function computeBasePointsForSubmission(
   action: ActionScoringShape,
   rawValue: string | null | undefined,
@@ -402,6 +470,14 @@ export class GameEngineService {
           unitSize: normalized.unitSize,
           basePointsPerUnit: normalized.basePointsPerUnit,
           maxPerDay: dto.maxPerDay ?? null,
+          // Numeric safety limits — null when admin doesn't configure
+          // them, preserving existing behavior. Decimal columns accept
+          // a JS number directly; Prisma coerces to Decimal internally.
+          maxDigits: dto.maxDigits ?? null,
+          maxValue: dto.maxValue !== undefined && dto.maxValue !== null
+            ? new Prisma.Decimal(dto.maxValue) : null,
+          minValue: dto.minValue !== undefined && dto.minValue !== null
+            ? new Prisma.Decimal(dto.minValue) : null,
           showInPortal: dto.showInPortal ?? true,
           blockedMessage: dto.blockedMessage ?? null,
           explanationContent: dto.explanationContent ?? null,
@@ -530,6 +606,17 @@ export class GameEngineService {
           ...(dto.unit !== undefined ? { unit: dto.unit } : {}),
           ...(dto.points !== undefined ? { points: dto.points } : {}),
           ...(dto.maxPerDay !== undefined ? { maxPerDay: dto.maxPerDay } : {}),
+          // Numeric safety limits. Sending the field as null clears it
+          // (back to "no restriction"); omitting the field leaves the
+          // stored value untouched. Same partial-update pattern as the
+          // rest of the service.
+          ...(dto.maxDigits !== undefined ? { maxDigits: dto.maxDigits } : {}),
+          ...(dto.maxValue !== undefined
+            ? { maxValue: dto.maxValue !== null ? new Prisma.Decimal(dto.maxValue) : null }
+            : {}),
+          ...(dto.minValue !== undefined
+            ? { minValue: dto.minValue !== null ? new Prisma.Decimal(dto.minValue) : null }
+            : {}),
           ...(dto.showInPortal !== undefined ? { showInPortal: dto.showInPortal } : {}),
           ...(dto.blockedMessage !== undefined ? { blockedMessage: dto.blockedMessage } : {}),
           ...(dto.explanationContent !== undefined ? { explanationContent: dto.explanationContent } : {}),
@@ -847,6 +934,18 @@ export class GameEngineService {
     // Removing this check from correctLog is a PRODUCT decision: truthful
     // corrections beat monotonic protection for historical logs.
     let effectiveValue: Prisma.Decimal | null = null;
+    // Numeric input safety limits — generic per-action guards
+    // (maxDigits / maxValue / minValue). Runs BEFORE any DB write so
+    // a violation produces zero side effects: no UserActionLog, no
+    // ScoreEvent, no FeedEvent. Same helper used by all four numeric
+    // baseScoringType variants below; null limits short-circuit out.
+    if (action.inputType === 'number') {
+      validateNumericInputLimits(dto.value, {
+        maxDigits: action.maxDigits,
+        maxValue: action.maxValue,
+        minValue: action.minValue,
+      });
+    }
     if (action.inputType === 'number' && action.aggregationMode === 'latest_value') {
       const parsed = parseFloat(dto.value ?? '');
       if (isNaN(parsed) || parsed < 0) {

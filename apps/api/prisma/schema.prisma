@@ -1108,6 +1108,29 @@ model GameAction {
   unitSize                Int?
   basePointsPerUnit       Int?
   maxPerDay               Int?
+  // ── Numeric input safety limits (per action) ──────────────────────────────
+  // Generic guards against the "extra digit" data-quality problem (e.g. a
+  // participant typing 80000 steps when they meant 8000). All three are
+  // optional and apply only when inputType='number'. Null = no restriction
+  // (preserves legacy behavior for actions created before this feature).
+  //
+  // maxDigits: maximum count of NUMERIC digits allowed in the parsed value
+  //   (separators, decimal points, and signs are NOT counted). Useful as a
+  //   coarse "no extra digit" guardrail without requiring the admin to
+  //   reason about specific magnitudes.
+  // maxValue: hard upper bound on the parsed numeric value (inclusive).
+  //   Use when there's a meaningful product-level ceiling.
+  // minValue: hard lower bound on the parsed numeric value (inclusive).
+  //   Defaults to 0 in code if null (existing logAction already rejects
+  //   negative values for latest_value); kept null here so existing rows
+  //   keep their current behavior.
+  //
+  // Both backend (logAction) and frontend (participant portal) enforce.
+  // On violation: reject the submission, no UserActionLog / ScoreEvent
+  // is written, and a Hebrew error is returned. We never silently clamp.
+  maxDigits               Int?
+  maxValue                Decimal? @db.Decimal(20, 4)
+  minValue                Decimal? @db.Decimal(20, 4)
   // Whether this action appears in the participant-facing portal
   showInPortal            Boolean  @default(true)
   // Custom message shown to participant when daily limit is reached (null = use system default)

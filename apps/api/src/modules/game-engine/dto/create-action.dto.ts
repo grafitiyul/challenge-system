@@ -1,4 +1,4 @@
-import { IsBoolean, IsIn, IsInt, IsObject, IsOptional, IsString, Matches, Max, Min, ValidateIf, ValidateNested, IsArray } from 'class-validator';
+import { IsBoolean, IsIn, IsInt, IsNumber, IsObject, IsOptional, IsString, Matches, Max, Min, ValidateIf, ValidateNested, IsArray } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ActionContextUseDto } from './context-definition.dto';
 
@@ -83,6 +83,30 @@ export class CreateActionDto {
   @IsInt()
   @Min(1)
   maxPerDay?: number | null;
+
+  /**
+   * Numeric input safety limits — only meaningful when inputType='number'.
+   * Null = no restriction; legacy rows stay unchanged. Server enforces
+   * these in logAction BEFORE any DB write; portal mirrors them as a
+   * pre-submit check. We never silently clamp — violations are hard
+   * rejections with a Hebrew error message that points at "extra digit"
+   * as the most common cause.
+   */
+  @IsOptional()
+  @ValidateIf((o) => o.maxDigits !== null)
+  @IsInt()
+  @Min(1)
+  maxDigits?: number | null;
+
+  @IsOptional()
+  @ValidateIf((o) => o.maxValue !== null)
+  @IsNumber()
+  maxValue?: number | null;
+
+  @IsOptional()
+  @ValidateIf((o) => o.minValue !== null)
+  @IsNumber()
+  minValue?: number | null;
 
   @IsOptional()
   @IsBoolean()
@@ -228,6 +252,25 @@ export class UpdateActionDto {
   @IsInt()
   @Min(1)
   maxPerDay?: number | null;
+
+  /** See CreateActionDto.maxDigits. */
+  @IsOptional()
+  @ValidateIf((o) => o.maxDigits !== null)
+  @IsInt()
+  @Min(1)
+  maxDigits?: number | null;
+
+  /** See CreateActionDto.maxValue. */
+  @IsOptional()
+  @ValidateIf((o) => o.maxValue !== null)
+  @IsNumber()
+  maxValue?: number | null;
+
+  /** See CreateActionDto.minValue. */
+  @IsOptional()
+  @ValidateIf((o) => o.minValue !== null)
+  @IsNumber()
+  minValue?: number | null;
 
   @IsOptional()
   @IsBoolean()
