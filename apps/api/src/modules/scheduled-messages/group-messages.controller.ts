@@ -59,14 +59,16 @@ export class GroupScheduledMessagesController {
     return this.svc.cancel(groupId, msgId);
   }
 
-  // Bulk-import templates from the group's program. Cloned rows start
-  // as draft + disabled — admin must approve each one before the cron
-  // can execute.
-  @Post('inherit-from-program')
-  inherit(
+  // Recovery / catch-up endpoint. Auto-create on template-write is
+  // the primary way scheduled rows appear in groups; this is the
+  // "if anything got out of sync, click here" backstop. Idempotent.
+  // Cloned rows start as draft + disabled — admin must enable each
+  // one before the cron can execute.
+  @Post('sync-from-program')
+  syncMissing(
     @Param('groupId') groupId: string,
     @Body() dto: InheritFromProgramDto,
   ) {
-    return this.svc.inheritFromProgram(groupId, dto);
+    return this.svc.syncMissingFromProgram(groupId, dto);
   }
 }

@@ -6,108 +6,7 @@ import {
   UpdateGroupMessageDto,
   InheritFromProgramDto,
 } from './dto/group-message.dto';
-
-const PARTICIPANT_TZ = 'Asia/Jerusalem';
-
-// Compose an absolute UTC Date from a YYYY-MM-DD calendar day (in
-// Asia/Jerusalem) plus an HH:mm wall-clock time. Robust against DST
-// transitions because we anchor on the local calendar day and then
-// normalise via Intl. Used by the template→group timing resolver.
-function jerusalemDateAtTime(ymd: string, hhmm: string): Date {
-  const [hh, mm] = hhmm.split(':').map(Number);
-  // Probe: a UTC noon on the target Y/M/D guarantees we're on the
-  // correct local day in Asia/Jerusalem regardless of DST. Then
-  // shift to the desired hours/minutes by computing the offset
-  // between UTC noon and the local target wall-clock.
-  const [y, m, d] = ymd.split('-').map(Number);
-  // Build the local-time string and let Date parse it via toLocaleString
-  // round-trip; cheaper to compute the offset directly:
-  const probe = new Date(Date.UTC(y, (m as number) - 1, d, 12, 0, 0));
-  const localParts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: PARTICIPANT_TZ,
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', hour12: false,
-  }).formatToParts(probe);
-  const localHour = Number(localParts.find((p) => p.type === 'hour')?.value);
-  // If the probe's local time is 14:00 on this day, the offset from
-  // UTC noon to local noon is +2 hours; we use that to shift to
-  // the desired wall-clock.
-  const offsetHours = localHour - 12;
-  return new Date(Date.UTC(y, (m as number) - 1, d, hh - offsetHours, mm, 0));
-}
-
-// Format a Date as YYYY-MM-DD using its Asia/Jerusalem calendar day.
-function jerusalemYmd(d: Date): string {
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: PARTICIPANT_TZ,
-    year: 'numeric', month: '2-digit', day: '2-digit',
-  }).format(d);
-}
-
-// Add `days` to a YYYY-MM-DD calendar day, returning YYYY-MM-DD.
-function addDaysYmd(ymd: string, days: number): string {
-  const [y, m, d] = ymd.split('-').map(Number);
-  const dt = new Date(Date.UTC(y, (m as number) - 1, d + days));
-  return jerusalemYmd(dt);
-}
-
-// Resolve a template's timingType + offsets + the group's start/end
-// dates into a single absolute UTC instant. Throws BadRequestException
-// when the group lacks the date the timing type depends on.
-export function resolveTemplateScheduledAt(
-  template: {
-    timingType: string;
-    exactAt: Date | null;
-    dayOfNumber: number | null;
-    offsetDays: number | null;
-    timeOfDay: string | null;
-  },
-  group: { startDate: Date | null; endDate: Date | null },
-): Date {
-  switch (template.timingType) {
-    case 'exact': {
-      if (!template.exactAt) {
-        throw new BadRequestException('תבנית "תאריך מדויק" ללא תאריך מוגדר');
-      }
-      return template.exactAt;
-    }
-    case 'day_of': {
-      if (!group.startDate) {
-        throw new BadRequestException('לא ניתן לייבא תבנית "יום N של המשחק" לקבוצה ללא תאריך התחלה');
-      }
-      if (!template.dayOfNumber || !template.timeOfDay) {
-        throw new BadRequestException('תבנית "יום N של המשחק" חסרה מספר יום או שעה');
-      }
-      const startYmd = jerusalemYmd(group.startDate);
-      const targetYmd = addDaysYmd(startYmd, template.dayOfNumber - 1);
-      return jerusalemDateAtTime(targetYmd, template.timeOfDay);
-    }
-    case 'before_start': {
-      if (!group.startDate) {
-        throw new BadRequestException('לא ניתן לייבא תבנית "X ימים לפני התחלה" לקבוצה ללא תאריך התחלה');
-      }
-      if (template.offsetDays === null || !template.timeOfDay) {
-        throw new BadRequestException('תבנית "X ימים לפני התחלה" חסרה מספר ימים או שעה');
-      }
-      const startYmd = jerusalemYmd(group.startDate);
-      const targetYmd = addDaysYmd(startYmd, -template.offsetDays);
-      return jerusalemDateAtTime(targetYmd, template.timeOfDay);
-    }
-    case 'after_end': {
-      if (!group.endDate) {
-        throw new BadRequestException('לא ניתן לייבא תבנית "X ימים אחרי סיום" לקבוצה ללא תאריך סיום');
-      }
-      if (template.offsetDays === null || !template.timeOfDay) {
-        throw new BadRequestException('תבנית "X ימים אחרי סיום" חסרה מספר ימים או שעה');
-      }
-      const endYmd = jerusalemYmd(group.endDate);
-      const targetYmd = addDaysYmd(endYmd, template.offsetDays);
-      return jerusalemDateAtTime(targetYmd, template.timeOfDay);
-    }
-    default:
-      throw new BadRequestException(`timingType לא נתמך: ${template.timingType}`);
-  }
-}
+import { resolveTemplateScheduledAt } from './timing';
 
 @Injectable()
 export class GroupScheduledMessagesService {
@@ -119,7 +18,9 @@ export class GroupScheduledMessagesService {
       where: { groupId },
       orderBy: [{ scheduledAt: 'asc' }],
       include: {
-        sourceTemplate: { select: { id: true, internalName: true, isActive: true } },
+        // sourceTemplate is now a CommunicationTemplate. Only the fields
+        // the group tab actually uses are selected.
+        sourceTemplate: { select: { id: true, title: true, isActive: true } },
       },
     });
   }
@@ -220,28 +121,36 @@ export class GroupScheduledMessagesService {
     });
   }
 
-  // Inherit (clone) program templates into this group. Each template
-  // becomes a fresh GroupScheduledMessage row with status='draft' and
-  // enabled=false — admin must explicitly approve. Skips templates
-  // that would produce a duplicate via @@unique(groupId, sourceTemplateId, scheduledAt).
-  async inheritFromProgram(groupId: string, dto: InheritFromProgramDto) {
+  // Sync missing templates — recovery flow. The PRIMARY way templates
+  // become group rows is the auto-create hook on the comm-template
+  // writer (programs.service.autoCreateGroupSchedulesForTemplate),
+  // fired when an admin creates a new template OR adds a timingType
+  // to an existing one. This endpoint stays as a manual "if anything
+  // got out of sync, click here" recovery action — it's idempotent
+  // thanks to @@unique(groupId, sourceTemplateId, scheduledAt).
+  async syncMissingFromProgram(groupId: string, dto: InheritFromProgramDto) {
     const group = await this.prisma.group.findUnique({
       where: { id: groupId },
       select: { id: true, programId: true, startDate: true, endDate: true },
     });
     if (!group) throw new NotFoundException('הקבוצה לא נמצאה');
     if (!group.programId) {
-      throw new BadRequestException('לא ניתן לייבא תבניות — הקבוצה אינה משויכת לתוכנית');
+      throw new BadRequestException('לא ניתן לסנכרן תבניות — הקבוצה אינה משויכת לתוכנית');
     }
 
-    const where = {
-      programId: group.programId,
-      isActive: true,
-      ...(dto.templateIds && dto.templateIds.length > 0
-        ? { id: { in: dto.templateIds } }
-        : {}),
-    };
-    const templates = await this.prisma.programScheduledMessageTemplate.findMany({ where });
+    // Pull only WhatsApp comm-templates that are scheduling-default.
+    // Email templates pass through because they have timingType=null.
+    const templates = await this.prisma.communicationTemplate.findMany({
+      where: {
+        programId: group.programId,
+        isActive: true,
+        channel: 'whatsapp',
+        timingType: { not: null },
+        ...(dto.templateIds && dto.templateIds.length > 0
+          ? { id: { in: dto.templateIds } }
+          : {}),
+      },
+    });
     if (templates.length === 0) {
       return { created: 0, skipped: 0, errors: [] as { templateId: string; reason: string }[] };
     }
@@ -262,17 +171,20 @@ export class GroupScheduledMessagesService {
         continue;
       }
       try {
+        const now = new Date();
         await this.prisma.groupScheduledMessage.create({
           data: {
             groupId,
             sourceTemplateId: t.id,
-            category: t.category,
-            internalName: t.internalName,
-            content: t.content,
+            category: t.category ?? '',
+            internalName: t.title,
+            content: t.body,
             scheduledAt,
             targetType: 'group_whatsapp_chat',
             enabled: false,
             status: 'draft',
+            contentSyncedAt: now,
+            scheduledAtSyncedAt: now,
           },
         });
         created++;
@@ -290,7 +202,7 @@ export class GroupScheduledMessagesService {
       }
     }
     this.logger.log(
-      `[scheduled] inherit groupId=${groupId} created=${created} skipped=${skipped} errors=${errors.length}`,
+      `[scheduled] sync groupId=${groupId} created=${created} skipped=${skipped} errors=${errors.length}`,
     );
     return { created, skipped, errors };
   }

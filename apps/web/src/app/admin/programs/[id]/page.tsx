@@ -13,7 +13,7 @@ import { ProfileTab } from './profile-tab';
 
 type ProgramType = 'challenge' | 'game' | 'group_coaching' | 'personal_coaching';
 type GroupStatus = 'active' | 'inactive';
-type TabKey = 'settings' | 'groups' | 'game' | 'rules' | 'waitlist' | 'offers' | 'communication' | 'profile' | 'scheduled';
+type TabKey = 'settings' | 'groups' | 'game' | 'rules' | 'waitlist' | 'offers' | 'communication' | 'profile';
 
 interface Group {
   id: string;
@@ -94,7 +94,7 @@ const labelStyle: React.CSSProperties = {
   fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 6, display: 'block',
 };
 
-const VALID_TABS: TabKey[] = ['settings', 'groups', 'game', 'rules', 'offers', 'scheduled', 'waitlist', 'communication', 'profile'];
+const VALID_TABS: TabKey[] = ['settings', 'groups', 'game', 'rules', 'offers', 'waitlist', 'communication', 'profile'];
 
 function formatDate(iso: string | null) {
   if (!iso) return '—';
@@ -4721,7 +4721,6 @@ function ProgramPageInner({ params }: { params: Promise<{ id: string }> }) {
   const tabs: { key: TabKey; label: string }[] = [
     { key: 'groups', label: 'קבוצות' },
     { key: 'offers', label: 'הצעות מכר' },
-    { key: 'scheduled', label: 'הודעות מתוזמנות' },
     { key: 'waitlist', label: 'רשימת המתנה' },
     { key: 'communication', label: 'נוסחים להודעות' },
     ...(program.type === 'game' ? [
@@ -4776,7 +4775,6 @@ function ProgramPageInner({ params }: { params: Promise<{ id: string }> }) {
         {activeTab === 'game' && <GameEngineTab programId={program.id} />}
         {activeTab === 'rules' && <RulesTab program={program} onSaved={(updated) => setProgram(updated)} />}
         {activeTab === 'offers' && <ProductOffersTab programId={program.id} />}
-        {activeTab === 'scheduled' && <ProgramScheduledTemplatesTab programId={program.id} />}
         {activeTab === 'waitlist' && <ProductWaitlistTab programId={program.id} />}
         {activeTab === 'communication' && <ProductCommunicationTab programId={program.id} />}
         {activeTab === 'profile' && (
@@ -5090,275 +5088,6 @@ interface WaitlistRow {
   participant: { id: string; firstName: string; lastName: string | null; phoneNumber: string; email: string | null; status: string | null };
 }
 
-// ─── Scheduled message templates (program-level defaults) ────────────────
-// Templates are DEFAULTS only — they never send by themselves. Groups
-// clone them into GroupScheduledMessage rows that the cron worker
-// actually executes. This tab is the authoring surface; the
-// "הודעות מתוזמנות" tab on /admin/groups/[id] is where sending is
-// controlled.
-
-interface ScheduledTemplate {
-  id: string;
-  category: string;
-  internalName: string;
-  content: string;
-  timingType: 'exact' | 'day_of' | 'before_start' | 'after_end';
-  exactAt: string | null;
-  dayOfNumber: number | null;
-  offsetDays: number | null;
-  timeOfDay: string | null;
-  isActive: boolean;
-  sortOrder: number;
-}
-
-const TIMING_LABELS: Record<ScheduledTemplate['timingType'], string> = {
-  exact: 'תאריך מדויק',
-  day_of: 'יום N של המשחק',
-  before_start: 'X ימים לפני התחלה',
-  after_end: 'X ימים אחרי סיום',
-};
-
-function describeTiming(t: ScheduledTemplate): string {
-  if (t.timingType === 'exact') {
-    return t.exactAt ? `תאריך מדויק: ${new Date(t.exactAt).toLocaleString('he-IL')}` : 'תאריך מדויק (לא הוגדר)';
-  }
-  if (t.timingType === 'day_of') {
-    return `יום ${t.dayOfNumber ?? '?'} של המשחק בשעה ${t.timeOfDay ?? '?'}`;
-  }
-  if (t.timingType === 'before_start') {
-    return `${t.offsetDays ?? '?'} ימים לפני התחלה בשעה ${t.timeOfDay ?? '?'}`;
-  }
-  return `${t.offsetDays ?? '?'} ימים אחרי סיום בשעה ${t.timeOfDay ?? '?'}`;
-}
-
-function ProgramScheduledTemplatesTab({ programId }: { programId: string }) {
-  const [rows, setRows] = useState<ScheduledTemplate[] | null>(null);
-  const [err, setErr] = useState('');
-  const [editing, setEditing] = useState<ScheduledTemplate | null>(null);
-  const [creating, setCreating] = useState(false);
-
-  const reload = useCallback(() => {
-    apiFetch<ScheduledTemplate[]>(`${BASE_URL}/programs/${programId}/scheduled-templates`, { cache: 'no-store' })
-      .then(setRows).catch((e) => setErr(e instanceof Error ? e.message : 'טעינה נכשלה'));
-  }, [programId]);
-  useEffect(() => { reload(); }, [reload]);
-
-  // Group by category for clean visual scanning. Order: categories
-  // by first appearance (preserves admin-controlled sortOrder), and
-  // within each category by sortOrder ASC.
-  const grouped: Array<{ category: string; items: ScheduledTemplate[] }> = [];
-  if (rows) {
-    for (const r of rows) {
-      const bucket = grouped.find((g) => g.category === r.category);
-      if (bucket) bucket.items.push(r);
-      else grouped.push({ category: r.category, items: [r] });
-    }
-  }
-
-  return (
-    <div>
-      <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 10, padding: 14, marginBottom: 16, fontSize: 13, color: '#78350f', lineHeight: 1.6 }}>
-        אלו תבניות בלבד — לא נשלחות אוטומטית. כדי שהודעה תישלח בפועל, יש לייבא
-        אותה ולסמן אותה כפעילה בלשונית &ldquo;הודעות מתוזמנות&rdquo; של הקבוצה הספציפית.
-      </div>
-
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-        <div style={{ fontSize: 16, fontWeight: 700, color: '#0f172a' }}>תבניות הודעות מתוזמנות</div>
-        <button
-          onClick={() => setCreating(true)}
-          style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '8px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
-        >+ תבנית חדשה</button>
-      </div>
-
-      {err && <div style={{ background: '#fee2e2', color: '#991b1b', padding: 10, borderRadius: 8, fontSize: 13, marginBottom: 12 }}>{err}</div>}
-      {!rows && <div style={{ color: '#94a3b8', textAlign: 'center', padding: 30 }}>טוען...</div>}
-      {rows && rows.length === 0 && (
-        <div style={{ padding: '40px 20px', textAlign: 'center', color: '#94a3b8', border: '2px dashed #e2e8f0', borderRadius: 12 }}>
-          אין תבניות עדיין. צרי תבנית ראשונה כדי להתחיל.
-        </div>
-      )}
-
-      {grouped.map((g) => (
-        <div key={g.category} style={{ marginBottom: 18 }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>
-            {g.category}
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {g.items.map((t) => (
-              <div key={t.id} style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: 14 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginBottom: 6 }}>
-                  <div style={{ fontSize: 14, fontWeight: 600, color: '#0f172a' }}>{t.internalName}</div>
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <button onClick={() => setEditing(t)} style={{ background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', borderRadius: 7, padding: '5px 12px', fontSize: 12, cursor: 'pointer' }}>ערוך</button>
-                  </div>
-                </div>
-                <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}>{describeTiming(t)}</div>
-                <div style={{ fontSize: 13, color: '#334155', whiteSpace: 'pre-wrap', maxHeight: 80, overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.content}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      ))}
-
-      {(creating || editing) && (
-        <ScheduledTemplateModal
-          programId={programId}
-          initial={editing}
-          onClose={() => { setCreating(false); setEditing(null); }}
-          onSaved={() => { setCreating(false); setEditing(null); reload(); }}
-          onDeactivated={() => { setCreating(false); setEditing(null); reload(); }}
-        />
-      )}
-    </div>
-  );
-}
-
-function ScheduledTemplateModal(props: {
-  programId: string;
-  initial: ScheduledTemplate | null;
-  onClose: () => void;
-  onSaved: () => void;
-  onDeactivated: () => void;
-}) {
-  const isEdit = !!props.initial;
-  const [category, setCategory] = useState(props.initial?.category ?? 'משחק שוטף');
-  const [internalName, setInternalName] = useState(props.initial?.internalName ?? '');
-  const [content, setContent] = useState(props.initial?.content ?? '');
-  const [timingType, setTimingType] = useState<ScheduledTemplate['timingType']>(props.initial?.timingType ?? 'day_of');
-  const [exactAt, setExactAt] = useState(props.initial?.exactAt ? props.initial.exactAt.slice(0, 16) : '');
-  const [dayOfNumber, setDayOfNumber] = useState(props.initial?.dayOfNumber != null ? String(props.initial.dayOfNumber) : '');
-  const [offsetDays, setOffsetDays] = useState(props.initial?.offsetDays != null ? String(props.initial.offsetDays) : '');
-  const [timeOfDay, setTimeOfDay] = useState(props.initial?.timeOfDay ?? '09:00');
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState('');
-
-  async function save() {
-    if (!internalName.trim()) { setErr('שם פנימי הוא שדה חובה'); return; }
-    if (!content.trim()) { setErr('תוכן ההודעה הוא שדה חובה'); return; }
-    setBusy(true); setErr('');
-    try {
-      const body = {
-        category: category.trim(),
-        internalName: internalName.trim(),
-        content,
-        timingType,
-        exactAt: timingType === 'exact' && exactAt ? new Date(exactAt).toISOString() : null,
-        dayOfNumber: timingType === 'day_of' && dayOfNumber.trim() ? parseInt(dayOfNumber) : null,
-        offsetDays: (timingType === 'before_start' || timingType === 'after_end') && offsetDays.trim() ? parseInt(offsetDays) : null,
-        timeOfDay: timingType !== 'exact' ? timeOfDay : null,
-      };
-      if (isEdit) {
-        await apiFetch(`${BASE_URL}/programs/${props.programId}/scheduled-templates/${props.initial!.id}`, { method: 'PATCH', body: JSON.stringify(body) });
-      } else {
-        await apiFetch(`${BASE_URL}/programs/${props.programId}/scheduled-templates`, { method: 'POST', body: JSON.stringify(body) });
-      }
-      props.onSaved();
-    } catch (e) {
-      const msg = e instanceof Error ? e.message :
-        (typeof e === 'object' && e !== null && typeof (e as { message?: unknown }).message === 'string')
-          ? (e as { message: string }).message : 'שמירה נכשלה';
-      setErr(msg);
-    } finally { setBusy(false); }
-  }
-
-  async function deactivate() {
-    if (!props.initial) return;
-    if (!window.confirm('להעביר את התבנית לארכיון? לא תופיע יותר לייבוא לקבוצות חדשות, אך הודעות שכבר נמשכו לקבוצות יישארו פעילות.')) return;
-    setBusy(true);
-    try {
-      await apiFetch(`${BASE_URL}/programs/${props.programId}/scheduled-templates/${props.initial.id}`, { method: 'DELETE' });
-      props.onDeactivated();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : 'הסרה נכשלה');
-    } finally { setBusy(false); }
-  }
-
-  return (
-    <div onClick={(e) => { if (e.target === e.currentTarget && !busy) props.onClose(); }} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 16 }}>
-      <div style={{ background: '#fff', borderRadius: 14, padding: 22, width: '100%', maxWidth: 560, maxHeight: '92vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-          <div style={{ fontSize: 17, fontWeight: 700 }}>{isEdit ? 'עריכת תבנית' : 'תבנית חדשה'}</div>
-          <button onClick={props.onClose} style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: 'pointer' }}>×</button>
-        </div>
-        <div style={{ display: 'grid', gap: 12 }}>
-          <div>
-            <label style={LABEL_P4}>קטגוריה</label>
-            <select value={category} onChange={(e) => setCategory(e.target.value)} style={inputStyle}>
-              <option value="משחק שוטף">משחק שוטף</option>
-              <option value="לפני משחק">לפני משחק</option>
-              <option value="פתיחה">פתיחה</option>
-              <option value="סיום">סיום</option>
-              <option value="תזכורת">תזכורת</option>
-              <option value="מותאם אישית">מותאם אישית</option>
-            </select>
-          </div>
-          <div>
-            <label style={LABEL_P4}>שם פנימי *</label>
-            <input style={inputStyle} value={internalName} onChange={(e) => setInternalName(e.target.value)} placeholder="לדוגמה: תזכורת בוקר ביום 3" />
-          </div>
-          <div>
-            <label style={LABEL_P4}>תוכן ההודעה *</label>
-            <textarea rows={5} style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.6 }} value={content} onChange={(e) => setContent(e.target.value)} placeholder="טקסט ההודעה שיישלח לקבוצה..." />
-          </div>
-          <div>
-            <label style={LABEL_P4}>סוג תזמון *</label>
-            <select value={timingType} onChange={(e) => setTimingType(e.target.value as ScheduledTemplate['timingType'])} style={inputStyle}>
-              {Object.entries(TIMING_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-            </select>
-          </div>
-          {timingType === 'exact' && (
-            <div>
-              <label style={LABEL_P4}>תאריך + שעה *</label>
-              <input type="datetime-local" style={{ ...inputStyle, direction: 'ltr' }} value={exactAt} onChange={(e) => setExactAt(e.target.value)} />
-            </div>
-          )}
-          {timingType === 'day_of' && (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-              <div>
-                <label style={LABEL_P4}>מספר יום *</label>
-                <input type="number" min={1} style={{ ...inputStyle, direction: 'ltr' }} value={dayOfNumber} onChange={(e) => setDayOfNumber(e.target.value)} />
-                <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>1 = יום ההתחלה</div>
-              </div>
-              <div>
-                <label style={LABEL_P4}>שעה (זמן ישראל) *</label>
-                <input type="time" style={{ ...inputStyle, direction: 'ltr' }} value={timeOfDay} onChange={(e) => setTimeOfDay(e.target.value)} />
-              </div>
-            </div>
-          )}
-          {(timingType === 'before_start' || timingType === 'after_end') && (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-              <div>
-                <label style={LABEL_P4}>מספר ימים *</label>
-                <input type="number" min={0} style={{ ...inputStyle, direction: 'ltr' }} value={offsetDays} onChange={(e) => setOffsetDays(e.target.value)} />
-              </div>
-              <div>
-                <label style={LABEL_P4}>שעה (זמן ישראל) *</label>
-                <input type="time" style={{ ...inputStyle, direction: 'ltr' }} value={timeOfDay} onChange={(e) => setTimeOfDay(e.target.value)} />
-              </div>
-            </div>
-          )}
-        </div>
-        {err && <div style={{ color: '#dc2626', fontSize: 13, marginTop: 10 }}>{err}</div>}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 16 }}>
-          <div>
-            {isEdit && (
-              <button onClick={deactivate} disabled={busy} style={{ background: '#fff', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: 8, padding: '7px 14px', fontSize: 13, cursor: busy ? 'not-allowed' : 'pointer' }}>
-                העבר לארכיון
-              </button>
-            )}
-          </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button onClick={props.onClose} disabled={busy} style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 8, padding: '7px 14px', fontSize: 13, cursor: busy ? 'not-allowed' : 'pointer' }}>ביטול</button>
-            <button onClick={() => { void save(); }} disabled={busy} style={{ background: busy ? '#93c5fd' : '#2563eb', color: '#fff', border: 'none', borderRadius: 8, padding: '7px 18px', fontSize: 13, fontWeight: 600, cursor: busy ? 'not-allowed' : 'pointer' }}>
-              {busy ? 'שומר...' : 'שמור'}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function ProductWaitlistTab({ programId }: { programId: string }) {
   const [rows, setRows] = useState<WaitlistRow[] | null>(null);
   const [err, setErr] = useState('');
@@ -5414,18 +5143,71 @@ interface CommTemplate {
   subject: string | null;
   body: string;
   isActive: boolean;
+  // Scheduling defaults — only meaningful for whatsapp templates.
+  // null timingType = no scheduling default; template is for manual/
+  // triggered sends only (the legacy pre-merge behavior).
+  category: string | null;
+  timingType: 'exact' | 'day_of' | 'before_start' | 'after_end' | null;
+  exactAt: string | null;
+  dayOfNumber: number | null;
+  offsetDays: number | null;
+  timeOfDay: string | null;
+  sortOrder: number;
+}
+
+const TIMING_LABELS: Record<NonNullable<CommTemplate['timingType']>, string> = {
+  exact: 'תאריך מדויק',
+  day_of: 'יום N של המשחק',
+  before_start: 'X ימים לפני התחלה',
+  after_end: 'X ימים אחרי סיום',
+};
+
+function describeTemplateTiming(t: CommTemplate): string {
+  if (!t.timingType) return '';
+  if (t.timingType === 'exact') {
+    return t.exactAt ? `תאריך מדויק: ${new Date(t.exactAt).toLocaleString('he-IL')}` : 'תאריך מדויק (לא הוגדר)';
+  }
+  if (t.timingType === 'day_of') {
+    return `יום ${t.dayOfNumber ?? '?'} של המשחק בשעה ${t.timeOfDay ?? '?'}`;
+  }
+  if (t.timingType === 'before_start') {
+    return `${t.offsetDays ?? '?'} ימים לפני התחלה בשעה ${t.timeOfDay ?? '?'}`;
+  }
+  return `${t.offsetDays ?? '?'} ימים אחרי סיום בשעה ${t.timeOfDay ?? '?'}`;
 }
 
 function ProductCommunicationTab({ programId }: { programId: string }) {
   const [rows, setRows] = useState<CommTemplate[] | null>(null);
   const [err, setErr] = useState('');
   const [editing, setEditing] = useState<CommTemplate | 'new' | null>(null);
+  // Drag-and-drop reorder state. dragIdx tracks which row is being
+  // dragged, dropIdx is the position the user is hovering over.
+  // Changes commit on drop via PATCH /reorder.
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [dropIdx, setDropIdx] = useState<number | null>(null);
   const reload = useCallback(() => {
     apiFetch<CommTemplate[]>(`${BASE_URL}/programs/${programId}/communication-templates`, { cache: 'no-store' })
       .then(setRows)
       .catch((e) => setErr(e instanceof Error ? e.message : 'טעינה נכשלה'));
   }, [programId]);
   useEffect(() => { reload(); }, [reload]);
+
+  // Persist a new ordering. Optimistic — updates local state first so
+  // the row visibly moves, then PATCHes; reloads on failure to undo.
+  const saveOrder = useCallback(async (next: CommTemplate[]) => {
+    setRows(next);
+    try {
+      await apiFetch(`${BASE_URL}/programs/${programId}/communication-templates/reorder`, {
+        method: 'POST',
+        body: JSON.stringify({
+          items: next.map((t, i) => ({ id: t.id, sortOrder: i })),
+        }),
+      });
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'סדר התבניות לא נשמר');
+      reload();
+    }
+  }, [programId, reload]);
 
   if (err) return <div style={{ color: '#b91c1c' }}>{err}</div>;
   if (!rows) return <div style={{ padding: 20, textAlign: 'center', color: '#94a3b8' }}>טוען...</div>;
@@ -5442,26 +5224,85 @@ function ProductCommunicationTab({ programId }: { programId: string }) {
         >+ תבנית</button>
       </div>
 
+      <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 12, color: '#78350f', lineHeight: 1.55 }}>
+        תבניות וואטסאפ עם תזמון מוגדר נוצרות אוטומטית כטיוטות מושבתות בכל קבוצה.
+        השליחה נשלטת רק מלשונית &ldquo;הודעות מתוזמנות&rdquo; של כל קבוצה. בלי תזמון — התבנית
+        משמשת לשליחות ידניות בלבד.
+      </div>
+
       {rows.length === 0 && <div style={{ ...CARD, color: '#64748b' }}>אין תבניות עדיין.</div>}
 
-      {rows.map((t) => (
-        <div key={t.id} onClick={() => setEditing(t)} style={{ ...CARD, marginBottom: 8, cursor: 'pointer' }}>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6, flexWrap: 'wrap' as const }}>
-            <span style={{
-              background: t.channel === 'email' ? '#eff6ff' : '#dcfce7',
-              color: t.channel === 'email' ? '#1d4ed8' : '#15803d',
-              padding: '2px 10px', borderRadius: 999, fontSize: 11, fontWeight: 700,
-            }}>
-              {t.channel === 'email' ? 'מייל' : 'וואטסאפ'}
-            </span>
-            <div style={{ fontSize: 14, fontWeight: 700 }}>{t.title}</div>
+      {rows.map((t, i) => {
+        const isDropTarget = dragIdx !== null && dropIdx === i && dragIdx !== i;
+        return (
+          <div
+            key={t.id}
+            draggable
+            onDragStart={() => setDragIdx(i)}
+            onDragOver={(e) => { e.preventDefault(); setDropIdx(i); }}
+            onDragEnd={() => { setDragIdx(null); setDropIdx(null); }}
+            onDrop={(e) => {
+              e.preventDefault();
+              if (dragIdx === null || dragIdx === i) { setDragIdx(null); setDropIdx(null); return; }
+              const next = [...rows];
+              const [moved] = next.splice(dragIdx, 1);
+              next.splice(i, 0, moved);
+              setDragIdx(null);
+              setDropIdx(null);
+              void saveOrder(next);
+            }}
+            onClick={() => setEditing(t)}
+            style={{
+              ...CARD,
+              marginBottom: 8,
+              cursor: 'grab',
+              opacity: dragIdx === i ? 0.5 : 1,
+              borderTop: isDropTarget ? '3px solid #2563eb' : CARD.border,
+              borderBottom: isDropTarget ? '3px solid #2563eb' : CARD.border,
+            }}
+          >
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6, flexWrap: 'wrap' as const }}>
+              {/* Drag handle hint — not interactive itself; the whole
+                  card is the drag source. Clearer affordance for "you
+                  can reorder these". */}
+              <span style={{ color: '#cbd5e1', fontSize: 14, cursor: 'grab', userSelect: 'none' }}>⋮⋮</span>
+              <span style={{
+                background: t.channel === 'email' ? '#eff6ff' : '#dcfce7',
+                color: t.channel === 'email' ? '#1d4ed8' : '#15803d',
+                padding: '2px 10px', borderRadius: 999, fontSize: 11, fontWeight: 700,
+              }}>
+                {t.channel === 'email' ? 'מייל' : 'וואטסאפ'}
+              </span>
+              {t.timingType && (
+                <span style={{
+                  background: '#fffbeb', color: '#92400e', border: '1px solid #fde68a',
+                  padding: '2px 10px', borderRadius: 999, fontSize: 11, fontWeight: 700,
+                }}>
+                  📅 מתוזמנת
+                </span>
+              )}
+              {t.category && (
+                <span style={{
+                  background: '#f1f5f9', color: '#475569',
+                  padding: '2px 10px', borderRadius: 999, fontSize: 11, fontWeight: 600,
+                }}>
+                  {t.category}
+                </span>
+              )}
+              <div style={{ fontSize: 14, fontWeight: 700 }}>{t.title}</div>
+            </div>
+            {t.timingType && (
+              <div style={{ fontSize: 12, color: '#92400e', marginBottom: 4 }}>
+                ⏱ {describeTemplateTiming(t)}
+              </div>
+            )}
+            {t.subject && <div style={{ fontSize: 12, color: '#475569', marginBottom: 4 }}>נושא: {t.subject}</div>}
+            <div style={{ fontSize: 12, color: '#64748b', whiteSpace: 'pre-wrap' as const, maxHeight: 60, overflow: 'hidden' }}>
+              {t.body.slice(0, 200)}{t.body.length > 200 ? '...' : ''}
+            </div>
           </div>
-          {t.subject && <div style={{ fontSize: 12, color: '#475569', marginBottom: 4 }}>נושא: {t.subject}</div>}
-          <div style={{ fontSize: 12, color: '#64748b', whiteSpace: 'pre-wrap' as const, maxHeight: 60, overflow: 'hidden' }}>
-            {t.body.slice(0, 200)}{t.body.length > 200 ? '...' : ''}
-          </div>
-        </div>
-      ))}
+        );
+      })}
 
       {editing && (
         <CommTemplateModal
@@ -5486,6 +5327,30 @@ function CommTemplateModal(props: {
   const [title, setTitle] = useState(props.initial?.title ?? '');
   const [subject, setSubject] = useState(props.initial?.subject ?? '');
   const [body, setBody] = useState(props.initial?.body ?? '');
+  // Scheduling defaults — only meaningful when channel='whatsapp'.
+  // schedulingEnabled toggles the whole block; when off we send
+  // timingType=null and the template behaves as manual-send-only.
+  const [schedulingEnabled, setSchedulingEnabled] = useState(
+    !!props.initial?.timingType,
+  );
+  const [category, setCategory] = useState(props.initial?.category ?? 'משחק שוטף');
+  const [timingType, setTimingType] = useState<NonNullable<CommTemplate['timingType']>>(
+    props.initial?.timingType ?? 'day_of',
+  );
+  const [exactAt, setExactAt] = useState(
+    props.initial?.exactAt ? props.initial.exactAt.slice(0, 16) : '',
+  );
+  const [dayOfNumber, setDayOfNumber] = useState(
+    props.initial?.dayOfNumber != null ? String(props.initial.dayOfNumber) : '',
+  );
+  const [offsetDays, setOffsetDays] = useState(
+    props.initial?.offsetDays != null ? String(props.initial.offsetDays) : '',
+  );
+  const [timeOfDay, setTimeOfDay] = useState(props.initial?.timeOfDay ?? '09:00');
+  // After saving an edit on a scheduling template that already has
+  // groups using it, we open the apply-to-groups follow-up modal so
+  // the admin can explicitly opt in to propagating the change.
+  const [applyTarget, setApplyTarget] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   // Shared imperative ref — both WhatsAppEditor and RichContentEditor
@@ -5495,6 +5360,24 @@ function CommTemplateModal(props: {
 
   async function save() {
     if (!title.trim() || !body.trim()) { setErr('חובה למלא שם וגוף ההודעה'); return; }
+    // Pre-validate the scheduling block before round-tripping. Server
+    // re-validates as the source of truth; this just saves a refused-
+    // request round-trip on obvious local mistakes.
+    const wantsScheduling = channel === 'whatsapp' && schedulingEnabled;
+    if (wantsScheduling) {
+      if (timingType === 'exact' && !exactAt) {
+        setErr('עבור תזמון "תאריך מדויק" יש לבחור תאריך ושעה');
+        return;
+      }
+      if (timingType === 'day_of' && (!dayOfNumber.trim() || !timeOfDay)) {
+        setErr('עבור תזמון "יום N של המשחק" יש למלא מספר יום ושעה');
+        return;
+      }
+      if ((timingType === 'before_start' || timingType === 'after_end') && (!offsetDays.trim() || !timeOfDay)) {
+        setErr('עבור תזמון יחסי יש למלא מספר ימים ושעה');
+        return;
+      }
+    }
     setBusy(true); setErr('');
     try {
       const payload = {
@@ -5502,19 +5385,50 @@ function CommTemplateModal(props: {
         title: title.trim(),
         subject: channel === 'email' ? (subject.trim() || null) : null,
         body,
+        // Scheduling fields — null when scheduling is off OR channel is
+        // email (server enforces too; this is just clarity at the wire).
+        category: wantsScheduling ? category.trim() || null : null,
+        timingType: wantsScheduling ? timingType : null,
+        exactAt: wantsScheduling && timingType === 'exact' && exactAt
+          ? new Date(exactAt).toISOString()
+          : null,
+        dayOfNumber: wantsScheduling && timingType === 'day_of' && dayOfNumber.trim()
+          ? parseInt(dayOfNumber)
+          : null,
+        offsetDays: wantsScheduling && (timingType === 'before_start' || timingType === 'after_end') && offsetDays.trim()
+          ? parseInt(offsetDays)
+          : null,
+        timeOfDay: wantsScheduling && timingType !== 'exact' ? timeOfDay : null,
       };
+      let savedId: string;
       if (isEdit) {
         await apiFetch(`${BASE_URL}/communication-templates/${props.initial!.id}`, {
           method: 'PATCH', body: JSON.stringify(payload),
         });
+        savedId = props.initial!.id;
       } else {
-        await apiFetch(`${BASE_URL}/programs/${props.programId}/communication-templates`, {
+        const created = await apiFetch<{ id: string }>(`${BASE_URL}/programs/${props.programId}/communication-templates`, {
           method: 'POST', body: JSON.stringify(payload),
         });
+        savedId = created.id;
+      }
+      // For scheduling templates that already exist (edit path), the
+      // admin needs to decide whether to propagate to existing groups.
+      // The auto-create-on-template-create hook handles brand-new
+      // templates, so on isEdit we open the apply-to-groups modal.
+      // On create-with-scheduling, the apply path is also useful in
+      // case there are groups that already had a previous version.
+      if (wantsScheduling) {
+        setApplyTarget(savedId);
+        setBusy(false);
+        return;
       }
       props.onSaved();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'שמירה נכשלה');
+      const msg = e instanceof Error ? e.message :
+        (typeof e === 'object' && e !== null && typeof (e as { message?: unknown }).message === 'string')
+          ? (e as { message: string }).message : 'שמירה נכשלה';
+      setErr(msg);
     } finally { setBusy(false); }
   }
 
@@ -5589,6 +5503,86 @@ function CommTemplateModal(props: {
               />
             )}
           </div>
+          {/* Scheduling-defaults expander — only meaningful for
+              whatsapp templates. Email templates fall through;
+              email scheduling is out of scope for v1. */}
+          {channel === 'whatsapp' && (
+            <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 10, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={schedulingEnabled}
+                  onChange={(e) => setSchedulingEnabled(e.target.checked)}
+                  style={{ width: 16, height: 16, marginTop: 3, flexShrink: 0 }}
+                />
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: '#78350f' }}>שלח אוטומטית לפי לוח זמנים (תזמון)</div>
+                  <div style={{ fontSize: 12, color: '#92400e', marginTop: 2, lineHeight: 1.5 }}>
+                    אם פעיל — תיווצר טיוטה מושבתת בכל קבוצה. הקבוצות מאשרות את ההודעה ומפעילות אותה בנפרד.
+                    אם כבוי — התבנית נשמרת לשליחה ידנית בלבד (כמו עד כה).
+                  </div>
+                </div>
+              </label>
+
+              {schedulingEnabled && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10, paddingTop: 4 }}>
+                  <div>
+                    <label style={LABEL_P4}>קטגוריה</label>
+                    <select value={category} onChange={(e) => setCategory(e.target.value)} style={INPUT_P4}>
+                      <option value="משחק שוטף">משחק שוטף</option>
+                      <option value="לפני משחק">לפני משחק</option>
+                      <option value="פתיחה">פתיחה</option>
+                      <option value="סיום">סיום</option>
+                      <option value="תזכורת">תזכורת</option>
+                      <option value="מותאם אישית">מותאם אישית</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label style={LABEL_P4}>סוג תזמון</label>
+                    <select
+                      value={timingType}
+                      onChange={(e) => setTimingType(e.target.value as NonNullable<CommTemplate['timingType']>)}
+                      style={INPUT_P4}
+                    >
+                      {Object.entries(TIMING_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                    </select>
+                  </div>
+                  {timingType === 'exact' && (
+                    <div>
+                      <label style={LABEL_P4}>תאריך + שעה *</label>
+                      <input type="datetime-local" style={{ ...INPUT_P4, direction: 'ltr' }} value={exactAt} onChange={(e) => setExactAt(e.target.value)} />
+                    </div>
+                  )}
+                  {timingType === 'day_of' && (
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                      <div>
+                        <label style={LABEL_P4}>מספר יום *</label>
+                        <input type="number" min={1} style={{ ...INPUT_P4, direction: 'ltr' }} value={dayOfNumber} onChange={(e) => setDayOfNumber(e.target.value)} />
+                        <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>1 = יום ההתחלה</div>
+                      </div>
+                      <div>
+                        <label style={LABEL_P4}>שעה (זמן ישראל) *</label>
+                        <input type="time" style={{ ...INPUT_P4, direction: 'ltr' }} value={timeOfDay} onChange={(e) => setTimeOfDay(e.target.value)} />
+                      </div>
+                    </div>
+                  )}
+                  {(timingType === 'before_start' || timingType === 'after_end') && (
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                      <div>
+                        <label style={LABEL_P4}>מספר ימים *</label>
+                        <input type="number" min={0} style={{ ...INPUT_P4, direction: 'ltr' }} value={offsetDays} onChange={(e) => setOffsetDays(e.target.value)} />
+                      </div>
+                      <div>
+                        <label style={LABEL_P4}>שעה (זמן ישראל) *</label>
+                        <input type="time" style={{ ...INPUT_P4, direction: 'ltr' }} value={timeOfDay} onChange={(e) => setTimeOfDay(e.target.value)} />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
           {err && <div style={{ color: '#b91c1c', fontSize: 13 }}>{err}</div>}
         </div>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between', marginTop: 18 }}>
@@ -5606,6 +5600,225 @@ function CommTemplateModal(props: {
             >{busy ? 'שומר...' : 'שמירה'}</button>
           </div>
         </div>
+      </div>
+
+      {/* Apply-to-groups follow-up. Opens after a successful save of
+          a scheduling-enabled template; lets admin EXPLICITLY pick
+          which groups receive the updated content/scheduledAt.
+          Skipping = "saved the template but didn't push to groups".
+          Group-level rows that admins already manually edited are
+          flagged so the admin can decide whether to overwrite. */}
+      {applyTarget && (
+        <ApplyTemplateToGroupsModal
+          templateId={applyTarget}
+          onClose={() => { setApplyTarget(null); props.onSaved(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── Apply template changes to selected groups ────────────────────────────
+// Explicit propagation flow. Lists every group whose
+// GroupScheduledMessage references this template, with per-group flags
+// for "manually edited" and current row status. Admin checks groups +
+// optionally checks "override manual edits" + clicks Apply. Server
+// updates the snapshot fields (content / category / scheduledAt) and
+// stamps sync timestamps. Sent / cancelled rows are ALWAYS skipped —
+// we never reach into terminal lifecycle states.
+
+interface GroupUsingTemplate {
+  groupId: string;
+  groupName: string;
+  groupIsActive: boolean;
+  rowStatus: string;
+  rowEnabled: boolean;
+  isManuallyEdited: boolean;
+}
+
+function ApplyTemplateToGroupsModal(props: { templateId: string; onClose: () => void }) {
+  const [groups, setGroups] = useState<GroupUsingTemplate[] | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [overrideManual, setOverrideManual] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [result, setResult] = useState<{
+    updated: string[];
+    skippedTerminal: string[];
+    skippedManual: string[];
+    skippedMissing: string[];
+    errors: { groupId: string; reason: string }[];
+  } | null>(null);
+
+  useEffect(() => {
+    apiFetch<GroupUsingTemplate[]>(`${BASE_URL}/communication-templates/${props.templateId}/groups-using`, { cache: 'no-store' })
+      .then((rows) => setGroups(rows))
+      .catch((e) => setErr(e instanceof Error ? e.message : 'טעינה נכשלה'));
+  }, [props.templateId]);
+
+  function toggle(id: string) {
+    setSelected((curr) => {
+      const next = new Set(curr);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+  function selectAll() {
+    if (!groups) return;
+    setSelected(new Set(groups.filter((g) => g.rowStatus !== 'sent' && g.rowStatus !== 'cancelled').map((g) => g.groupId)));
+  }
+  function clearAll() {
+    setSelected(new Set());
+  }
+
+  async function apply() {
+    if (selected.size === 0) { setErr('יש לבחור לפחות קבוצה אחת'); return; }
+    setBusy(true); setErr('');
+    try {
+      const r = await apiFetch<{
+        updated: string[];
+        skippedTerminal: string[];
+        skippedManual: string[];
+        skippedMissing: string[];
+        errors: { groupId: string; reason: string }[];
+      }>(`${BASE_URL}/communication-templates/${props.templateId}/apply-to-groups`, {
+        method: 'POST',
+        body: JSON.stringify({
+          groupIds: Array.from(selected),
+          overrideManualEdits: overrideManual,
+        }),
+      });
+      setResult(r);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message :
+        (typeof e === 'object' && e !== null && typeof (e as { message?: unknown }).message === 'string')
+          ? (e as { message: string }).message : 'החלה נכשלה';
+      setErr(msg);
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <div
+      onClick={(e) => { if (e.target === e.currentTarget && !busy) props.onClose(); }}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100, padding: 16 }}
+    >
+      <div style={{ background: '#fff', borderRadius: 14, padding: 22, width: '100%', maxWidth: 520, maxHeight: '90vh', overflowY: 'auto' as const, boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <div style={{ fontSize: 17, fontWeight: 700 }}>החל שינויים על קבוצות</div>
+          <button onClick={props.onClose} disabled={busy} style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: busy ? 'not-allowed' : 'pointer' }}>×</button>
+        </div>
+
+        {!result && (
+          <>
+            <p style={{ fontSize: 13, color: '#475569', lineHeight: 1.6, margin: '0 0 12px' }}>
+              התבנית עודכנה. סמני את הקבוצות שעליהן להחיל את השינוי. לא נדרוס הודעות שכבר
+              נשלחו או בוטלו, ולא נדרוס הודעות שערכת ידנית — אלא אם תאשרי במפורש למטה.
+            </p>
+
+            {!groups && <div style={{ color: '#94a3b8', textAlign: 'center', padding: 20 }}>טוען...</div>}
+            {groups && groups.length === 0 && (
+              <div style={{ padding: 20, textAlign: 'center', color: '#94a3b8', border: '2px dashed #e2e8f0', borderRadius: 10 }}>
+                התבנית עדיין לא משויכת לאף קבוצה. תיווצר אוטומטית כטיוטה מושבתת לכל קבוצה חדשה.
+              </div>
+            )}
+
+            {groups && groups.length > 0 && (
+              <>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                  <button type="button" onClick={selectAll} style={{ background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', borderRadius: 7, padding: '4px 10px', fontSize: 12, cursor: 'pointer' }}>בחר הכל</button>
+                  <button type="button" onClick={clearAll} style={{ background: '#f8fafc', color: '#475569', border: '1px solid #e2e8f0', borderRadius: 7, padding: '4px 10px', fontSize: 12, cursor: 'pointer' }}>נקה</button>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: '40vh', overflowY: 'auto' }}>
+                  {groups.map((g) => {
+                    const terminal = g.rowStatus === 'sent' || g.rowStatus === 'cancelled';
+                    const checked = selected.has(g.groupId);
+                    return (
+                      <label
+                        key={g.groupId}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 8,
+                          padding: '8px 10px', borderRadius: 8,
+                          background: terminal ? '#f1f5f9' : checked ? '#eff6ff' : '#fff',
+                          border: '1px solid #e2e8f0',
+                          opacity: terminal ? 0.6 : 1,
+                          cursor: terminal ? 'not-allowed' : 'pointer',
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={terminal}
+                          onChange={() => !terminal && toggle(g.groupId)}
+                          style={{ width: 16, height: 16 }}
+                        />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a' }}>{g.groupName}</div>
+                          <div style={{ fontSize: 11, color: '#64748b' }}>
+                            סטטוס: {g.rowStatus}{!g.groupIsActive && ' · קבוצה לא פעילה'}
+                          </div>
+                        </div>
+                        {g.isManuallyEdited && !terminal && (
+                          <span style={{ background: '#fef3c7', color: '#92400e', fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 999 }}>
+                            ערכה ידנית
+                          </span>
+                        )}
+                      </label>
+                    );
+                  })}
+                </div>
+
+                {groups.some((g) => g.isManuallyEdited && g.rowStatus !== 'sent' && g.rowStatus !== 'cancelled') && (
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={overrideManual}
+                      onChange={(e) => setOverrideManual(e.target.checked)}
+                      style={{ width: 16, height: 16 }}
+                    />
+                    <span style={{ fontSize: 12, color: '#92400e' }}>
+                      דרוס גם הודעות שערכתי ידנית (השינויים שעשית בקבוצה יאבדו)
+                    </span>
+                  </label>
+                )}
+              </>
+            )}
+
+            {err && <div style={{ color: '#b91c1c', fontSize: 13, marginTop: 10 }}>{err}</div>}
+
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 14 }}>
+              <button onClick={props.onClose} disabled={busy} style={{ padding: '8px 16px', fontSize: 13, fontWeight: 600, background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 8, cursor: busy ? 'not-allowed' : 'pointer' }}>
+                לא, השאר כפי שהוא
+              </button>
+              <button
+                onClick={() => { void apply(); }}
+                disabled={busy || !groups || groups.length === 0 || selected.size === 0}
+                style={{ padding: '8px 18px', fontSize: 13, fontWeight: 700, background: busy ? '#93c5fd' : '#2563eb', color: '#fff', border: 'none', borderRadius: 8, cursor: (busy || !groups || groups.length === 0 || selected.size === 0) ? 'not-allowed' : 'pointer' }}
+              >
+                {busy ? 'מחיל...' : `החל על ${selected.size} קבוצות`}
+              </button>
+            </div>
+          </>
+        )}
+
+        {result && (
+          <>
+            <div style={{ fontSize: 13, color: '#0f172a', lineHeight: 1.7, marginBottom: 14 }}>
+              עודכנו: <strong>{result.updated.length}</strong><br />
+              דולגו (כבר נשלחו / בוטלו): {result.skippedTerminal.length}<br />
+              דולגו (ערכה ידנית): {result.skippedManual.length}<br />
+              דולגו (לא נמצאו): {result.skippedMissing.length}<br />
+              שגיאות: {result.errors.length}
+            </div>
+            {result.errors.length > 0 && (
+              <div style={{ background: '#fef2f2', color: '#991b1b', border: '1px solid #fecaca', borderRadius: 8, padding: 10, fontSize: 12, marginBottom: 12 }}>
+                {result.errors.map((e, i) => <div key={i}>{e.reason}</div>)}
+              </div>
+            )}
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <button onClick={props.onClose} style={{ padding: '8px 18px', fontSize: 13, fontWeight: 700, background: '#2563eb', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer' }}>סגור</button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

@@ -1,6 +1,6 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { AdminSessionGuard } from '../auth/admin-session.guard';
-import { ProgramsService } from './programs.service';
+import { ProgramsService, CommTemplateInput, CommTemplateUpdateInput } from './programs.service';
 import { CreateProgramDto } from './dto/create-program.dto';
 import { UpdateProgramDto } from './dto/update-program.dto';
 import { CreateProgramGroupDto } from './dto/create-program-group.dto';
@@ -91,9 +91,19 @@ export class ProgramsController {
   @Post(':id/communication-templates')
   createCommunicationTemplate(
     @Param('id') id: string,
-    @Body() body: { channel: 'email' | 'whatsapp'; title: string; subject?: string | null; body: string; isActive?: boolean },
+    @Body() body: CommTemplateInput,
   ) {
     return this.svc.createCommunicationTemplate(id, body);
+  }
+
+  // Drag-and-drop reorder. Body shape is the standard list of
+  // [{ id, sortOrder }] pairs used elsewhere in the codebase.
+  @Post(':id/communication-templates/reorder')
+  reorderCommunicationTemplates(
+    @Param('id') id: string,
+    @Body() body: { items: { id: string; sortOrder: number }[] },
+  ) {
+    return this.svc.reorderCommunicationTemplates(id, body.items);
   }
 
   @Get(':id/groups')
@@ -116,7 +126,7 @@ export class CommunicationTemplatesController {
   @Patch(':id')
   update(
     @Param('id') id: string,
-    @Body() body: { channel?: 'email' | 'whatsapp'; title?: string; subject?: string | null; body?: string; isActive?: boolean },
+    @Body() body: CommTemplateUpdateInput,
   ) {
     return this.svc.updateCommunicationTemplate(id, body);
   }
@@ -124,5 +134,30 @@ export class CommunicationTemplatesController {
   @Delete(':id')
   deactivate(@Param('id') id: string) {
     return this.svc.deactivateCommunicationTemplate(id);
+  }
+
+  // Powers the apply-to-groups modal. Lists every group whose
+  // GroupScheduledMessage references this template, with a
+  // per-group "isManuallyEdited" flag so the admin sees which
+  // rows would be overwritten and can opt in/out per group.
+  @Get(':id/groups-using')
+  listGroupsUsing(@Param('id') id: string) {
+    return this.svc.listGroupsUsingTemplate(id);
+  }
+
+  // Explicit apply-changes flow. Body lists the groupIds the admin
+  // selected to update + an optional override flag for rows the
+  // admin manually edited. Response groups the outcome so the UI
+  // can show "X updated, Y skipped because manual edits".
+  @Post(':id/apply-to-groups')
+  applyToGroups(
+    @Param('id') id: string,
+    @Body() body: { groupIds: string[]; overrideManualEdits?: boolean },
+  ) {
+    return this.svc.applyTemplateChangesToGroups(
+      id,
+      Array.isArray(body.groupIds) ? body.groupIds : [],
+      { overrideManualEdits: !!body.overrideManualEdits },
+    );
   }
 }

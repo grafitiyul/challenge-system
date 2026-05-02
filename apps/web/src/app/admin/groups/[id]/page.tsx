@@ -2808,7 +2808,9 @@ interface SchedMsg {
   sentAt: string | null;
   failureReason: string | null;
   sourceTemplateId: string | null;
-  sourceTemplate: { id: string; internalName: string; isActive: boolean } | null;
+  // After the comm-templates merge, sourceTemplate is a CommunicationTemplate
+  // (the field is now `title`, not `internalName`).
+  sourceTemplate: { id: string; title: string; isActive: boolean } | null;
 }
 
 const SCHED_STATUS_LABEL: Record<SchedMsg['status'], { text: string; bg: string; fg: string }> = {
@@ -2942,7 +2944,7 @@ function GroupScheduledMessagesTab({ groupId, hasProgram }: { groupId: string; h
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {hasProgram && (
             <button onClick={() => setInheriting(true)} style={{ background: '#fff', color: '#1d4ed8', border: '1px solid #bfdbfe', borderRadius: 8, padding: '7px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
-              + ייבוא תבניות מהתוכנית
+              ↻ סנכרן תבניות חסרות
             </button>
           )}
           <button onClick={() => setCreating(true)} style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 8, padding: '7px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
@@ -2956,7 +2958,7 @@ function GroupScheduledMessagesTab({ groupId, hasProgram }: { groupId: string; h
       {rows && rows.length === 0 && (
         <div style={{ padding: '40px 20px', textAlign: 'center', color: '#94a3b8', border: '2px dashed #e2e8f0', borderRadius: 12 }}>
           {hasProgram
-            ? 'אין הודעות מתוזמנות. לחצי "ייבוא תבניות מהתוכנית" או "הודעה חדשה" להתחיל.'
+            ? 'אין הודעות מתוזמנות. תבניות עם תזמון בתוכנית נוצרות אוטומטית כטיוטה. אפשר ללחוץ "סנכרן" אם משהו חסר, או "הודעה חדשה" להוסיף הודעה לקבוצה זו בלבד.'
             : 'אין הודעות מתוזמנות. לחצי "הודעה חדשה" להתחיל.'}
         </div>
       )}
@@ -2996,7 +2998,7 @@ function GroupScheduledMessagesTab({ groupId, hasProgram }: { groupId: string; h
                   <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}>
                     📅 {formatSchedTime(r.scheduledAt)}
                     {r.sourceTemplate && (
-                      <span style={{ marginInlineStart: 8, color: '#94a3b8' }}>· מתבנית: {r.sourceTemplate.internalName}</span>
+                      <span style={{ marginInlineStart: 8, color: '#94a3b8' }}>· מתבנית: {r.sourceTemplate.title}</span>
                     )}
                   </div>
                   <div style={{ fontSize: 13, color: '#334155', whiteSpace: 'pre-wrap', maxHeight: 80, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.content}</div>
@@ -3143,7 +3145,7 @@ function InheritTemplatesModal(props: { groupId: string; onClose: () => void; on
       // the group's program. Backend returns counts for created /
       // skipped / errored so the admin sees the result inline.
       const r = await apiFetch<{ created: number; skipped: number; errors: { templateId: string; reason: string }[] }>(
-        `${BASE_URL}/groups/${props.groupId}/scheduled-messages/inherit-from-program`,
+        `${BASE_URL}/groups/${props.groupId}/scheduled-messages/sync-from-program`,
         { method: 'POST', body: JSON.stringify({}) },
       );
       setResult(r);
@@ -3158,7 +3160,7 @@ function InheritTemplatesModal(props: { groupId: string; onClose: () => void; on
     <div onClick={(e) => { if (e.target === e.currentTarget && !busy) props.onClose(); }} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 16 }}>
       <div style={{ background: '#fff', borderRadius: 14, padding: 22, width: '100%', maxWidth: 480, boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-          <div style={{ fontSize: 17, fontWeight: 700 }}>ייבוא תבניות מהתוכנית</div>
+          <div style={{ fontSize: 17, fontWeight: 700 }}>סנכרון תבניות מהתוכנית</div>
           <button onClick={props.onClose} style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: 'pointer' }}>×</button>
         </div>
         {!result && (

@@ -68,10 +68,6 @@ model Program {
   showOtherGroupsMemberDetails Boolean @default(false)
 
   questionnaireTemplates QuestionnaireTemplate[]
-  // Scheduled message templates — DEFAULTS only. Never send by themselves.
-  // Groups can clone these into GroupScheduledMessage rows that the cron
-  // worker actually executes.
-  scheduledMessageTemplates ProgramScheduledMessageTemplate[]
   // Public registration — offers, waitlist, and communication templates
   // all hang off Program. Program IS the product: its `type` column is the
   // productType discriminator (game / challenge / group_coaching /
@@ -1648,41 +1644,13 @@ model QuestionnaireExternalLink {
 // V1 scope: targetType is always 'group_whatsapp_chat' — fan out to a
 // per-participant target is deferred to V2 to keep duplicate-send
 // reasoning simple.
-
-model ProgramScheduledMessageTemplate {
-  id           String  @id @default(cuid())
-  programId    String
-  program      Program @relation(fields: [programId], references: [id])
-  // Free-form category. UI offers a curated set
-  // (משחק שוטף / לפני משחק / פתיחה / סיום / תזכורת) but admins can
-  // add custom strings without a migration.
-  category     String
-  // Internal label that admins use to recognize this template.
-  internalName String
-  content      String  @db.Text
-  // Discriminator for how scheduledAt is computed when this template
-  // is cloned into a group:
-  //   "exact"        — exactAt is the absolute send time (group-agnostic)
-  //   "day_of"       — dayOfNumber + timeOfDay relative to group.startDate
-  //                    (1-based; day 1 = startDate)
-  //   "before_start" — group.startDate - offsetDays at timeOfDay
-  //   "after_end"    — group.endDate   + offsetDays at timeOfDay
-  timingType   String
-  exactAt      DateTime?    @db.Timestamptz
-  dayOfNumber  Int?
-  offsetDays   Int?
-  // "HH:mm" in Asia/Jerusalem. Required for non-exact timing.
-  timeOfDay    String?
-  isActive     Boolean      @default(true)
-  sortOrder    Int          @default(0)
-  createdAt    DateTime     @default(now())
-  updatedAt    DateTime     @updatedAt
-
-  groupMessages GroupScheduledMessage[]
-
-  @@index([programId, isActive])
-  @@map("program_scheduled_message_templates")
-}
+//
+// Source-of-truth note: ProgramScheduledMessageTemplate was retired
+// in the comm-templates merge — scheduling defaults now live as
+// nullable columns on CommunicationTemplate (channel='whatsapp' rows
+// with timingType set). GroupScheduledMessage.sourceTemplateId points
+// at a CommunicationTemplate; template edits never propagate
+// silently — admin uses the explicit "apply to groups" flow.
 
 model GroupScheduledMessage {
   id              String   @id @default(cuid())
@@ -1693,7 +1661,7 @@ model GroupScheduledMessage {
   // ON DELETE SET NULL via Prisma — template removal must not orphan
   // group rows that the admin already approved + scheduled.
   sourceTemplateId String?
-  sourceTemplate  ProgramScheduledMessageTemplate? @relation(fields: [sourceTemplateId], references: [id])
+  sourceTemplate  CommunicationTemplate? @relation(fields: [sourceTemplateId], references: [id])
 
   // Snapshot fields — copied at clone/create time and NEVER touched by
   // template edits. This is the load-bearing "edits don't propagate"
@@ -1733,6 +1701,16 @@ model GroupScheduledMessage {
 
   sentAt          DateTime? @db.Timestamptz
   failureReason   String?
+
+  // ── Sync tracking for the apply-to-groups flow ─────────────────────────
+  // Both timestamps are set at row creation (auto-create-from-template
+  // path) and at every "apply changes to groups" run. After that they're
+  // immutable from THIS endpoint — a direct admin edit on the group row
+  // updates updatedAt but NOT these columns. Comparing each *SyncedAt to
+  // updatedAt tells the apply-to-groups UI which rows have manual edits
+  // so it can warn before overwriting them.
+  contentSyncedAt     DateTime? @db.Timestamptz
+  scheduledAtSyncedAt DateTime? @db.Timestamptz
 
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
@@ -2113,6 +2091,33 @@ model CommunicationTemplate {
   subject   String? // email only; ignored for whatsapp
   body      String
   isActive  Boolean  @default(true)
+
+  // ── Scheduling defaults (channel='whatsapp' only) ─────────────────────────
+  // When timingType is set, this template is ALSO usable as a scheduled-
+  // messages default. Group rows clone the snapshot fields (title / body /
+  // category) plus a resolved scheduledAt computed from timingType + the
+  // group's start/end dates. NULL on every column = "no scheduling default;
+  // template is for manual/triggered sends only" — that's the existing
+  // pre-merge behavior so legacy rows are unaffected.
+  //
+  // Free-form category (משחק שוטף / לפני משחק / פתיחה / סיום / תזכורת /
+  // מותאם אישית). UI offers chips for the curated set but allows custom.
+  category    String?
+  // "exact" | "day_of" | "before_start" | "after_end". Null = no scheduling.
+  timingType  String?
+  exactAt     DateTime? @db.Timestamptz
+  dayOfNumber Int?
+  offsetDays  Int?
+  // "HH:mm" Asia/Jerusalem; required for non-exact timing types.
+  timeOfDay   String?
+  // Drag-and-drop ordering inside the program's templates tab.
+  sortOrder   Int       @default(0)
+
+  // Reverse: every GroupScheduledMessage row whose sourceTemplateId
+  // points here. ON DELETE SET NULL on the group row's FK so deleting
+  // a template never orphans an in-flight scheduled send.
+  groupMessages GroupScheduledMessage[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
