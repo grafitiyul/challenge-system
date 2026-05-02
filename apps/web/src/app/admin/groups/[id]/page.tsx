@@ -74,6 +74,12 @@ interface WhatsAppChat {
   type: string;
   name: string | null;
   phoneNumber: string | null;
+  // Captured by the bridge on chat first-create from Baileys'
+  // socket.profilePictureUrl. Null when WhatsApp didn't return one
+  // (no picture set, restrictive privacy, transient failure).
+  // Optional in this interface so older API responses (pre-migration)
+  // don't TS-fail in strict mode.
+  profilePictureUrl?: string | null;
 }
 
 interface ChatLink {
@@ -148,6 +154,58 @@ function colorFromKey(key: string): { bg: string; fg: string } {
 function chatInitial(chat: WhatsAppChat): string {
   const src = chat.name?.trim() || chat.phoneNumber || chat.externalChatId;
   return Array.from(src ?? '?')[0] ?? '?';
+}
+
+// Avatar circle for a chat. Shows the WhatsApp profile / group
+// picture when present (object-fit: cover keeps the circle clean
+// regardless of source aspect ratio), and falls back to the
+// initial-letter bubble when:
+//   * the chat has no profilePictureUrl persisted (legacy rows
+//     pre-bridge-hook, or chats where WhatsApp didn't expose one)
+//   * the image fails to load at runtime (URL expired, network
+//     error) — onError flips an internal flag and the fallback
+//     paints in place without a layout shift, since the wrapper's
+//     dimensions are fixed.
+function ChatAvatar({ chat, size = 36 }: { chat: WhatsAppChat; size?: number }) {
+  const [errored, setErrored] = useState(false);
+  const initial = chatInitial(chat);
+  const palette = colorFromKey(chat.id);
+  const showImage = !!chat.profilePictureUrl && !errored;
+  const fontSize = Math.round(size * 0.42);
+  return (
+    <span
+      style={{
+        width: size, height: size, flexShrink: 0,
+        borderRadius: '50%',
+        // The fallback palette is always set, so the placeholder shows
+        // through during the brief moment between mount and image
+        // decode. No flash-of-empty-circle.
+        background: palette.bg,
+        color: palette.fg,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        fontSize, fontWeight: 700,
+        overflow: 'hidden',
+        position: 'relative',
+      }}
+    >
+      {showImage ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={chat.profilePictureUrl as string}
+          alt=""
+          referrerPolicy="no-referrer"
+          onError={() => setErrored(true)}
+          style={{
+            width: '100%', height: '100%',
+            objectFit: 'cover',
+            display: 'block',
+          }}
+        />
+      ) : (
+        initial
+      )}
+    </span>
+  );
 }
 
 // ─── SVG icon components ──────────────────────────────────────────────────────
@@ -2498,8 +2556,6 @@ export default function GroupDetailPage() {
                       </div>
                     ) : matches.map((c) => {
                       const selected = selectedChatId === c.id;
-                      const initial = chatInitial(c);
-                      const palette = colorFromKey(c.id);
                       const secondary = c.type === 'private'
                         ? (c.phoneNumber || c.externalChatId)
                         : 'צ׳אט קבוצתי';
@@ -2524,15 +2580,12 @@ export default function GroupDetailPage() {
                             if (!selected) (e.currentTarget as HTMLButtonElement).style.background = '#fff';
                           }}
                         >
-                          {/* Initial-letter avatar bubble — color is
-                              hash-of-id stable so each chat has its
-                              own visual identity even with similar names. */}
-                          <span style={{
-                            width: 36, height: 36, flexShrink: 0,
-                            borderRadius: '50%', background: palette.bg, color: palette.fg,
-                            display: 'flex', alignItems: 'center', justifyContent: 'center',
-                            fontSize: 15, fontWeight: 700,
-                          }}>{initial}</span>
+                          {/* Real WhatsApp picture when the bridge captured one;
+                              otherwise the hash-of-id colored initial bubble.
+                              ChatAvatar handles both, including runtime image
+                              load failures (URL expired etc.) without layout
+                              shift since the wrapper has fixed dimensions. */}
+                          <ChatAvatar chat={c} size={36} />
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{
                               fontSize: 14, fontWeight: 700, color: '#0f172a',

@@ -129,8 +129,17 @@ model Program {
   // with mm:ss countdown on the client.
   catchUpBannerText      String?
   // Asia/Jerusalem YYYY-MM-DD strings on which the button is allowed
-  // to appear. Empty array = button never appears (safe default).
+  // to appear. Empty array combined with empty catchUpAllowedWeekdays
+  // means the button never appears (safe default — matches the
+  // pre-weekday-feature behavior).
   catchUpAvailableDates  String[] @default([])
+  // JS-style weekday numbers (0=Sun..6=Sat) in Asia/Jerusalem on which
+  // the catch-up button is available. Combined with catchUpAvailableDates
+  // via the same shared helper as GameAction availability:
+  //   weekday in list OR today's date in extra-dates list → available
+  // Default empty preserves the historical "only the explicit dates"
+  // behavior so existing programs are unaffected.
+  catchUpAllowedWeekdays Int[]    @default([])
 
   catchUpSessions        CatchUpSession[]
 
@@ -274,6 +283,13 @@ model Group {
   aiGroupSummaries    AiGroupSummary[]
   participantInsights ParticipantInsight[]
   chatLinks           GroupChatLink[]
+
+  // Scheduled-messages master toggle. When false, the cron worker
+  // skips every row in this group regardless of per-message flags.
+  // Defaults false so a freshly-created group never sends until the
+  // admin explicitly opts in.
+  scheduledMessagesEnabled Boolean @default(false)
+  scheduledMessages        GroupScheduledMessage[]
 
   // Game engine
   scoreEvents      ScoreEvent[]
@@ -493,8 +509,18 @@ model ParticipantUploadedFile {
   // "avatar" | "before" | "profile_field:<fieldKey>" — free-form so future
   // categories don't require a migration.
   category      String
-  // Path served by the API's static-asset middleware: "/uploads/<filename>".
+  // Public URL the browser fetches. For R2-backed uploads this is
+  // MEDIA_PUBLIC_URL_BASE/<storageKey>; for legacy / dev-disk uploads
+  // it's "/uploads/<filename>" served by the API's static-asset
+  // middleware. Renderers handle both shapes.
   url           String
+  // Bucket-relative key for R2-backed uploads (e.g.
+  // "profile/<participantId>/<ts>_<rand>.jpg"). Used by the admin
+  // delete flow to remove the underlying R2 object. Nullable so
+  // pre-cutover rows (and dev-disk uploads where there's no remote
+  // bucket to clean up) keep working — admin delete simply skips the
+  // R2 remove step in that case.
+  storageKey    String?
   mimeType      String
   sizeBytes     Int
   uploadedAt    DateTime    @default(now())
@@ -653,6 +679,12 @@ model WhatsAppChat {
   type           String            @default("private")
   name           String?
   phoneNumber    String?
+  // WhatsApp profile / group picture URL captured from Baileys at
+  // chat first-create. Null when WhatsApp didn't return one (group
+  // has no picture set, contact has restrictive privacy, transient
+  // network failure). Frontend uses it to render the avatar circle
+  // and falls back to an initial-letter bubble when null.
+  profilePictureUrl String?
   lastMessageAt  DateTime?
   messages       WhatsAppMessage[]
   groupLinks     GroupChatLink[]
@@ -1089,6 +1121,29 @@ model GameAction {
   unitSize                Int?
   basePointsPerUnit       Int?
   maxPerDay               Int?
+  // ── Numeric input safety limits (per action) ──────────────────────────────
+  // Generic guards against the "extra digit" data-quality problem (e.g. a
+  // participant typing 80000 steps when they meant 8000). All three are
+  // optional and apply only when inputType='number'. Null = no restriction
+  // (preserves legacy behavior for actions created before this feature).
+  //
+  // maxDigits: maximum count of NUMERIC digits allowed in the parsed value
+  //   (separators, decimal points, and signs are NOT counted). Useful as a
+  //   coarse "no extra digit" guardrail without requiring the admin to
+  //   reason about specific magnitudes.
+  // maxValue: hard upper bound on the parsed numeric value (inclusive).
+  //   Use when there's a meaningful product-level ceiling.
+  // minValue: hard lower bound on the parsed numeric value (inclusive).
+  //   Defaults to 0 in code if null (existing logAction already rejects
+  //   negative values for latest_value); kept null here so existing rows
+  //   keep their current behavior.
+  //
+  // Both backend (logAction) and frontend (participant portal) enforce.
+  // On violation: reject the submission, no UserActionLog / ScoreEvent
+  // is written, and a Hebrew error is returned. We never silently clamp.
+  maxDigits               Int?
+  maxValue                Decimal? @db.Decimal(20, 4)
+  minValue                Decimal? @db.Decimal(20, 4)
   // Whether this action appears in the participant-facing portal
   showInPortal            Boolean  @default(true)
   // Custom message shown to participant when daily limit is reached (null = use system default)
@@ -1121,6 +1176,32 @@ model GameAction {
   // Monotonically increasing version number of contextSchemaJson. Stamped onto each new
   // UserActionLog at write time so historical rows remain interpretable after schema edits.
   contextSchemaVersion    Int      @default(1)
+
+  // ── Availability schedule (admin-controlled per action) ────────────────────
+  // Restrict the days on which this action is available to participants.
+  // BOTH arrays empty (the default) preserves the legacy "available every
+  // day" behavior — existing rows therefore keep working unchanged.
+  //
+  // allowedWeekdays — JS-style weekday numbers in Asia/Jerusalem:
+  //   0=Sunday, 1=Monday, … 5=Friday, 6=Saturday. Order in the array is
+  //   irrelevant; service stores a sorted, deduped list.
+  // extraAllowedDates — YYYY-MM-DD strings (Asia/Jerusalem local day).
+  //   Manually-picked specific calendar days that should ALSO make the
+  //   action available, regardless of allowedWeekdays. Useful for
+  //   one-off exceptions (e.g. "also enable on this Wednesday").
+  //
+  // Availability rule (shared by participant portal + log submission):
+  //   no rules configured        → available
+  //   today's weekday in list    → available
+  //   today's date in extra list → available
+  //   otherwise                  → unavailable
+  //
+  // The same shape is mirrored on Program.catchUpAllowedWeekdays /
+  // Program.catchUpAvailableDates for the completion-mode (מצב השלמה)
+  // surface, evaluated through the same shared helper.
+  allowedWeekdays    Int[]    @default([])
+  extraAllowedDates  String[] @default([])
+
   isActive                Boolean  @default(true)
   sortOrder               Int      @default(0)
   createdAt               DateTime @default(now())
@@ -1537,6 +1618,120 @@ model QuestionnaireExternalLink {
 }
 
 // =============================================================================
+// SCHEDULED MESSAGES
+// =============================================================================
+// Two-layer model:
+//   ProgramScheduledMessageTemplate — DEFAULT only, never sends. Lives at
+//                                      program level so admins can author
+//                                      reusable templates once and clone
+//                                      into specific groups.
+//   GroupScheduledMessage           — ACTUAL sending control. Cron only
+//                                      reads from this table. Each row is
+//                                      a self-contained snapshot — template
+//                                      edits never propagate retroactively.
+//
+// Lifecycle (status):
+//   draft     — admin still configuring (auto-cloned rows start here)
+//   pending   — armed and waiting for scheduledAt + retry conditions
+//   sent      — terminal success
+//   failed    — terminal failure after maxAttempts
+//   cancelled — admin manually cancelled
+//   skipped   — cron reached it but a gate blocked the send (master
+//               toggle off, group archived, no chat link, etc.)
+//
+// Send rule (cron):
+//   Group.scheduledMessagesEnabled = true
+//     AND row.enabled = true
+//     AND row.status = 'pending'
+//     AND row.scheduledAt <= now()
+//     AND (row.nextRetryAt IS NULL OR row.nextRetryAt <= now())
+//     AND row.claimedAt IS NULL OR row.claimedAt < now() - 5 minutes
+//
+// V1 scope: targetType is always 'group_whatsapp_chat' — fan out to a
+// per-participant target is deferred to V2 to keep duplicate-send
+// reasoning simple.
+//
+// Source-of-truth note: ProgramScheduledMessageTemplate was retired
+// in the comm-templates merge — scheduling defaults now live as
+// nullable columns on CommunicationTemplate (channel='whatsapp' rows
+// with timingType set). GroupScheduledMessage.sourceTemplateId points
+// at a CommunicationTemplate; template edits never propagate
+// silently — admin uses the explicit "apply to groups" flow.
+
+model GroupScheduledMessage {
+  id              String   @id @default(cuid())
+  groupId         String
+  group           Group    @relation(fields: [groupId], references: [id])
+  // Optional — populated when this row was cloned from a template.
+  // Nullable because admins can also create group-only schedules.
+  // ON DELETE SET NULL via Prisma — template removal must not orphan
+  // group rows that the admin already approved + scheduled.
+  sourceTemplateId String?
+  sourceTemplate  CommunicationTemplate? @relation(fields: [sourceTemplateId], references: [id])
+
+  // Snapshot fields — copied at clone/create time and NEVER touched by
+  // template edits. This is the load-bearing "edits don't propagate"
+  // guarantee from the spec. An explicit "apply changes to selected
+  // groups" admin action creates fresh rows; it does not mutate
+  // existing ones.
+  category        String
+  internalName    String
+  content         String   @db.Text
+  // Resolved absolute send time in UTC. Computed once at create/clone.
+  scheduledAt     DateTime @db.Timestamptz
+  // V1 only supports group_whatsapp_chat. Stored as a string so V2
+  // (per-participant) doesn't need a migration.
+  targetType      String   @default("group_whatsapp_chat")
+
+  // One-click pause without changing status. enabled=false makes the
+  // cron skip this row even when status='pending'. Combines with
+  // Group.scheduledMessagesEnabled (master) and status as the three
+  // gates that must ALL pass for a send.
+  enabled         Boolean  @default(false)
+
+  // Lifecycle — see header comment above the model.
+  status          String   @default("draft")
+
+  // Retry/backoff state. nextRetryAt is set after each failed attempt
+  // to delay the next pickup; null means "ready immediately".
+  // Schedule: 1m / 5m / 15m → after 3 failed attempts → status='failed'.
+  attemptCount    Int      @default(0)
+  lastAttemptAt   DateTime? @db.Timestamptz
+  nextRetryAt     DateTime? @db.Timestamptz
+
+  // Idempotency / claim columns — see worker design + duplicate-send
+  // prevention notes. claimedAt < now() - 5 min implicitly releases
+  // a claim from a worker that died mid-send.
+  claimedAt       DateTime? @db.Timestamptz
+  claimedBy       String?
+
+  sentAt          DateTime? @db.Timestamptz
+  failureReason   String?
+
+  // ── Sync tracking for the apply-to-groups flow ─────────────────────────
+  // Both timestamps are set at row creation (auto-create-from-template
+  // path) and at every "apply changes to groups" run. After that they're
+  // immutable from THIS endpoint — a direct admin edit on the group row
+  // updates updatedAt but NOT these columns. Comparing each *SyncedAt to
+  // updatedAt tells the apply-to-groups UI which rows have manual edits
+  // so it can warn before overwriting them.
+  contentSyncedAt     DateTime? @db.Timestamptz
+  scheduledAtSyncedAt DateTime? @db.Timestamptz
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Critical: prevents the same template from being cloned twice into
+  // the same group at the same resolved time. Catches inheritance
+  // double-click + concurrent re-applies.
+  @@unique([groupId, sourceTemplateId, scheduledAt])
+  // Cron's primary access path.
+  @@index([status, scheduledAt])
+  @@index([groupId, status])
+  @@map("group_scheduled_messages")
+}
+
+// =============================================================================
 // SYSTEM SETTINGS
 // =============================================================================
 // Generic key-value store for admin-controlled feature flags and config.
@@ -1902,6 +2097,33 @@ model CommunicationTemplate {
   subject   String? // email only; ignored for whatsapp
   body      String
   isActive  Boolean  @default(true)
+
+  // ── Scheduling defaults (channel='whatsapp' only) ─────────────────────────
+  // When timingType is set, this template is ALSO usable as a scheduled-
+  // messages default. Group rows clone the snapshot fields (title / body /
+  // category) plus a resolved scheduledAt computed from timingType + the
+  // group's start/end dates. NULL on every column = "no scheduling default;
+  // template is for manual/triggered sends only" — that's the existing
+  // pre-merge behavior so legacy rows are unaffected.
+  //
+  // Free-form category (משחק שוטף / לפני משחק / פתיחה / סיום / תזכורת /
+  // מותאם אישית). UI offers chips for the curated set but allows custom.
+  category    String?
+  // "exact" | "day_of" | "before_start" | "after_end". Null = no scheduling.
+  timingType  String?
+  exactAt     DateTime? @db.Timestamptz
+  dayOfNumber Int?
+  offsetDays  Int?
+  // "HH:mm" Asia/Jerusalem; required for non-exact timing types.
+  timeOfDay   String?
+  // Drag-and-drop ordering inside the program's templates tab.
+  sortOrder   Int       @default(0)
+
+  // Reverse: every GroupScheduledMessage row whose sourceTemplateId
+  // points here. ON DELETE SET NULL on the group row's FK so deleting
+  // a template never orphans an in-flight scheduled send.
+  groupMessages GroupScheduledMessage[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

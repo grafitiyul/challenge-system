@@ -679,6 +679,12 @@ model WhatsAppChat {
   type           String            @default("private")
   name           String?
   phoneNumber    String?
+  // WhatsApp profile / group picture URL captured from Baileys at
+  // chat first-create. Null when WhatsApp didn't return one (group
+  // has no picture set, contact has restrictive privacy, transient
+  // network failure). Frontend uses it to render the avatar circle
+  // and falls back to an initial-letter bubble when null.
+  profilePictureUrl String?
   lastMessageAt  DateTime?
   messages       WhatsAppMessage[]
   groupLinks     GroupChatLink[]

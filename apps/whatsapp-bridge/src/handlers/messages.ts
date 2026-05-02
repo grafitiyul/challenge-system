@@ -268,17 +268,66 @@ async function upsertChat(
   if (existing) {
     return existing;
   }
+
+  // Capture the WhatsApp profile / group picture URL on first-create
+  // so the admin link-chat modal can render real avatars instead of
+  // generated initial bubbles. Bounded by a 5s timeout — Baileys'
+  // call is a synchronous protocol query, and a hung WhatsApp server
+  // shouldn't block message ingest. Failures (no permission, group
+  // has no picture, transient error) are logged at debug-level and
+  // we fall back to null; the frontend treats null as "use the
+  // initial bubble". Only run for newly-created chats — never re-fetch
+  // for existing rows (would amplify ingest cost on every inbound).
+  const profilePictureUrl = await fetchProfilePictureSafe(socket, externalChatId, log);
+
   return prisma.whatsAppChat.create({
     data: {
       externalChatId,
       type: isGroup ? 'group' : 'private',
       name: resolvedName,
       phoneNumber: isGroup ? null : senderPhone,
+      profilePictureUrl,
       lastMessageAt,
       provider: 'baileys',
     },
     select: { id: true, name: true },
   });
+}
+
+// Best-effort wrapper around socket.profilePictureUrl. Always
+// resolves — never throws — so callers don't need their own
+// try/catch. WhatsApp returns 401/403 for contacts that have
+// restricted profile-picture privacy; we treat that as "no
+// picture" identically to "no picture set".
+async function fetchProfilePictureSafe(
+  socket: IngestServices['socket'],
+  jid: string,
+  log: IngestServices['log'],
+): Promise<string | null> {
+  const FETCH_TIMEOUT_MS = 5_000;
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    const probe = socket.profilePictureUrl(jid, 'image');
+    // Suppress late rejection — if the timeout wins, the underlying
+    // promise's eventual rejection is irrelevant to this caller.
+    probe.catch(() => undefined);
+    const result = await Promise.race([
+      probe,
+      new Promise<null>((res) => {
+        timer = setTimeout(() => res(null), FETCH_TIMEOUT_MS);
+      }),
+    ]);
+    if (typeof result === 'string' && result) return result;
+    return null;
+  } catch (err) {
+    log.debug(
+      { jid, err: errSummary(err) },
+      'profilePictureUrl fetch failed; falling back to no picture',
+    );
+    return null;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 // ─── reaction ingest ────────────────────────────────────────────────
