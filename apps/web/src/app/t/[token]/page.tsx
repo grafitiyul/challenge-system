@@ -1363,7 +1363,12 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
       return `from=${today}&to=${today}`;
     }
     if (r.key === 'custom' && r.from && r.to) return `from=${r.from}&to=${r.to}`;
-    const days = r.key === '7d' ? 7 : r.key === '30d' ? 30 : r.key === 'all' ? 30 : 14;
+    // "all" range now drives a true full-history trend via the new
+    // backend period=all path. Previously this was capped at days=30,
+    // which is why scope='all' looked unchanged on the chart even when
+    // the participant had prior-game data older than 30 days.
+    if (r.key === 'all') return `period=all`;
+    const days = r.key === '7d' ? 7 : r.key === '30d' ? 30 : 14;
     return `days=${days}`;
   }
   function buildBreakdownQuery(r: AnalyticsRange, g: BreakdownGroupBy): string {
@@ -2908,7 +2913,16 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                   // participant who is both "me" and "0 today" gets RED
                   // bg + BLUE start-stripe rather than one indicator
                   // suppressing the other.
-                  const isZeroToday = row.todayScore === 0;
+                  // Gate (1): only in multi-player view (leaderboard.length > 1).
+                  // Gate (2): only when todayScore is an explicit number
+                  // equal to 0. Defensive — undefined !== 0, but if the
+                  // backend ever returns nullish we don't paint red on
+                  // a row whose score we don't actually know.
+                  const isMultiPlayer = stats.groupLeaderboard.length > 1;
+                  const isZeroToday =
+                    isMultiPlayer
+                    && typeof row.todayScore === 'number'
+                    && row.todayScore === 0;
                   return (
                     <div
                       key={row.participantId}

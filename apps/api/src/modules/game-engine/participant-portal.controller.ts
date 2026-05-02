@@ -229,6 +229,10 @@ export class ParticipantPortalController {
 
   // GET /api/public/participant/:token/analytics/trend?days=7|14|30&scope=current|all
   // Or                                          ?from=YYYY-MM-DD&to=YYYY-MM-DD
+  // Or                                          ?period=all   (full history;
+  //                                              "since" computed from the
+  //                                              participant's earliest event
+  //                                              matching the scope filter)
   @Get(':token/analytics/trend')
   getAnalyticsTrend(
     @Param('token') token: string,
@@ -236,14 +240,17 @@ export class ParticipantPortalController {
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('scope') scope?: string,
+    @Query('period') period?: string,
   ): Promise<AnalyticsTrendPoint[]> {
     const parsedDays = days ? parseInt(days, 10) : undefined;
     const safeScope: 'current' | 'all' = scope === 'all' ? 'all' : 'current';
+    const safePeriod: 'all' | undefined = period === 'all' ? 'all' : undefined;
     return this.portalService.getAnalyticsTrend(token, {
       days: parsedDays,
       from,
       to,
       scope: safeScope,
+      period: safePeriod,
     });
   }
 

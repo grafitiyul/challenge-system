@@ -1495,21 +1495,54 @@ export class ParticipantPortalService {
 
   async getAnalyticsTrend(
     token: string,
-    opts: { days?: number; from?: string; to?: string; scope?: 'current' | 'all' },
+    opts: {
+      days?: number;
+      from?: string;
+      to?: string;
+      scope?: 'current' | 'all';
+      period?: 'all';
+    },
   ): Promise<AnalyticsTrendPoint[]> {
     const { participantId, programId } = await this.resolveToken(token);
     const scope = opts.scope ?? 'current';
-    const { since, until } = resolveRange({ days: opts.days, from: opts.from, to: opts.to });
-    // Trend requires a concrete start — a bounded window makes no sense for "all".
-    if (since === null) {
-      throw new BadRequestException('trend requires days or from/to; "all" is not supported');
-    }
 
     // scope='current' → program-scoped (existing behavior).
     // scope='all'     → cross-program for the personal continuity view
     //                   in the data tab toggle. Same time range, same
     //                   shape, just no programId filter.
     const baseFilter = scope === 'all' ? { participantId } : { participantId, programId };
+
+    // Date range resolution.
+    //   period='all' → compute since from the participant's earliest
+    //                  event matching the scope filter. Lets the data
+    //                  tab "all" range actually surface prior-game
+    //                  history without the chart's prior 30-day cap.
+    //                  When the participant has no events at all,
+    //                  fall back to today (returns an empty trend).
+    //   otherwise   → use days / from-to via the existing helper.
+    let since: Date | null;
+    let until: Date;
+    if (opts.period === 'all') {
+      const earliest = await this.prisma.scoreEvent.findFirst({
+        where: baseFilter,
+        orderBy: { createdAt: 'asc' },
+        select: { createdAt: true },
+      });
+      until = startOfDayUTC(new Date());
+      until.setUTCDate(until.getUTCDate() + 1);
+      until.setUTCMilliseconds(until.getUTCMilliseconds() - 1);
+      since = earliest ? startOfDayUTC(earliest.createdAt) : startOfDayUTC(new Date());
+    } else {
+      const range = resolveRange({ days: opts.days, from: opts.from, to: opts.to });
+      since = range.since;
+      until = range.until;
+    }
+    // Trend requires a concrete start — a bounded window makes no
+    // sense without one. period='all' guarantees a concrete start
+    // above; the legacy days/from-to paths can still produce null.
+    if (since === null) {
+      throw new BadRequestException('trend requires days, from/to, or period=all');
+    }
 
     // Sum ALL ScoreEvent rows per day (action, rule, correction net out naturally).
     const events = await this.prisma.scoreEvent.findMany({
