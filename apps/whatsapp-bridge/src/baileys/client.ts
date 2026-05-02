@@ -38,6 +38,7 @@ import {
   handleHistorySync,
   handleReactions,
   IngestServices,
+  fetchProfilePictureSafe,
 } from '../handlers/messages';
 
 const log = pino({ level: config.logLevel, name: 'baileys' });
@@ -117,6 +118,12 @@ export class BaileysClient {
   // True while reopenSocket() is in flight, so concurrent sends or
   // repeated triggers don't pile up multiple socket-rebuild attempts.
   private reconnecting = false;
+
+  // True while refreshMissingChatPictures is iterating. The route
+  // returns 409 to a second caller landing during a run rather than
+  // queueing — refresh is admin-driven + bounded; a backlog is the
+  // operator's signal to wait, not an excuse to stack jobs.
+  private refreshChatPicturesInFlight = false;
 
   // ── Single-socket lifecycle invariant ───────────────────────────
   // Bumped each time connect() spins up a new socket. Every event
@@ -500,6 +507,112 @@ export class BaileysClient {
     const next = this.reconnectChain.then(fn, fn);
     this.reconnectChain = next.catch(() => undefined);
     return next;
+  }
+
+  // Backstop for chats that existed before the profilePictureUrl
+  // capture hook was added (or where the first-ingest fetch returned
+  // null — restrictive privacy, transient WhatsApp error). Iterates
+  // chats with NULL profilePictureUrl and tries again, capped per
+  // call + paced between fetches so we don't swamp WhatsApp's
+  // protocol channel or block normal ingest.
+  //
+  // Concurrency: refuses overlap via refreshChatPicturesInFlight so a
+  // second admin click while one run is going returns alreadyRunning
+  // rather than stacking work. The flag is process-local; the bridge
+  // is replicas=1 anyway (see README) so this is the only guard
+  // needed.
+  //
+  // Rate budget: at maxRows=50 + delayMsBetween=1500 the worst-case
+  // wall-clock is ~75s — comfortably inside the API proxy's 120s
+  // timeout, and well under WhatsApp's spam thresholds for
+  // non-message protocol queries.
+  async refreshMissingChatPictures(opts: {
+    maxRows?: number;
+    delayMsBetween?: number;
+  } = {}): Promise<{
+    checked: number;
+    updated: number;
+    skipped: number;
+    failed: number;
+    errors: string[];
+    alreadyRunning?: boolean;
+    notReady?: boolean;
+    notReadyReason?: string;
+  }> {
+    if (this.refreshChatPicturesInFlight) {
+      return { checked: 0, updated: 0, skipped: 0, failed: 0, errors: [], alreadyRunning: true };
+    }
+    const readiness = this.getReadiness();
+    if (!readiness.ok) {
+      return {
+        checked: 0, updated: 0, skipped: 0, failed: 0, errors: [],
+        notReady: true, notReadyReason: readiness.reason ?? 'not_ready',
+      };
+    }
+    const maxRows = Math.max(1, Math.min(opts.maxRows ?? 50, 200));
+    const delayMs = Math.max(0, opts.delayMsBetween ?? 1500);
+
+    this.refreshChatPicturesInFlight = true;
+    const startedAt = Date.now();
+    try {
+      // Order by lastMessageAt desc so the most-recently-active chats
+      // get refreshed first — that's what the admin sees in their
+      // link-chat modal anyway. Older / abandoned chats wait.
+      const candidates = await prisma.whatsAppChat.findMany({
+        where: { profilePictureUrl: null },
+        orderBy: { lastMessageAt: 'desc' },
+        take: maxRows,
+        select: { id: true, externalChatId: true },
+      });
+      log.info({ count: candidates.length, maxRows }, 'refresh-chat-pictures starting');
+
+      let checked = 0;
+      let updated = 0;
+      let skipped = 0;
+      let failed = 0;
+      const errors: string[] = [];
+
+      for (let i = 0; i < candidates.length; i++) {
+        const c = candidates[i];
+        checked++;
+        try {
+          const url = await fetchProfilePictureSafe(this.socket!, c.externalChatId, log);
+          if (url) {
+            // Defensive WHERE clause: another path (a fresh inbound
+            // upsert, the future bridge restart) might have already
+            // set the URL between SELECT and UPDATE. Updating only
+            // when still null avoids stomping on a fresher capture.
+            const result = await prisma.whatsAppChat.updateMany({
+              where: { id: c.id, profilePictureUrl: null },
+              data: { profilePictureUrl: url },
+            });
+            if (result.count > 0) updated++;
+            else skipped++;
+          } else {
+            failed++;
+          }
+        } catch (err) {
+          failed++;
+          // Cap the error list — admins don't need 50 lines of
+          // similar failure reasons. Ten samples is enough to triage.
+          if (errors.length < 10) {
+            errors.push(err instanceof Error ? err.message.split('\n')[0]?.slice(0, 200) ?? 'unknown' : 'unknown');
+          }
+        }
+        // Pacing — skip after the last item.
+        if (i < candidates.length - 1 && delayMs > 0) {
+          await new Promise((res) => setTimeout(res, delayMs));
+        }
+      }
+
+      log.info(
+        { checked, updated, skipped, failed, elapsedMs: Date.now() - startedAt },
+        'refresh-chat-pictures complete',
+      );
+      return { checked, updated, skipped, failed, errors };
+    } finally {
+      this.refreshChatPicturesInFlight = false;
+    }
   }
 
   // Probe whether a JID is registered on WhatsApp via socket.onWhatsApp.

@@ -299,7 +299,7 @@ async function upsertChat(
 // try/catch. WhatsApp returns 401/403 for contacts that have
 // restricted profile-picture privacy; we treat that as "no
 // picture" identically to "no picture set".
-async function fetchProfilePictureSafe(
+export async function fetchProfilePictureSafe(
   socket: IngestServices['socket'],
   jid: string,
   log: IngestServices['log'],

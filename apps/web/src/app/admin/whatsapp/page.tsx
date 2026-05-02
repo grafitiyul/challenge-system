@@ -189,6 +189,22 @@ export default function WhatsAppBridgePage() {
   const [debugRunning, setDebugRunning] = useState(false);
   const [debugResult, setDebugResult] = useState<unknown>(null);
   const [debugError, setDebugError] = useState<string | null>(null);
+  // Refresh-chat-pictures state — same pattern: own running flag
+  // and a structured result object the strip below renders inline.
+  // The flag fields (bridgeUnavailable / alreadyRunning / notReady)
+  // mirror what the bridge / API proxy can return; the strip branches
+  // on each one for distinct messaging.
+  const [refreshingPictures, setRefreshingPictures] = useState(false);
+  const [refreshPicturesResult, setRefreshPicturesResult] = useState<{
+    ok?: boolean;
+    error?: string;
+    reason?: string;
+    checked?: number; updated?: number; skipped?: number; failed?: number;
+    errors?: string[];
+    bridgeUnavailable?: boolean;
+    alreadyRunning?: boolean;
+    notReady?: boolean;
+  } | null>(null);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = useCallback(async () => {
@@ -316,6 +332,37 @@ export default function WhatsAppBridgePage() {
       setRestartHint(`איפוס נכשל: ${msg}`);
     } finally {
       setRestarting(false);
+    }
+  }
+
+  // POST /api/admin/whatsapp/refresh-chat-pictures — backstop for
+  // chats whose profilePictureUrl is null (legacy rows + first-fetch
+  // failures). Bridge iterates capped + paced; the call may take up
+  // to ~75s on a full batch of 50. Result rendered inline.
+  async function refreshChatPictures() {
+    if (refreshingPictures) return;
+    setRefreshingPictures(true);
+    setRefreshPicturesResult(null);
+    try {
+      const r = await apiFetch<{
+        checked?: number; updated?: number; skipped?: number; failed?: number;
+        errors?: string[]; error?: string; reason?: string;
+        alreadyRunning?: boolean; notReady?: boolean; bridgeUnavailable?: boolean;
+      }>(
+        `${BASE_URL}/admin/whatsapp/refresh-chat-pictures`,
+        { method: 'POST' },
+      );
+      setRefreshPicturesResult({
+        ok: !r.error && !r.alreadyRunning && !r.notReady && !r.bridgeUnavailable,
+        ...r,
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message :
+        (typeof e === 'object' && e !== null && typeof (e as { message?: unknown }).message === 'string')
+          ? (e as { message: string }).message : 'רענון נכשל';
+      setRefreshPicturesResult({ ok: false, error: 'request_failed', reason: msg });
+    } finally {
+      setRefreshingPictures(false);
     }
   }
 
@@ -650,6 +697,97 @@ export default function WhatsAppBridgePage() {
 
             {debugResult !== null && (
               <DebugResult result={debugResult} />
+            )}
+          </div>
+
+          {/* Refresh chat pictures — backstop for chats with NULL
+              profilePictureUrl. Capped at 50 per call + paced 1.5s
+              between fetches by the bridge so it can't swamp WhatsApp
+              and won't block normal ingest. Result strip below shows
+              checked / updated / skipped / failed; admins can press
+              again for the next batch when many pictures are missing. */}
+          <div
+            style={{
+              background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12,
+              padding: 18, marginBottom: 16,
+            }}
+          >
+            <div style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a', marginBottom: 2 }}>
+                  רענון תמונות צ׳אטים
+                </div>
+                <div style={{ fontSize: 12, color: '#64748b', lineHeight: 1.55 }}>
+                  שולפת תמונות פרופיל / קבוצה מ-WhatsApp עבור צ׳אטים ללא תמונה.
+                  עד 50 צ׳אטים לקריאה, עיכוב של ~1.5 שניות בין שליפות. ניתן ללחוץ שוב לקבלת אצווה נוספת.
+                </div>
+              </div>
+              <button
+                onClick={() => { void refreshChatPictures(); }}
+                disabled={refreshingPictures}
+                style={{
+                  padding: '8px 14px', fontSize: 13, fontWeight: 600,
+                  background: refreshingPictures ? '#bfdbfe' : '#2563eb',
+                  color: '#fff', border: 'none', borderRadius: 8,
+                  cursor: refreshingPictures ? 'not-allowed' : 'pointer',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {refreshingPictures ? 'מרענן...' : 'רענן תמונות צ׳אטים'}
+              </button>
+            </div>
+
+            {refreshPicturesResult && (
+              <div
+                style={{
+                  marginTop: 10,
+                  background:
+                    refreshPicturesResult.error || refreshPicturesResult.bridgeUnavailable ? '#fee2e2'
+                    : refreshPicturesResult.alreadyRunning ? '#fef3c7'
+                    : refreshPicturesResult.notReady ? '#fef3c7'
+                    : '#f0fdf4',
+                  color:
+                    refreshPicturesResult.error || refreshPicturesResult.bridgeUnavailable ? '#991b1b'
+                    : refreshPicturesResult.alreadyRunning || refreshPicturesResult.notReady ? '#92400e'
+                    : '#166534',
+                  border: '1px solid currentColor',
+                  borderRadius: 8, padding: '8px 12px', fontSize: 12, lineHeight: 1.6,
+                }}
+              >
+                {refreshPicturesResult.bridgeUnavailable && (
+                  <div>הגשר לא זמין: {refreshPicturesResult.reason ?? 'לא ידוע'}</div>
+                )}
+                {refreshPicturesResult.alreadyRunning && (
+                  <div>רענון אחר כבר בעיצומו. נסי שוב בעוד מספר שניות.</div>
+                )}
+                {refreshPicturesResult.notReady && (
+                  <div>WhatsApp לא מחובר כרגע ({refreshPicturesResult.reason ?? 'not_ready'}). חברי וסרקי QR ונסי שוב.</div>
+                )}
+                {refreshPicturesResult.error && !refreshPicturesResult.bridgeUnavailable && !refreshPicturesResult.alreadyRunning && !refreshPicturesResult.notReady && (
+                  <div>שגיאה: {refreshPicturesResult.reason ?? refreshPicturesResult.error}</div>
+                )}
+                {refreshPicturesResult.ok && (
+                  <>
+                    <div style={{ fontWeight: 700, marginBottom: 2 }}>סיים</div>
+                    <div>
+                      נבדקו: <strong>{refreshPicturesResult.checked ?? 0}</strong> ·
+                      עודכנו: <strong>{refreshPicturesResult.updated ?? 0}</strong> ·
+                      ללא תמונה: {refreshPicturesResult.failed ?? 0}
+                      {!!refreshPicturesResult.skipped && ` · דולגו: ${refreshPicturesResult.skipped}`}
+                    </div>
+                    {!!(refreshPicturesResult.errors && refreshPicturesResult.errors.length) && (
+                      <details style={{ marginTop: 6 }}>
+                        <summary style={{ cursor: 'pointer', color: '#15803d' }}>
+                          פרטי שגיאות ({refreshPicturesResult.errors.length})
+                        </summary>
+                        <pre dir="ltr" style={{ margin: '6px 0 0', fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontFamily: 'monospace' }}>
+                          {refreshPicturesResult.errors.join('\n')}
+                        </pre>
+                      </details>
+                    )}
+                  </>
+                )}
+              </div>
             )}
           </div>
         </>

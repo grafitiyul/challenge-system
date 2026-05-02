@@ -79,7 +79,7 @@ export async function startHttpServer(client: BaileysClient): Promise<FastifyIns
       url: req.url,
       // List the routes the bridge DOES expose so the operator can
       // see at a glance whether their probe URL matches anything.
-      registeredRoutes: ['GET /health', 'GET /status', 'POST /send', 'POST /debug-send', 'POST /sign-out', 'POST /restart-socket', 'POST /hard-reset-session'],
+      registeredRoutes: ['GET /health', 'GET /status', 'POST /send', 'POST /debug-send', 'POST /sign-out', 'POST /restart-socket', 'POST /hard-reset-session', 'POST /refresh-chat-pictures'],
     });
   });
 
@@ -526,6 +526,48 @@ export async function startHttpServer(client: BaileysClient): Promise<FastifyIns
     } catch (err) {
       log.error({ err: errSummary(err) }, '[/hard-reset-session] failed');
       reply.code(500).send({ error: 'hard_reset_failed', detail: errSummary(err) });
+    }
+  });
+
+  // POST /refresh-chat-pictures — backstop for chats that exist
+  // without a profilePictureUrl (legacy rows from before the
+  // first-ingest hook was added, or chats where WhatsApp returned
+  // 401/403/no-picture at first capture). Iterates capped + paced
+  // and persists URLs when found. Returns a summary the admin UI
+  // displays inline.
+  //
+  // Concurrency: 409 alreadyRunning if a previous request is still
+  // looping. Readiness: 503 when the socket isn't usable for
+  // protocol queries (no point fetching pictures while disconnected).
+  fastify.post('/refresh-chat-pictures', async (_req, reply) => {
+    log.info('[/refresh-chat-pictures] requested');
+    try {
+      const result = await client.refreshMissingChatPictures({
+        // Defaults match BaileysClient.refreshMissingChatPictures
+        // defaults; keeping them explicit here makes the contract
+        // visible without spelunking the client.
+        maxRows: 50,
+        delayMsBetween: 1500,
+      });
+      if (result.alreadyRunning) {
+        reply.code(409).send({ error: 'already_running', ...result });
+        return;
+      }
+      if (result.notReady) {
+        reply.code(503).send({
+          error: 'whatsapp_not_connected',
+          reason: result.notReadyReason ?? 'not_ready',
+          ...result,
+        });
+        return;
+      }
+      reply.code(200).send(result);
+    } catch (err) {
+      log.error({ err: errSummary(err) }, '[/refresh-chat-pictures] failed');
+      reply.code(500).send({
+        error: 'refresh_failed',
+        detail: errSummary(err),
+      });
     }
   });
 

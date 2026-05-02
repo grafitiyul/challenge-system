@@ -321,6 +321,32 @@ export class WhatsappBridgeService {
     }
   }
 
+  // POST /api/admin/whatsapp/refresh-chat-pictures → bridge POST
+  // /refresh-chat-pictures. Backstop for chats that exist without a
+  // profilePictureUrl. Bridge does the iteration + per-chat fetch
+  // + persistence; we just proxy. Generous 120 s timeout because at
+  // 50 chats × 1.5 s pacing the worst-case wall-clock is ~75 s.
+  async refreshChatPictures(): Promise<unknown> {
+    const base = bridgeUrl();
+    if (!base) return { bridgeUnavailable: true, reason: 'WHATSAPP_BRIDGE_URL not configured' };
+    try {
+      const res = await fetch(`${base}/refresh-chat-pictures`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${bridgeSecret()}` },
+        signal: AbortSignal.timeout(120_000),
+      });
+      const json = await res.json().catch(() => ({}));
+      // Bridge returns 200 / 409 / 503 / 500 with a structured body
+      // in each case. Pass it through verbatim so the admin UI can
+      // distinguish "another run in progress" from "not connected"
+      // from "succeeded with N updates" without our re-shape.
+      return json;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'unknown';
+      return { bridgeUnavailable: true, reason: message };
+    }
+  }
+
   // POST /api/admin/whatsapp/hard-reset-session → bridge POST
   // /hard-reset-session. Wipes persisted Baileys auth + resets the
   // WhatsAppConnection singleton + spawns a fresh socket so a new

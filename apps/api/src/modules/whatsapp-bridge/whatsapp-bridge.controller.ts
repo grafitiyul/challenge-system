@@ -50,6 +50,20 @@ export class WhatsappBridgeController {
     return this.svc.debugSend(body.phone, body.message);
   }
 
+  // POST /api/admin/whatsapp/refresh-chat-pictures
+  // Backstop endpoint that re-fetches WhatsApp profile / group
+  // pictures for chats whose profilePictureUrl is null (legacy
+  // pre-hook rows, chats where first-ingest got 401/403, etc.).
+  // Capped per call (50 chats) and paced (1.5s between fetches)
+  // by the bridge so it doesn't swamp WhatsApp's protocol channel.
+  // Returns { checked, updated, skipped, failed, errors } from the
+  // bridge, or { alreadyRunning } / { notReady } when the bridge
+  // is busy or disconnected.
+  @Post('refresh-chat-pictures')
+  refreshChatPictures() {
+    return this.svc.refreshChatPictures();
+  }
+
   // POST /api/admin/whatsapp/hard-reset-session
   // Nuke + repair: deletes every row in whatsapp_sessions (creds +
   // signal keys), resets the WhatsAppConnection singleton, and spawns
