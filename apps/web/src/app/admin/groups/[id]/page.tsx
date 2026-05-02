@@ -130,6 +130,26 @@ function chatDisplayName(chat: WhatsAppChat): string {
   return chat.name ?? chat.phoneNumber ?? chat.externalChatId;
 }
 
+// Stable hue from a string. The avatar bubble's background color is
+// hash(name)-derived so two chats with similar names get distinct
+// colors that survive across renders. Used inside the link-chat modal
+// where we have no profile image to show — initial-letter bubbles are
+// the next-best visual differentiator.
+function colorFromKey(key: string): { bg: string; fg: string } {
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) | 0;
+  const hue = Math.abs(h) % 360;
+  return { bg: `hsl(${hue}, 65%, 88%)`, fg: `hsl(${hue}, 60%, 35%)` };
+}
+
+// First grapheme of the most informative field. Hebrew letters,
+// emoji, latin all behave correctly under Array.from (which iterates
+// codepoints, not surrogate pairs).
+function chatInitial(chat: WhatsAppChat): string {
+  const src = chat.name?.trim() || chat.phoneNumber || chat.externalChatId;
+  return Array.from(src ?? '?')[0] ?? '?';
+}
+
 // ─── SVG icon components ──────────────────────────────────────────────────────
 
 function PencilIcon() {
@@ -298,6 +318,9 @@ export default function GroupDetailPage() {
   // Link chat modal
   const [linkModalOpen, setLinkModalOpen] = useState(false);
   const [availableChats, setAvailableChats] = useState<WhatsAppChat[]>([]);
+  // Search inside the link-chat modal. Cleared when the modal opens
+  // and on type switch so each new flow starts with a clean list.
+  const [chatSearch, setChatSearch] = useState('');
   const [chatsLoading, setChatsLoading] = useState(false);
   const [selectedChatId, setSelectedChatId] = useState('');
   const [selectedLinkType, setSelectedLinkType] = useState<'group_chat' | 'private_participant_chat'>('group_chat');
@@ -812,6 +835,7 @@ export default function GroupDetailPage() {
     setSelectedChatId('');
     setSelectedLinkType('group_chat');
     setSelectedParticipantId('');
+    setChatSearch('');
     setLinkError(null);
     if (availableChats.length > 0) return;
     setChatsLoading(true);
@@ -2346,85 +2370,241 @@ export default function GroupDetailPage() {
       )}
 
       {/* ══════════════════════════════════════════════════════════════════════
-          MODAL — LINK CHAT
+          MODAL — LINK CHAT  (redesigned, type-first → search → list)
       ══════════════════════════════════════════════════════════════════════ */}
-      {linkModalOpen && (
-        <Modal onClose={() => setLinkModalOpen(false)}>
-          <h3 style={S.modalTitle}>קשרי צ׳אט קיים</h3>
+      {linkModalOpen && (() => {
+        // Filter the available chats by the selected link type FIRST.
+        // selectedLinkType=='group_chat' → only c.type=='group'.
+        // selectedLinkType=='private_participant_chat' → only c.type=='private'.
+        // Then by the search term — case-insensitive match against
+        // name + phoneNumber + externalChatId. Filtering is purely
+        // client-side: the data is already in availableChats.
+        const wantType = selectedLinkType === 'group_chat' ? 'group' : 'private';
+        const lower = chatSearch.trim().toLowerCase();
+        const matches = pickableChats
+          .filter((c) => c.type === wantType)
+          .filter((c) => {
+            if (!lower) return true;
+            const hay = `${c.name ?? ''} ${c.phoneNumber ?? ''} ${c.externalChatId}`.toLowerCase();
+            return hay.includes(lower);
+          });
 
-          <div style={{ marginBottom: 16 }}>
-            <label style={S.fieldLabel}>בחר/י צ׳אט</label>
-            {chatsLoading ? (
-              <p style={{ color: '#94a3b8', fontSize: 13 }}>טוען צ׳אטים...</p>
-            ) : pickableChats.length === 0 ? (
-              <p style={{ color: '#94a3b8', fontSize: 13 }}>
-                {availableChats.length === 0 ? 'אין צ׳אטים זמינים (הרץ backfill תחילה)' : 'כל הצ׳אטים כבר מקושרים.'}
-              </p>
-            ) : (
-              <select value={selectedChatId} onChange={(e) => setSelectedChatId(e.target.value)} style={S.select}>
-                <option value="">-- בחר/י צ׳אט --</option>
-                {pickableChats.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {chatDisplayName(c)} ({c.type === 'group' ? 'קבוצה' : 'פרטי'})
-                  </option>
-                ))}
-              </select>
-            )}
-          </div>
+        return (
+          <Modal onClose={() => setLinkModalOpen(false)}>
+            <h3 style={S.modalTitle}>קשרי צ׳אט קיים</h3>
 
-          <div style={{ marginBottom: 16 }}>
-            <label style={S.fieldLabel}>סוג קישור</label>
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-              {([
-                ['group_chat', '👥 קבוצת וואטסאפ'],
-                ['private_participant_chat', '👤 צ׳אט פרטי'],
-              ] as const).map(([val, label]) => (
-                <label key={val} style={{
-                  display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer',
-                  padding: '7px 12px', borderRadius: 8, border: '1px solid',
-                  borderColor: selectedLinkType === val ? '#2563eb' : '#e2e8f0',
-                  background: selectedLinkType === val ? '#eff6ff' : '#fff',
-                  fontSize: 13, fontWeight: selectedLinkType === val ? 600 : 400,
-                }}>
-                  <input type="radio" name="linkType" value={val}
-                    checked={selectedLinkType === val}
-                    onChange={() => { setSelectedLinkType(val); setSelectedParticipantId(''); }}
-                    style={{ display: 'none' }}
-                  />
-                  {label}
-                </label>
-              ))}
+            {/* Step 1 — type picker. Two big cards. Selecting one sets
+                BOTH the link type AND filters the chat list. Resets
+                the chat selection + search when the type changes so
+                stale state from the previous type doesn't bleed through. */}
+            <div style={{ marginBottom: 14 }}>
+              <label style={S.fieldLabel}>סוג חיבור</label>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                {([
+                  ['group_chat', '👥', 'קבוצת וואטסאפ', 'צ׳אט קבוצתי משותף לכל המשתתפות'],
+                  ['private_participant_chat', '👤', 'צ׳אט פרטי', 'צ׳אט אישי עם משתתפת אחת'],
+                ] as const).map(([val, emoji, label, hint]) => {
+                  const active = selectedLinkType === val;
+                  return (
+                    <button
+                      key={val}
+                      type="button"
+                      onClick={() => {
+                        if (selectedLinkType !== val) {
+                          setSelectedLinkType(val);
+                          setSelectedChatId('');
+                          setSelectedParticipantId('');
+                          setChatSearch('');
+                        }
+                      }}
+                      style={{
+                        textAlign: 'right',
+                        display: 'flex', flexDirection: 'column', gap: 4,
+                        padding: '14px 14px',
+                        background: active ? '#eff6ff' : '#fff',
+                        border: `2px solid ${active ? '#2563eb' : '#e2e8f0'}`,
+                        borderRadius: 10,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <div style={{ fontSize: 22 }}>{emoji}</div>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: active ? '#1d4ed8' : '#0f172a' }}>{label}</div>
+                      <div style={{ fontSize: 11, color: '#64748b', lineHeight: 1.45 }}>{hint}</div>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-          </div>
 
-          {selectedLinkType === 'private_participant_chat' && (
-            <div style={{ marginBottom: 16 }}>
-              <label style={S.fieldLabel}>משתתף/ת</label>
-              {participants.length === 0 ? (
-                <p style={{ color: '#94a3b8', fontSize: 13 }}>אין משתתפות פעילות בקבוצה זו.</p>
+            {/* Step 2 — search + filtered chat list. Only shown after a
+                type is picked (technically selectedLinkType always has
+                a value since it defaults to 'group_chat', but we still
+                guard for clarity if someone changes the default). */}
+            <div style={{ marginBottom: 14 }}>
+              <label style={S.fieldLabel}>
+                בחר/י {selectedLinkType === 'group_chat' ? 'קבוצת וואטסאפ' : 'צ׳אט פרטי'}
+              </label>
+
+              {chatsLoading ? (
+                <div style={{ color: '#94a3b8', fontSize: 13, padding: '12px 0' }}>טוען צ׳אטים...</div>
+              ) : pickableChats.length === 0 ? (
+                <div style={{ color: '#94a3b8', fontSize: 13, padding: '12px 0' }}>
+                  {availableChats.length === 0 ? 'אין צ׳אטים זמינים (הרץ backfill תחילה)' : 'כל הצ׳אטים כבר מקושרים.'}
+                </div>
               ) : (
-                <select value={selectedParticipantId} onChange={(e) => setSelectedParticipantId(e.target.value)} style={S.select}>
-                  <option value="">-- בחר/י משתתף/ת --</option>
-                  {participants.map((pg) => (
-                    <option key={pg.participant.id} value={pg.participant.id}>
-                      {displayName(pg.participant)} · {pg.participant.phoneNumber}
-                    </option>
-                  ))}
-                </select>
+                <>
+                  {/* Search input with magnifier glyph. Instant filtering.
+                      Mobile-friendly: enough padding for tap, font-size
+                      16+ to suppress iOS auto-zoom on focus. */}
+                  <div style={{ position: 'relative', marginBottom: 8 }}>
+                    <span style={{
+                      position: 'absolute', insetInlineStart: 12, top: '50%', transform: 'translateY(-50%)',
+                      color: '#94a3b8', fontSize: 14, pointerEvents: 'none',
+                    }}>🔍</span>
+                    <input
+                      type="text"
+                      value={chatSearch}
+                      onChange={(e) => setChatSearch(e.target.value)}
+                      placeholder={selectedLinkType === 'group_chat' ? 'חיפוש לפי שם קבוצה...' : 'חיפוש לפי שם או מספר...'}
+                      style={{
+                        width: '100%', padding: '10px 36px 10px 12px',
+                        border: '1px solid #e2e8f0', borderRadius: 8,
+                        fontSize: 15, fontFamily: 'inherit',
+                        boxSizing: 'border-box',
+                      }}
+                    />
+                  </div>
+
+                  {/* Scrollable list. Max-height keeps a 50+ chat list
+                      from pushing the modal buttons off-screen on
+                      mobile. Each cell uses an avatar bubble derived
+                      from the chat name (no profile image is stored on
+                      WhatsAppChat) plus a secondary line: phone for
+                      private, group JID for group (until participant
+                      counts are wired through, which is not in scope
+                      for this UI commit). */}
+                  <div style={{
+                    border: '1px solid #e2e8f0', borderRadius: 10,
+                    maxHeight: 320, overflowY: 'auto',
+                    background: '#fff',
+                  }}>
+                    {matches.length === 0 ? (
+                      <div style={{ padding: '20px 14px', color: '#94a3b8', fontSize: 13, textAlign: 'center' }}>
+                        {chatSearch
+                          ? `לא נמצאו תוצאות עבור "${chatSearch}"`
+                          : selectedLinkType === 'group_chat'
+                            ? 'אין קבוצות וואטסאפ זמינות לקישור.'
+                            : 'אין צ׳אטים פרטיים זמינים לקישור.'}
+                      </div>
+                    ) : matches.map((c) => {
+                      const selected = selectedChatId === c.id;
+                      const initial = chatInitial(c);
+                      const palette = colorFromKey(c.id);
+                      const secondary = c.type === 'private'
+                        ? (c.phoneNumber || c.externalChatId)
+                        : 'צ׳אט קבוצתי';
+                      return (
+                        <button
+                          key={c.id}
+                          type="button"
+                          onClick={() => setSelectedChatId(c.id)}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: 12,
+                            width: '100%', textAlign: 'right',
+                            padding: '10px 12px',
+                            background: selected ? '#eff6ff' : '#fff',
+                            border: 'none',
+                            borderBottom: '1px solid #f1f5f9',
+                            cursor: 'pointer',
+                          }}
+                          onMouseEnter={(e) => {
+                            if (!selected) (e.currentTarget as HTMLButtonElement).style.background = '#f8fafc';
+                          }}
+                          onMouseLeave={(e) => {
+                            if (!selected) (e.currentTarget as HTMLButtonElement).style.background = '#fff';
+                          }}
+                        >
+                          {/* Initial-letter avatar bubble — color is
+                              hash-of-id stable so each chat has its
+                              own visual identity even with similar names. */}
+                          <span style={{
+                            width: 36, height: 36, flexShrink: 0,
+                            borderRadius: '50%', background: palette.bg, color: palette.fg,
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            fontSize: 15, fontWeight: 700,
+                          }}>{initial}</span>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{
+                              fontSize: 14, fontWeight: 700, color: '#0f172a',
+                              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                            }}>
+                              {chatDisplayName(c)}
+                            </div>
+                            <div style={{
+                              fontSize: 12, color: '#64748b', marginTop: 2,
+                              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                              direction: c.type === 'private' && c.phoneNumber ? 'ltr' : 'rtl',
+                            }}>
+                              {secondary}
+                            </div>
+                          </div>
+                          {selected && (
+                            <span style={{ color: '#2563eb', fontSize: 18, fontWeight: 700, flexShrink: 0 }}>✓</span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Result count strip — useful when there are 50+
+                      chats and the user wants to see "did my search
+                      narrow this down?" at a glance. */}
+                  <div style={{ marginTop: 6, fontSize: 11, color: '#94a3b8', textAlign: 'end' }}>
+                    {matches.length} {selectedLinkType === 'group_chat' ? 'קבוצות' : 'צ׳אטים'}
+                    {chatSearch && ` (מסונן מתוך ${pickableChats.filter((c) => c.type === wantType).length})`}
+                  </div>
+                </>
               )}
             </div>
-          )}
 
-          {linkError && <p style={{ color: '#ef4444', fontSize: 13, marginBottom: 12 }}>{linkError}</p>}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
-            <button onClick={() => setLinkModalOpen(false)} style={S.btnSecondary}>ביטול</button>
-            <button onClick={linkSubmitting ? undefined : submitLink} disabled={linkSubmitting}
-              style={{ ...S.btnPrimary, ...(linkSubmitting ? S.btnDisabled : {}) }}>
-              {linkSubmitting ? 'שומר...' : 'קשרי'}
-            </button>
-          </div>
-        </Modal>
-      )}
+            {/* Step 3 — participant picker. Only meaningful for the
+                private chat flow. Shown only after a chat is picked so
+                the modal stays clean while the admin's still browsing. */}
+            {selectedLinkType === 'private_participant_chat' && selectedChatId && (
+              <div style={{ marginBottom: 14 }}>
+                <label style={S.fieldLabel}>משתתף/ת</label>
+                {participants.length === 0 ? (
+                  <p style={{ color: '#94a3b8', fontSize: 13 }}>אין משתתפות פעילות בקבוצה זו.</p>
+                ) : (
+                  <select value={selectedParticipantId} onChange={(e) => setSelectedParticipantId(e.target.value)} style={S.select}>
+                    <option value="">-- בחר/י משתתף/ת --</option>
+                    {participants.map((pg) => (
+                      <option key={pg.participant.id} value={pg.participant.id}>
+                        {displayName(pg.participant)} · {pg.participant.phoneNumber}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+            )}
+
+            {linkError && <p style={{ color: '#ef4444', fontSize: 13, marginBottom: 12 }}>{linkError}</p>}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+              <button onClick={() => setLinkModalOpen(false)} style={S.btnSecondary}>ביטול</button>
+              <button
+                onClick={linkSubmitting ? undefined : submitLink}
+                disabled={linkSubmitting || !selectedChatId}
+                style={{
+                  ...S.btnPrimary,
+                  ...(linkSubmitting || !selectedChatId ? S.btnDisabled : {}),
+                }}
+              >
+                {linkSubmitting ? 'שומר...' : 'קשרי'}
+              </button>
+            </div>
+          </Modal>
+        );
+      })()}
     </div>
   );
 }
