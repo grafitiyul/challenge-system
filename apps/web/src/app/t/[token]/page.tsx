@@ -1200,6 +1200,28 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
   const [analyticsError, setAnalyticsError] = useState('');
 
+  // ── Data tab scope toggle (continue/override only) ─────────────────────
+  // When the participant is in continue or override mode, the analytics
+  // tab gets a segmented control: "<group name>" vs "כל המשחקים". 'current'
+  // queries program/group-scoped data (existing behavior); 'all' queries
+  // cross-program. Toggle visible ONLY in the data tab; the rest of the
+  // portal stays game-scoped regardless. Fresh participants don't see
+  // the toggle and scope is locked to 'current'.
+  // Persisted per-token in localStorage so admin's pick survives reloads.
+  // Default 'current' for safety per spec sign-off.
+  const [analyticsScope, setAnalyticsScope] = useState<'current' | 'all'>(() => {
+    if (typeof window === 'undefined') return 'current';
+    const stored = window.localStorage.getItem(`analyticsScope:${token}`);
+    return stored === 'all' ? 'all' : 'current';
+  });
+  const setAnalyticsScopePersisted = useCallback((scope: 'current' | 'all') => {
+    setAnalyticsScope(scope);
+    if (typeof window !== 'undefined') {
+      try { window.localStorage.setItem(`analyticsScope:${token}`, scope); }
+      catch { /* localStorage may be unavailable in private browsing — ignore */ }
+    }
+  }, [token]);
+
   // Phase 2B: one shared range drives chart + breakdown + pie. The trend chart
   // needs a bounded range, so when key='all' we internally fetch the trend with
   // the last 30 days while breakdown/pie use the true unbounded range.
@@ -1384,13 +1406,16 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
           // into the rest of the analytics screen.
           setAnalyticsInsights([]);
         });
+      // Summary + trend honor the data-tab scope toggle; breakdown stays
+      // program-scoped (mixing actions across programs in a pie chart
+      // doesn't make sense — different programs have different actions).
       Promise.all([
         apiFetch<AnalyticsSummary>(
-          `${BASE_URL}/public/participant/${token}/analytics/summary`,
+          `${BASE_URL}/public/participant/${token}/analytics/summary?scope=${analyticsScope}`,
           { cache: 'no-store' },
         ),
         apiFetch<AnalyticsTrendPoint[]>(
-          `${BASE_URL}/public/participant/${token}/analytics/trend?${buildTrendQuery(r)}`,
+          `${BASE_URL}/public/participant/${token}/analytics/trend?${buildTrendQuery(r)}&scope=${analyticsScope}`,
           { cache: 'no-store' },
         ),
         apiFetch<AnalyticsBreakdownEntry[]>(
@@ -1407,19 +1432,19 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
         .catch(() => setAnalyticsError('שגיאה בטעינת הנתונים'))
         .finally(() => setAnalyticsLoading(false));
     },
-    [token, range, groupBy],
+    [token, range, groupBy, analyticsScope],
   );
 
   const refreshTrendOnly = useCallback(
     (r: AnalyticsRange) => {
       apiFetch<AnalyticsTrendPoint[]>(
-        `${BASE_URL}/public/participant/${token}/analytics/trend?${buildTrendQuery(r)}`,
+        `${BASE_URL}/public/participant/${token}/analytics/trend?${buildTrendQuery(r)}&scope=${analyticsScope}`,
         { cache: 'no-store' },
       )
         .then(setAnalyticsTrend)
         .catch(() => setAnalyticsError('שגיאה בטעינת הנתונים'));
     },
-    [token],
+    [token, analyticsScope],
   );
 
   const refreshBreakdownOnly = useCallback(
@@ -2407,60 +2432,65 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
             {analyticsError && <p style={s.tabError}>{analyticsError}</p>}
             {analyticsSummary && (
               <>
-                {/* ── Continuity banner — appears in continue/override
-                    mode regardless of whether streak numbers match.
-                    "continue" represents continuity OF EXPERIENCE
-                    (history exposed below, lifetime points visible),
-                    not continuity of streak — so the participant
-                    never sees this surface look identical to fresh
-                    even if her prior streak broke before this game. */}
-                {analyticsSummary.streakMode === 'continue' && (
+                {/* ── Scope toggle — only for continue/override.
+                    Two segmented options: current game (group name when
+                    available, fallback "המשחק הנוכחי") vs כל המשחקים.
+                    Selection persists in localStorage per token. The
+                    chips + total + trend below all read whatever the
+                    backend returned for the requested scope, so the
+                    same render path serves both cases — no extra
+                    branching in the rest of this tab. */}
+                {analyticsSummary.streakMode !== 'fresh' && (
                   <div
+                    role="tablist"
+                    aria-label="טווח נתונים"
                     style={{
-                      background: '#eff6ff',
-                      border: '1px solid #bfdbfe',
-                      borderRadius: 10,
-                      padding: '8px 12px',
-                      marginBottom: 12,
-                      fontSize: 13,
-                      color: '#1d4ed8',
                       display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
+                      gap: 6,
+                      padding: 4,
+                      background: '#f1f5f9',
+                      borderRadius: 999,
+                      marginBottom: 14,
                     }}
                   >
-                    <span style={{ fontSize: 16 }}>🔁</span>
-                    <span>ממשיכה מההיסטוריה הקודמת שלך — הניקוד והרצף הנוכחיים מתחילים מ-0, ההיסטוריה זמינה למטה.</span>
-                  </div>
-                )}
-                {analyticsSummary.streakMode === 'override' && (
-                  <div
-                    style={{
-                      background: '#fffbeb',
-                      border: '1px solid #fde68a',
-                      borderRadius: 10,
-                      padding: '8px 12px',
-                      marginBottom: 12,
-                      fontSize: 13,
-                      color: '#92400e',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                    }}
-                  >
-                    <span style={{ fontSize: 16 }}>✏️</span>
-                    <span>הרצף שלך עודכן ידנית.</span>
+                    {([
+                      { key: 'current' as const, label: ctx?.group?.name?.trim() || 'המשחק הנוכחי' },
+                      { key: 'all' as const,     label: 'כל המשחקים' },
+                    ]).map((opt) => {
+                      const active = analyticsScope === opt.key;
+                      return (
+                        <button
+                          key={opt.key}
+                          role="tab"
+                          aria-selected={active}
+                          onClick={() => setAnalyticsScopePersisted(opt.key)}
+                          style={{
+                            flex: 1,
+                            padding: '8px 12px',
+                            fontSize: 13,
+                            fontWeight: 600,
+                            background: active ? '#fff' : 'transparent',
+                            color: active ? '#1d4ed8' : '#475569',
+                            border: 'none',
+                            borderRadius: 999,
+                            cursor: 'pointer',
+                            boxShadow: active ? '0 1px 2px rgba(0,0,0,0.06)' : 'none',
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                          }}
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
                   </div>
                 )}
 
-                {/* ── Summary strip — mode-aware ────────────────────────
-                    fresh  : show only game streak ("רצף במשחק") +
-                             nothing about the participant's lifetime
-                             history.
-                    continue / override : show game streak AND a second
-                             chip "הרצף שלך" with the cross-game personal
-                             streak, only when the two numbers differ
-                             (no need to render the same number twice). */}
+                {/* ── Summary strip — values come from the backend in
+                    whichever scope was requested. The streak label
+                    flips with scope so participants understand which
+                    streak they're reading. */}
                 <div style={s.summaryStrip}>
                   <div style={s.summaryChipPrimary}>
                     <span style={s.summaryChipValueAccent}>{analyticsSummary.todayScore}</span>
@@ -2468,15 +2498,10 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                   </div>
                   <div style={s.summaryChip}>
                     <span style={s.summaryChipValue}>{analyticsSummary.currentStreak}</span>
-                    <span style={s.summaryChipLabel}>רצף במשחק</span>
+                    <span style={s.summaryChipLabel}>
+                      {analyticsScope === 'all' ? 'הרצף שלך' : 'רצף במשחק'}
+                    </span>
                   </div>
-                  {analyticsSummary.streakMode !== 'fresh' &&
-                    analyticsSummary.personalStreak !== analyticsSummary.currentStreak && (
-                      <div style={s.summaryChip}>
-                        <span style={s.summaryChipValue}>{analyticsSummary.personalStreak}</span>
-                        <span style={s.summaryChipLabel}>הרצף שלך</span>
-                      </div>
-                    )}
                   <div style={s.summaryChip}>
                     {(() => {
                       const d = analyticsSummary.trendVsYesterday;
@@ -2493,15 +2518,16 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                   </div>
                 </div>
 
-                {/* ── Total ─ shown in continue/override only.
-                    fresh hides "סה״כ נקודות" entirely so the participant
-                    feels a true reset (per spec sign-off). The current
-                    game's points are still visible in the chip above. */}
+                {/* ── Total stripe ─ hidden in fresh mode (the spec
+                    holds: fresh participants don't see lifetime/total
+                    on the data tab). For continue/override the value
+                    represents whichever scope was picked above:
+                    'current' → current-game total, 'all' → lifetime. */}
                 {analyticsSummary.streakMode !== 'fresh' && (
                   <div style={s.totalStripe}>
                     <span style={s.totalStripeLabel}>סה"כ</span>
                     <span style={s.totalStripeValue}>
-                      {analyticsSummary.lifetimePoints.toLocaleString('he-IL')} נקודות
+                      {analyticsSummary.totalScore.toLocaleString('he-IL')} נקודות
                     </span>
                   </div>
                 )}

@@ -1418,7 +1418,10 @@ export class ParticipantPortalService {
   // strictly from ScoreEvent (for points/trends) and UserActionLog (for
   // submission metadata). No cached aggregates. No group/social data.
 
-  async getAnalyticsSummary(token: string): Promise<AnalyticsSummary> {
+  async getAnalyticsSummary(
+    token: string,
+    scope: 'current' | 'all' = 'current',
+  ): Promise<AnalyticsSummary> {
     const multi = await this.resolveMultiGroup(token, undefined);
     const { participantId, programId, activeGroupId: groupId } = multi;
 
@@ -1426,23 +1429,32 @@ export class ParticipantPortalService {
     const todayStart = startOfDayUTC(now);
     const yesterdayStart = new Date(todayStart.getTime() - DAY_MS);
 
-    // Game streak uses the new two-layer model bounded to this group's
-    // window. Personal streak + lifetime points read across all programs.
-    // streakMode comes from the active membership and drives portal
-    // display rules — fresh hides personal/total in the chips below.
-    const [totalAgg, todayAgg, yesterdayAgg, gameStreak, personalStreakRow, lifetimePoints, membership] = await Promise.all([
+    // Scope drives where-clause shape:
+    //   "current" — bounded to this game (groupId for score sums,
+    //               game streak via getGameStreakForMembership)
+    //   "all"     — cross-program: participantId only, personal streak
+    //               via getPersonalStreak, lifetime points via
+    //               getPersonalLifetimePoints
+    // The response field NAMES are unchanged — values flip to whichever
+    // scope was requested. streakMode and personalStreak/lifetimePoints
+    // are still returned for the frontend toggle UI to drive labels.
+    const baseScoreFilter = scope === 'all'
+      ? { participantId }
+      : { participantId, groupId };
+
+    const [scopedTotalAgg, scopedTodayAgg, scopedYesterdayAgg, gameStreak, personalStreakRow, lifetimePoints, membership] = await Promise.all([
       this.prisma.scoreEvent.aggregate({
         _sum: { points: true },
-        where: { participantId, programId },
+        where: baseScoreFilter,
       }),
       this.prisma.scoreEvent.aggregate({
         _sum: { points: true },
-        where: { participantId, programId, createdAt: { gte: todayStart } },
+        where: { ...baseScoreFilter, createdAt: { gte: todayStart } },
       }),
       this.prisma.scoreEvent.aggregate({
         _sum: { points: true },
         where: {
-          participantId, programId,
+          ...baseScoreFilter,
           createdAt: { gte: yesterdayStart, lt: todayStart },
         },
       }),
@@ -1454,16 +1466,27 @@ export class ParticipantPortalService {
         select: { streakMode: true },
       }),
     ]);
+    // Suppress unused-warning for programId in scope='all' branch — the
+    // multi-group resolver still needs programId for membership lookup.
+    void programId;
 
-    const todayScore = todayAgg._sum.points ?? 0;
-    const yesterdayScore = yesterdayAgg._sum.points ?? 0;
+    const todayScore = scopedTodayAgg._sum.points ?? 0;
+    const yesterdayScore = scopedYesterdayAgg._sum.points ?? 0;
+
+    // currentStreak takes the streak relevant to the requested scope.
+    // The personalStreak / lifetimePoints fields stay populated either
+    // way so the frontend toggle UI can label its options without an
+    // extra round-trip when flipping scope.
+    const currentStreak = scope === 'all'
+      ? personalStreakRow.currentStreak
+      : gameStreak.currentStreak;
 
     return {
-      totalScore: totalAgg._sum.points ?? 0,
+      totalScore: scopedTotalAgg._sum.points ?? 0,
       todayScore,
       yesterdayScore,
       trendVsYesterday: todayScore - yesterdayScore,
-      currentStreak: gameStreak.currentStreak,
+      currentStreak,
       streakMode: (membership?.streakMode as 'fresh' | 'continue' | 'override') ?? 'fresh',
       personalStreak: personalStreakRow.currentStreak,
       lifetimePoints,
@@ -1472,19 +1495,26 @@ export class ParticipantPortalService {
 
   async getAnalyticsTrend(
     token: string,
-    opts: { days?: number; from?: string; to?: string },
+    opts: { days?: number; from?: string; to?: string; scope?: 'current' | 'all' },
   ): Promise<AnalyticsTrendPoint[]> {
     const { participantId, programId } = await this.resolveToken(token);
+    const scope = opts.scope ?? 'current';
     const { since, until } = resolveRange({ days: opts.days, from: opts.from, to: opts.to });
     // Trend requires a concrete start — a bounded window makes no sense for "all".
     if (since === null) {
       throw new BadRequestException('trend requires days or from/to; "all" is not supported');
     }
 
+    // scope='current' → program-scoped (existing behavior).
+    // scope='all'     → cross-program for the personal continuity view
+    //                   in the data tab toggle. Same time range, same
+    //                   shape, just no programId filter.
+    const baseFilter = scope === 'all' ? { participantId } : { participantId, programId };
+
     // Sum ALL ScoreEvent rows per day (action, rule, correction net out naturally).
     const events = await this.prisma.scoreEvent.findMany({
       where: {
-        participantId, programId,
+        ...baseFilter,
         createdAt: { gte: since, lte: until },
       },
       select: { points: true, createdAt: true },
@@ -1498,7 +1528,7 @@ export class ParticipantPortalService {
     // Submission count = active UserActionLogs per day.
     const logs = await this.prisma.userActionLog.findMany({
       where: {
-        participantId, programId,
+        ...baseFilter,
         status: 'active',
         createdAt: { gte: since, lte: until },
       },

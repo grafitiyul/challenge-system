@@ -211,13 +211,23 @@ export class ParticipantPortalController {
   // All four endpoints are scoped to the participant behind :token and read
   // strictly from the ScoreEvent ledger + active UserActionLogs.
 
-  // GET /api/public/participant/:token/analytics/summary
+  // GET /api/public/participant/:token/analytics/summary?scope=current|all
+  // scope='current' (default): bounded to the participant's currently
+  // active group (today/total per groupId, gameStreak from membership).
+  // scope='all': cross-program (today/total per participantId only,
+  // currentStreak = personal streak). Toggle sits in the portal data
+  // tab; only the data tab uses 'all' — every other surface (home,
+  // feed, action submission) calls without scope and gets 'current'.
   @Get(':token/analytics/summary')
-  getAnalyticsSummary(@Param('token') token: string): Promise<AnalyticsSummary> {
-    return this.portalService.getAnalyticsSummary(token);
+  getAnalyticsSummary(
+    @Param('token') token: string,
+    @Query('scope') scope?: string,
+  ): Promise<AnalyticsSummary> {
+    const safeScope = scope === 'all' ? 'all' : 'current';
+    return this.portalService.getAnalyticsSummary(token, safeScope);
   }
 
-  // GET /api/public/participant/:token/analytics/trend?days=7|14|30
+  // GET /api/public/participant/:token/analytics/trend?days=7|14|30&scope=current|all
   // Or                                          ?from=YYYY-MM-DD&to=YYYY-MM-DD
   @Get(':token/analytics/trend')
   getAnalyticsTrend(
@@ -225,12 +235,15 @@ export class ParticipantPortalController {
     @Query('days') days?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
+    @Query('scope') scope?: string,
   ): Promise<AnalyticsTrendPoint[]> {
     const parsedDays = days ? parseInt(days, 10) : undefined;
+    const safeScope: 'current' | 'all' = scope === 'all' ? 'all' : 'current';
     return this.portalService.getAnalyticsTrend(token, {
       days: parsedDays,
       from,
       to,
+      scope: safeScope,
     });
   }
 
