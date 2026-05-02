@@ -5,6 +5,7 @@ import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { BASE_URL, apiFetch } from '@lib/api';
 import WhatsAppEditor from '@components/whatsapp-editor';
+import { VariableButtonBar, type VariableEditorHandle } from '@components/variable-button-bar';
 import { ChatMessage, ChatMessageList } from '@components/chat-messages';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -3292,6 +3293,51 @@ function GroupSchedMsgModal(props: {
   const [enabled, setEnabled] = useState(props.initial?.enabled ?? false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  // Restore-to-template state. confirming = a confirm dialog is open;
+  // restoring = the fetch is in flight. The template id is read off
+  // the row that was passed in — only present when this group row was
+  // cloned from a program template.
+  const [restoreConfirm, setRestoreConfirm] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const sourceTemplateId = props.initial?.sourceTemplateId ?? null;
+  // Shared imperative ref — same shape used by the template editor on
+  // /admin/programs/[id], so the variable bar's insertAtCursor +
+  // focus contract works identically across both surfaces.
+  const editorHandleRef = useRef<VariableEditorHandle | null>(null);
+
+  // Fetch the canonical template + reset content (and the related
+  // snapshot fields) back to it. Timing fields are NOT touched —
+  // group-level scheduling is intentional per spec, even when content
+  // is reverted to the original. After restore, saving sends the
+  // template-derived body so the row is no longer "manually edited".
+  // The reload of the parent list will refresh contentSyncedAt etc.
+  async function restoreToTemplate() {
+    if (!sourceTemplateId) return;
+    setRestoring(true);
+    try {
+      const tpl = await apiFetch<{
+        id: string;
+        title: string;
+        body: string;
+        category: string | null;
+      }>(`${BASE_URL}/communication-templates/${sourceTemplateId}`, { cache: 'no-store' });
+      // Reset the editable snapshot fields. We DO NOT touch
+      // scheduledAt or enabled — admin's per-group timing + on/off
+      // decisions are independent of the content-revert action.
+      setContent(tpl.body);
+      setInternalName(tpl.title);
+      if (tpl.category) setCategory(tpl.category);
+      setRestoreConfirm(false);
+      setErr('');
+    } catch (e) {
+      const msg = e instanceof Error ? e.message :
+        (typeof e === 'object' && e !== null && typeof (e as { message?: unknown }).message === 'string')
+          ? (e as { message: string }).message : 'שחזור נכשל';
+      setErr(msg);
+    } finally {
+      setRestoring(false);
+    }
+  }
 
   async function save() {
     if (!internalName.trim()) { setErr('שם פנימי הוא שדה חובה'); return; }
@@ -3320,6 +3366,21 @@ function GroupSchedMsgModal(props: {
     } finally { setBusy(false); }
   }
 
+  // Style constants matching the template editor's CommTemplateModal
+  // exactly — same paddings, borders, radii, font-sizes — so the two
+  // editors look identical to the admin.
+  const labelStyle: React.CSSProperties = {
+    fontSize: 13, fontWeight: 600, color: '#374151',
+    marginBottom: 6, display: 'block',
+  };
+  const inputStyle: React.CSSProperties = {
+    width: '100%', padding: '10px 14px',
+    border: '1px solid #cbd5e1', borderRadius: 8,
+    fontSize: 15, color: '#0f172a', background: '#fff',
+    fontFamily: 'inherit', boxSizing: 'border-box',
+    lineHeight: 1.5,
+  };
+
   return (
     <div onClick={(e) => { if (e.target === e.currentTarget && !busy) props.onClose(); }} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 16 }}>
       <div style={{ background: '#fff', borderRadius: 14, padding: 22, width: '100%', maxWidth: 560, maxHeight: '92vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
@@ -3329,8 +3390,8 @@ function GroupSchedMsgModal(props: {
         </div>
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
-            <label style={{ fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 6, display: 'block' }}>קטגוריה</label>
-            <select value={category} onChange={(e) => setCategory(e.target.value)} style={{ width: '100%', padding: '10px 14px', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: 15, color: '#0f172a', background: '#ffffff' }}>
+            <label style={labelStyle}>קטגוריה</label>
+            <select value={category} onChange={(e) => setCategory(e.target.value)} style={inputStyle}>
               <option value="משחק שוטף">משחק שוטף</option>
               <option value="לפני משחק">לפני משחק</option>
               <option value="פתיחה">פתיחה</option>
@@ -3340,16 +3401,48 @@ function GroupSchedMsgModal(props: {
             </select>
           </div>
           <div>
-            <label style={{ fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 6, display: 'block' }}>שם פנימי *</label>
-            <input style={{ width: '100%', padding: '10px 14px', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: 15 }} value={internalName} onChange={(e) => setInternalName(e.target.value)} />
+            <label style={labelStyle}>שם פנימי *</label>
+            <input style={inputStyle} value={internalName} onChange={(e) => setInternalName(e.target.value)} />
           </div>
           <div>
-            <label style={{ fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 6, display: 'block' }}>תוכן *</label>
-            <textarea rows={5} style={{ width: '100%', padding: '10px 14px', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: 15, resize: 'vertical', lineHeight: 1.6 }} value={content} onChange={(e) => setContent(e.target.value)} />
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 6 }}>
+              <label style={{ ...labelStyle, marginBottom: 0 }}>תוכן *</label>
+              {/* Restore-to-template button. Only shown when the row
+                  has a sourceTemplate to restore from — group-only
+                  ad-hoc messages (sourceTemplateId=null) have no
+                  canonical version to revert to. */}
+              {sourceTemplateId && (
+                <button
+                  type="button"
+                  onClick={() => setRestoreConfirm(true)}
+                  disabled={busy || restoring}
+                  style={{
+                    fontSize: 12, fontWeight: 600,
+                    background: '#fff', color: '#1d4ed8',
+                    border: '1px solid #bfdbfe', borderRadius: 7,
+                    padding: '4px 10px',
+                    cursor: (busy || restoring) ? 'not-allowed' : 'pointer',
+                  }}
+                  title="החזר את התוכן לגרסה המקורית מהתבנית"
+                >⟲ החזר לתבנית המקור</button>
+              )}
+            </div>
+            {/* Same VariableButtonBar + WhatsAppEditor stack the
+                template editor uses on /admin/programs/[id]. Same
+                font, same formatting behavior, same {variable}
+                rendering — the two editors are now indistinguishable. */}
+            <VariableButtonBar editorRef={editorHandleRef} />
+            <WhatsAppEditor
+              ref={editorHandleRef}
+              value={content}
+              onChange={setContent}
+              placeholder="הקלידי את תוכן ההודעה..."
+              minHeight={180}
+            />
           </div>
           <div>
-            <label style={{ fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 6, display: 'block' }}>תאריך ושעה (זמן ישראל) *</label>
-            <input type="datetime-local" style={{ width: '100%', padding: '10px 14px', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: 15, direction: 'ltr' }} value={scheduledAt} onChange={(e) => setScheduledAt(e.target.value)} />
+            <label style={labelStyle}>תאריך ושעה (זמן ישראל) *</label>
+            <input type="datetime-local" style={{ ...inputStyle, direction: 'ltr' }} value={scheduledAt} onChange={(e) => setScheduledAt(e.target.value)} />
           </div>
           <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
             <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} style={{ width: 16, height: 16 }} />
@@ -3362,6 +3455,40 @@ function GroupSchedMsgModal(props: {
           <button onClick={() => { void save(); }} disabled={busy} style={{ background: busy ? '#93c5fd' : '#2563eb', color: '#fff', border: 'none', borderRadius: 8, padding: '7px 18px', fontSize: 13, fontWeight: 600, cursor: busy ? 'not-allowed' : 'pointer' }}>{busy ? 'שומר...' : 'שמור'}</button>
         </div>
       </div>
+
+      {/* Restore-to-template confirm. Layered on top of the editor
+          modal (zIndex 1100 vs 1000) and shaded backdrop so the admin
+          sees the consequence before committing. Restoring updates
+          local state only — the row isn't persisted until the admin
+          hits שמור. That gives them an "undo via cancel" path even
+          after restore. */}
+      {restoreConfirm && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div style={{ background: '#fff', borderRadius: 12, padding: 22, maxWidth: 420, width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', marginBottom: 8 }}>
+              להחזיר לגרסת התבנית?
+            </div>
+            <p style={{ fontSize: 13, color: '#475569', lineHeight: 1.6, margin: '0 0 14px' }}>
+              האם להחזיר את ההודעה לגרסה המקורית מהתבנית?
+              השינויים שעשית לתוכן בקבוצה יוחלפו בנוסח התבנית. תאריך/שעת
+              השליחה והמתג הפעיל לא ישתנו. השמירה תתבצע רק לאחר לחיצה על
+              &ldquo;שמור&rdquo;.
+            </p>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setRestoreConfirm(false)}
+                disabled={restoring}
+                style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 8, padding: '7px 14px', fontSize: 13, cursor: restoring ? 'not-allowed' : 'pointer' }}
+              >ביטול</button>
+              <button
+                onClick={() => { void restoreToTemplate(); }}
+                disabled={restoring}
+                style={{ background: restoring ? '#93c5fd' : '#2563eb', color: '#fff', border: 'none', borderRadius: 8, padding: '7px 16px', fontSize: 13, fontWeight: 700, cursor: restoring ? 'not-allowed' : 'pointer' }}
+              >{restoring ? 'מחזיר...' : 'כן, החזר'}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -123,6 +123,14 @@ export class ProgramsController {
 export class CommunicationTemplatesController {
   constructor(private readonly svc: ProgramsService) {}
 
+  // Fetch one — used by the group-level "restore to template" flow
+  // so the editor can read the canonical body/subject snapshot back
+  // out without going through the program-scoped list endpoint.
+  @Get(':id')
+  findById(@Param('id') id: string) {
+    return this.svc.findCommunicationTemplateById(id);
+  }
+
   @Patch(':id')
   update(
     @Param('id') id: string,

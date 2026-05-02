@@ -477,6 +477,18 @@ export class ProgramsService {
     return updated;
   }
 
+  // Single-template fetch. Used by the group "restore to template"
+  // flow — the editor needs the canonical body/subject/category to
+  // reset its fields after the admin confirms restore. Not exposed
+  // for general listing (that's listCommunicationTemplates).
+  async findCommunicationTemplateById(templateId: string) {
+    const tpl = await this.prisma.communicationTemplate.findUnique({
+      where: { id: templateId },
+    });
+    if (!tpl) throw new NotFoundException(`Template ${templateId} not found`);
+    return tpl;
+  }
+
   async deactivateCommunicationTemplate(templateId: string) {
     const existing = await this.prisma.communicationTemplate.findUnique({
       where: { id: templateId },
