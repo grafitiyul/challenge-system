@@ -10,6 +10,68 @@ import { UnlockRuleDto } from './dto/unlock-rule.dto';
 import { InitGroupStateDto } from './dto/init-group-state.dto';
 import { CorrectLogDto, VoidLogDto } from './dto/correct-log.dto';
 import { validateContext, validateContextSchemaShape } from './context-validation';
+import {
+  gameDayKey,
+  personalDayKey,
+  previousDayKey,
+  dayKeyAt,
+  safeTz,
+} from './streak-timezone';
+
+/**
+ * Best-streak helper for the phantom-day model. Walks the day set in
+ * sorted order; whenever we hit the override day, the run-so-far
+ * "absorbs" the override value (because the phantom day is counted
+ * as N consecutive days adjacent to the run's neighbors).
+ *
+ * Edge cases:
+ *   - override day is in the middle of a run: run = pre + N + post
+ *   - override day is its own isolated day: run = N
+ *   - override day is at a run's edge: run = N + adjacent_run
+ *   - no override: standard consecutive-day count
+ */
+function computeBestStreakWithPhantom(
+  loggedDays: Set<string>,
+  overrideDay: string | null,
+  overrideValue: number,
+): number {
+  if (loggedDays.size === 0) return 0;
+  const sorted = Array.from(loggedDays).sort(); // YYYY-MM-DD lexicographic = chronological
+  let best = 0;
+  let runStart = 0;
+  for (let i = 0; i < sorted.length; i++) {
+    if (i > 0) {
+      // Need previousDayKey of sorted[i] to compare; reuse string math.
+      const [y, m, d] = sorted[i].split('-').map(Number);
+      const anchor = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+      anchor.setUTCDate(anchor.getUTCDate() - 1);
+      const prev = `${anchor.getUTCFullYear()}-${String(anchor.getUTCMonth() + 1).padStart(2, '0')}-${String(anchor.getUTCDate()).padStart(2, '0')}`;
+      if (prev !== sorted[i - 1]) {
+        // Run break. Score the previous run.
+        best = Math.max(best, scoreRun(sorted, runStart, i - 1, overrideDay, overrideValue));
+        runStart = i;
+      }
+    }
+  }
+  // Last run.
+  best = Math.max(best, scoreRun(sorted, runStart, sorted.length - 1, overrideDay, overrideValue));
+  return best;
+}
+
+function scoreRun(
+  sorted: string[],
+  startIdx: number,
+  endIdx: number,
+  overrideDay: string | null,
+  overrideValue: number,
+): number {
+  let total = 0;
+  for (let i = startIdx; i <= endIdx; i++) {
+    if (overrideDay && sorted[i] === overrideDay) total += overrideValue;
+    else total += 1;
+  }
+  return total;
+}
 
 /**
  * Normalise an availability weekday list: int-only, in 0..6, deduped,
@@ -821,6 +883,27 @@ export class GameEngineService {
     if (!action.isActive) throw new BadRequestException('Action is inactive');
     if (action.programId !== dto.programId) throw new BadRequestException('Action does not belong to this program');
 
+    // ── Continuation gate + groupId/timezone resolution ─────────────────────
+    // Server resolves which group (if any) to credit and snapshots the
+    // participant's current timezone onto the new log row. Refuses the
+    // log if the participant has no active membership in this program
+    // and isn't within its continuation window. We compute this BEFORE
+    // any side-effects (idempotency lookup notwithstanding) so a refused
+    // log produces zero downstream state.
+    const ctx = await this.resolveLogContextForParticipant(dto.participantId, dto.programId);
+    if (!ctx.allowed) {
+      const map: Record<string, string> = {
+        participant_not_found: 'משתתפת לא נמצאה',
+        participant_inactive: 'המשתתפת אינה פעילה',
+        program_not_found: 'תוכנית לא נמצאה',
+        no_active_membership: 'אינך משתתפת פעילה בתוכנית זו',
+        past_continuation_window: 'חלון ההמשך לתוכנית הסתיים',
+      };
+      throw new BadRequestException(map[ctx.reason] || 'לא ניתן לדווח כעת');
+    }
+    const resolvedGroupId = ctx.groupId; // null → continuation window
+    const tzSnapshot = ctx.timezone;
+
     // ── Idempotency replay short-circuit ─────────────────────────────────────
     // If the same clientSubmissionId was already processed, return the prior result
     // rather than inserting a duplicate. A key collision across different
@@ -1024,6 +1107,9 @@ export class GameEngineService {
               clientSubmissionId: dto.clientSubmissionId ?? null,
               schemaVersion: action.contextSchemaVersion,
               chainRootId: '__pending__',
+              // Frozen tz snapshot for personal-streak day-bucketing.
+              // Future tz changes don't shift this row's bucket.
+              timezoneSnapshot: tzSnapshot,
               ...(dto.creditedAt ? { createdAt: dto.creditedAt } : {}),
             },
           });
@@ -1033,11 +1119,15 @@ export class GameEngineService {
           });
 
           // 2. Action ScoreEvent.
+          // groupId comes from the resolver, NOT dto.groupId. The
+          // resolver returns a real group id for active members and
+          // null for continuation-window logs (so the leaderboard
+          // doesn't credit them but personal totals still include them).
           const se = await tx.scoreEvent.create({
             data: {
               participantId: dto.participantId,
               programId: dto.programId,
-              groupId: dto.groupId ?? null,
+              groupId: resolvedGroupId,
               sourceType: 'action',
               sourceId: dto.actionId,
               points: pointsForThisLog,
@@ -1579,14 +1669,16 @@ export class GameEngineService {
 
     const members = await this.prisma.participantGroup.findMany({
       where: { groupId, isActive: true },
-      include: { participant: { select: { id: true, firstName: true, lastName: true } } },
+      include: {
+        participant: { select: { id: true, firstName: true, lastName: true } },
+      },
     });
 
     if (members.length === 0) return [];
 
     const participantIds = members.map((m) => m.participantId);
 
-    const [totals, todayTotals, weekTotals, streaks] = await Promise.all([
+    const [totals, todayTotals, weekTotals, streaks, personalStreaks] = await Promise.all([
       this.prisma.scoreEvent.groupBy({
         by: ['participantId'],
         where: { groupId, participantId: { in: participantIds } },
@@ -1602,21 +1694,34 @@ export class GameEngineService {
         where: { groupId, participantId: { in: participantIds }, createdAt: { gte: weekStart } },
         _sum: { points: true },
       }),
-      // Live per-participant streak — ParticipantGameState is no longer a read source.
-      group.programId
-        ? Promise.all(
-            participantIds.map(async (pid) => {
-              const s = await this.getStreakLive(pid, group.programId!);
-              return { participantId: pid, currentStreak: s.currentStreak };
-            }),
-          )
-        : Promise.resolve([]),
+      // Live per-membership game-streak using the new two-layer system.
+      // Bounded by group window, system tz (Asia/Jerusalem), honors the
+      // membership's override / streakMode. Falls back to 0 for any
+      // participant without a membership row (defensive — shouldn't
+      // happen given the WHERE above).
+      Promise.all(
+        members.map(async (m) => {
+          const s = await this.getGameStreakForMembership(m.participantId, groupId);
+          return { participantId: m.participantId, currentStreak: s.currentStreak };
+        }),
+      ),
+      // Personal streak per participant — read once for the whole list
+      // so the participants-tab UI can render "הרצף שלך: Y" alongside
+      // the game streak. Same data source as the admin participant
+      // profile's "סטטיסטיקה אישית" section.
+      Promise.all(
+        participantIds.map(async (pid) => {
+          const s = await this.getPersonalStreak(pid);
+          return { participantId: pid, currentStreak: s.currentStreak };
+        }),
+      ),
     ]);
 
     const totalsMap = Object.fromEntries(totals.map((r) => [r.participantId, r._sum.points ?? 0]));
     const todayMap = Object.fromEntries(todayTotals.map((r) => [r.participantId, r._sum.points ?? 0]));
     const weekMap = Object.fromEntries(weekTotals.map((r) => [r.participantId, r._sum.points ?? 0]));
     const streakMap = Object.fromEntries((streaks as { participantId: string; currentStreak: number }[]).map((r) => [r.participantId, r.currentStreak]));
+    const personalStreakMap = Object.fromEntries((personalStreaks as { participantId: string; currentStreak: number }[]).map((r) => [r.participantId, r.currentStreak]));
 
     const rows = members.map((m) => ({
       participantId: m.participantId,
@@ -1626,6 +1731,14 @@ export class GameEngineService {
       todayScore: todayMap[m.participantId] ?? 0,
       weekScore: weekMap[m.participantId] ?? 0,
       currentStreak: streakMap[m.participantId] ?? 0,
+      // Two-layer streak/score additions. Frontend uses these to render
+      // "רצף במשחק: X / הרצף שלך: Y" on the participants tab + the
+      // mode badge on each row.
+      personalStreak: personalStreakMap[m.participantId] ?? 0,
+      streakMode: m.streakMode as 'fresh' | 'continue' | 'override',
+      streakStartOverride: m.streakStartOverride,
+      overrideReason: m.overrideReason,
+      overrideAt: m.overrideAt,
     }));
 
     rows.sort((a, b) => b.totalScore - a.totalScore);
@@ -2431,6 +2544,356 @@ export class GameEngineService {
    * Compute currentStreak and bestStreak directly from ScoreEvent history without touching the DB.
    * Used by stats endpoints so streak is always derived from live data, never stale stored state.
    */
+  // ─── Phase 2: two-layer streak system ────────────────────────────────────
+  //
+  // setStreakMode: single endpoint covering all three continuity modes
+  // (fresh / continue / override). Per spec: admin must be able to flip
+  // mode mid-game. Override fields populated only when mode='override';
+  // any other transition NULLs them so we never carry stale values.
+  // Audit columns track who/when of the latest mode change.
+  async setStreakMode(
+    groupId: string,
+    participantId: string,
+    dto: { mode: 'fresh' | 'continue' | 'override'; value?: number; reason?: string },
+    adminId: string | null,
+  ) {
+    const membership = await this.prisma.participantGroup.findFirst({
+      where: { groupId, participantId },
+      select: { id: true, isActive: true, participant: { select: { timezone: true } } },
+    });
+    if (!membership) throw new NotFoundException('המשתתפת אינה רשומה לקבוצה זו');
+    if (!membership.isActive) throw new BadRequestException('חברות לא פעילה — לא ניתן לעדכן רצף');
+
+    const now = new Date();
+    const data: Prisma.ParticipantGroupUpdateInput = {
+      streakMode: dto.mode,
+      streakModeUpdatedBy: adminId,
+      streakModeUpdatedAt: now,
+    };
+
+    if (dto.mode === 'override') {
+      if (typeof dto.value !== 'number' || !Number.isInteger(dto.value) || dto.value < 0) {
+        throw new BadRequestException('עבור עריכה ידנית יש להזין מספר רצף תקין');
+      }
+      data.streakStartOverride = dto.value;
+      data.overrideReason = dto.reason?.trim() ? dto.reason.trim().slice(0, 500) : null;
+      data.overrideBy = adminId;
+      data.overrideAt = now;
+      // Snapshot tz at override-set time so the phantom day's bucket
+      // stays stable even if the participant later changes her tz.
+      data.overrideTimezone = safeTz(membership.participant.timezone);
+    } else {
+      // fresh / continue — clear override columns explicitly so a row
+      // that was previously override mode doesn't carry a stale value.
+      data.streakStartOverride = null;
+      data.overrideReason = null;
+      data.overrideBy = null;
+      data.overrideAt = null;
+      data.overrideTimezone = null;
+    }
+
+    return this.prisma.participantGroup.update({
+      where: { id: membership.id },
+      data,
+      select: {
+        id: true,
+        streakMode: true,
+        streakStartOverride: true,
+        overrideReason: true,
+        overrideBy: true,
+        overrideAt: true,
+        overrideTimezone: true,
+        streakModeUpdatedBy: true,
+        streakModeUpdatedAt: true,
+      },
+    });
+  }
+
+  // resolveLogContextForParticipant: shared gate for logAction. Verifies
+  // the participant has at least one membership in this program that is
+  // either currently active OR within the program's continuation window.
+  // Returns the groupId to credit (null = continuation window — counts
+  // for personal totals only, no leaderboard credit) and the participant's
+  // current timezone (snapshotted onto the new UserActionLog row so future
+  // tz changes don't retroactively shift past day buckets).
+  //
+  // Returning { allowed: false } means refuse the log (D1 rule).
+  async resolveLogContextForParticipant(
+    participantId: string,
+    programId: string,
+    db: DbClient = this.prisma,
+  ): Promise<
+    | { allowed: false; reason: string }
+    | { allowed: true; groupId: string | null; timezone: string }
+  > {
+    const participant = await db.participant.findUnique({
+      where: { id: participantId },
+      select: { id: true, isActive: true, timezone: true },
+    });
+    if (!participant) return { allowed: false, reason: 'participant_not_found' };
+    if (!participant.isActive) return { allowed: false, reason: 'participant_inactive' };
+
+    const program = await db.program.findUnique({
+      where: { id: programId },
+      select: { id: true, continuationDays: true },
+    });
+    if (!program) return { allowed: false, reason: 'program_not_found' };
+
+    const now = new Date();
+
+    // Active memberships only — leaving a group ends scoring access
+    // immediately, regardless of continuation window. Continuation
+    // applies AFTER group end while membership is still active.
+    const memberships = await db.participantGroup.findMany({
+      where: {
+        participantId,
+        isActive: true,
+        group: { programId },
+      },
+      select: {
+        id: true,
+        groupId: true,
+        group: { select: { id: true, startDate: true, endDate: true, isActive: true } },
+      },
+    });
+
+    if (memberships.length === 0) {
+      return { allowed: false, reason: 'no_active_membership' };
+    }
+
+    // 1) Currently inside a group's run window → credit that group.
+    //    "currently inside" = today is between startDate and endDate
+    //    (exclusive of NULL bounds, which mean "open-ended in that
+    //    direction"). When multiple matches, prefer the most recently
+    //    joined / longest-running.
+    const activeNow = memberships.find((m) => {
+      const g = m.group;
+      if (!g || !g.isActive) return false;
+      const startedOk = !g.startDate || g.startDate <= now;
+      const notEndedYet = !g.endDate || g.endDate >= now;
+      return startedOk && notEndedYet;
+    });
+    if (activeNow) {
+      return {
+        allowed: true,
+        groupId: activeNow.groupId,
+        timezone: participant.timezone || 'Asia/Jerusalem',
+      };
+    }
+
+    // 2) Continuation window — group ended within continuationDays.
+    //    Logs allowed but credited to no group (groupId = null).
+    const continuationCutoff = new Date(
+      now.getTime() - program.continuationDays * 24 * 60 * 60 * 1000,
+    );
+    const inContinuation = memberships.some((m) => {
+      const g = m.group;
+      if (!g || !g.endDate) return false;
+      return g.endDate >= continuationCutoff;
+    });
+    if (inContinuation) {
+      return {
+        allowed: true,
+        groupId: null,
+        timezone: participant.timezone || 'Asia/Jerusalem',
+      };
+    }
+
+    // 3) Otherwise — no active group, no continuation window. Refuse.
+    return { allowed: false, reason: 'past_continuation_window' };
+  }
+
+  // Personal-streak — phantom-day algorithm with snapshotted tz.
+  // Walks backward from today/yesterday counting consecutive logged
+  // days; when it hits the most-recent override's day, adds the
+  // override value and stops (override = baseline floor).
+  async getPersonalStreak(
+    participantId: string,
+    db: DbClient = this.prisma,
+  ): Promise<{ currentStreak: number; bestStreak: number; lastLoggedAt: Date | null }> {
+    const participant = await db.participant.findUnique({
+      where: { id: participantId },
+      select: { id: true, timezone: true },
+    });
+    if (!participant) return { currentStreak: 0, bestStreak: 0, lastLoggedAt: null };
+
+    const logs = await db.userActionLog.findMany({
+      where: { participantId, status: 'active' },
+      select: { occurredAt: true, timezoneSnapshot: true },
+      orderBy: { occurredAt: 'asc' },
+    });
+
+    // Bucket each log by its OWN snapshotted tz — this is what keeps
+    // tz changes non-retroactive. A log written under "America/New_York"
+    // stays bucketed by NY days even after the participant moves to IL.
+    const loggedDays = new Set<string>();
+    let lastLoggedAt: Date | null = null;
+    for (const l of logs) {
+      loggedDays.add(personalDayKey(l));
+      if (!lastLoggedAt || l.occurredAt > lastLoggedAt) lastLoggedAt = l.occurredAt;
+    }
+
+    // Most-recent override across all this participant's memberships
+    // where streakMode='override'. fresh/continue rows contribute
+    // nothing — they have NULL override fields.
+    const overrideRow = await db.participantGroup.findFirst({
+      where: {
+        participantId,
+        streakMode: 'override',
+        overrideAt: { not: null },
+        streakStartOverride: { not: null },
+      },
+      orderBy: { overrideAt: 'desc' },
+      select: {
+        streakStartOverride: true,
+        overrideAt: true,
+        overrideTimezone: true,
+      },
+    });
+
+    let overrideDay: string | null = null;
+    let overrideValue = 0;
+    if (overrideRow && overrideRow.overrideAt && overrideRow.streakStartOverride !== null) {
+      overrideDay = dayKeyAt(
+        overrideRow.overrideAt,
+        safeTz(overrideRow.overrideTimezone),
+      );
+      overrideValue = overrideRow.streakStartOverride;
+      loggedDays.add(overrideDay); // phantom day
+    }
+
+    if (loggedDays.size === 0) return { currentStreak: 0, bestStreak: 0, lastLoggedAt };
+
+    // Anchor: today or yesterday using participant's CURRENT tz.
+    // This is intentional — "is the streak alive RIGHT NOW from the
+    // participant's perspective" depends on her current local clock,
+    // even if older logs were under a different tz.
+    const tzNow = participant.timezone || 'Asia/Jerusalem';
+    const now = new Date();
+    const todayKey = dayKeyAt(now, tzNow);
+    const yesterdayKey = previousDayKey(todayKey);
+
+    let cursor: string | null = null;
+    if (loggedDays.has(todayKey)) cursor = todayKey;
+    else if (loggedDays.has(yesterdayKey)) cursor = yesterdayKey;
+
+    if (!cursor) {
+      // No anchor — streak broken. Best-streak still computed below.
+    }
+
+    let current = 0;
+    while (cursor && loggedDays.has(cursor)) {
+      if (overrideDay && cursor === overrideDay) {
+        current += overrideValue;
+        break;
+      }
+      current += 1;
+      cursor = previousDayKey(cursor);
+    }
+
+    // Best-streak = longest consecutive run anywhere in history. We
+    // include the override phantom day as a contributor: if it's
+    // adjacent to a log run, the override value adds to that run.
+    const bestStreak = computeBestStreakWithPhantom(loggedDays, overrideDay, overrideValue);
+
+    return { currentStreak: current, bestStreak, lastLoggedAt };
+  }
+
+  // Game-streak — per-membership, bounded by group window, system tz.
+  // Override fields read from THIS membership only (per-group rule).
+  // The personal "most-recent across memberships" rule does NOT apply
+  // here — game streaks are isolated by design.
+  async getGameStreakForMembership(
+    participantId: string,
+    groupId: string,
+    db: DbClient = this.prisma,
+  ): Promise<{ currentStreak: number; bestStreak: number }> {
+    const membership = await db.participantGroup.findFirst({
+      where: { participantId, groupId },
+      select: {
+        joinedAt: true,
+        streakMode: true,
+        streakStartOverride: true,
+        overrideAt: true,
+        group: { select: { id: true, startDate: true, endDate: true } },
+      },
+    });
+    if (!membership) return { currentStreak: 0, bestStreak: 0 };
+
+    const now = new Date();
+    const windowStart =
+      membership.group.startDate && membership.group.startDate > membership.joinedAt
+        ? membership.group.startDate
+        : membership.joinedAt;
+    const windowEnd =
+      membership.group.endDate && membership.group.endDate < now
+        ? membership.group.endDate
+        : now;
+
+    // Game-streak counts ScoreEvent rows credited TO THIS GROUP only —
+    // continuation-window logs (groupId=null) are excluded by design.
+    const events = await db.scoreEvent.findMany({
+      where: {
+        participantId,
+        groupId,
+        sourceType: 'action',
+        createdAt: { gte: windowStart, lte: windowEnd },
+      },
+      select: { createdAt: true },
+    });
+
+    const loggedDays = new Set<string>();
+    for (const e of events) loggedDays.add(gameDayKey(e.createdAt));
+
+    let overrideDay: string | null = null;
+    let overrideValue = 0;
+    if (
+      membership.streakMode === 'override' &&
+      membership.overrideAt &&
+      membership.streakStartOverride !== null
+    ) {
+      overrideDay = gameDayKey(membership.overrideAt);
+      overrideValue = membership.streakStartOverride;
+      loggedDays.add(overrideDay);
+    }
+
+    if (loggedDays.size === 0) return { currentStreak: 0, bestStreak: 0 };
+
+    // Anchor in system tz.
+    const todayKey = gameDayKey(now);
+    const yesterdayKey = previousDayKey(todayKey);
+    let cursor: string | null = null;
+    if (loggedDays.has(todayKey)) cursor = todayKey;
+    else if (loggedDays.has(yesterdayKey)) cursor = yesterdayKey;
+
+    let current = 0;
+    while (cursor && loggedDays.has(cursor)) {
+      if (overrideDay && cursor === overrideDay) {
+        current += overrideValue;
+        break;
+      }
+      current += 1;
+      cursor = previousDayKey(cursor);
+    }
+
+    const bestStreak = computeBestStreakWithPhantom(loggedDays, overrideDay, overrideValue);
+    return { currentStreak: current, bestStreak };
+  }
+
+  // Lifetime points — sum across every program. Used in admin profile
+  // and in portal "סה״כ נקודות" display (only when streakMode allows
+  // showing it; the portal hides it in 'fresh' mode per spec).
+  async getPersonalLifetimePoints(
+    participantId: string,
+    db: DbClient = this.prisma,
+  ): Promise<number> {
+    const agg = await db.scoreEvent.aggregate({
+      where: { participantId },
+      _sum: { points: true },
+    });
+    return agg._sum.points ?? 0;
+  }
+
   async getStreakLive(
     participantId: string,
     programId: string,
@@ -2631,6 +3094,11 @@ export class GameEngineService {
               chainRootId: oldLog.chainRootId,
               editedByRole: dto.actorRole,
               editedAt: new Date(),
+              // Inherit the original log's tz snapshot. A correction is
+              // not a new submission — the day bucket should remain the
+              // one this log occupied. Personal-streak math depends on
+              // this for chain consistency.
+              timezoneSnapshot: oldLog.timezoneSnapshot,
               ...(isUnitsDelta ? { createdAt: oldLog.createdAt } : {}),
             },
           });

@@ -151,6 +151,13 @@ export class ProgramsService {
       ).sort((a, b) => a - b);
     }
 
+    if (dto.continuationDays !== undefined) {
+      // DTO already validates 0..60 + integer; defensive clamp here so
+      // a hand-rolled raw client request can't sneak past validation.
+      const v = Math.max(0, Math.min(60, Math.floor(dto.continuationDays)));
+      data.continuationDays = v;
+    }
+
     return this.prisma.program.update({ where: { id }, data });
   }
 

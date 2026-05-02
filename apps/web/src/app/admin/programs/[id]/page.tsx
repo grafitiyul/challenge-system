@@ -51,6 +51,11 @@ interface Program {
   catchUpBannerText: string | null;
   catchUpAvailableDates: string[];
   catchUpAllowedWeekdays: number[];
+  // Days after a participant's last active group's endDate during
+  // which she can still submit UserActionLog entries. Counts toward
+  // personal streak / personal totals but doesn't credit any group
+  // leaderboard. 0 = hard cutoff. Default 7 from the migration.
+  continuationDays: number;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -223,6 +228,13 @@ function SettingsTab({ program, onSaved }: { program: Program; onSaved: (p: Prog
         </div>
       </div>
 
+      {/* ── Continuation window ── Days after a participant's last
+           active group ends during which she can still submit logs.
+           Logs in this window count for personal streak / personal
+           totals but produce ScoreEvent rows with groupId=null
+           (no leaderboard credit). Default 7. 0 = hard cutoff. */}
+      <ContinuationWindowSettings program={program} onSaved={onSaved} />
+
       {/* ── Catch-up mode ── Per-program admin section. Master toggle
            gates everything; available-dates list controls when the
            button can appear at all. Snapshot of duration / days-back
@@ -303,6 +315,88 @@ function SettingsTab({ program, onSaved }: { program: Program; onSaved: (p: Prog
           onDeleted={() => router.push('/admin/programs')}
         />
       )}
+    </div>
+  );
+}
+
+// ─── Continuation window (Settings tab subsection) ──────────────────────
+// One number: how many days after a participant's last active group
+// ends she can still submit logs. Logs in this window count for her
+// personal streak/totals but don't credit any leaderboard (the score
+// event is created with groupId=null). 0 = hard cutoff at endDate.
+
+function ContinuationWindowSettings({ program, onSaved }: { program: Program; onSaved: (p: Program) => void }) {
+  const [value, setValue] = useState<string>(String(program.continuationDays ?? 7));
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [err, setErr] = useState('');
+
+  const isDirty = String(program.continuationDays ?? 7) !== value;
+
+  async function save() {
+    setErr(''); setSaved(false);
+    const n = parseInt(value, 10);
+    if (!Number.isInteger(n) || n < 0 || n > 60) {
+      setErr('יש להזין מספר בין 0 ל-60');
+      return;
+    }
+    setSaving(true);
+    try {
+      const updated = await apiFetch(`${BASE_URL}/programs/${program.id}`, {
+        method: 'PATCH',
+        cache: 'no-store',
+        body: JSON.stringify({ continuationDays: n }),
+      }) as Program;
+      onSaved(updated);
+      setValue(String(updated.continuationDays ?? 7));
+      setSaved(true);
+    } catch (e) {
+      const m = e instanceof Error ? e.message :
+        (typeof e === 'object' && e !== null && typeof (e as { message?: unknown }).message === 'string')
+          ? (e as { message: string }).message : 'שמירה נכשלה';
+      setErr(m);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: 24, marginBottom: 24, maxWidth: 520 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 12 }}>
+        ⏳ חלון המשך אחרי סיום משחק
+      </div>
+      <p style={{ fontSize: 13, color: '#64748b', lineHeight: 1.6, margin: '0 0 12px' }}>
+        בתוך X ימים מסיום המשחק, המשתתפת יכולה להמשיך לדווח.
+        הדיווחים נספרים לרצף האישי שלה אבל אינם מזכים בנקודות במשחק.
+        ערך 0 משמעו ניתוק מיידי בסיום המשחק.
+      </p>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <label style={{ fontSize: 13, color: '#475569' }}>ימים להמשך:</label>
+        <input
+          type="number"
+          min={0}
+          max={60}
+          value={value}
+          onChange={(e) => { setValue(e.target.value); setSaved(false); }}
+          style={{
+            width: 90, padding: '8px 12px', direction: 'ltr',
+            border: '1px solid #cbd5e1', borderRadius: 8,
+            fontSize: 14, fontFamily: 'inherit',
+          }}
+        />
+        <button
+          onClick={save}
+          disabled={saving || !isDirty}
+          style={{
+            background: saving || !isDirty ? '#93c5fd' : '#2563eb',
+            color: '#fff', border: 'none', borderRadius: 8,
+            padding: '8px 16px', fontSize: 13, fontWeight: 600,
+            cursor: saving || !isDirty ? 'not-allowed' : 'pointer',
+          }}
+        >{saving ? 'שומר...' : 'שמור'}</button>
+        {saved && <span style={{ color: '#16a34a', fontSize: 13 }}>✓ נשמר</span>}
+        {err && <span style={{ color: '#dc2626', fontSize: 13 }}>{err}</span>}
+      </div>
     </div>
   );
 }

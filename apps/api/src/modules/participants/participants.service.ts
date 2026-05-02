@@ -203,6 +203,45 @@ export class ParticipantsService {
     return { ...rest, paymentsCount: _count?.payments ?? 0 };
   }
 
+  // Update participant's IANA timezone. Validated against the platform's
+  // supported tz list (Intl.supportedValuesOf when available; otherwise
+  // a constructor-probe fallback). Stored as-is; personal-streak math
+  // reads this for FUTURE log snapshots only — past logs keep their
+  // own snapshot so changing tz never retroactively shifts buckets.
+  async updateTimezone(participantId: string, timezone: string) {
+    const tz = (timezone ?? '').trim();
+    if (!tz || !this.isValidIanaTz(tz)) {
+      throw new BadRequestException('אזור זמן לא חוקי');
+    }
+    const exists = await this.prisma.participant.findUnique({
+      where: { id: participantId },
+      select: { id: true },
+    });
+    if (!exists) throw new NotFoundException('משתתפת לא נמצאה');
+    return this.prisma.participant.update({
+      where: { id: participantId },
+      data: { timezone: tz },
+      select: { id: true, timezone: true },
+    });
+  }
+
+  private isValidIanaTz(value: string): boolean {
+    const fn = (Intl as unknown as {
+      supportedValuesOf?: (key: 'timeZone') => string[];
+    }).supportedValuesOf;
+    if (typeof fn === 'function') {
+      try {
+        if (fn('timeZone').includes(value)) return true;
+      } catch { /* fall through to probe */ }
+    }
+    try {
+      new Intl.DateTimeFormat('en-CA', { timeZone: value });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   // Returns active whatsapp CommunicationTemplate rows for every program
   // this participant is currently active in. Used by the unified chat
   // composer's template picker so a single dropdown surfaces every

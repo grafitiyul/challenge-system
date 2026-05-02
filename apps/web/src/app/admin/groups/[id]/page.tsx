@@ -11,6 +11,7 @@ import { WhatsAppIcon } from '@components/icons/whatsapp-icon';
 import { ParticipantPrivateChatPopup } from '@components/participant-private-chat-popup';
 import { MessageComposer, loadProgramTemplates } from '@components/message-composer';
 import { StrongModal } from '@components/strong-modal';
+import { StreakModeModal, type StreakModeInitial } from '@components/streak-mode-modal';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -255,6 +256,14 @@ interface ParticipantRankRow {
   todayScore: number;
   weekScore: number;
   currentStreak: number;
+  // Two-layer streak/score additions. The leaderboard endpoint returns
+  // these alongside the existing fields; participants tab renders them
+  // directly without any extra fetch.
+  personalStreak: number;
+  streakMode: 'fresh' | 'continue' | 'override';
+  streakStartOverride: number | null;
+  overrideReason: string | null;
+  overrideAt: string | null;
   rank: number;
 }
 
@@ -317,6 +326,16 @@ export default function GroupDetailPage() {
   // private DM. Loaded from a single batched endpoint so adding a
   // participant doesn't fan out into N round trips.
   const [scheduledCounts, setScheduledCounts] = useState<Record<string, number>>({});
+
+  // המשכיות / רצף modal — opened from the per-participant button in
+  // the participants list. The modal POSTs to streak-mode endpoint;
+  // on success we refetch the leaderboard so the row's streak / mode
+  // badge updates immediately.
+  const [streakModeModal, setStreakModeModal] = useState<{
+    participantId: string;
+    participantName: string;
+    initial: StreakModeInitial;
+  } | null>(null);
 
   // Tab
   const [tab, setTab] = useState<Tab>('participants');
@@ -513,15 +532,20 @@ export default function GroupDetailPage() {
   // ─── Leaderboard: lazy-load when user opens the ביצועים ודירוגים tab ──────
 
   useEffect(() => {
-    if (tab !== 'overview' || !id) return;
+    // Leaderboard powers BOTH the overview tab (full table + inspect
+    // panel) and the participants tab (each row's streak / mode badge
+    // / "המשכיות / רצף" button reads from the same response). Fetch
+    // whenever either tab is active.
+    if (!id || (tab !== 'overview' && tab !== 'participants')) return;
     setRanksLoading(true);
     setRanksError(false);
     apiFetch<ParticipantRankRow[]>(`${BASE_URL}/game/leaderboard/group/${id}`, { cache: 'no-store' })
       .then((data) => {
         const rows = Array.isArray(data) ? data : [];
         setParticipantRanks(rows);
-        // Auto-select rank 1 participant for the inspect panel
-        if (rows.length > 0 && !inspectedParticipantId) {
+        // Auto-select rank 1 participant for the inspect panel — only
+        // applies on the overview tab where the panel is rendered.
+        if (tab === 'overview' && rows.length > 0 && !inspectedParticipantId) {
           setInspectedParticipantId(rows[0].participantId);
         }
       })
@@ -1531,6 +1555,49 @@ export default function GroupDetailPage() {
                         </div>
                       </div>
 
+                      {/* Streak block — pulled from leaderboard data
+                          (participantRanks). Renders absolute numbers
+                          with the new spec copy: "רצף במשחק" plus a
+                          second line for "הרצף שלך" only when the
+                          personal streak differs. No plus signs, no
+                          deltas. Mode badge sits to the right.
+                          Fallback: if the leaderboard hasn't loaded
+                          yet (or this participant isn't in it for any
+                          reason) the block is hidden — admin still
+                          sees the row, just without streak info. */}
+                      {(() => {
+                        const rank = participantRanks.find((r) => r.participantId === p.id);
+                        if (!rank) return null;
+                        const showPersonal = rank.personalStreak !== rank.currentStreak;
+                        return (
+                          <div style={{ minWidth: 130, fontSize: 12, color: '#475569', flexShrink: 0 }}>
+                            <div style={{ fontWeight: 600, color: '#0f172a' }}>
+                              🔥 רצף במשחק: <strong>{rank.currentStreak}</strong> ימים
+                            </div>
+                            {showPersonal && (
+                              <div style={{ marginTop: 2 }}>
+                                הרצף שלך: <strong>{rank.personalStreak}</strong> ימים
+                              </div>
+                            )}
+                            <div style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
+                              <span
+                                style={{
+                                  fontSize: 10, fontWeight: 700, padding: '1px 7px',
+                                  borderRadius: 999, whiteSpace: 'nowrap',
+                                  ...(rank.streakMode === 'fresh' ? { background: '#f1f5f9', color: '#475569' } :
+                                     rank.streakMode === 'continue' ? { background: '#dbeafe', color: '#1d4ed8' } :
+                                     { background: '#fef3c7', color: '#92400e' }),
+                                }}
+                              >
+                                {rank.streakMode === 'fresh' ? 'התחלה חדשה' :
+                                 rank.streakMode === 'continue' ? 'המשך' :
+                                 `עריכה ידנית${rank.streakStartOverride !== null ? ` · ${rank.streakStartOverride}` : ''}`}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })()}
+
                       {/* Actions */}
                       <div style={{ display: 'flex', gap: 6, flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                         {/* Unified WhatsApp action — opens the locked
@@ -1626,6 +1693,40 @@ export default function GroupDetailPage() {
                             {copiedId === `bypass-${pg.id}` ? '✓' : bypassFetchingFor === pg.id ? '…' : '↻'}
                           </button>
                         )}
+
+                        {/* המשכיות / רצף — opens the 3-mode modal.
+                            Reads the current mode from the leaderboard
+                            row (already fetched for this tab). When the
+                            row isn't in the leaderboard yet (e.g.
+                            initial load), default to 'fresh' so the
+                            modal still works. */}
+                        {(() => {
+                          const rank = participantRanks.find((r) => r.participantId === p.id);
+                          return (
+                            <button
+                              type="button"
+                              onClick={() => setStreakModeModal({
+                                participantId: p.id,
+                                participantName: displayName(p),
+                                initial: {
+                                  mode: rank?.streakMode ?? 'fresh',
+                                  value: rank?.streakStartOverride ?? null,
+                                  reason: rank?.overrideReason ?? null,
+                                  overrideBy: null,
+                                  overrideAt: rank?.overrideAt ?? null,
+                                },
+                              })}
+                              style={{
+                                padding: '5px 10px', borderRadius: 6,
+                                border: '1px solid #e2e8f0', color: '#475569', background: '#f8fafc',
+                                fontSize: 12, cursor: 'pointer',
+                              }}
+                              title="הגדר מצב רצף — התחלה חדשה / המשך / עריכה ידנית"
+                            >
+                              🔥 המשכיות
+                            </button>
+                          );
+                        })()}
 
                         {/* Remove */}
                         <button
@@ -2696,6 +2797,26 @@ export default function GroupDetailPage() {
           participantId={chatPopup.participantId}
           participantName={chatPopup.participantName}
           onClose={() => setChatPopup(null)}
+        />
+      )}
+
+      {/* המשכיות / רצף modal. On save, refetch the leaderboard so the
+          row's streak / mode badge updates immediately — same data
+          source the row was reading from. */}
+      {streakModeModal && (
+        <StreakModeModal
+          groupId={id}
+          participantId={streakModeModal.participantId}
+          participantName={streakModeModal.participantName}
+          initial={streakModeModal.initial}
+          onClose={() => setStreakModeModal(null)}
+          onSaved={() => {
+            setStreakModeModal(null);
+            // Refresh leaderboard data driving the row's streak block.
+            apiFetch<ParticipantRankRow[]>(`${BASE_URL}/game/leaderboard/group/${id}`, { cache: 'no-store' })
+              .then((data) => setParticipantRanks(Array.isArray(data) ? data : []))
+              .catch(() => { /* silent — row will reload on next tab visit */ });
+          }}
         />
       )}
     </div>

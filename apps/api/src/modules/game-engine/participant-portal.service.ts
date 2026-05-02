@@ -356,6 +356,25 @@ export interface PortalStats {
     rank: number;
     isMe: boolean;
   }[];
+
+  // ── Two-layer streak/score additions ──────────────────────────────
+  // streakMode drives display rules in the portal:
+  //   "fresh"    — hide personal streak line, hide "סה״כ נקודות",
+  //                hide cross-game data tab content.
+  //   "continue" — show personal streak line + "סה״כ נקודות" +
+  //                full cross-game data.
+  //   "override" — same as continue. The override value is already
+  //                baked into currentStreak via phantom-day algorithm.
+  // Default 'fresh' on every existing membership row from the
+  // streak-layers migration so behavior matches the prior "no
+  // carry-over" expectation until admin opts in.
+  streakMode: 'fresh' | 'continue' | 'override';
+  // Personal-streak number across all programs the participant is in,
+  // bucketed by per-log timezoneSnapshot. Hidden by the frontend in
+  // 'fresh' mode; shown alongside currentStreak (game) otherwise.
+  personalStreak: number;
+  // Lifetime points sum across every program. Hidden in 'fresh' mode.
+  lifetimePoints: number;
 }
 
 export interface PortalFeedItem {
@@ -407,6 +426,12 @@ export interface AnalyticsSummary {
   /** todayScore - yesterdayScore. Negative when today is worse. */
   trendVsYesterday: number;
   currentStreak: number;
+  // Two-layer streak/score additions. Drive portal display rules per
+  // streakMode: fresh hides personalStreak + lifetimePoints + cross-
+  // game data; continue/override show them.
+  streakMode: 'fresh' | 'continue' | 'override';
+  personalStreak: number;
+  lifetimePoints: number;
 }
 
 export interface AnalyticsTrendPoint {
@@ -1232,12 +1257,24 @@ export class ParticipantPortalService {
     const weekStart = new Date(now); weekStart.setDate(now.getDate() - now.getDay()); weekStart.setHours(0, 0, 0, 0);
 
     // Personal scores per group: only events stamped with this groupId.
-    const [todayAgg, weekAgg, totalAgg, streak] = await Promise.all([
+    // Game streak (currentStreak/bestStreak) uses the new two-layer
+    // model — bounded to the group window, system tz, override-aware
+    // per the membership's streakMode. Personal streak + lifetime
+    // points + streakMode are read alongside so the frontend can
+    // gate display per the mode rules (fresh hides personal/total).
+    const [todayAgg, weekAgg, totalAgg, gameStreak, personalStreak, lifetimePoints, membership] = await Promise.all([
       this.prisma.scoreEvent.aggregate({ _sum: { points: true }, where: { participantId, groupId, createdAt: { gte: todayStart } } }),
       this.prisma.scoreEvent.aggregate({ _sum: { points: true }, where: { participantId, groupId, createdAt: { gte: weekStart } } }),
       this.prisma.scoreEvent.aggregate({ _sum: { points: true }, where: { participantId, groupId } }),
-      this.gameEngine.getStreakLive(participantId, programId),
+      this.gameEngine.getGameStreakForMembership(participantId, groupId),
+      this.gameEngine.getPersonalStreak(participantId),
+      this.gameEngine.getPersonalLifetimePoints(participantId),
+      this.prisma.participantGroup.findFirst({
+        where: { participantId, groupId },
+        select: { streakMode: true },
+      }),
     ]);
+    const streak = gameStreak; // alias for the legacy variable name below
 
     // 14-day daily trend — also per-group.
     const dailyTrend = await this.buildDailyTrend(participantId, groupId, 14);
@@ -1287,6 +1324,9 @@ export class ParticipantPortalService {
       bestStreak: streak.bestStreak,
       dailyTrend,
       groupLeaderboard: leaderboard,
+      streakMode: (membership?.streakMode as 'fresh' | 'continue' | 'override') ?? 'fresh',
+      personalStreak: personalStreak.currentStreak,
+      lifetimePoints,
     };
   }
 
@@ -1379,13 +1419,18 @@ export class ParticipantPortalService {
   // submission metadata). No cached aggregates. No group/social data.
 
   async getAnalyticsSummary(token: string): Promise<AnalyticsSummary> {
-    const { participantId, programId } = await this.resolveToken(token);
+    const multi = await this.resolveMultiGroup(token, undefined);
+    const { participantId, programId, activeGroupId: groupId } = multi;
 
     const now = new Date();
     const todayStart = startOfDayUTC(now);
     const yesterdayStart = new Date(todayStart.getTime() - DAY_MS);
 
-    const [totalAgg, todayAgg, yesterdayAgg, streak] = await Promise.all([
+    // Game streak uses the new two-layer model bounded to this group's
+    // window. Personal streak + lifetime points read across all programs.
+    // streakMode comes from the active membership and drives portal
+    // display rules — fresh hides personal/total in the chips below.
+    const [totalAgg, todayAgg, yesterdayAgg, gameStreak, personalStreakRow, lifetimePoints, membership] = await Promise.all([
       this.prisma.scoreEvent.aggregate({
         _sum: { points: true },
         where: { participantId, programId },
@@ -1401,7 +1446,13 @@ export class ParticipantPortalService {
           createdAt: { gte: yesterdayStart, lt: todayStart },
         },
       }),
-      this.gameEngine.getStreakLive(participantId, programId),
+      this.gameEngine.getGameStreakForMembership(participantId, groupId),
+      this.gameEngine.getPersonalStreak(participantId),
+      this.gameEngine.getPersonalLifetimePoints(participantId),
+      this.prisma.participantGroup.findFirst({
+        where: { participantId, groupId },
+        select: { streakMode: true },
+      }),
     ]);
 
     const todayScore = todayAgg._sum.points ?? 0;
@@ -1412,7 +1463,10 @@ export class ParticipantPortalService {
       todayScore,
       yesterdayScore,
       trendVsYesterday: todayScore - yesterdayScore,
-      currentStreak: streak.currentStreak,
+      currentStreak: gameStreak.currentStreak,
+      streakMode: (membership?.streakMode as 'fresh' | 'continue' | 'override') ?? 'fresh',
+      personalStreak: personalStreakRow.currentStreak,
+      lifetimePoints,
     };
   }
 

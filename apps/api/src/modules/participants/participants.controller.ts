@@ -3,6 +3,7 @@ import { AdminSessionGuard } from '../auth/admin-session.guard';
 import { ParticipantsService } from './participants.service';
 import { CreateParticipantDto } from './dto/create-participant.dto';
 import { UpdateParticipantDto } from './dto/update-participant.dto';
+import { UpdateParticipantTimezoneDto } from './dto/update-timezone.dto';
 
 @UseGuards(AdminSessionGuard)
 @Controller('participants')
@@ -53,6 +54,18 @@ export class ParticipantsController {
   @Get(':id/whatsapp-templates')
   whatsappTemplates(@Param('id') id: string) {
     return this.participantsService.listWhatsappTemplatesForParticipant(id);
+  }
+
+  // PATCH /api/participants/:id/timezone
+  // Updates the participant's IANA timezone. Personal-streak day
+  // bucketing for FUTURE logs uses this value; historical logs keep
+  // their own snapshot, so changing tz never recomputes history.
+  @Patch(':id/timezone')
+  updateTimezone(
+    @Param('id') id: string,
+    @Body() dto: UpdateParticipantTimezoneDto,
+  ) {
+    return this.participantsService.updateTimezone(id, dto.timezone);
   }
 
   @Post()

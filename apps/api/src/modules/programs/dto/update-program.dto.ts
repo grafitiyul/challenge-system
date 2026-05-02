@@ -110,4 +110,15 @@ export class UpdateProgramDto {
   @Min(0, { each: true })
   @Max(6, { each: true })
   catchUpAllowedWeekdays?: number[];
+
+  // Days after a participant's last active membership in this program
+  // ends during which she can still submit UserActionLog entries.
+  // Logs in this window count for personal streak / personal totals
+  // but produce ScoreEvent rows with groupId=null (no leaderboard
+  // credit). 0 = hard cutoff at endDate. Reasonable upper bound 60.
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(60)
+  continuationDays?: number;
 }

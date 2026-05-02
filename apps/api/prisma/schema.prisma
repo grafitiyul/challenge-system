@@ -143,6 +143,15 @@ model Program {
 
   catchUpSessions CatchUpSession[]
 
+  // ── Continuation window ─────────────────────────────────────────────
+  // Days after a participant's last active membership in this program
+  // ends during which she can still submit UserActionLog entries.
+  // Logs in this window count for personal streak / personal totals
+  // but produce ScoreEvent rows with groupId=null (no leaderboard
+  // credit). Default 7. 0 = hard cutoff at endDate.
+  // Configurable per program from the program settings tab.
+  continuationDays Int @default(7)
+
   @@map("programs")
 }
 
@@ -406,6 +415,16 @@ model Participant {
   profileValues ParticipantProfileValue[]
   uploadedFiles ParticipantUploadedFile[]
 
+  // IANA timezone identifier (e.g. "Asia/Jerusalem", "America/New_York").
+  // Used to bucket UserActionLog rows for the PERSONAL streak only —
+  // game streak / leaderboard / score math always use Asia/Jerusalem
+  // so leaderboards stay consistent across participants.
+  // Validated at write time against Intl.supportedValuesOf('timeZone').
+  // Default Asia/Jerusalem; admin / participant can change at any time.
+  // Changing it does NOT recompute history — every UserActionLog row
+  // carries its own timezoneSnapshot captured at write time.
+  timezone String @default("Asia/Jerusalem")
+
   // Private scheduled WhatsApp messages — admin-composed DMs that
   // wait for a future scheduledAt and are sent by the cron worker.
   // Single source of truth across surfaces (participant chat tab +
@@ -547,8 +566,34 @@ model ParticipantGroup {
   leftAt        DateTime?
   isActive      Boolean     @default(true)
   accessToken   String?     @unique // Personal link token for /t/:token participant portal
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @updatedAt
+
+  // ── Streak continuity (3-mode) ───────────────────────────────────────
+  // Per-membership streak mode. Selected by admin from the group
+  // participants list ("המשכיות / רצף" control). Drives both
+  // computation and the participant-facing display rules:
+  //   "fresh"    — default. Game streak starts at 0; portal hides
+  //                personal streak/history and "סה״כ נקודות".
+  //   "continue" — pure UX flag. Game streak still 0, but portal
+  //                shows personal streak/history alongside.
+  //   "override" — admin set a starting streak number. Phantom-day
+  //                algorithm applies it as the game-streak baseline,
+  //                AND most-recent override across all memberships
+  //                wins for personal-streak baseline.
+  streakMode          String    @default("fresh")
+  streakStartOverride Int?
+  overrideReason      String?
+  overrideBy          String?
+  overrideAt          DateTime? @db.Timestamptz
+  // Snapshotted at override-set time so the phantom day's bucket
+  // stays stable even if participant changes timezone afterward.
+  overrideTimezone    String?
+  // Last-write-wins audit on the mode flip. For full audit trail of
+  // every change, add a sibling StreakModeEvent table (out of scope).
+  streakModeUpdatedBy String?
+  streakModeUpdatedAt DateTime? @db.Timestamptz
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // A participant can only have one active record per group
   @@unique([participantId, groupId])
@@ -1381,6 +1426,15 @@ model UserActionLog {
   // audit-trail signal.
   occurredAt         DateTime    @default(now()) @db.Timestamptz
   createdAt          DateTime    @default(now()) @db.Timestamptz
+
+  // Captured at log-write time from participant.timezone. Day
+  // bucketing for the PERSONAL streak uses this column, NOT the
+  // participant's current timezone. Result: changing the participant's
+  // tz affects only future logs; historical buckets are frozen.
+  // Game streak ignores this column — game logic always uses
+  // Asia/Jerusalem so leaderboards stay consistent across participants.
+  // Nullable for legacy rows; read-time fallback to Asia/Jerusalem.
+  timezoneSnapshot String?
 
   @@index([participantId, programId])
   @@index([actionId])

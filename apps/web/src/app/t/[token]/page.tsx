@@ -168,6 +168,16 @@ interface AnalyticsSummary {
   yesterdayScore: number;
   trendVsYesterday: number;
   currentStreak: number;
+  // Two-layer streak/score additions. Drive display rules per the
+  // membership's streakMode:
+  //   "fresh"    — hide personal streak chip + "סה״כ נקודות".
+  //   "continue" — show personal streak ("הרצף שלך: Y ימים") +
+  //                lifetime points alongside game numbers.
+  //   "override" — same as continue. Override value is already baked
+  //                into currentStreak via phantom-day algorithm.
+  streakMode: 'fresh' | 'continue' | 'override';
+  personalStreak: number;
+  lifetimePoints: number;
 }
 
 interface AnalyticsTrendPoint {
@@ -2397,7 +2407,14 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
             {analyticsError && <p style={s.tabError}>{analyticsError}</p>}
             {analyticsSummary && (
               <>
-                {/* ── Summary strip ───────────────────────────────────── */}
+                {/* ── Summary strip — mode-aware ────────────────────────
+                    fresh  : show only game streak ("רצף במשחק") +
+                             nothing about the participant's lifetime
+                             history.
+                    continue / override : show game streak AND a second
+                             chip "הרצף שלך" with the cross-game personal
+                             streak, only when the two numbers differ
+                             (no need to render the same number twice). */}
                 <div style={s.summaryStrip}>
                   <div style={s.summaryChipPrimary}>
                     <span style={s.summaryChipValueAccent}>{analyticsSummary.todayScore}</span>
@@ -2405,8 +2422,15 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                   </div>
                   <div style={s.summaryChip}>
                     <span style={s.summaryChipValue}>{analyticsSummary.currentStreak}</span>
-                    <span style={s.summaryChipLabel}>רצף ימים</span>
+                    <span style={s.summaryChipLabel}>רצף במשחק</span>
                   </div>
+                  {analyticsSummary.streakMode !== 'fresh' &&
+                    analyticsSummary.personalStreak !== analyticsSummary.currentStreak && (
+                      <div style={s.summaryChip}>
+                        <span style={s.summaryChipValue}>{analyticsSummary.personalStreak}</span>
+                        <span style={s.summaryChipLabel}>הרצף שלך</span>
+                      </div>
+                    )}
                   <div style={s.summaryChip}>
                     {(() => {
                       const d = analyticsSummary.trendVsYesterday;
@@ -2423,13 +2447,18 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                   </div>
                 </div>
 
-                {/* ── Total ───────────────────────────────────────────── */}
-                <div style={s.totalStripe}>
-                  <span style={s.totalStripeLabel}>סה"כ</span>
-                  <span style={s.totalStripeValue}>
-                    {analyticsSummary.totalScore.toLocaleString('he-IL')} נקודות
-                  </span>
-                </div>
+                {/* ── Total ─ shown in continue/override only.
+                    fresh hides "סה״כ נקודות" entirely so the participant
+                    feels a true reset (per spec sign-off). The current
+                    game's points are still visible in the chip above. */}
+                {analyticsSummary.streakMode !== 'fresh' && (
+                  <div style={s.totalStripe}>
+                    <span style={s.totalStripeLabel}>סה"כ</span>
+                    <span style={s.totalStripeValue}>
+                      {analyticsSummary.lifetimePoints.toLocaleString('he-IL')} נקודות
+                    </span>
+                  </div>
+                )}
 
                 {/* ── Shared range picker (drives chart + breakdown + pie) */}
                 <div style={s.rangeCard}>

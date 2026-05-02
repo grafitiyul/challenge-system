@@ -9,6 +9,7 @@ import { AdminProjectsTab } from '@components/admin-projects';
 import { PaymentsTab } from '@components/payments-tab';
 import { ParticipantPrivateChatPopup } from '@components/participant-private-chat-popup';
 import { WhatsAppIcon } from '@components/icons/whatsapp-icon';
+import { TimezonePickerModal } from '@components/timezone-picker-modal';
 import {
   PARTICIPANT_LIFECYCLE_STATUSES,
   PARTICIPANT_SOURCES,
@@ -46,6 +47,10 @@ interface Participant {
   // Default false; admin flips it via the toggle below the active-groups chips.
   multiGroupEnabled?: boolean;
   participantGroups: ParticipantGroup[];
+  // IANA timezone for personal-streak day bucketing. Defaults to
+  // Asia/Jerusalem; admin edits via TimezonePickerModal in the
+  // סטטיסטיקה אישית section.
+  timezone?: string;
 }
 
 function displayName(p: { firstName: string; lastName?: string | null }): string {
@@ -687,6 +692,16 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
   // when the chat popup closes so cancellations/edits inside the
   // popup update the badge here.
   const [scheduledCount, setScheduledCount] = useState(0);
+  // Personal stats for the new "סטטיסטיקה אישית" section. Refreshed
+  // alongside the main participant fetch + after a tz change so the
+  // displayed numbers always match the latest backend state.
+  const [personalStats, setPersonalStats] = useState<{
+    currentStreak: number;
+    bestStreak: number;
+    lifetimePoints: number;
+    lastLoggedAt: string | null;
+  } | null>(null);
+  const [tzModalOpen, setTzModalOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [form, setForm] = useState<EditForm>({ firstName: '', lastName: '', phoneNumber: '', email: '', birthDate: '', city: '', status: '', notes: '', nextAction: '', source: '' });
@@ -761,6 +776,24 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
     })();
     return () => { cancelled = true; };
   }, [id, chatPopupOpen]);
+
+  // Personal stats: cross-program streak + lifetime points. Refreshed
+  // after a tz change (close of the picker triggers a refetch via the
+  // dependency on tzModalOpen flipping back to false). Silent failure
+  // — the section just won't render if the endpoint errored.
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    apiFetch<{
+      currentStreak: number;
+      bestStreak: number;
+      lastLoggedAt: string | null;
+      lifetimePoints: number;
+    }>(`${BASE_URL}/game/admin/participants/${id}/personal-stats`, { cache: 'no-store' })
+      .then((s) => { if (!cancelled) setPersonalStats(s); })
+      .catch(() => { if (!cancelled) setPersonalStats(null); });
+    return () => { cancelled = true; };
+  }, [id, tzModalOpen]);
 
   // Prefetch submissions on page load — runs in background while user reads the page.
   // By the time they click the שאלונים or היסטוריה tab, data is already ready.
@@ -1194,6 +1227,58 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
       )}
 
       {/* ═══════════════════════════════════════════════════════════════
+          סטטיסטיקה אישית — cross-program streak + lifetime points + tz
+          Always visible to admin (no mode-based hiding here — mode
+          rules apply only to the participant's own portal display).
+      ═══════════════════════════════════════════════════════════════ */}
+      <div
+        style={{
+          background: '#fff', border: '1px solid #e2e8f0',
+          borderRadius: 10, padding: '14px 18px', marginBottom: 16,
+          display: 'flex', flexWrap: 'wrap', gap: 18, alignItems: 'center',
+        }}
+      >
+        <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a' }}>
+          סטטיסטיקה אישית
+        </div>
+        {personalStats ? (
+          <>
+            <div style={{ fontSize: 13, color: '#475569' }}>
+              🔥 רצף אישי: <strong style={{ color: '#0f172a' }}>{personalStats.currentStreak}</strong>
+              {' · שיא: '}<strong style={{ color: '#0f172a' }}>{personalStats.bestStreak}</strong>
+            </div>
+            <div style={{ fontSize: 13, color: '#475569' }}>
+              💯 סה״כ נקודות: <strong style={{ color: '#0f172a' }}>{personalStats.lifetimePoints}</strong>
+            </div>
+            {personalStats.lastLoggedAt && (
+              <div style={{ fontSize: 12, color: '#64748b' }}>
+                פעיל לאחרונה: {new Date(personalStats.lastLoggedAt).toLocaleString('he-IL', {
+                  day: '2-digit', month: '2-digit', year: '2-digit',
+                  hour: '2-digit', minute: '2-digit',
+                })}
+              </div>
+            )}
+          </>
+        ) : (
+          <div style={{ fontSize: 12, color: '#94a3b8' }}>טוען...</div>
+        )}
+        <div style={{ marginInlineStart: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 12, color: '#475569' }}>
+            אזור זמן: <strong dir="ltr" style={{ color: '#0f172a' }}>{participant.timezone || 'Asia/Jerusalem'}</strong>
+          </span>
+          <button
+            type="button"
+            onClick={() => setTzModalOpen(true)}
+            style={{
+              padding: '4px 10px', fontSize: 11, fontWeight: 600,
+              background: '#fff', color: '#1d4ed8',
+              border: '1px solid #bfdbfe', borderRadius: 6, cursor: 'pointer',
+            }}
+          >ערוך</button>
+        </div>
+      </div>
+
+      {/* ═══════════════════════════════════════════════════════════════
           TABS
       ═══════════════════════════════════════════════════════════════ */}
       <div style={{ display: 'flex', background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '10px 10px 0 0', overflow: 'hidden', overflowX: 'auto' }}>
@@ -1285,6 +1370,25 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
           participantId={participant.id}
           participantName={displayName(participant)}
           onClose={() => setChatPopupOpen(false)}
+        />
+      )}
+
+      {/* Timezone picker — used by the participant's סטטיסטיקה אישית
+          row. On save, refetches personal stats (the streak number can
+          shift slightly when tz changes the anchor day, even though
+          historical bucketing stays frozen). */}
+      {tzModalOpen && (
+        <TimezonePickerModal
+          currentTimezone={participant.timezone || 'Asia/Jerusalem'}
+          onClose={() => setTzModalOpen(false)}
+          onSave={async (tz) => {
+            await apiFetch<{ id: string; timezone: string }>(
+              `${BASE_URL}/participants/${participant.id}/timezone`,
+              { method: 'PATCH', body: JSON.stringify({ timezone: tz }) },
+            );
+            setParticipant((prev) => prev ? { ...prev, timezone: tz } : prev);
+            setTzModalOpen(false);
+          }}
         />
       )}
 

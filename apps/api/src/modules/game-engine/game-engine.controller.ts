@@ -28,6 +28,7 @@ import { LogActionDto } from './dto/log-action.dto';
 import { EvaluateRulesDto } from './dto/evaluate-rules.dto';
 import { UnlockRuleDto } from './dto/unlock-rule.dto';
 import { InitGroupStateDto } from './dto/init-group-state.dto';
+import { SetStreakModeDto } from './dto/streak-mode.dto';
 
 // ─── Actions ─────────────────────────────────────────────────────────────────
 
@@ -157,6 +158,41 @@ export class GameEngineController {
   @Get('groups/:groupId/state')
   getGroupState(@Param('groupId') groupId: string) {
     return this.svc.getGroupState(groupId);
+  }
+
+  // POST /api/game/groups/:groupId/participants/:participantId/streak-mode
+  // Single endpoint covering all 3 continuity modes (fresh/continue/
+  // override). Admin opens "המשכיות / רצף" from the group participant
+  // list; the modal POSTs here. Service clears override columns when
+  // switching to fresh/continue, sets them when switching to override.
+  @Post('groups/:groupId/participants/:participantId/streak-mode')
+  setStreakMode(
+    @Param('groupId') groupId: string,
+    @Param('participantId') participantId: string,
+    @Body() dto: SetStreakModeDto,
+  ) {
+    // adminId not yet captured by the existing admin guard convention —
+    // pass null for now; columns are nullable. When session id is
+    // exposed on req.admin, swap this for the real id without an API
+    // shape change.
+    return this.svc.setStreakMode(groupId, participantId, dto, null);
+  }
+
+  // GET /api/game/admin/participants/:participantId/personal-stats
+  // Cross-program stats for the admin participant profile section.
+  // Composes three small queries; never call inside a hot loop.
+  @Get('admin/participants/:participantId/personal-stats')
+  async personalStats(@Param('participantId') participantId: string) {
+    const [streak, lifetimePoints] = await Promise.all([
+      this.svc.getPersonalStreak(participantId),
+      this.svc.getPersonalLifetimePoints(participantId),
+    ]);
+    return {
+      currentStreak: streak.currentStreak,
+      bestStreak: streak.bestStreak,
+      lastLoggedAt: streak.lastLoggedAt,
+      lifetimePoints,
+    };
   }
 
   // GET /api/game/leaderboard/group/:groupId
