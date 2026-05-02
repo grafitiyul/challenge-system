@@ -3293,6 +3293,28 @@ function GroupSchedMsgModal(props: {
   const [enabled, setEnabled] = useState(props.initial?.enabled ?? false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  // Unsaved-changes guard. The modal is locked open — backdrop clicks do
+  // nothing, and explicit close attempts (X / ביטול) route through
+  // attemptClose, which checks dirty against the initial snapshot and
+  // pops an in-app confirm before discarding. Successful save bypasses
+  // the guard via props.onSaved.
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const initialCategory = props.initial?.category ?? 'משחק שוטף';
+  const initialInternalName = props.initial?.internalName ?? '';
+  const initialContent = props.initial?.content ?? '';
+  const initialScheduledAt = props.initial ? isoToLocalInput(props.initial.scheduledAt) : '';
+  const initialEnabled = props.initial?.enabled ?? false;
+  const isDirty =
+    category !== initialCategory ||
+    internalName !== initialInternalName ||
+    content !== initialContent ||
+    scheduledAt !== initialScheduledAt ||
+    enabled !== initialEnabled;
+  function attemptClose() {
+    if (busy) return;
+    if (isDirty) { setConfirmDiscard(true); return; }
+    props.onClose();
+  }
   // Restore-to-template state. confirming = a confirm dialog is open;
   // restoring = the fetch is in flight. The template id is read off
   // the row that was passed in — only present when this group row was
@@ -3382,11 +3404,11 @@ function GroupSchedMsgModal(props: {
   };
 
   return (
-    <div onClick={(e) => { if (e.target === e.currentTarget && !busy) props.onClose(); }} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 16 }}>
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 16 }}>
       <div style={{ background: '#fff', borderRadius: 14, padding: 22, width: '100%', maxWidth: 560, maxHeight: '92vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
           <div style={{ fontSize: 17, fontWeight: 700 }}>{isEdit ? 'עריכת הודעה מתוזמנת' : 'הודעה חדשה לקבוצה'}</div>
-          <button onClick={props.onClose} style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: 'pointer' }}>×</button>
+          <button onClick={attemptClose} disabled={busy} style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: busy ? 'not-allowed' : 'pointer' }}>×</button>
         </div>
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
@@ -3451,7 +3473,7 @@ function GroupSchedMsgModal(props: {
         </div>
         {err && <div style={{ color: '#dc2626', fontSize: 13, marginTop: 10 }}>{err}</div>}
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
-          <button onClick={props.onClose} disabled={busy} style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 8, padding: '7px 14px', fontSize: 13, cursor: busy ? 'not-allowed' : 'pointer' }}>ביטול</button>
+          <button onClick={attemptClose} disabled={busy} style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 8, padding: '7px 14px', fontSize: 13, cursor: busy ? 'not-allowed' : 'pointer' }}>ביטול</button>
           <button onClick={() => { void save(); }} disabled={busy} style={{ background: busy ? '#93c5fd' : '#2563eb', color: '#fff', border: 'none', borderRadius: 8, padding: '7px 18px', fontSize: 13, fontWeight: 600, cursor: busy ? 'not-allowed' : 'pointer' }}>{busy ? 'שומר...' : 'שמור'}</button>
         </div>
       </div>
@@ -3485,6 +3507,35 @@ function GroupSchedMsgModal(props: {
                 disabled={restoring}
                 style={{ background: restoring ? '#93c5fd' : '#2563eb', color: '#fff', border: 'none', borderRadius: 8, padding: '7px 16px', fontSize: 13, fontWeight: 700, cursor: restoring ? 'not-allowed' : 'pointer' }}
               >{restoring ? 'מחזיר...' : 'כן, החזר'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Unsaved-changes confirm. Layered above the editor (zIndex 1100)
+          so the admin sees it without losing the underlying form
+          context. Only shown when attemptClose detected a dirty
+          state — clean closes skip this entirely. "המשך לערוך" just
+          dismisses the confirm; "סגור בלי לשמור" abandons edits via
+          props.onClose. */}
+      {confirmDiscard && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div style={{ background: '#fff', borderRadius: 12, padding: 22, maxWidth: 420, width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', marginBottom: 8 }}>
+              לסגור בלי לשמור?
+            </div>
+            <p style={{ fontSize: 13, color: '#475569', lineHeight: 1.6, margin: '0 0 14px' }}>
+              יש שינויים שלא נשמרו. לסגור בלי לשמור?
+            </p>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setConfirmDiscard(false)}
+                style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 8, padding: '7px 14px', fontSize: 13, cursor: 'pointer' }}
+              >המשך לערוך</button>
+              <button
+                onClick={() => { setConfirmDiscard(false); props.onClose(); }}
+                style={{ background: '#dc2626', color: '#fff', border: 'none', borderRadius: 8, padding: '7px 16px', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
+              >סגור בלי לשמור</button>
             </div>
           </div>
         </div>
