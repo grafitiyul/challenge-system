@@ -2778,33 +2778,56 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
             {stats && stats.groupLeaderboard.length > 1 && (
               <div style={s.leaderboardCard}>
                 <p style={s.sectionTitle}>דירוג הקבוצה</p>
-                {stats.groupLeaderboard.map((row) => (
-                  <div
-                    key={row.participantId}
-                    style={{ ...s.leaderRow, ...(row.isMe ? s.leaderRowMe : {}) }}
-                  >
-                    <span style={s.leaderRank}>#{row.rank}</span>
-                    <ParticipantAvatar
-                      firstName={row.firstName}
-                      lastName={row.lastName}
-                      profileImageUrl={row.profileImageUrl}
-                      size={28}
-                      fontSize={11}
-                    />
-                    <span style={s.leaderName}>
-                      {row.firstName}{row.lastName ? ` ${row.lastName}` : ''}
-                      {row.isMe && <span style={s.meBadge}> (את)</span>}
-                    </span>
-                    <span style={s.leaderScore}>
-                      {row.totalScore}
-                      {row.todayScore !== 0 && (
-                        <span style={s.leaderScoreToday}>
-                          {' ('}{row.todayScore > 0 ? '+' : ''}{row.todayScore} היום{')'}
-                        </span>
-                      )}
-                    </span>
-                  </div>
-                ))}
+                {stats.groupLeaderboard.map((row) => {
+                  // Three row states stack via spread order. The order is
+                  // load-bearing: zeroToday's red background must be the
+                  // LAST property write so it wins the cascade, and the
+                  // "me" style contributes a thick start-border that
+                  // remains visible on top of the red background — so a
+                  // participant who is both "me" and "0 today" gets RED
+                  // bg + BLUE start-stripe rather than one indicator
+                  // suppressing the other.
+                  const isZeroToday = row.todayScore === 0;
+                  return (
+                    <div
+                      key={row.participantId}
+                      style={{
+                        ...s.leaderRow,
+                        ...(row.isMe ? s.leaderRowMe : {}),
+                        ...(isZeroToday ? s.leaderRowZeroToday : {}),
+                      }}
+                    >
+                      <span style={s.leaderRank}>#{row.rank}</span>
+                      <ParticipantAvatar
+                        firstName={row.firstName}
+                        lastName={row.lastName}
+                        profileImageUrl={row.profileImageUrl}
+                        size={28}
+                        fontSize={11}
+                      />
+                      <span style={s.leaderName}>
+                        {row.firstName}{row.lastName ? ` ${row.lastName}` : ''}
+                        {row.isMe && <span style={s.meBadge}> (את)</span>}
+                      </span>
+                      {/* Today column: own fixed-width slot so the total
+                          column to its end-side stays vertically aligned
+                          across every row regardless of how many digits
+                          the today value has. Empty when todayScore === 0
+                          but the slot is still reserved (minWidth on the
+                          cell). */}
+                      <span style={s.leaderToday}>
+                        {row.todayScore !== 0
+                          ? `(${row.todayScore > 0 ? '+' : ''}${row.todayScore} היום)`
+                          : ''}
+                      </span>
+                      {/* Total column: fixed-width, text-align:start so in
+                          RTL the digit sequence's right edge anchors to
+                          the cell's right edge — that's what makes a "5"
+                          stack column-clean under a "1535". */}
+                      <span style={s.leaderScore}>{row.totalScore}</span>
+                    </div>
+                  );
+                })}
               </div>
             )}
 
@@ -4591,6 +4614,24 @@ const s = {
     margin: '0 -16px',
     padding: '10px 16px',
     borderRadius: 8,
+    // 3px start-side stripe so the "me" indicator survives the
+    // zero-today red background overriding `background` below.
+    // borderInlineStart respects RTL automatically — renders on the
+    // right edge in RTL, left in LTR.
+    borderInlineStart: '3px solid #2563eb',
+  } satisfies React.CSSProperties,
+
+  // Subtle red wash for participants who scored 0 today. Light enough
+  // to read as "passive flag" rather than "error" (red-50 from the
+  // tailwind palette: #fef2f2). When applied alongside leaderRowMe,
+  // this background wins the cascade but the blue start-stripe from
+  // leaderRowMe stays — so "me + 0 today" reads as red bg with blue
+  // stripe, no indicator suppressed.
+  leaderRowZeroToday: {
+    background: '#fef2f2',
+    margin: '0 -16px',
+    padding: '10px 16px',
+    borderRadius: 8,
   } satisfies React.CSSProperties,
 
   leaderRank: {
@@ -4605,18 +4646,38 @@ const s = {
     fontSize: 15,
     color: '#111827',
     fontWeight: 500,
+    // Long names don't push the score columns off-grid.
+    minWidth: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
   } satisfies React.CSSProperties,
 
+  // Today column — fixed slot so the total column next to it stays
+  // column-aligned across rows regardless of today value digit count.
+  // text-align: start in RTL = right-align inside the cell, which
+  // anchors the parenthesised value to the cell's right edge and
+  // visually places it on the OPPOSITE side from the total column.
+  leaderToday: {
+    fontSize: 12,
+    fontWeight: 500,
+    color: '#94a3b8',
+    minWidth: 78,
+    textAlign: 'start',
+    flexShrink: 0,
+    whiteSpace: 'nowrap',
+  } satisfies React.CSSProperties,
+
+  // Total column — fixed slot, text-align: start so in RTL the digits
+  // anchor to the cell's right edge. That's how "5" stacks neatly
+  // under "1535" — last-digit alignment.
   leaderScore: {
     fontSize: 15,
     fontWeight: 700,
     color: '#1d4ed8',
-  } satisfies React.CSSProperties,
-
-  leaderScoreToday: {
-    fontSize: 12,
-    fontWeight: 500,
-    color: '#94a3b8',
+    minWidth: 56,
+    textAlign: 'start',
+    flexShrink: 0,
   } satisfies React.CSSProperties,
 
   meBadge: {
