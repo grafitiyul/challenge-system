@@ -15,6 +15,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { BASE_URL, apiFetch } from '@lib/api';
+import { StrongModal } from '@components/strong-modal';
 
 const FIELD_TYPES = ['text', 'textarea', 'number', 'date', 'image', 'imageGallery'] as const;
 type FieldType = (typeof FIELD_TYPES)[number];
@@ -356,24 +357,35 @@ function FieldEditorModal(props: {
   // to whatever the existing row already is — fieldKey + isSystemField
   // are immutable on the server (changing them would silently rebind
   // values to a different target).
-  const [origin, setOrigin] = useState<'system' | 'custom'>(
-    props.field?.isSystemField ? 'system' : 'custom',
-  );
-  const [systemKey, setSystemKey] = useState<string>(
-    props.field?.isSystemField ? props.field.fieldKey : 'firstName',
-  );
-  const [customKey, setCustomKey] = useState<string>(
-    props.field && !props.field.isSystemField ? props.field.fieldKey : '',
-  );
-  const [label, setLabel] = useState(props.field?.label ?? '');
-  const [helperText, setHelperText] = useState(props.field?.helperText ?? '');
-  const [fieldType, setFieldType] = useState<FieldType>(
-    props.field?.fieldType ?? 'text',
-  );
-  const [isRequired, setIsRequired] = useState(props.field?.isRequired ?? false);
-  const [isActive, setIsActive] = useState(props.field?.isActive ?? true);
+  const i_origin: 'system' | 'custom' = props.field?.isSystemField ? 'system' : 'custom';
+  const i_systemKey = props.field?.isSystemField ? props.field.fieldKey : 'firstName';
+  const i_customKey = props.field && !props.field.isSystemField ? props.field.fieldKey : '';
+  const i_label = props.field?.label ?? '';
+  const i_helperText = props.field?.helperText ?? '';
+  const i_fieldType: FieldType = props.field?.fieldType ?? 'text';
+  const i_isRequired = props.field?.isRequired ?? false;
+  const i_isActive = props.field?.isActive ?? true;
+
+  const [origin, setOrigin] = useState<'system' | 'custom'>(i_origin);
+  const [systemKey, setSystemKey] = useState<string>(i_systemKey);
+  const [customKey, setCustomKey] = useState<string>(i_customKey);
+  const [label, setLabel] = useState(i_label);
+  const [helperText, setHelperText] = useState(i_helperText);
+  const [fieldType, setFieldType] = useState<FieldType>(i_fieldType);
+  const [isRequired, setIsRequired] = useState(i_isRequired);
+  const [isActive, setIsActive] = useState(i_isActive);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+
+  const isDirty =
+    origin !== i_origin ||
+    systemKey !== i_systemKey ||
+    customKey !== i_customKey ||
+    label !== i_label ||
+    helperText !== i_helperText ||
+    fieldType !== i_fieldType ||
+    isRequired !== i_isRequired ||
+    isActive !== i_isActive;
 
   // When in create mode + system origin, lock fieldType to the system
   // metadata. Auto-fill the label if the admin hasn't typed one.
@@ -446,18 +458,16 @@ function FieldEditorModal(props: {
   };
 
   return (
-    <div
-      onClick={(e) => { if (e.target === e.currentTarget && !busy) props.onClose(); }}
-      style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100, padding: 16 }}
+    <StrongModal
+      title={isCreate ? 'הוסף שדה לפרופיל' : `ערוך שדה: ${props.field!.label}`}
+      isDirty={isDirty}
+      onClose={props.onClose}
+      busy={busy}
+      maxWidth={480}
+      zIndex={1100}
     >
-      <div style={{ background: '#fff', borderRadius: 12, padding: 22, width: '100%', maxWidth: 480, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.25)' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-          <h3 style={{ fontSize: 17, fontWeight: 700, margin: 0 }}>
-            {isCreate ? 'הוסף שדה לפרופיל' : `ערוך שדה: ${props.field!.label}`}
-          </h3>
-          <button onClick={props.onClose} aria-label="סגור" style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: 'pointer' }}>×</button>
-        </div>
-
+      {({ attemptClose }) => (
+      <>
         <div style={{ display: 'grid', gap: 12 }}>
           {isCreate && (
             <div>
@@ -578,7 +588,7 @@ function FieldEditorModal(props: {
         </div>
 
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 18 }}>
-          <button onClick={props.onClose} disabled={busy} style={{ padding: '8px 16px', background: '#f1f5f9', border: '1px solid #e2e8f0', color: '#374151', borderRadius: 8, fontSize: 13, cursor: 'pointer' }}>
+          <button onClick={attemptClose} disabled={busy} style={{ padding: '8px 16px', background: '#f1f5f9', border: '1px solid #e2e8f0', color: '#374151', borderRadius: 8, fontSize: 13, cursor: busy ? 'not-allowed' : 'pointer' }}>
             ביטול
           </button>
           <button
@@ -589,7 +599,8 @@ function FieldEditorModal(props: {
             {busy ? 'שומר...' : isCreate ? 'הוסף' : 'שמור'}
           </button>
         </div>
-      </div>
-    </div>
+      </>
+      )}
+    </StrongModal>
   );
 }

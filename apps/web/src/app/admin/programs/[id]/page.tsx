@@ -7,6 +7,7 @@ import { BASE_URL, apiFetch } from '@lib/api';
 import WhatsAppEditor from '@components/whatsapp-editor';
 import RichContentEditor from '@components/rich-content-editor';
 import { VariableButtonBar, type VariableEditorHandle } from '@components/variable-button-bar';
+import { StrongModal } from '@components/strong-modal';
 import { ProfileTab } from './profile-tab';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -1898,16 +1899,13 @@ function ActionModal({
   const [form, setForm] = useState(initialForm.current);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const [showUnsaved, setShowUnsaved] = useState(false);
 
-  function isDirty(): boolean {
-    return JSON.stringify(form) !== JSON.stringify(initialForm.current);
-  }
-
-  function handleClose() {
-    if (isDirty()) setShowUnsaved(true);
-    else onClose();
-  }
+  // Dirty check is delegated to StrongModal — it owns the locked
+  // backdrop + sticky X + unsaved-changes confirm. We just compute
+  // the bool. JSON-stringify diff is intentional: the form has
+  // nested arrays/objects (contextFields, attachedContexts) so
+  // shallow compare wouldn't catch all edits.
+  const isDirty = JSON.stringify(form) !== JSON.stringify(initialForm.current);
 
   // Derived default prompt — used as placeholder in the admin form and as
   // fallback in the portal when the admin leaves the override blank.
@@ -2106,14 +2104,15 @@ function ActionModal({
   };
 
   return (
-    <>
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, padding: 20, overflowY: 'auto' }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, padding: 28, width: '100%', maxWidth: 500, boxShadow: '0 20px 60px rgba(0,0,0,0.2)', maxHeight: '92vh', overflowY: 'auto' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 22 }}>
-          <h2 style={{ fontSize: 17, fontWeight: 700, color: '#0f172a', margin: 0 }}>{action ? 'עריכת פעולה' : 'פעולה חדשה'}</h2>
-          <button onClick={handleClose} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: '#94a3b8', lineHeight: 1 }}>×</button>
-        </div>
-
+    <StrongModal
+      title={action ? 'עריכת פעולה' : 'פעולה חדשה'}
+      isDirty={isDirty}
+      onClose={onClose}
+      busy={saving}
+      maxWidth={500}
+      zIndex={9999}
+    >
+      {({ attemptClose }) => (
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
 
           {/* ── Identity ── */}
@@ -2640,46 +2639,14 @@ function ActionModal({
 
           {error && <div style={{ color: '#dc2626', fontSize: 13, background: '#fef2f2', padding: '8px 12px', borderRadius: 7 }}>{error}</div>}
           <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-            <button type="button" onClick={handleClose} style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 7, padding: '9px 18px', fontSize: 13, cursor: 'pointer' }}>ביטול</button>
+            <button type="button" onClick={attemptClose} disabled={saving} style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 7, padding: '9px 18px', fontSize: 13, cursor: saving ? 'not-allowed' : 'pointer' }}>ביטול</button>
             <button type="submit" disabled={saving} style={{ background: saving ? '#93c5fd' : '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '9px 20px', fontSize: 13, fontWeight: 600, cursor: saving ? 'not-allowed' : 'pointer' }}>
               {saving ? 'שומר...' : 'שמירה'}
             </button>
           </div>
         </form>
-      </div>
-    </div>
-
-    {/* ── Unsaved-changes confirmation ── */}
-    {showUnsaved && (
-      <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 10000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-        <div style={{ background: '#fff', borderRadius: 12, padding: 24, maxWidth: 320, width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
-          <h3 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', margin: '0 0 8px' }}>שינויים לא שמורים</h3>
-          <p style={{ fontSize: 14, color: '#64748b', margin: '0 0 20px', lineHeight: 1.5 }}>יש שינויים שעדיין לא נשמרו. מה לעשות?</p>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <button
-              disabled={saving}
-              onClick={async () => { const ok = await submitForm(); if (ok) setShowUnsaved(false); }}
-              style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '10px 16px', fontSize: 13, fontWeight: 600, cursor: saving ? 'not-allowed' : 'pointer', textAlign: 'center' as const }}
-            >
-              {saving ? 'שומר...' : 'שמור ויצא'}
-            </button>
-            <button
-              onClick={() => { setShowUnsaved(false); onClose(); }}
-              style={{ background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca', borderRadius: 7, padding: '10px 16px', fontSize: 13, cursor: 'pointer', textAlign: 'center' as const }}
-            >
-              בטל שינויים
-            </button>
-            <button
-              onClick={() => setShowUnsaved(false)}
-              style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 7, padding: '10px 16px', fontSize: 13, cursor: 'pointer', textAlign: 'center' as const }}
-            >
-              המשך עריכה
-            </button>
-          </div>
-        </div>
-      </div>
-    )}
-    </>
+      )}
+    </StrongModal>
   );
 }
 
@@ -2725,28 +2692,21 @@ function RuleModal({
   const [rewardJson, setRewardJson] = useState(initial.current.rewardJson);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const [showUnsaved, setShowUnsaved] = useState(false);
 
-  function isDirty(): boolean {
-    return (
-      name !== initial.current.name ||
-      type !== initial.current.type ||
-      activationType !== initial.current.activationType ||
-      activationDays !== initial.current.activationDays ||
-      requiresAdminApproval !== initial.current.requiresAdminApproval ||
-      rewardPoints !== initial.current.rewardPoints ||
-      minStreak !== initial.current.minStreak ||
-      conditionActionId !== initial.current.conditionActionId ||
-      threshold !== initial.current.threshold ||
-      conditionJson !== initial.current.conditionJson ||
-      rewardJson !== initial.current.rewardJson
-    );
-  }
-
-  function handleClose() {
-    if (isDirty()) setShowUnsaved(true);
-    else onClose();
-  }
+  // Dirty check delegated to StrongModal — see ActionModal for the
+  // same pattern. Field-by-field compare against the initial snapshot.
+  const isDirty =
+    name !== initial.current.name ||
+    type !== initial.current.type ||
+    activationType !== initial.current.activationType ||
+    activationDays !== initial.current.activationDays ||
+    requiresAdminApproval !== initial.current.requiresAdminApproval ||
+    rewardPoints !== initial.current.rewardPoints ||
+    minStreak !== initial.current.minStreak ||
+    conditionActionId !== initial.current.conditionActionId ||
+    threshold !== initial.current.threshold ||
+    conditionJson !== initial.current.conditionJson ||
+    rewardJson !== initial.current.rewardJson;
 
   function buildJsonFromUI(): { cond: Record<string, unknown>; reward: Record<string, unknown> } {
     const pts = parseInt(rewardPoints) || 0;
@@ -2840,14 +2800,15 @@ function RuleModal({
   const summary = buildSummary();
 
   return (
-    <>
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, padding: 20 }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, padding: 28, width: '100%', maxWidth: 520, maxHeight: '92vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 22 }}>
-          <h2 style={{ fontSize: 17, fontWeight: 700, color: '#0f172a', margin: 0 }}>{rule ? 'עריכת חוק' : 'חוק בונוס חדש'}</h2>
-          <button onClick={handleClose} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: '#94a3b8', lineHeight: 1 }}>×</button>
-        </div>
-
+    <StrongModal
+      title={rule ? 'עריכת חוק' : 'חוק בונוס חדש'}
+      isDirty={isDirty}
+      onClose={onClose}
+      busy={saving}
+      maxWidth={520}
+      zIndex={9999}
+    >
+      {({ attemptClose }) => (
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
 
           {/* ── Name ── */}
@@ -3035,46 +2996,14 @@ function RuleModal({
 
           {error && <div style={{ color: '#dc2626', fontSize: 13, background: '#fef2f2', padding: '8px 12px', borderRadius: 7 }}>{error}</div>}
           <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-            <button type="button" onClick={handleClose} style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 7, padding: '9px 18px', fontSize: 13, cursor: 'pointer' }}>ביטול</button>
+            <button type="button" onClick={attemptClose} disabled={saving} style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 7, padding: '9px 18px', fontSize: 13, cursor: saving ? 'not-allowed' : 'pointer' }}>ביטול</button>
             <button type="submit" disabled={saving} style={{ background: saving ? '#93c5fd' : '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '9px 20px', fontSize: 13, fontWeight: 600, cursor: saving ? 'not-allowed' : 'pointer' }}>
               {saving ? 'שומר...' : 'שמירה'}
             </button>
           </div>
         </form>
-      </div>
-    </div>
-
-    {/* ── Unsaved-changes confirmation ── */}
-    {showUnsaved && (
-      <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 10000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-        <div style={{ background: '#fff', borderRadius: 12, padding: 24, maxWidth: 320, width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
-          <h3 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', margin: '0 0 8px' }}>שינויים לא שמורים</h3>
-          <p style={{ fontSize: 14, color: '#64748b', margin: '0 0 20px', lineHeight: 1.5 }}>יש שינויים שעדיין לא נשמרו. מה לעשות?</p>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <button
-              disabled={saving}
-              onClick={async () => { const ok = await submitForm(); if (ok) setShowUnsaved(false); }}
-              style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '10px 16px', fontSize: 13, fontWeight: 600, cursor: saving ? 'not-allowed' : 'pointer', textAlign: 'center' as const }}
-            >
-              {saving ? 'שומר...' : 'שמור ויצא'}
-            </button>
-            <button
-              onClick={() => { setShowUnsaved(false); onClose(); }}
-              style={{ background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca', borderRadius: 7, padding: '10px 16px', fontSize: 13, cursor: 'pointer', textAlign: 'center' as const }}
-            >
-              בטל שינויים
-            </button>
-            <button
-              onClick={() => setShowUnsaved(false)}
-              style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 7, padding: '10px 16px', fontSize: 13, cursor: 'pointer', textAlign: 'center' as const }}
-            >
-              המשך עריכה
-            </button>
-          </div>
-        </div>
-      </div>
-    )}
-    </>
+      )}
+    </StrongModal>
   );
 }
 
@@ -4922,18 +4851,39 @@ function OfferModalInline(props: {
   onSaved: () => void;
 }) {
   const isEdit = !!props.initial;
-  const [title, setTitle] = useState(props.initial?.title ?? '');
-  const [amount, setAmount] = useState(props.initial ? props.initial.amount : '');
-  const [currency, setCurrency] = useState(props.initial?.currency ?? 'ILS');
-  const [iCountPaymentUrl, setIcount] = useState(props.initial?.iCountPaymentUrl ?? '');
-  const [iCountPageId, setICountPageId] = useState(props.initial?.iCountPageId ?? '');
-  const [iCountItemName, setICountItemName] = useState(props.initial?.iCountItemName ?? '');
-  const [iCountExternalId, setICountExternalId] = useState(props.initial?.iCountExternalId ?? '');
-  const [defaultGroupId, setDefaultGroupId] = useState(props.initial?.defaultGroup?.id ?? '');
-  const [isActive, setIsActive] = useState(props.initial?.isActive ?? true);
+  const i_title = props.initial?.title ?? '';
+  const i_amount: string | number = props.initial ? props.initial.amount : '';
+  const i_currency = props.initial?.currency ?? 'ILS';
+  const i_iCountPaymentUrl = props.initial?.iCountPaymentUrl ?? '';
+  const i_iCountPageId = props.initial?.iCountPageId ?? '';
+  const i_iCountItemName = props.initial?.iCountItemName ?? '';
+  const i_iCountExternalId = props.initial?.iCountExternalId ?? '';
+  const i_defaultGroupId = props.initial?.defaultGroup?.id ?? '';
+  const i_isActive = props.initial?.isActive ?? true;
+
+  const [title, setTitle] = useState(i_title);
+  const [amount, setAmount] = useState<string | number>(i_amount);
+  const [currency, setCurrency] = useState(i_currency);
+  const [iCountPaymentUrl, setIcount] = useState(i_iCountPaymentUrl);
+  const [iCountPageId, setICountPageId] = useState(i_iCountPageId);
+  const [iCountItemName, setICountItemName] = useState(i_iCountItemName);
+  const [iCountExternalId, setICountExternalId] = useState(i_iCountExternalId);
+  const [defaultGroupId, setDefaultGroupId] = useState(i_defaultGroupId);
+  const [isActive, setIsActive] = useState(i_isActive);
   const [groups, setGroups] = useState<Array<{ id: string; name: string }>>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+
+  const isDirty =
+    title !== i_title ||
+    String(amount) !== String(i_amount) ||
+    currency !== i_currency ||
+    iCountPaymentUrl !== i_iCountPaymentUrl ||
+    iCountPageId !== i_iCountPageId ||
+    iCountItemName !== i_iCountItemName ||
+    iCountExternalId !== i_iCountExternalId ||
+    defaultGroupId !== i_defaultGroupId ||
+    isActive !== i_isActive;
 
   useEffect(() => {
     apiFetch<Array<{ id: string; name: string }>>(`${BASE_URL}/groups`)
@@ -4990,15 +4940,15 @@ function OfferModalInline(props: {
   }
 
   return (
-    <div
-      onClick={(e) => { if (e.target === e.currentTarget && !busy) props.onClose(); }}
-      style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 16 }}
+    <StrongModal
+      title={isEdit ? 'עריכת הצעה' : 'הצעה חדשה'}
+      isDirty={isDirty}
+      onClose={props.onClose}
+      busy={busy}
+      maxWidth={520}
     >
-      <div style={{ background: '#fff', borderRadius: 14, padding: 22, width: '100%', maxWidth: 520, maxHeight: '90vh', overflowY: 'auto' as const, boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-          <div style={{ fontSize: 17, fontWeight: 700 }}>{isEdit ? 'עריכת הצעה' : 'הצעה חדשה'}</div>
-          <button aria-label="סגור" onClick={props.onClose} style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: 'pointer' }}>×</button>
-        </div>
+      {({ attemptClose }) => (
+      <>
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
             <label style={LABEL_P4}>כותרת *</label>
@@ -5065,7 +5015,7 @@ function OfferModalInline(props: {
             )}
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button onClick={props.onClose} style={{ padding: '8px 18px', background: '#f1f5f9', border: '1px solid #e2e8f0', color: '#374151', borderRadius: 8, fontSize: 13, cursor: 'pointer' }}>ביטול</button>
+            <button onClick={attemptClose} disabled={busy} style={{ padding: '8px 18px', background: '#f1f5f9', border: '1px solid #e2e8f0', color: '#374151', borderRadius: 8, fontSize: 13, cursor: busy ? 'not-allowed' : 'pointer' }}>ביטול</button>
             <button
               onClick={submit}
               disabled={busy}
@@ -5073,8 +5023,9 @@ function OfferModalInline(props: {
             >{busy ? 'שומר...' : 'שמירה'}</button>
           </div>
         </div>
-      </div>
-    </div>
+      </>
+      )}
+    </StrongModal>
   );
 }
 
@@ -5091,6 +5042,7 @@ interface WaitlistRow {
 function ProductWaitlistTab({ programId }: { programId: string }) {
   const [rows, setRows] = useState<WaitlistRow[] | null>(null);
   const [err, setErr] = useState('');
+  const [adding, setAdding] = useState(false);
   const reload = useCallback(() => {
     apiFetch<WaitlistRow[]>(`${BASE_URL}/programs/${programId}/waitlist`, { cache: 'no-store' })
       .then(setRows)
@@ -5104,34 +5056,323 @@ function ProductWaitlistTab({ programId }: { programId: string }) {
     reload();
   }
 
-  if (err) return <div style={{ color: '#b91c1c' }}>{err}</div>;
-  if (!rows) return <div style={{ padding: 20, textAlign: 'center', color: '#94a3b8' }}>טוען...</div>;
-  if (rows.length === 0) return (
-    <div style={{ ...CARD, color: '#64748b' }}>
-      אין משתתפות ברשימת ההמתנה. מילוי שאלון מסוג “רשימת המתנה” שמשויך לתוכנית זו יוסיף אוטומטית משתתפות.
-    </div>
-  );
+  // Set of participant ids already on the waitlist — used by the
+  // "select existing" tab in AddWaitlistModal to filter them out so
+  // an admin can't double-add (the server would 409 anyway, but
+  // hiding them is cleaner UX).
+  const existingIds = new Set((rows ?? []).map((r) => r.participant.id));
+
   return (
-    <div style={{ ...CARD, overflow: 'hidden' }}>
-      {rows.map((r) => (
-        <div key={r.id} style={{ padding: 14, borderBottom: '1px solid #f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' as const }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <Link href={`/admin/participants/${r.participant.id}`} style={{ color: '#0f172a', textDecoration: 'none', fontWeight: 600 }}>
-              {[r.participant.firstName, r.participant.lastName].filter(Boolean).join(' ')}
-            </Link>
-            <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
-              <span dir="ltr">{r.participant.phoneNumber}</span>
-              {r.source && <> · מקור: {r.source}</>}
-              {' · '}{new Date(r.createdAt).toLocaleDateString('he-IL')}
-            </div>
-          </div>
-          <button
-            onClick={() => remove(r.participant.id)}
-            style={{ padding: '6px 12px', fontSize: 12, background: 'transparent', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: 7, cursor: 'pointer' }}
-          >הסר</button>
+    <>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+        <button
+          onClick={() => setAdding(true)}
+          style={{
+            background: '#2563eb', color: '#fff', border: 'none',
+            borderRadius: 8, padding: '9px 16px',
+            fontSize: 13, fontWeight: 600, cursor: 'pointer',
+          }}
+        >+ הוסף משתתפת לרשימת המתנה</button>
+      </div>
+      {err && <div style={{ color: '#b91c1c', marginBottom: 12 }}>{err}</div>}
+      {!rows && <div style={{ padding: 20, textAlign: 'center', color: '#94a3b8' }}>טוען...</div>}
+      {rows && rows.length === 0 && (
+        <div style={{ ...CARD, color: '#64748b' }}>
+          אין עדיין משתתפות ברשימת ההמתנה. ניתן להוסיף ידנית בלחיצה על הכפתור למעלה,
+          או באמצעות מילוי שאלון מסוג &ldquo;רשימת המתנה&rdquo; שמשויך לתוכנית זו.
         </div>
-      ))}
-    </div>
+      )}
+      {rows && rows.length > 0 && (
+        <div style={{ ...CARD, overflow: 'hidden' }}>
+          {rows.map((r) => (
+            <div key={r.id} style={{ padding: 14, borderBottom: '1px solid #f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' as const }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <Link href={`/admin/participants/${r.participant.id}`} style={{ color: '#0f172a', textDecoration: 'none', fontWeight: 600 }}>
+                  {[r.participant.firstName, r.participant.lastName].filter(Boolean).join(' ')}
+                </Link>
+                <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
+                  <span dir="ltr">{r.participant.phoneNumber}</span>
+                  {r.source && <> · מקור: {r.source}</>}
+                  {' · '}{new Date(r.createdAt).toLocaleDateString('he-IL')}
+                </div>
+              </div>
+              <button
+                onClick={() => remove(r.participant.id)}
+                style={{ padding: '6px 12px', fontSize: 12, background: 'transparent', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: 7, cursor: 'pointer' }}
+              >הסר</button>
+            </div>
+          ))}
+        </div>
+      )}
+      {adding && (
+        <AddWaitlistModal
+          programId={programId}
+          existingIds={existingIds}
+          onClose={() => setAdding(false)}
+          onAdded={() => { setAdding(false); reload(); }}
+        />
+      )}
+    </>
+  );
+}
+
+// AddWaitlistModal — two-tab flow for adding a participant to the
+// waitlist. Tab 1 picks an existing participant from the system
+// (filtered by name/phone search, hides those already on this
+// waitlist). Tab 2 creates a brand-new participant on the fly and
+// adds her to the waitlist in two API calls (create participant →
+// post to waitlist with the new id). Locked via StrongModal — no
+// backdrop close, X + unsaved-changes confirm.
+interface ParticipantLite {
+  id: string;
+  firstName: string;
+  lastName: string | null;
+  phoneNumber: string;
+  email: string | null;
+  status: string | null;
+}
+
+function AddWaitlistModal(props: {
+  programId: string;
+  existingIds: Set<string>;
+  onClose: () => void;
+  onAdded: () => void;
+}) {
+  const [tab, setTab] = useState<'existing' | 'new'>('existing');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  // Tab 1 — existing
+  const [allParticipants, setAllParticipants] = useState<ParticipantLite[] | null>(null);
+  const [search, setSearch] = useState('');
+  const [pickedId, setPickedId] = useState<string | null>(null);
+
+  // Tab 2 — new
+  const i_firstName = '';
+  const i_lastName = '';
+  const i_phone = '';
+  const i_email = '';
+  const i_genderName = 'נקבה';
+  const i_source = '';
+  const [firstName, setFirstName] = useState(i_firstName);
+  const [lastName, setLastName] = useState(i_lastName);
+  const [phone, setPhone] = useState(i_phone);
+  const [email, setEmail] = useState(i_email);
+  const [genderName, setGenderName] = useState(i_genderName);
+  const [source, setSource] = useState(i_source);
+
+  // The "pick existing" tab considers itself dirty as soon as a row
+  // is selected. The "new" tab is dirty whenever any of the create
+  // fields are non-empty. Either tab being dirty arms the unsaved-
+  // changes confirm in StrongModal.
+  const newTabDirty =
+    firstName !== i_firstName ||
+    lastName !== i_lastName ||
+    phone !== i_phone ||
+    email !== i_email ||
+    genderName !== i_genderName ||
+    source !== i_source;
+  const isDirty = (tab === 'existing' && pickedId !== null) || (tab === 'new' && newTabDirty);
+
+  useEffect(() => {
+    apiFetch<ParticipantLite[]>(`${BASE_URL}/participants?includeMock=false`, { cache: 'no-store' })
+      .then(setAllParticipants)
+      .catch((e) => setErr(e instanceof Error ? e.message : 'טעינה נכשלה'));
+  }, []);
+
+  const filtered = (allParticipants ?? [])
+    .filter((p) => !props.existingIds.has(p.id))
+    .filter((p) => {
+      if (!search.trim()) return true;
+      const term = search.trim().toLowerCase();
+      const fullName = `${p.firstName} ${p.lastName ?? ''}`.toLowerCase();
+      const phoneStr = (p.phoneNumber || '').toLowerCase();
+      return fullName.includes(term) || phoneStr.includes(term);
+    })
+    .slice(0, 50);
+
+  async function submitExisting() {
+    if (!pickedId) { setErr('יש לבחור משתתפת'); return; }
+    setBusy(true); setErr('');
+    try {
+      await apiFetch(`${BASE_URL}/programs/${props.programId}/waitlist`, {
+        method: 'POST',
+        body: JSON.stringify({ participantId: pickedId, source: 'admin_manual' }),
+      });
+      props.onAdded();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message :
+        (typeof e === 'object' && e !== null && typeof (e as { message?: unknown }).message === 'string')
+          ? (e as { message: string }).message : 'הוספה נכשלה';
+      setErr(msg);
+    } finally { setBusy(false); }
+  }
+
+  async function submitNew() {
+    if (!firstName.trim()) { setErr('שם פרטי הוא שדה חובה'); return; }
+    if (!phone.trim()) { setErr('טלפון הוא שדה חובה'); return; }
+    if (!genderName.trim()) { setErr('יש לבחור מגדר'); return; }
+    setBusy(true); setErr('');
+    try {
+      // Step 1 — create the participant. Backend resolves genderName
+      // to a Gender row (find-or-create) and enforces phone-uniqueness;
+      // a 409 here means the phone is already taken by someone else,
+      // in which case the admin should switch to the "existing" tab.
+      const created = await apiFetch<{ id: string }>(`${BASE_URL}/participants`, {
+        method: 'POST',
+        body: JSON.stringify({
+          firstName: firstName.trim(),
+          lastName: lastName.trim() || undefined,
+          phoneNumber: phone.trim(),
+          genderName: genderName.trim(),
+          email: email.trim() || undefined,
+          source: 'admin_waitlist',
+        }),
+      });
+      // Step 2 — add to the waitlist. If this fails after step 1
+      // succeeded, the participant exists but isn't on the list yet —
+      // surface the error so the admin can retry from the "existing"
+      // tab without re-creating.
+      await apiFetch(`${BASE_URL}/programs/${props.programId}/waitlist`, {
+        method: 'POST',
+        body: JSON.stringify({
+          participantId: created.id,
+          source: source.trim() || 'admin_manual',
+        }),
+      });
+      props.onAdded();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message :
+        (typeof e === 'object' && e !== null && typeof (e as { message?: unknown }).message === 'string')
+          ? (e as { message: string }).message : 'יצירה נכשלה';
+      setErr(msg);
+    } finally { setBusy(false); }
+  }
+
+  const tabBtn = (key: 'existing' | 'new', label: string): React.CSSProperties => ({
+    flex: 1, padding: '9px 12px', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+    border: `2px solid ${tab === key ? '#2563eb' : '#e2e8f0'}`,
+    background: tab === key ? '#eff6ff' : '#fff',
+    color: tab === key ? '#2563eb' : '#374151',
+    borderRadius: 7,
+  });
+
+  return (
+    <StrongModal
+      title="הוספת משתתפת לרשימת המתנה"
+      isDirty={isDirty}
+      onClose={props.onClose}
+      busy={busy}
+      maxWidth={520}
+      zIndex={1100}
+    >
+      {({ attemptClose }) => (
+        <>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
+            <button type="button" onClick={() => setTab('existing')} style={tabBtn('existing', 'בחרי קיימת')}>בחרי קיימת</button>
+            <button type="button" onClick={() => setTab('new')} style={tabBtn('new', 'צרי חדשה')}>צרי חדשה</button>
+          </div>
+
+          {tab === 'existing' && (
+            <>
+              <input
+                style={INPUT_P4}
+                placeholder="חיפוש לפי שם או טלפון..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+              <div style={{ marginTop: 10, maxHeight: '50vh', overflowY: 'auto', border: '1px solid #e2e8f0', borderRadius: 8 }}>
+                {!allParticipants && <div style={{ padding: 20, textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>טוען...</div>}
+                {allParticipants && filtered.length === 0 && (
+                  <div style={{ padding: 20, textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>
+                    {search.trim() ? 'לא נמצאו תוצאות' : 'אין משתתפות זמינות להוספה'}
+                  </div>
+                )}
+                {filtered.map((p) => {
+                  const checked = pickedId === p.id;
+                  return (
+                    <label
+                      key={p.id}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 10,
+                        padding: '10px 12px',
+                        borderBottom: '1px solid #f1f5f9',
+                        background: checked ? '#eff6ff' : '#fff',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <input
+                        type="radio"
+                        name="pickParticipant"
+                        checked={checked}
+                        onChange={() => setPickedId(p.id)}
+                        style={{ width: 16, height: 16 }}
+                      />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a' }}>
+                          {[p.firstName, p.lastName].filter(Boolean).join(' ')}
+                        </div>
+                        <div style={{ fontSize: 12, color: '#64748b', direction: 'ltr', textAlign: 'right' }}>
+                          {p.phoneNumber}{p.email ? ` · ${p.email}` : ''}
+                        </div>
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+            </>
+          )}
+
+          {tab === 'new' && (
+            <div style={{ display: 'grid', gap: 12 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                <div>
+                  <label style={LABEL_P4}>שם פרטי *</label>
+                  <input style={INPUT_P4} value={firstName} onChange={(e) => setFirstName(e.target.value)} />
+                </div>
+                <div>
+                  <label style={LABEL_P4}>שם משפחה</label>
+                  <input style={INPUT_P4} value={lastName} onChange={(e) => setLastName(e.target.value)} />
+                </div>
+              </div>
+              <div>
+                <label style={LABEL_P4}>טלפון *</label>
+                <input style={{ ...INPUT_P4, direction: 'ltr' }} value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="0501234567" />
+              </div>
+              <div>
+                <label style={LABEL_P4}>אימייל</label>
+                <input style={{ ...INPUT_P4, direction: 'ltr' }} value={email} onChange={(e) => setEmail(e.target.value)} />
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                <div>
+                  <label style={LABEL_P4}>מגדר *</label>
+                  <select style={INPUT_P4} value={genderName} onChange={(e) => setGenderName(e.target.value)}>
+                    <option value="נקבה">נקבה</option>
+                    <option value="זכר">זכר</option>
+                    <option value="אחר">אחר</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={LABEL_P4}>מקור (אופציונלי)</label>
+                  <input style={INPUT_P4} value={source} onChange={(e) => setSource(e.target.value)} placeholder="לדוגמה: המלצה, פייסבוק" />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {err && <div style={{ color: '#b91c1c', fontSize: 13, marginTop: 10 }}>{err}</div>}
+
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+            <button onClick={attemptClose} disabled={busy} style={{ padding: '8px 16px', background: '#f1f5f9', border: '1px solid #e2e8f0', color: '#374151', borderRadius: 8, fontSize: 13, cursor: busy ? 'not-allowed' : 'pointer' }}>ביטול</button>
+            <button
+              onClick={() => { void (tab === 'existing' ? submitExisting() : submitNew()); }}
+              disabled={busy}
+              style={{ padding: '8px 18px', background: busy ? '#93c5fd' : '#2563eb', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: busy ? 'not-allowed' : 'pointer' }}
+            >{busy ? '...' : 'הוספה לרשימה'}</button>
+          </div>
+        </>
+      )}
+    </StrongModal>
   );
 }
 
@@ -5397,30 +5638,48 @@ function CommTemplateModal(props: {
   onSaved: () => void;
 }) {
   const isEdit = !!props.initial;
-  const [channel, setChannel] = useState<'email' | 'whatsapp'>(props.initial?.channel ?? 'whatsapp');
-  const [title, setTitle] = useState(props.initial?.title ?? '');
-  const [subject, setSubject] = useState(props.initial?.subject ?? '');
-  const [body, setBody] = useState(props.initial?.body ?? '');
+  // Initial snapshot values. Used both as useState seeds and for the
+  // dirty-check that gates the unsaved-changes confirm in StrongModal.
+  const i_channel = props.initial?.channel ?? 'whatsapp';
+  const i_title = props.initial?.title ?? '';
+  const i_subject = props.initial?.subject ?? '';
+  const i_body = props.initial?.body ?? '';
+  const i_schedulingEnabled = !!props.initial?.timingType;
+  const i_category = props.initial?.category ?? 'משחק שוטף';
+  const i_timingType: NonNullable<CommTemplate['timingType']> =
+    props.initial?.timingType ?? 'day_of';
+  const i_exactAt = props.initial?.exactAt ? props.initial.exactAt.slice(0, 16) : '';
+  const i_dayOfNumber = props.initial?.dayOfNumber != null ? String(props.initial.dayOfNumber) : '';
+  const i_offsetDays = props.initial?.offsetDays != null ? String(props.initial.offsetDays) : '';
+  const i_timeOfDay = props.initial?.timeOfDay ?? '09:00';
+
+  const [channel, setChannel] = useState<'email' | 'whatsapp'>(i_channel);
+  const [title, setTitle] = useState(i_title);
+  const [subject, setSubject] = useState(i_subject);
+  const [body, setBody] = useState(i_body);
   // Scheduling defaults — only meaningful when channel='whatsapp'.
   // schedulingEnabled toggles the whole block; when off we send
   // timingType=null and the template behaves as manual-send-only.
-  const [schedulingEnabled, setSchedulingEnabled] = useState(
-    !!props.initial?.timingType,
-  );
-  const [category, setCategory] = useState(props.initial?.category ?? 'משחק שוטף');
-  const [timingType, setTimingType] = useState<NonNullable<CommTemplate['timingType']>>(
-    props.initial?.timingType ?? 'day_of',
-  );
-  const [exactAt, setExactAt] = useState(
-    props.initial?.exactAt ? props.initial.exactAt.slice(0, 16) : '',
-  );
-  const [dayOfNumber, setDayOfNumber] = useState(
-    props.initial?.dayOfNumber != null ? String(props.initial.dayOfNumber) : '',
-  );
-  const [offsetDays, setOffsetDays] = useState(
-    props.initial?.offsetDays != null ? String(props.initial.offsetDays) : '',
-  );
-  const [timeOfDay, setTimeOfDay] = useState(props.initial?.timeOfDay ?? '09:00');
+  const [schedulingEnabled, setSchedulingEnabled] = useState(i_schedulingEnabled);
+  const [category, setCategory] = useState(i_category);
+  const [timingType, setTimingType] = useState<NonNullable<CommTemplate['timingType']>>(i_timingType);
+  const [exactAt, setExactAt] = useState(i_exactAt);
+  const [dayOfNumber, setDayOfNumber] = useState(i_dayOfNumber);
+  const [offsetDays, setOffsetDays] = useState(i_offsetDays);
+  const [timeOfDay, setTimeOfDay] = useState(i_timeOfDay);
+
+  const isDirty =
+    channel !== i_channel ||
+    title !== i_title ||
+    subject !== i_subject ||
+    body !== i_body ||
+    schedulingEnabled !== i_schedulingEnabled ||
+    category !== i_category ||
+    timingType !== i_timingType ||
+    exactAt !== i_exactAt ||
+    dayOfNumber !== i_dayOfNumber ||
+    offsetDays !== i_offsetDays ||
+    timeOfDay !== i_timeOfDay;
   // After saving an edit on a scheduling template that already has
   // groups using it, we open the apply-to-groups follow-up modal so
   // the admin can explicitly opt in to propagating the change.
@@ -5513,15 +5772,16 @@ function CommTemplateModal(props: {
   }
 
   return (
-    <div
-      onClick={(e) => { if (e.target === e.currentTarget && !busy) props.onClose(); }}
-      style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 16 }}
+    <>
+    <StrongModal
+      title={isEdit ? 'עריכת תבנית' : 'תבנית חדשה'}
+      isDirty={isDirty}
+      onClose={props.onClose}
+      busy={busy}
+      maxWidth={560}
     >
-      <div style={{ background: '#fff', borderRadius: 14, padding: 22, width: '100%', maxWidth: 560, maxHeight: '90vh', overflowY: 'auto' as const, boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-          <div style={{ fontSize: 17, fontWeight: 700 }}>{isEdit ? 'עריכת תבנית' : 'תבנית חדשה'}</div>
-          <button aria-label="סגור" onClick={props.onClose} style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: 'pointer' }}>×</button>
-        </div>
+      {({ attemptClose }) => (
+      <>
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
             <label style={LABEL_P4}>ערוץ</label>
@@ -5666,7 +5926,7 @@ function CommTemplateModal(props: {
             )}
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button onClick={props.onClose} style={{ padding: '8px 18px', background: '#f1f5f9', border: '1px solid #e2e8f0', color: '#374151', borderRadius: 8, fontSize: 13, cursor: 'pointer' }}>ביטול</button>
+            <button onClick={attemptClose} disabled={busy} style={{ padding: '8px 18px', background: '#f1f5f9', border: '1px solid #e2e8f0', color: '#374151', borderRadius: 8, fontSize: 13, cursor: busy ? 'not-allowed' : 'pointer' }}>ביטול</button>
             <button
               onClick={save}
               disabled={busy}
@@ -5674,7 +5934,9 @@ function CommTemplateModal(props: {
             >{busy ? 'שומר...' : 'שמירה'}</button>
           </div>
         </div>
-      </div>
+      </>
+      )}
+    </StrongModal>
 
       {/* Apply-to-groups follow-up. Opens after a successful save of
           a scheduling-enabled template; lets admin EXPLICITLY pick
@@ -5688,7 +5950,7 @@ function CommTemplateModal(props: {
           onClose={() => { setApplyTarget(null); props.onSaved(); }}
         />
       )}
-    </div>
+    </>
   );
 }
 
@@ -5771,17 +6033,22 @@ function ApplyTemplateToGroupsModal(props: { templateId: string; onClose: () => 
     } finally { setBusy(false); }
   }
 
-  return (
-    <div
-      onClick={(e) => { if (e.target === e.currentTarget && !busy) props.onClose(); }}
-      style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100, padding: 16 }}
-    >
-      <div style={{ background: '#fff', borderRadius: 14, padding: 22, width: '100%', maxWidth: 520, maxHeight: '90vh', overflowY: 'auto' as const, boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-          <div style={{ fontSize: 17, fontWeight: 700 }}>החל שינויים על קבוצות</div>
-          <button onClick={props.onClose} disabled={busy} style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: busy ? 'not-allowed' : 'pointer' }}>×</button>
-        </div>
+  // "Dirty" here means the admin has selected groups they haven't yet
+  // applied — closing without applying loses that selection. Once a
+  // result exists the operation is terminal, so dirty drops back to false.
+  const isDirty = !result && selected.size > 0;
 
+  return (
+    <StrongModal
+      title="החל שינויים על קבוצות"
+      isDirty={isDirty}
+      onClose={props.onClose}
+      busy={busy}
+      maxWidth={520}
+      zIndex={1100}
+    >
+      {({ attemptClose }) => (
+      <>
         {!result && (
           <>
             <p style={{ fontSize: 13, color: '#475569', lineHeight: 1.6, margin: '0 0 12px' }}>
@@ -5860,7 +6127,7 @@ function ApplyTemplateToGroupsModal(props: { templateId: string; onClose: () => 
             {err && <div style={{ color: '#b91c1c', fontSize: 13, marginTop: 10 }}>{err}</div>}
 
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 14 }}>
-              <button onClick={props.onClose} disabled={busy} style={{ padding: '8px 16px', fontSize: 13, fontWeight: 600, background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 8, cursor: busy ? 'not-allowed' : 'pointer' }}>
+              <button onClick={attemptClose} disabled={busy} style={{ padding: '8px 16px', fontSize: 13, fontWeight: 600, background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 8, cursor: busy ? 'not-allowed' : 'pointer' }}>
                 לא, השאר כפי שהוא
               </button>
               <button
@@ -5893,7 +6160,8 @@ function ApplyTemplateToGroupsModal(props: { templateId: string; onClose: () => 
             </div>
           </>
         )}
-      </div>
-    </div>
+      </>
+      )}
+    </StrongModal>
   );
 }
