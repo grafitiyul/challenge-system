@@ -68,6 +68,10 @@ model Program {
   showOtherGroupsMemberDetails Boolean @default(false)
 
   questionnaireTemplates QuestionnaireTemplate[]
+  // Scheduled message templates — DEFAULTS only. Never send by themselves.
+  // Groups can clone these into GroupScheduledMessage rows that the cron
+  // worker actually executes.
+  scheduledMessageTemplates ProgramScheduledMessageTemplate[]
   // Public registration — offers, waitlist, and communication templates
   // all hang off Program. Program IS the product: its `type` column is the
   // productType discriminator (game / challenge / group_coaching /
@@ -283,6 +287,13 @@ model Group {
   aiGroupSummaries    AiGroupSummary[]
   participantInsights ParticipantInsight[]
   chatLinks           GroupChatLink[]
+
+  // Scheduled-messages master toggle. When false, the cron worker
+  // skips every row in this group regardless of per-message flags.
+  // Defaults false so a freshly-created group never sends until the
+  // admin explicitly opts in.
+  scheduledMessagesEnabled Boolean @default(false)
+  scheduledMessages        GroupScheduledMessage[]
 
   // Game engine
   scoreEvents      ScoreEvent[]
@@ -1602,6 +1613,138 @@ model QuestionnaireExternalLink {
 
   @@index([templateId])
   @@map("questionnaire_external_links")
+}
+
+// =============================================================================
+// SCHEDULED MESSAGES
+// =============================================================================
+// Two-layer model:
+//   ProgramScheduledMessageTemplate — DEFAULT only, never sends. Lives at
+//                                      program level so admins can author
+//                                      reusable templates once and clone
+//                                      into specific groups.
+//   GroupScheduledMessage           — ACTUAL sending control. Cron only
+//                                      reads from this table. Each row is
+//                                      a self-contained snapshot — template
+//                                      edits never propagate retroactively.
+//
+// Lifecycle (status):
+//   draft     — admin still configuring (auto-cloned rows start here)
+//   pending   — armed and waiting for scheduledAt + retry conditions
+//   sent      — terminal success
+//   failed    — terminal failure after maxAttempts
+//   cancelled — admin manually cancelled
+//   skipped   — cron reached it but a gate blocked the send (master
+//               toggle off, group archived, no chat link, etc.)
+//
+// Send rule (cron):
+//   Group.scheduledMessagesEnabled = true
+//     AND row.enabled = true
+//     AND row.status = 'pending'
+//     AND row.scheduledAt <= now()
+//     AND (row.nextRetryAt IS NULL OR row.nextRetryAt <= now())
+//     AND row.claimedAt IS NULL OR row.claimedAt < now() - 5 minutes
+//
+// V1 scope: targetType is always 'group_whatsapp_chat' — fan out to a
+// per-participant target is deferred to V2 to keep duplicate-send
+// reasoning simple.
+
+model ProgramScheduledMessageTemplate {
+  id           String  @id @default(cuid())
+  programId    String
+  program      Program @relation(fields: [programId], references: [id])
+  // Free-form category. UI offers a curated set
+  // (משחק שוטף / לפני משחק / פתיחה / סיום / תזכורת) but admins can
+  // add custom strings without a migration.
+  category     String
+  // Internal label that admins use to recognize this template.
+  internalName String
+  content      String  @db.Text
+  // Discriminator for how scheduledAt is computed when this template
+  // is cloned into a group:
+  //   "exact"        — exactAt is the absolute send time (group-agnostic)
+  //   "day_of"       — dayOfNumber + timeOfDay relative to group.startDate
+  //                    (1-based; day 1 = startDate)
+  //   "before_start" — group.startDate - offsetDays at timeOfDay
+  //   "after_end"    — group.endDate   + offsetDays at timeOfDay
+  timingType   String
+  exactAt      DateTime?    @db.Timestamptz
+  dayOfNumber  Int?
+  offsetDays   Int?
+  // "HH:mm" in Asia/Jerusalem. Required for non-exact timing.
+  timeOfDay    String?
+  isActive     Boolean      @default(true)
+  sortOrder    Int          @default(0)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  groupMessages GroupScheduledMessage[]
+
+  @@index([programId, isActive])
+  @@map("program_scheduled_message_templates")
+}
+
+model GroupScheduledMessage {
+  id              String   @id @default(cuid())
+  groupId         String
+  group           Group    @relation(fields: [groupId], references: [id])
+  // Optional — populated when this row was cloned from a template.
+  // Nullable because admins can also create group-only schedules.
+  // ON DELETE SET NULL via Prisma — template removal must not orphan
+  // group rows that the admin already approved + scheduled.
+  sourceTemplateId String?
+  sourceTemplate  ProgramScheduledMessageTemplate? @relation(fields: [sourceTemplateId], references: [id])
+
+  // Snapshot fields — copied at clone/create time and NEVER touched by
+  // template edits. This is the load-bearing "edits don't propagate"
+  // guarantee from the spec. An explicit "apply changes to selected
+  // groups" admin action creates fresh rows; it does not mutate
+  // existing ones.
+  category        String
+  internalName    String
+  content         String   @db.Text
+  // Resolved absolute send time in UTC. Computed once at create/clone.
+  scheduledAt     DateTime @db.Timestamptz
+  // V1 only supports group_whatsapp_chat. Stored as a string so V2
+  // (per-participant) doesn't need a migration.
+  targetType      String   @default("group_whatsapp_chat")
+
+  // One-click pause without changing status. enabled=false makes the
+  // cron skip this row even when status='pending'. Combines with
+  // Group.scheduledMessagesEnabled (master) and status as the three
+  // gates that must ALL pass for a send.
+  enabled         Boolean  @default(false)
+
+  // Lifecycle — see header comment above the model.
+  status          String   @default("draft")
+
+  // Retry/backoff state. nextRetryAt is set after each failed attempt
+  // to delay the next pickup; null means "ready immediately".
+  // Schedule: 1m / 5m / 15m → after 3 failed attempts → status='failed'.
+  attemptCount    Int      @default(0)
+  lastAttemptAt   DateTime? @db.Timestamptz
+  nextRetryAt     DateTime? @db.Timestamptz
+
+  // Idempotency / claim columns — see worker design + duplicate-send
+  // prevention notes. claimedAt < now() - 5 min implicitly releases
+  // a claim from a worker that died mid-send.
+  claimedAt       DateTime? @db.Timestamptz
+  claimedBy       String?
+
+  sentAt          DateTime? @db.Timestamptz
+  failureReason   String?
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Critical: prevents the same template from being cloned twice into
+  // the same group at the same resolved time. Catches inheritance
+  // double-click + concurrent re-applies.
+  @@unique([groupId, sourceTemplateId, scheduledAt])
+  // Cron's primary access path.
+  @@index([status, scheduledAt])
+  @@index([groupId, status])
+  @@map("group_scheduled_messages")
 }
 
 // =============================================================================

@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './modules/auth/auth.module';
@@ -27,10 +28,15 @@ import { OffersModule } from './modules/offers/offers.module';
 import { IcountWebhookModule } from './modules/icount-webhook/icount-webhook.module';
 import { AdminUsersModule } from './modules/admin-users/admin-users.module';
 import { WhatsappBridgeModule } from './modules/whatsapp-bridge/whatsapp-bridge.module';
+import { ScheduledMessagesModule } from './modules/scheduled-messages/scheduled-messages.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    // ScheduleModule.forRoot() activates @Cron decorators globally;
+    // the scheduled-messages worker registers itself via @Cron and
+    // would silently no-op without this.
+    ScheduleModule.forRoot(),
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }]),
     PrismaModule,
     WassengerModule,
@@ -56,6 +62,7 @@ import { WhatsappBridgeModule } from './modules/whatsapp-bridge/whatsapp-bridge.
     IcountWebhookModule,
     AdminUsersModule,
     WhatsappBridgeModule,
+    ScheduledMessagesModule,
   ],
   controllers: [HealthController],
   providers: [SeederService],

@@ -162,7 +162,7 @@ const HDR_ICON_BTN_DANGER_HOVER: React.CSSProperties = { ...HDR_ICON_BTN_DANGER,
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
-type Tab = 'overview' | 'participants' | 'questionnaires' | 'tasks' | 'communication';
+type Tab = 'overview' | 'participants' | 'questionnaires' | 'tasks' | 'communication' | 'scheduled';
 
 interface ParticipantRankRow {
   participantId: string;
@@ -1033,6 +1033,7 @@ export default function GroupDetailPage() {
           ['overview', 'ביצועים ודירוגים'],
           ['questionnaires', 'שאלונים'],
           ['tasks', 'משימות'],
+          ['scheduled', 'הודעות מתוזמנות'],
           ['communication', 'תקשורת'],
         ] as const).map(([key, label]) => (
           <button
@@ -1248,6 +1249,13 @@ export default function GroupDetailPage() {
           </Section>
 
         </>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════════════
+          TAB: SCHEDULED MESSAGES
+      ══════════════════════════════════════════════════════════════════════ */}
+      {tab === 'scheduled' && (
+        <GroupScheduledMessagesTab groupId={id} hasProgram={!!group.programId} />
       )}
 
       {/* ══════════════════════════════════════════════════════════════════════
@@ -2778,3 +2786,411 @@ const S = {
   } as React.CSSProperties,
   btnDisabled: { background: '#93c5fd', cursor: 'not-allowed' } as React.CSSProperties,
 };
+
+// ─── Scheduled messages — group tab ─────────────────────────────────────────
+// Admin-facing controller of actual sending. Three gates must ALL be
+// true for a row to send: (1) group master toggle ON, (2) per-row
+// enabled=true, (3) status='pending'. The cron worker on the API
+// reads from this same data via /api/groups/:id/scheduled-messages.
+
+interface SchedMsg {
+  id: string;
+  category: string;
+  internalName: string;
+  content: string;
+  scheduledAt: string;
+  targetType: string;
+  enabled: boolean;
+  status: 'draft' | 'pending' | 'sent' | 'failed' | 'cancelled' | 'skipped';
+  attemptCount: number;
+  lastAttemptAt: string | null;
+  nextRetryAt: string | null;
+  sentAt: string | null;
+  failureReason: string | null;
+  sourceTemplateId: string | null;
+  sourceTemplate: { id: string; internalName: string; isActive: boolean } | null;
+}
+
+const SCHED_STATUS_LABEL: Record<SchedMsg['status'], { text: string; bg: string; fg: string }> = {
+  draft:     { text: 'טיוטה',  bg: '#f1f5f9', fg: '#475569' },
+  pending:   { text: 'מתוזמן', bg: '#dbeafe', fg: '#1d4ed8' },
+  sent:      { text: 'נשלח ✓', bg: '#dcfce7', fg: '#15803d' },
+  failed:    { text: 'נכשל',   bg: '#fee2e2', fg: '#b91c1c' },
+  cancelled: { text: 'בוטל',   bg: '#f1f5f9', fg: '#94a3b8' },
+  skipped:   { text: 'דולג',   bg: '#fef3c7', fg: '#92400e' },
+};
+
+function formatSchedTime(iso: string): string {
+  return new Date(iso).toLocaleString('he-IL', {
+    day: '2-digit', month: '2-digit', year: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  });
+}
+
+// Convert YYYY-MM-DDTHH:mm (datetime-local input value, interpreted
+// as Asia/Jerusalem) → ISO UTC. The browser's datetime-local input
+// returns a wall-clock string in the user's locale; for admins in
+// Israel that's already what we want, so we just append the local
+// offset and serialise. Acceptable because the admin enters dates
+// from Israel; if not, the displayed time uses he-IL locale anyway.
+function localInputToIso(local: string): string {
+  return new Date(local).toISOString();
+}
+function isoToLocalInput(iso: string): string {
+  // Keep only YYYY-MM-DDTHH:mm in user's locale wall-clock.
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function GroupScheduledMessagesTab({ groupId, hasProgram }: { groupId: string; hasProgram: boolean }) {
+  const [rows, setRows] = useState<SchedMsg[] | null>(null);
+  const [masterEnabled, setMasterEnabled] = useState<boolean | null>(null);
+  const [err, setErr] = useState('');
+  const [busyMaster, setBusyMaster] = useState(false);
+  const [editing, setEditing] = useState<SchedMsg | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [inheriting, setInheriting] = useState(false);
+
+  const reload = useCallback(async () => {
+    try {
+      const [list, group] = await Promise.all([
+        apiFetch<SchedMsg[]>(`${BASE_URL}/groups/${groupId}/scheduled-messages`, { cache: 'no-store' }),
+        apiFetch<{ scheduledMessagesEnabled: boolean }>(`${BASE_URL}/groups/${groupId}`, { cache: 'no-store' }),
+      ]);
+      setRows(list);
+      setMasterEnabled(group.scheduledMessagesEnabled);
+      setErr('');
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'טעינה נכשלה');
+    }
+  }, [groupId]);
+  useEffect(() => { void reload(); }, [reload]);
+
+  async function toggleMaster(next: boolean) {
+    setBusyMaster(true);
+    try {
+      const updated = await apiFetch<{ scheduledMessagesEnabled: boolean }>(
+        `${BASE_URL}/groups/${groupId}/scheduled-messages/master-toggle`,
+        { method: 'PATCH', body: JSON.stringify({ scheduledMessagesEnabled: next }) },
+      );
+      setMasterEnabled(updated.scheduledMessagesEnabled);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'שמירה נכשלה');
+    } finally {
+      setBusyMaster(false);
+    }
+  }
+
+  async function toggleRowEnabled(row: SchedMsg, next: boolean) {
+    try {
+      await apiFetch(`${BASE_URL}/groups/${groupId}/scheduled-messages/${row.id}`,
+        { method: 'PATCH', body: JSON.stringify({ enabled: next }) });
+      void reload();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message :
+        (typeof e === 'object' && e !== null && typeof (e as { message?: unknown }).message === 'string')
+          ? (e as { message: string }).message : 'שמירה נכשלה');
+    }
+  }
+
+  async function cancelRow(row: SchedMsg) {
+    if (!window.confirm(`לבטל את ההודעה "${row.internalName}"? ההודעה לא תישלח ולא תוכל לחזור למצב פעיל.`)) return;
+    try {
+      await apiFetch(`${BASE_URL}/groups/${groupId}/scheduled-messages/${row.id}/cancel`, { method: 'POST' });
+      void reload();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'ביטול נכשל');
+    }
+  }
+
+  // Group rows by category for clean visual scanning.
+  const grouped: Array<{ category: string; items: SchedMsg[] }> = [];
+  if (rows) {
+    for (const r of rows) {
+      const bucket = grouped.find((g) => g.category === r.category);
+      if (bucket) bucket.items.push(r);
+      else grouped.push({ category: r.category, items: [r] });
+    }
+  }
+
+  return (
+    <div>
+      {/* Master toggle */}
+      <div style={{ background: masterEnabled ? '#f0fdf4' : '#fef2f2', border: `1px solid ${masterEnabled ? '#bbf7d0' : '#fecaca'}`, borderRadius: 10, padding: 16, marginBottom: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+          <input
+            type="checkbox"
+            checked={masterEnabled === true}
+            disabled={busyMaster || masterEnabled === null}
+            onChange={(e) => { void toggleMaster(e.target.checked); }}
+            style={{ width: 18, height: 18, marginTop: 2, cursor: 'pointer', flexShrink: 0 }}
+          />
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: '#0f172a' }}>שליחת הודעות מתוזמנות לקבוצה זו</div>
+            <div style={{ fontSize: 12, color: masterEnabled ? '#15803d' : '#b91c1c', marginTop: 4, lineHeight: 1.55 }}>
+              {masterEnabled
+                ? 'הודעות שסומנו כפעילות יישלחו אוטומטית בזמן שנקבע להן.'
+                : 'כל ההודעות המתוזמנות מושבתות. אף הודעה לא תישלח אוטומטית, גם אם היא מסומנת כפעילה בנפרד.'}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 8 }}>
+        <div style={{ fontSize: 16, fontWeight: 700, color: '#0f172a' }}>הודעות מתוזמנות לקבוצה</div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {hasProgram && (
+            <button onClick={() => setInheriting(true)} style={{ background: '#fff', color: '#1d4ed8', border: '1px solid #bfdbfe', borderRadius: 8, padding: '7px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+              + ייבוא תבניות מהתוכנית
+            </button>
+          )}
+          <button onClick={() => setCreating(true)} style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 8, padding: '7px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+            + הודעה חדשה לקבוצה זו
+          </button>
+        </div>
+      </div>
+
+      {err && <div style={{ background: '#fee2e2', color: '#991b1b', padding: 10, borderRadius: 8, fontSize: 13, marginBottom: 12 }}>{err}</div>}
+      {!rows && <div style={{ color: '#94a3b8', textAlign: 'center', padding: 30 }}>טוען...</div>}
+      {rows && rows.length === 0 && (
+        <div style={{ padding: '40px 20px', textAlign: 'center', color: '#94a3b8', border: '2px dashed #e2e8f0', borderRadius: 12 }}>
+          {hasProgram
+            ? 'אין הודעות מתוזמנות. לחצי "ייבוא תבניות מהתוכנית" או "הודעה חדשה" להתחיל.'
+            : 'אין הודעות מתוזמנות. לחצי "הודעה חדשה" להתחיל.'}
+        </div>
+      )}
+
+      {grouped.map((g) => (
+        <div key={g.category} style={{ marginBottom: 20 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>
+            {g.category}
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {g.items.map((r) => {
+              const pill = SCHED_STATUS_LABEL[r.status];
+              const dimmed = !masterEnabled && r.enabled;
+              return (
+                <div key={r.id} style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: 14, opacity: dimmed ? 0.7 : 1 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 6 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                      <input
+                        type="checkbox"
+                        checked={r.enabled}
+                        disabled={r.status === 'sent' || r.status === 'cancelled'}
+                        onChange={(e) => { void toggleRowEnabled(r, e.target.checked); }}
+                        style={{ width: 16, height: 16, cursor: r.status === 'sent' || r.status === 'cancelled' ? 'not-allowed' : 'pointer' }}
+                      />
+                      <span style={{ fontSize: 14, fontWeight: 600, color: '#0f172a' }}>{r.internalName}</span>
+                      <span style={{ background: pill.bg, color: pill.fg, fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 999 }}>{pill.text}</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      {r.status !== 'sent' && r.status !== 'cancelled' && (
+                        <>
+                          <button onClick={() => setEditing(r)} style={{ background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', borderRadius: 7, padding: '5px 12px', fontSize: 12, cursor: 'pointer' }}>ערוך</button>
+                          <button onClick={() => { void cancelRow(r); }} style={{ background: '#fff', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: 7, padding: '5px 12px', fontSize: 12, cursor: 'pointer' }}>ביטול</button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}>
+                    📅 {formatSchedTime(r.scheduledAt)}
+                    {r.sourceTemplate && (
+                      <span style={{ marginInlineStart: 8, color: '#94a3b8' }}>· מתבנית: {r.sourceTemplate.internalName}</span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 13, color: '#334155', whiteSpace: 'pre-wrap', maxHeight: 80, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.content}</div>
+                  {r.status === 'failed' && r.failureReason && (
+                    <div style={{ marginTop: 8, padding: '6px 10px', background: '#fee2e2', color: '#991b1b', fontSize: 12, borderRadius: 6 }}>
+                      ניסיונות: {r.attemptCount} · סיבה: {r.failureReason}
+                    </div>
+                  )}
+                  {r.status === 'skipped' && r.failureReason && (
+                    <div style={{ marginTop: 8, padding: '6px 10px', background: '#fef3c7', color: '#92400e', fontSize: 12, borderRadius: 6 }}>
+                      דולג: {r.failureReason}
+                    </div>
+                  )}
+                  {dimmed && (
+                    <div style={{ marginTop: 8, padding: '6px 10px', background: '#fef3c7', color: '#92400e', fontSize: 12, borderRadius: 6 }}>
+                      ⚠ המתג הראשי כבוי — ההודעה לא תישלח גם אם מסומנת כפעילה
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+
+      {(creating || editing) && (
+        <GroupSchedMsgModal
+          groupId={groupId}
+          initial={editing}
+          onClose={() => { setCreating(false); setEditing(null); }}
+          onSaved={() => { setCreating(false); setEditing(null); void reload(); }}
+        />
+      )}
+      {inheriting && (
+        <InheritTemplatesModal
+          groupId={groupId}
+          onClose={() => setInheriting(false)}
+          onDone={() => { setInheriting(false); void reload(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function GroupSchedMsgModal(props: {
+  groupId: string;
+  initial: SchedMsg | null;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const isEdit = !!props.initial;
+  const [category, setCategory] = useState(props.initial?.category ?? 'משחק שוטף');
+  const [internalName, setInternalName] = useState(props.initial?.internalName ?? '');
+  const [content, setContent] = useState(props.initial?.content ?? '');
+  const [scheduledAt, setScheduledAt] = useState(
+    props.initial ? isoToLocalInput(props.initial.scheduledAt) : '',
+  );
+  const [enabled, setEnabled] = useState(props.initial?.enabled ?? false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  async function save() {
+    if (!internalName.trim()) { setErr('שם פנימי הוא שדה חובה'); return; }
+    if (!content.trim()) { setErr('תוכן ההודעה הוא שדה חובה'); return; }
+    if (!scheduledAt) { setErr('יש לבחור תאריך ושעה'); return; }
+    setBusy(true); setErr('');
+    try {
+      const body = {
+        category: category.trim(),
+        internalName: internalName.trim(),
+        content,
+        scheduledAt: localInputToIso(scheduledAt),
+        enabled,
+      };
+      if (isEdit) {
+        await apiFetch(`${BASE_URL}/groups/${props.groupId}/scheduled-messages/${props.initial!.id}`, { method: 'PATCH', body: JSON.stringify(body) });
+      } else {
+        await apiFetch(`${BASE_URL}/groups/${props.groupId}/scheduled-messages`, { method: 'POST', body: JSON.stringify(body) });
+      }
+      props.onSaved();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message :
+        (typeof e === 'object' && e !== null && typeof (e as { message?: unknown }).message === 'string')
+          ? (e as { message: string }).message : 'שמירה נכשלה';
+      setErr(msg);
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <div onClick={(e) => { if (e.target === e.currentTarget && !busy) props.onClose(); }} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 16 }}>
+      <div style={{ background: '#fff', borderRadius: 14, padding: 22, width: '100%', maxWidth: 560, maxHeight: '92vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+          <div style={{ fontSize: 17, fontWeight: 700 }}>{isEdit ? 'עריכת הודעה מתוזמנת' : 'הודעה חדשה לקבוצה'}</div>
+          <button onClick={props.onClose} style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: 'pointer' }}>×</button>
+        </div>
+        <div style={{ display: 'grid', gap: 12 }}>
+          <div>
+            <label style={{ fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 6, display: 'block' }}>קטגוריה</label>
+            <select value={category} onChange={(e) => setCategory(e.target.value)} style={{ width: '100%', padding: '10px 14px', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: 15, color: '#0f172a', background: '#ffffff' }}>
+              <option value="משחק שוטף">משחק שוטף</option>
+              <option value="לפני משחק">לפני משחק</option>
+              <option value="פתיחה">פתיחה</option>
+              <option value="סיום">סיום</option>
+              <option value="תזכורת">תזכורת</option>
+              <option value="מותאם אישית">מותאם אישית</option>
+            </select>
+          </div>
+          <div>
+            <label style={{ fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 6, display: 'block' }}>שם פנימי *</label>
+            <input style={{ width: '100%', padding: '10px 14px', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: 15 }} value={internalName} onChange={(e) => setInternalName(e.target.value)} />
+          </div>
+          <div>
+            <label style={{ fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 6, display: 'block' }}>תוכן *</label>
+            <textarea rows={5} style={{ width: '100%', padding: '10px 14px', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: 15, resize: 'vertical', lineHeight: 1.6 }} value={content} onChange={(e) => setContent(e.target.value)} />
+          </div>
+          <div>
+            <label style={{ fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 6, display: 'block' }}>תאריך ושעה (זמן ישראל) *</label>
+            <input type="datetime-local" style={{ width: '100%', padding: '10px 14px', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: 15, direction: 'ltr' }} value={scheduledAt} onChange={(e) => setScheduledAt(e.target.value)} />
+          </div>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+            <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} style={{ width: 16, height: 16 }} />
+            <span style={{ fontSize: 13, color: '#0f172a' }}>סמני כפעילה (תעבור למצב &ldquo;מתוזמן&rdquo;)</span>
+          </label>
+        </div>
+        {err && <div style={{ color: '#dc2626', fontSize: 13, marginTop: 10 }}>{err}</div>}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+          <button onClick={props.onClose} disabled={busy} style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 8, padding: '7px 14px', fontSize: 13, cursor: busy ? 'not-allowed' : 'pointer' }}>ביטול</button>
+          <button onClick={() => { void save(); }} disabled={busy} style={{ background: busy ? '#93c5fd' : '#2563eb', color: '#fff', border: 'none', borderRadius: 8, padding: '7px 18px', fontSize: 13, fontWeight: 600, cursor: busy ? 'not-allowed' : 'pointer' }}>{busy ? 'שומר...' : 'שמור'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InheritTemplatesModal(props: { groupId: string; onClose: () => void; onDone: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ created: number; skipped: number; errors: { templateId: string; reason: string }[] } | null>(null);
+  const [err, setErr] = useState('');
+
+  async function run() {
+    setBusy(true); setErr('');
+    try {
+      // Empty body / no templateIds = inherit ALL active templates of
+      // the group's program. Backend returns counts for created /
+      // skipped / errored so the admin sees the result inline.
+      const r = await apiFetch<{ created: number; skipped: number; errors: { templateId: string; reason: string }[] }>(
+        `${BASE_URL}/groups/${props.groupId}/scheduled-messages/inherit-from-program`,
+        { method: 'POST', body: JSON.stringify({}) },
+      );
+      setResult(r);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message :
+        (typeof e === 'object' && e !== null && typeof (e as { message?: unknown }).message === 'string')
+          ? (e as { message: string }).message : 'ייבוא נכשל');
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <div onClick={(e) => { if (e.target === e.currentTarget && !busy) props.onClose(); }} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 16 }}>
+      <div style={{ background: '#fff', borderRadius: 14, padding: 22, width: '100%', maxWidth: 480, boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+          <div style={{ fontSize: 17, fontWeight: 700 }}>ייבוא תבניות מהתוכנית</div>
+          <button onClick={props.onClose} style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: 'pointer' }}>×</button>
+        </div>
+        {!result && (
+          <>
+            <p style={{ fontSize: 14, color: '#475569', lineHeight: 1.6, margin: '0 0 14px' }}>
+              ייווצרו הודעות מתוזמנות לקבוצה זו על בסיס כל התבניות הפעילות של התוכנית.
+              ההודעות יתחילו במצב <strong>טיוטה</strong> ו<strong>מושבתות</strong> — תצטרכי לסקור ולסמן כל אחת
+              כפעילה ידנית. תבניות שכבר יובאו (אותו זמן וקבוצה) יידלגו אוטומטית.
+            </p>
+            {err && <div style={{ color: '#dc2626', fontSize: 13, marginBottom: 10 }}>{err}</div>}
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button onClick={props.onClose} disabled={busy} style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 8, padding: '7px 14px', fontSize: 13, cursor: busy ? 'not-allowed' : 'pointer' }}>ביטול</button>
+              <button onClick={() => { void run(); }} disabled={busy} style={{ background: busy ? '#93c5fd' : '#2563eb', color: '#fff', border: 'none', borderRadius: 8, padding: '7px 18px', fontSize: 13, fontWeight: 600, cursor: busy ? 'not-allowed' : 'pointer' }}>{busy ? 'מייבא...' : 'ייבוא'}</button>
+            </div>
+          </>
+        )}
+        {result && (
+          <>
+            <div style={{ fontSize: 14, color: '#0f172a', marginBottom: 10 }}>
+              נוצרו: <strong>{result.created}</strong> · דולגו (כפילות): {result.skipped} · שגיאות: {result.errors.length}
+            </div>
+            {result.errors.length > 0 && (
+              <div style={{ marginBottom: 10, fontSize: 12, color: '#b91c1c', background: '#fef2f2', border: '1px solid #fecaca', padding: 8, borderRadius: 6 }}>
+                {result.errors.map((e, i) => <div key={i}>{e.reason}</div>)}
+              </div>
+            )}
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <button onClick={props.onDone} style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 8, padding: '7px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>סגור</button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
