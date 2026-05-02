@@ -2476,6 +2476,7 @@ export default function GroupDetailPage() {
           groupChatJid={groupChatLink?.whatsappChat?.externalChatId ?? null}
           groupChatName={groupChatLink ? chatDisplayName(groupChatLink.whatsappChat) : '(לא מקושר)'}
           programId={group?.programId ?? null}
+          participants={participants}
           onClose={() => setMsgModalOpen(false)}
           onSaved={() => setMsgModalOpen(false)}
         />
@@ -3471,33 +3472,58 @@ function GroupScheduledMessagesTab({ groupId, hasProgram }: { groupId: string; h
 // internalName from the picked datetime so admin doesn't have to
 // fill the schedule-tab editor's full form for an ad-hoc one-time
 // send. enabled=true so the cron worker picks it up immediately.
+// Result summary returned by the broadcast endpoint. Surfaced to the
+// admin after a private-broadcast click so they can see exactly which
+// participants got queued and which were skipped + why (most common
+// skip reason: a variable in the message that couldn't be resolved
+// for that specific participant — server-enforced safety, never
+// client-side bypassable).
+interface BroadcastResult {
+  selected: number;
+  queued: number;
+  skipped: number;
+  errors: Array<{ participantId: string; participantName: string; reason: string }>;
+}
+
 function GroupOneTimeMessageModal(props: {
   groupId: string;
   groupChatJid: string | null;
   groupChatName: string;
   programId: string | null;
+  participants: ParticipantGroupRow[];
   onClose: () => void;
   onSaved: () => void;
 }) {
   const [dirty, setDirty] = useState(false);
+  // Send target. 'group' = single message to the linked WhatsApp
+  // group chat (legacy path). 'broadcast' = per-participant private
+  // DMs to the selected subset of group members.
+  const [target, setTarget] = useState<'group' | 'broadcast'>('group');
+  // Default-all selection of active participants. Re-derived if the
+  // parent's participants list changes (admin adds/removes a member
+  // while the modal is open — rare, but cheap to handle).
+  // Default-all selection. The participants list shown in the group
+  // page already excludes inactive memberships server-side, so every
+  // entry here is a candidate. Backend re-validates active state when
+  // the broadcast endpoint runs.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(
+    () => new Set(props.participants.map((pg) => pg.participantId)),
+  );
+  const [result, setResult] = useState<BroadcastResult | null>(null);
 
-  async function sendNow(text: string): Promise<void> {
+  // ── Group-chat send (existing behavior) ───────────────────────────────
+  async function sendNowToGroup(text: string): Promise<void> {
     if (!props.groupChatJid) {
       throw new Error('לא קושרה קבוצת וואטסאפ — קשרי קבוצה לפני שליחה');
     }
     await apiFetch(`${BASE_URL}/admin/whatsapp/send`, {
       method: 'POST',
-      body: JSON.stringify({
-        phone: props.groupChatJid,
-        message: text,
-      }),
+      body: JSON.stringify({ phone: props.groupChatJid, message: text }),
     });
-    // Slight delay before closing so the admin sees the "נשלח ✓"
-    // flash from the composer's success banner.
     setTimeout(() => props.onSaved(), 800);
   }
 
-  async function schedule(text: string, scheduledAtIso: string): Promise<void> {
+  async function scheduleGroup(text: string, scheduledAtIso: string): Promise<void> {
     const when = new Date(scheduledAtIso);
     const human = when.toLocaleString('he-IL', {
       day: '2-digit', month: '2-digit', year: '2-digit',
@@ -3516,53 +3542,237 @@ function GroupOneTimeMessageModal(props: {
     setTimeout(() => props.onSaved(), 800);
   }
 
+  // ── Personal broadcast send/schedule ──────────────────────────────────
+  // Same callbacks shape MessageComposer expects. Both routes hit the
+  // single broadcast endpoint, which decides whether to write rows
+  // with scheduledAt=now or scheduledAt=picked. The endpoint also
+  // does the per-participant render + unresolved-variable check; we
+  // get back the summary and surface it inline (modal stays open so
+  // the admin reads the result before closing).
+  async function broadcastNow(text: string): Promise<void> {
+    if (selectedIds.size === 0) throw new Error('יש לבחור לפחות משתתפת אחת');
+    const r = await apiFetch<BroadcastResult>(
+      `${BASE_URL}/groups/${props.groupId}/messages/private-broadcast`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          content: text,
+          participantIds: Array.from(selectedIds),
+          sendMode: 'now',
+        }),
+      },
+    );
+    setResult(r);
+  }
+
+  async function broadcastSchedule(text: string, scheduledAtIso: string): Promise<void> {
+    if (selectedIds.size === 0) throw new Error('יש לבחור לפחות משתתפת אחת');
+    const r = await apiFetch<BroadcastResult>(
+      `${BASE_URL}/groups/${props.groupId}/messages/private-broadcast`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          content: text,
+          participantIds: Array.from(selectedIds),
+          sendMode: 'schedule',
+          scheduledAt: scheduledAtIso,
+        }),
+      },
+    );
+    setResult(r);
+  }
+
+  function toggleSelected(pid: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(pid)) next.delete(pid); else next.add(pid);
+      return next;
+    });
+  }
+
+  function selectAll() {
+    setSelectedIds(new Set(
+      props.participants
+        .filter((pg) => !!pg.participant.phoneNumber)
+        .map((pg) => pg.participantId)
+    ));
+  }
+  function clearAll() { setSelectedIds(new Set()); }
+
+  const activeParticipants = props.participants;
+  const sendNow = target === 'group' ? sendNowToGroup : broadcastNow;
+  const schedule = target === 'group' ? scheduleGroup : broadcastSchedule;
+
   return (
     <StrongModal
-      title={`הודעה לקבוצה — ${props.groupChatName}`}
+      title={target === 'group'
+        ? `הודעה לקבוצה — ${props.groupChatName}`
+        : `דיוור באישי — ${props.groupChatName}`}
       isDirty={dirty}
       onClose={props.onClose}
-      maxWidth={560}
+      maxWidth={620}
     >
       {() => (
         <>
-          {!props.groupChatJid && (
-            <div
-              style={{
-                background: '#fef2f2',
-                border: '1px solid #fecaca',
-                borderRadius: 8,
-                padding: '10px 14px',
-                marginBottom: 14,
-                fontSize: 13,
-                color: '#dc2626',
-              }}
-            >
+          {/* ── Target picker — which channel the message goes to ── */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 14 }}>
+            {([
+              { key: 'group' as const,     title: 'שליחה לקבוצת וואטסאפ', desc: 'הודעה אחת לקבוצה כולה' },
+              { key: 'broadcast' as const, title: 'דיוור לכולן באישי',     desc: 'הודעה פרטית לכל משתתפת בנפרד' },
+            ]).map((opt) => {
+              const active = target === opt.key;
+              return (
+                <button
+                  key={opt.key}
+                  type="button"
+                  onClick={() => { setTarget(opt.key); setResult(null); }}
+                  style={{
+                    padding: '12px 14px', textAlign: 'right',
+                    border: `2px solid ${active ? '#2563eb' : '#e2e8f0'}`,
+                    background: active ? '#eff6ff' : '#fff',
+                    color: active ? '#1d4ed8' : '#0f172a',
+                    borderRadius: 10, cursor: 'pointer',
+                  }}
+                >
+                  <div style={{ fontSize: 13, fontWeight: 700 }}>{opt.title}</div>
+                  <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>{opt.desc}</div>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* ── Group-target warnings ─────────────────────────────── */}
+          {target === 'group' && !props.groupChatJid && (
+            <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13, color: '#dc2626' }}>
               לא קושרה קבוצת וואטסאפ. לחצי &ldquo;קשרי צ׳אט&rdquo; ובחרי קישור מסוג &ldquo;קבוצת וואטסאפ&rdquo; לפני שליחה.
             </div>
           )}
-          <p style={{ fontSize: 13, color: '#475569', margin: '0 0 14px', lineHeight: 1.5 }}>
-            כתבי הודעה אחת. בלחיצה על &ldquo;שלח עכשיו&rdquo; ההודעה תשלח לקבוצה כעת.
-            בלחיצה על &ldquo;תזמן הודעה&rdquo; היא תישמר ותישלח אוטומטית בזמן שתבחרי.
-            הודעות מתוזמנות נראות בלשונית &ldquo;הודעות מתוזמנות&rdquo; ואפשר לערוך / לבטל אותן עד הזמן שנבחר.
-          </p>
-          <div
-            style={{
-              border: '1px solid #e2e8f0',
-              borderRadius: 12,
-              overflow: 'hidden',
-              background: '#fff',
-            }}
-          >
-            {/* loadTemplates is wired to the group's program — the
-                template picker shows whatsapp templates configured on
-                that program. dirty state bubbles up via onDirtyChange
-                so StrongModal's unsaved-changes confirm gates close. */}
+
+          {target === 'group' && (
+            <p style={{ fontSize: 13, color: '#475569', margin: '0 0 14px', lineHeight: 1.5 }}>
+              כתבי הודעה אחת. בלחיצה על &ldquo;שלח עכשיו&rdquo; ההודעה תשלח לקבוצה כעת.
+              בלחיצה על &ldquo;תזמן הודעה&rdquo; היא תישמר ותישלח אוטומטית בזמן שתבחרי.
+            </p>
+          )}
+
+          {/* ── Broadcast: participant selection panel ─────────────── */}
+          {target === 'broadcast' && (
+            <div style={{ marginBottom: 14, border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
+              <div style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                padding: '8px 12px', borderBottom: '1px solid #e2e8f0',
+                background: '#f8fafc', flexWrap: 'wrap', gap: 8,
+              }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: '#0f172a' }}>
+                  נבחרו {selectedIds.size} מתוך {activeParticipants.length} פעילות
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button type="button" onClick={selectAll}
+                    style={{ background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', borderRadius: 6, padding: '3px 10px', fontSize: 11, cursor: 'pointer' }}>
+                    בחר הכל
+                  </button>
+                  <button type="button" onClick={clearAll}
+                    style={{ background: '#fff', color: '#475569', border: '1px solid #cbd5e1', borderRadius: 6, padding: '3px 10px', fontSize: 11, cursor: 'pointer' }}>
+                    נקה
+                  </button>
+                </div>
+              </div>
+              <div style={{ maxHeight: 220, overflowY: 'auto', background: '#fff' }}>
+                {activeParticipants.map((pg) => {
+                  const p = pg.participant;
+                  const phone = (p.phoneNumber ?? '').trim();
+                  const noPhone = !phone;
+                  const checked = selectedIds.has(pg.participantId);
+                  return (
+                    <label
+                      key={pg.id}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 10,
+                        padding: '8px 12px',
+                        borderBottom: '1px solid #f1f5f9',
+                        background: checked ? '#eff6ff' : '#fff',
+                        cursor: 'pointer',
+                        opacity: noPhone ? 0.7 : 1,
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleSelected(pg.participantId)}
+                        style={{ width: 16, height: 16, flexShrink: 0 }}
+                      />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a' }}>
+                          {[p.firstName, p.lastName].filter(Boolean).join(' ')}
+                        </div>
+                        <div style={{ fontSize: 11, color: '#64748b', direction: 'ltr', textAlign: 'right' }}>
+                          {phone || '— ללא טלפון —'}
+                        </div>
+                      </div>
+                      {noPhone && (
+                        <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', background: '#fef3c7', color: '#92400e', borderRadius: 999 }}>
+                          ידולג בשליחה
+                        </span>
+                      )}
+                    </label>
+                  );
+                })}
+                {activeParticipants.length === 0 && (
+                  <div style={{ padding: 20, textAlign: 'center', color: '#94a3b8', fontSize: 12 }}>
+                    אין משתתפות פעילות בקבוצה
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ── Result summary (broadcast only, after click) ──────── */}
+          {result && (
+            <div
+              style={{
+                background: result.skipped > 0 ? '#fffbeb' : '#f0fdf4',
+                border: `1px solid ${result.skipped > 0 ? '#fde68a' : '#bbf7d0'}`,
+                borderRadius: 10, padding: 12, marginBottom: 14, fontSize: 13,
+              }}
+            >
+              <div style={{ fontWeight: 700, color: '#0f172a', marginBottom: 4 }}>
+                סיכום שליחה
+              </div>
+              <div style={{ color: '#475569' }}>
+                נבחרו: <strong>{result.selected}</strong> ·
+                בתור לשליחה: <strong style={{ color: '#15803d' }}>{result.queued}</strong> ·
+                דולגו: <strong style={{ color: '#92400e' }}>{result.skipped}</strong>
+              </div>
+              {result.errors.length > 0 && (
+                <details style={{ marginTop: 8, fontSize: 12 }}>
+                  <summary style={{ cursor: 'pointer', color: '#92400e', fontWeight: 600 }}>
+                    דולגו {result.errors.length} ({result.errors.length === 1 ? 'משתתפת' : 'משתתפות'}) — סיבות
+                  </summary>
+                  <div style={{ marginTop: 6, paddingInlineStart: 14, color: '#475569', lineHeight: 1.6 }}>
+                    {result.errors.map((e) => (
+                      <div key={e.participantId}>
+                        <strong>{e.participantName}</strong>: {e.reason}
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+              <div style={{ marginTop: 8, fontSize: 11, color: '#64748b' }}>
+                ההודעות נשלחות אוטומטית עם השהיה בין משתתפת למשתתפת. ניתן לעקוב אחר סטטוס פר-משתתפת בכרטיס &ldquo;צ׳אט&rdquo; של המשתתפת.
+              </div>
+            </div>
+          )}
+
+          {/* ── Composer ──────────────────────────────────────────── */}
+          <div style={{ border: '1px solid #e2e8f0', borderRadius: 12, overflow: 'hidden', background: '#fff' }}>
             <MessageComposer
               onSendNow={sendNow}
               onSchedule={schedule}
               loadTemplates={props.programId ? loadProgramTemplates(props.programId) : undefined}
               onDirtyChange={setDirty}
-              placeholder="כתבי את ההודעה לקבוצה..."
+              placeholder={target === 'group'
+                ? 'כתבי את ההודעה לקבוצה...'
+                : 'כתבי את ההודעה הפרטית — אפשר להשתמש במשתנים כמו {firstName}'}
             />
           </div>
         </>

@@ -109,4 +109,35 @@ export class GroupParticipantsScheduledCountsController {
     }
     return this.svc.countsForParticipants(ids);
   }
+
+  // Personal broadcast — sends a single body privately to a hand-
+  // picked subset of group members. Each participant gets one
+  // PrivateScheduledMessage row, rendered with her own variable
+  // context. Unresolved variables block her row from being created
+  // (server-enforced safety). Pacing/retry/no-double-send all come
+  // from the existing scheduled-messages worker, which picks up
+  // sendMode='now' rows on its next minute tick.
+  @Post('messages/private-broadcast')
+  privateBroadcast(
+    @Param('groupId') groupId: string,
+    @Body() body: {
+      content?: string;
+      participantIds?: string[];
+      sendMode?: 'now' | 'schedule';
+      scheduledAt?: string;
+    },
+  ) {
+    if (!body.content || !Array.isArray(body.participantIds) || !body.sendMode) {
+      throw new BadRequestException('שדות חובה: content, participantIds, sendMode');
+    }
+    if (body.sendMode !== 'now' && body.sendMode !== 'schedule') {
+      throw new BadRequestException('sendMode חייב להיות now או schedule');
+    }
+    return this.svc.privateBroadcast(groupId, {
+      content: body.content,
+      participantIds: body.participantIds,
+      sendMode: body.sendMode,
+      scheduledAt: body.scheduledAt,
+    });
+  }
 }

@@ -12,6 +12,7 @@ import {
   UpdatePrivateScheduledMessageDto,
 } from './dto/private-message.dto';
 import { CLAIM_TTL_MS } from './scheduled-messages-shared';
+import { renderTemplate } from '../programs/template-render';
 
 // Service for the participant-private-DM scheduling surface. Single
 // source of truth for upcoming DMs — the row is keyed on participantId
@@ -261,5 +262,196 @@ export class PrivateScheduledMessagesService {
   private isClaimedNow(claimedAt: Date | null): boolean {
     if (!claimedAt) return false;
     return claimedAt.getTime() > Date.now() - CLAIM_TTL_MS;
+  }
+
+  // ─── Personal broadcast — group-scoped, per-participant DMs ──────────────
+  //
+  // Sends a single message body privately to a hand-picked subset of a
+  // group's active participants. Uses the existing PrivateScheduledMessage
+  // pipeline so all our safety properties carry over for free:
+  //   - cron worker handles pacing (1.5s between sends, see shared consts)
+  //   - retry/backoff per row
+  //   - status = pending → sent / failed (visible in participant chat tab)
+  //   - no double-sends (atomic claim by the worker)
+  //
+  // For sendMode='now' we set scheduledAt = now() so the worker picks the
+  // rows up on its next tick (within ~1 minute). For sendMode='schedule'
+  // we honor the provided scheduledAt as-is.
+  //
+  // SAFETY rule (server-enforced, NOT optional):
+  //   Variables are rendered PER PARTICIPANT before persisting the row.
+  //   If the renderer leaves any unresolved {variable} pattern, that
+  //   participant is SKIPPED with reason='unresolved_variable'. The row
+  //   is never created, so the worker can never accidentally send the
+  //   raw template. Same rule for missing phone (can't send anywhere)
+  //   and inactive participant.
+  async privateBroadcast(
+    groupId: string,
+    body: {
+      content: string;
+      participantIds: string[];
+      sendMode: 'now' | 'schedule';
+      scheduledAt?: string;
+    },
+  ): Promise<{
+    selected: number;
+    queued: number;
+    skipped: number;
+    errors: Array<{ participantId: string; participantName: string; reason: string }>;
+  }> {
+    if (!body.content?.trim()) {
+      throw new BadRequestException('תוכן ההודעה הוא שדה חובה');
+    }
+    if (!Array.isArray(body.participantIds) || body.participantIds.length === 0) {
+      throw new BadRequestException('יש לבחור לפחות משתתפת אחת');
+    }
+    if (body.participantIds.length > 500) {
+      throw new BadRequestException('יותר מדי משתתפות בבקשה אחת');
+    }
+
+    let scheduledAt = new Date();
+    if (body.sendMode === 'schedule') {
+      if (!body.scheduledAt) {
+        throw new BadRequestException('יש לבחור תאריך/שעה לתזמון');
+      }
+      const when = new Date(body.scheduledAt);
+      if (Number.isNaN(when.getTime())) {
+        throw new BadRequestException('תאריך/שעה לא תקין');
+      }
+      if (when.getTime() < Date.now() + 30_000) {
+        throw new BadRequestException('יש לבחור זמן עתידי');
+      }
+      scheduledAt = when;
+    }
+
+    const group = await this.prisma.group.findUnique({
+      where: { id: groupId },
+      select: {
+        id: true,
+        name: true,
+        program: { select: { id: true, name: true } },
+      },
+    });
+    if (!group) throw new NotFoundException('הקבוצה לא נמצאה');
+
+    // Resolve only memberships that are (a) in this group, (b) for the
+    // selected participants. Filtering server-side defends against a
+    // tampered client request that lists participantIds outside this
+    // group.
+    const memberships = await this.prisma.participantGroup.findMany({
+      where: {
+        groupId,
+        isActive: true,
+        participantId: { in: body.participantIds },
+      },
+      include: {
+        participant: {
+          select: {
+            id: true, firstName: true, lastName: true,
+            phoneNumber: true, email: true, isActive: true,
+            accessToken: true,
+          },
+        },
+      },
+    });
+
+    // Index memberships by participantId so the selection ordering and
+    // error reporting reflect the client's input order.
+    const byPid = new Map(memberships.map((m) => [m.participantId, m]));
+
+    // Build link context once per participant — same shape as the
+    // existing previewMessage flow.
+    const webBaseRaw = process.env['NEXT_PUBLIC_APP_URL'] || process.env['WEB_BASE_URL'] || '';
+    const webBase = webBaseRaw.replace(/\/+$/, '');
+
+    const errors: Array<{ participantId: string; participantName: string; reason: string }> = [];
+    const toCreate: Array<{
+      participantId: string;
+      content: string;
+      phoneSnapshot: string;
+    }> = [];
+
+    for (const pid of body.participantIds) {
+      const m = byPid.get(pid);
+      const name = m
+        ? [m.participant.firstName, m.participant.lastName].filter(Boolean).join(' ').trim()
+        : pid;
+
+      if (!m) {
+        errors.push({ participantId: pid, participantName: name, reason: 'not_in_group' });
+        continue;
+      }
+      if (!m.participant.isActive) {
+        errors.push({ participantId: pid, participantName: name, reason: 'participant_inactive' });
+        continue;
+      }
+      const phone = (m.participant.phoneNumber ?? '').trim();
+      if (!phone) {
+        errors.push({ participantId: pid, participantName: name, reason: 'phone_missing' });
+        continue;
+      }
+
+      // Per-participant variable rendering. Same context shape as the
+      // preview/send-template flow elsewhere in the codebase.
+      const accessToken = m.participant.accessToken;
+      const gameLink = accessToken && webBase ? `${webBase}/t/${accessToken}` : null;
+      const tasksLink = accessToken && webBase ? `${webBase}/tg/${accessToken}` : null;
+      const portalLink = tasksLink;
+      const rendered = renderTemplate(body.content, {
+        participant: {
+          firstName: m.participant.firstName,
+          lastName: m.participant.lastName,
+          phoneNumber: phone,
+          email: m.participant.email,
+        },
+        product: group.program ? { title: group.program.name } : null,
+        group: { name: group.name },
+        gameLink, tasksLink, portalLink,
+      });
+
+      // SAFETY: any {key} that survived rendering = unresolved variable.
+      // We refuse to send the row to avoid leaking template syntax to
+      // the participant's WhatsApp. The reason is surfaced to the admin
+      // so they can fix the source template (typo, missing data, etc.).
+      const unresolved = rendered.match(/\{[a-zA-Z_][a-zA-Z0-9_]*\}/g);
+      if (unresolved && unresolved.length > 0) {
+        errors.push({
+          participantId: pid,
+          participantName: name,
+          reason: `משתנה דינמי לא הוחלף: ${Array.from(new Set(unresolved)).join(', ')}`,
+        });
+        continue;
+      }
+
+      toCreate.push({
+        participantId: pid,
+        content: rendered,
+        phoneSnapshot: phone,
+      });
+    }
+
+    // Bulk-create rows. createMany skips per-row return data; we don't
+    // need it here — the queued count is just toCreate.length and
+    // per-participant status will surface via each participant's
+    // chat tab once the worker runs.
+    if (toCreate.length > 0) {
+      await this.prisma.privateScheduledMessage.createMany({
+        data: toCreate.map((t) => ({
+          participantId: t.participantId,
+          content: t.content,
+          scheduledAt,
+          phoneSnapshot: t.phoneSnapshot,
+          status: 'pending',
+          enabled: true,
+        })),
+      });
+    }
+
+    return {
+      selected: body.participantIds.length,
+      queued: toCreate.length,
+      skipped: errors.length,
+      errors,
+    };
   }
 }

@@ -15,7 +15,8 @@
 //     a popover with the same chips (chat composer, where vertical
 //     space is precious — see participant-private-chat.tsx)
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 export interface VariableEditorHandle {
   insertAtCursor: (text: string) => void;
@@ -123,17 +124,60 @@ export function VariableButtonBar({ editorRef }: Props) {
 // inserts and closes.
 export function VariableInsertButton({ editorRef }: Props) {
   const [open, setOpen] = useState(false);
-  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const popoverRef = useRef<HTMLDivElement | null>(null);
+  // Computed popover position in viewport (page) coordinates. Computed
+  // from the button's getBoundingClientRect at open time + on
+  // scroll/resize. Rendering via portal escapes any parent overflow
+  // (StrongModal body has `overflow: hidden`) — without the portal
+  // the popover got clipped by the modal chrome.
+  const [coords, setCoords] = useState<{ top: number; insetInlineStart: number; width: number } | null>(null);
 
-  // Close on outside click + Escape. Mounted only while the popover
-  // is open so we don't pay the listener cost in the common case.
+  // Re-position popover whenever it opens, the window resizes, or any
+  // scrollable ancestor scrolls. We listen on capture so nested
+  // scrollable containers (e.g. the chat conversation area) trigger
+  // the recompute. Cleanup is symmetric.
+  useLayoutEffect(() => {
+    if (!open) return;
+    function recompute() {
+      const btn = buttonRef.current;
+      if (!btn) return;
+      const r = btn.getBoundingClientRect();
+      // Anchor: place the popover ABOVE the button by default. If
+      // there isn't enough headroom, fall back below. Width: clamp to
+      // viewport so it never overflows on narrow screens.
+      const popoverWidth = Math.min(420, window.innerWidth - 16);
+      const popoverHeightEstimate = 260;
+      const aboveTop = r.top - popoverHeightEstimate - 8;
+      const belowTop = r.bottom + 8;
+      const top = aboveTop > 8 ? aboveTop : belowTop;
+      // RTL-aware horizontal anchor. The button is right-aligned in
+      // the composer; we anchor the popover's right edge to the
+      // button's right edge so it grows leftward.
+      const right = window.innerWidth - r.right;
+      const insetInlineStart = right; // logical "start" in RTL = right edge
+      setCoords({ top, insetInlineStart, width: popoverWidth });
+    }
+    recompute();
+    window.addEventListener('resize', recompute);
+    window.addEventListener('scroll', recompute, true); // capture: catch nested scrolls
+    return () => {
+      window.removeEventListener('resize', recompute);
+      window.removeEventListener('scroll', recompute, true);
+    };
+  }, [open]);
+
+  // Close on outside click + Escape. The popover is in a portal, so
+  // its DOM tree is detached — we explicitly include it in the
+  // "inside" check below alongside the button wrapper.
   useEffect(() => {
     if (!open) return;
     function onDocMouseDown(e: MouseEvent) {
-      if (!wrapperRef.current) return;
-      if (e.target instanceof Node && !wrapperRef.current.contains(e.target)) {
-        setOpen(false);
-      }
+      const target = e.target as Node | null;
+      if (!target) return;
+      if (buttonRef.current?.contains(target)) return;
+      if (popoverRef.current?.contains(target)) return;
+      setOpen(false);
     }
     function onKey(e: KeyboardEvent) {
       if (e.key === 'Escape') setOpen(false);
@@ -160,9 +204,59 @@ export function VariableInsertButton({ editorRef }: Props) {
     cursor: 'pointer', whiteSpace: 'nowrap', fontFamily: 'inherit',
   };
 
+  // Popover content. Rendered via a portal to document.body so any
+  // ancestor `overflow: hidden` / `transform` doesn't clip it. The
+  // RTL `insetInlineStart` from coords pins it to the button's
+  // right edge regardless of the parent's writing direction.
+  const popover = open && coords && typeof document !== 'undefined' ? createPortal(
+    <div
+      ref={popoverRef}
+      style={{
+        position: 'fixed',
+        top: coords.top,
+        insetInlineStart: coords.insetInlineStart,
+        width: coords.width,
+        background: '#fff',
+        border: '1px solid #e2e8f0',
+        borderRadius: 10,
+        padding: 12,
+        boxShadow: '0 10px 30px rgba(0,0,0,0.18)',
+        // zIndex above StrongModal (1000) AND its confirm sub-modal
+        // (1100), AND any nested popup zIndices we use. 2000 leaves
+        // headroom for unusual stacks.
+        zIndex: 2000,
+        display: 'flex', flexDirection: 'column', gap: 10,
+        maxHeight: '60vh',
+        overflowY: 'auto',
+      }}
+    >
+      {GROUPS.map((g) => (
+        <div key={g.title} style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: '#475569', minWidth: 56 }}>
+            {g.title}:
+          </div>
+              {g.items.map((item) => (
+                <button
+              key={item.token}
+              type="button"
+              title={item.token}
+              onMouseDown={(e) => insert(item.token, e)}
+              onClick={(e) => e.preventDefault()}
+              style={chipStyle}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      ))}
+    </div>,
+    document.body,
+  ) : null;
+
   return (
-    <div ref={wrapperRef} style={{ position: 'relative', display: 'inline-block' }}>
+    <>
       <button
+        ref={buttonRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
         style={{
@@ -175,49 +269,7 @@ export function VariableInsertButton({ editorRef }: Props) {
         aria-expanded={open}
         aria-haspopup="true"
       >+ משתנים</button>
-      {open && (
-        <div
-          // Popover floats above the composer — high zIndex so it
-          // overlays scheduled-strip pills + chat bubbles. The inset:
-          // bottom anchor opens the popover ABOVE the button so it
-          // doesn't get clipped when the composer is at the bottom of
-          // a fixed-height chat container.
-          style={{
-            position: 'absolute',
-            bottom: 'calc(100% + 6px)',
-            insetInlineStart: 0,
-            background: '#fff',
-            border: '1px solid #e2e8f0',
-            borderRadius: 10,
-            padding: 12,
-            boxShadow: '0 10px 30px rgba(0,0,0,0.12)',
-            minWidth: 320,
-            maxWidth: 'min(420px, 85vw)',
-            zIndex: 1500,
-            display: 'flex', flexDirection: 'column', gap: 10,
-          }}
-        >
-          {GROUPS.map((g) => (
-            <div key={g.title} style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-              <div style={{ fontSize: 10, fontWeight: 700, color: '#475569', minWidth: 56 }}>
-                {g.title}:
-              </div>
-              {g.items.map((item) => (
-                <button
-                  key={item.token}
-                  type="button"
-                  title={item.token}
-                  onMouseDown={(e) => insert(item.token, e)}
-                  onClick={(e) => e.preventDefault()}
-                  style={chipStyle}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
+      {popover}
+    </>
   );
 }
