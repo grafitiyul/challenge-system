@@ -2223,7 +2223,17 @@ export default function GroupDetailPage() {
                                 {participantName}
                               </div>
                             )}
-                            <div style={{ fontSize: 13, color: '#374151', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>
+                            {/* Full feed message — wraps naturally onto
+                                multiple lines for long submissions
+                                (free-text notes, multi-context entries).
+                                The participant-name line above keeps its
+                                nowrap+ellipsis since it's a compact
+                                header label, not the content. */}
+                            <div style={{
+                              fontSize: 13, color: '#374151',
+                              whiteSpace: 'pre-wrap',
+                              wordBreak: 'break-word',
+                            }}>
                               {event.message}
                             </div>
                             <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>
