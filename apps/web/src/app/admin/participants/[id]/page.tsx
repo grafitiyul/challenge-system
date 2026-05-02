@@ -5,16 +5,11 @@ import Link from 'next/link';
 import { use } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { BASE_URL, apiFetch } from '@lib/api';
-import dynamic from 'next/dynamic';
 import { AdminProjectsTab } from '@components/admin-projects';
 import { PaymentsTab } from '@components/payments-tab';
 import { ParticipantPrivateChat } from '@components/participant-private-chat';
+import { ParticipantPrivateChatPopup } from '@components/participant-private-chat-popup';
 import { WhatsAppIcon } from '@components/icons/whatsapp-icon';
-
-// Shared composer used by the group-side "send message" modal. Reused here
-// so the participant WhatsApp compose experience matches exactly — same
-// WhatsApp markdown formatting, same emoji picker, same preview.
-const WhatsAppEditor = dynamic(() => import('@components/whatsapp-editor'), { ssr: false });
 import {
   PARTICIPANT_LIFECYCLE_STATUSES,
   PARTICIPANT_SOURCES,
@@ -676,7 +671,19 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
   });
 
   const [editOpen, setEditOpen] = useState(false);
-  const [composeOpen, setComposeOpen] = useState(false);
+  // The WhatsApp send modal is being retired — header now opens the
+  // unified chat popup (same component the צ׳אט tab embeds + the
+  // group participant-row WA button uses). Old WhatsAppComposeModal
+  // stays defined below for backward compat with anything that still
+  // imports it, but is no longer triggered from this header.
+  const [chatPopupOpen, setChatPopupOpen] = useState(false);
+  // Pending PrivateScheduledMessage count for THIS participant.
+  // Drives the small "⏰ N" badge next to the header WhatsApp button
+  // so the admin sees at a glance there are upcoming DMs queued —
+  // same data the צ׳אט tab + group-list badge read from. Refetched
+  // when the chat popup closes so cancellations/edits inside the
+  // popup update the badge here.
+  const [scheduledCount, setScheduledCount] = useState(0);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [form, setForm] = useState<EditForm>({ firstName: '', lastName: '', phoneNumber: '', email: '', birthDate: '', city: '', status: '', notes: '', nextAction: '', source: '' });
@@ -729,6 +736,28 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
       })
       .finally(() => setLoading(false));
   }, [id]);
+
+  // Pending PrivateScheduledMessage count for the header badge.
+  // Refetched whenever the chat popup closes (because edits/cancels
+  // inside the popup change this number) and on initial mount.
+  // Decorative — silent failure is fine, no badge rendered.
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const list = await apiFetch<Array<{ status: string }>>(
+          `${BASE_URL}/participants/${id}/scheduled-messages`,
+          { cache: 'no-store' },
+        );
+        if (cancelled) return;
+        setScheduledCount(list.filter((r) => r.status === 'pending').length);
+      } catch {
+        if (!cancelled) setScheduledCount(0);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [id, chatPopupOpen]);
 
   // Prefetch submissions on page load — runs in background while user reads the page.
   // By the time they click the שאלונים or היסטוריה tab, data is already ready.
@@ -1056,22 +1085,56 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
 
           {/* Quick actions */}
           <div style={{ display: 'flex', gap: 8, flexShrink: 0, flexWrap: 'wrap', alignSelf: 'flex-start' }}>
-            <button
-              onClick={() => setComposeOpen(true)}
-              title="שליחת WhatsApp"
-              aria-label="שליחת WhatsApp"
-              style={{
-                background: '#16a34a', color: '#fff', border: 'none',
-                borderRadius: '50%', width: 36, height: 36,
-                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: 16, cursor: 'pointer', flexShrink: 0,
-              }}
-            >
-              {/* Recognizable WhatsApp glyph — same icon used everywhere
-                  in admin UI for WhatsApp actions (group header, group
-                  participant list, chat tab). */}
-              <WhatsAppIcon size={18} color="#fff" />
-            </button>
+            {/* WhatsApp action — opens the unified chat popup
+                (same component that powers the צ׳אט tab + group
+                participant-row WA button). The clock pill on top
+                of the green button surfaces upcoming
+                PrivateScheduledMessage rows for this participant
+                so the admin sees them without having to open the
+                tab — same data the chat popup itself shows. */}
+            <div style={{ position: 'relative', display: 'inline-flex' }}>
+              <button
+                onClick={() => setChatPopupOpen(true)}
+                title={scheduledCount > 0
+                  ? `שליחת WhatsApp · ${scheduledCount} מתוזמנות`
+                  : 'שליחת WhatsApp'}
+                aria-label="שליחת WhatsApp"
+                style={{
+                  background: '#16a34a', color: '#fff', border: 'none',
+                  borderRadius: '50%', width: 36, height: 36,
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 16, cursor: 'pointer', flexShrink: 0,
+                }}
+              >
+                <WhatsAppIcon size={18} color="#fff" />
+              </button>
+              {scheduledCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setChatPopupOpen(true)}
+                  title="פתח צ׳אט להציג הודעות מתוזמנות"
+                  style={{
+                    position: 'absolute',
+                    top: -6,
+                    insetInlineEnd: -6,
+                    background: '#f59e0b',
+                    color: '#fff',
+                    fontSize: 10,
+                    fontWeight: 700,
+                    borderRadius: 999,
+                    padding: '2px 6px',
+                    border: '2px solid #fff',
+                    cursor: 'pointer',
+                    lineHeight: 1,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 2,
+                  }}
+                >
+                  ⏰ {scheduledCount}
+                </button>
+              )}
+            </div>
             <button
               onClick={openPickModal}
               style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 18px', fontSize: 14, cursor: 'pointer', fontWeight: 600, minHeight: 42 }}
@@ -1213,12 +1276,16 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
         />
       )}
 
-      {/* WhatsApp compose modal */}
-      {composeOpen && (
-        <WhatsappComposeModal
+      {/* WhatsApp chat popup. Replaces the legacy WhatsappComposeModal
+          (which is no longer rendered from this surface). Same component
+          the צ׳אט tab embeds + the group-list WA button opens — single
+          source of truth, single composer, single scheduled-message
+          list. */}
+      {chatPopupOpen && (
+        <ParticipantPrivateChatPopup
           participantId={participant.id}
-          phoneNumber={participant.phoneNumber}
-          onClose={() => setComposeOpen(false)}
+          participantName={displayName(participant)}
+          onClose={() => setChatPopupOpen(false)}
         />
       )}
 
@@ -1361,344 +1428,6 @@ function CollectedInfoTab({ participant }: { participant: Participant }) {
           <div style={{ fontSize: 14, color: '#374151', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{participant.notes}</div>
         </div>
       )}
-    </div>
-  );
-}
-
-// ─── WhatsApp compose modal ─────────────────────────────────────────────────
-
-interface ProductTemplateLite {
-  id: string;
-  title: string;
-  body: string;
-}
-
-function WhatsappComposeModal(props: {
-  participantId: string;
-  phoneNumber: string;
-  onClose: () => void;
-}) {
-  // Phase 4: programs ARE the products. We fetch the program list here
-  // and load program-scoped whatsapp communication templates when one is
-  // picked. Unchanged UI shape — just relabeled "תוכנית" from "מוצר".
-  const [products, setProducts] = useState<Array<{ id: string; title: string }>>([]);
-  const [selectedProductId, setSelectedProductId] = useState<string>('');
-  const [templates, setTemplates] = useState<ProductTemplateLite[]>([]);
-  // The editor is the single source of truth for what gets sent. We
-  // also remember which template was last loaded into it (and the
-  // body it produced) so שחזר can re-render and the dirty-check can
-  // tell whether the admin's manual edits would be discarded.
-  const [rawBody, setRawBody] = useState('');
-  const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
-  const [lastRenderedBody, setLastRenderedBody] = useState<string>('');
-  const [seedingTemplate, setSeedingTemplate] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState('');
-  const [sent, setSent] = useState(false);
-  const [copiedFlash, setCopiedFlash] = useState(false);
-  // In-app confirmation modal — replaces window.confirm so the flow
-  // can't be killed by a browser-level dismissal and we can lock
-  // background interaction (no outside-click close, explicit X).
-  type PendingAction =
-    | { kind: 'restore' }                       // user clicked שחזר תבנית טקסט
-    | { kind: 'pickTemplate'; templateId: string } // user picked a different template while edited
-    | { kind: 'close' }                         // user clicked X / ביטול while edits dirty
-    | null;
-  const [pending, setPending] = useState<PendingAction>(null);
-  const editorIsDirty = rawBody.trim() !== '' && rawBody !== lastRenderedBody;
-
-  // Composer close gate. Used by the X button + ביטול button + any
-  // future close affordance. If the editor has unsaved edits, route
-  // through the in-app pending modal instead of dismissing — the
-  // backdrop-click close was removed entirely (was the source of the
-  // "tiny click eats my edits" UX bug), so this is the ONLY path that
-  // calls props.onClose with dirty state.
-  const requestClose = () => {
-    if (busy) return;
-    if (editorIsDirty) {
-      setPending({ kind: 'close' });
-      return;
-    }
-    props.onClose();
-  };
-
-  useEffect(() => {
-    apiFetch<Array<{ id: string; name: string }>>(`${BASE_URL}/programs`)
-      .then((rows) => setProducts(rows.map((p) => ({ id: p.id, title: p.name }))))
-      .catch(() => setProducts([]));
-  }, []);
-
-  useEffect(() => {
-    if (!selectedProductId) { setTemplates([]); return; }
-    apiFetch<ProductTemplateLite[]>(
-      `${BASE_URL}/programs/${selectedProductId}/communication-templates?channel=whatsapp`,
-    ).then((rows) => setTemplates(rows)).catch(() => setTemplates([]));
-  }, [selectedProductId]);
-
-  // Render the chosen template via the server (variables substituted
-  // for this participant) and drop the result into the editor. Side
-  // effect: marks lastRenderedBody so the dirty check works.
-  async function renderTemplateBody(templateId: string): Promise<string | null> {
-    setSeedingTemplate(true);
-    setErr('');
-    try {
-      const r = await apiFetch<{ body: string }>(
-        `${BASE_URL}/participants/${props.participantId}/messages/preview`,
-        { method: 'POST', body: JSON.stringify({ templateId, rawBody: null }) },
-      );
-      return r.body;
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : 'טעינת התבנית נכשלה');
-      return null;
-    } finally {
-      setSeedingTemplate(false);
-    }
-  }
-  async function applyTemplate(templateId: string) {
-    const body = await renderTemplateBody(templateId);
-    if (body == null) return;
-    setSelectedTemplateId(templateId);
-    setLastRenderedBody(body);
-    setRawBody(body);
-  }
-  async function onPickTemplateFromDropdown(templateId: string) {
-    if (!templateId) return;
-    if (editorIsDirty) {
-      setPending({ kind: 'pickTemplate', templateId });
-      return;
-    }
-    await applyTemplate(templateId);
-  }
-  async function onRestoreTemplate() {
-    if (!selectedTemplateId) return;
-    if (editorIsDirty) {
-      setPending({ kind: 'restore' });
-      return;
-    }
-    await applyTemplate(selectedTemplateId);
-  }
-  function onClear() {
-    setRawBody('');
-    // Clearing leaves selectedTemplateId intact so שחזר still works,
-    // but resets lastRenderedBody so the dirty check doesn't immediately
-    // re-flag the empty state as edited.
-    setLastRenderedBody('');
-  }
-  async function onCopy() {
-    if (!rawBody.trim()) return;
-    try {
-      await navigator.clipboard.writeText(rawBody);
-      setCopiedFlash(true);
-      setTimeout(() => setCopiedFlash(false), 1500);
-    } catch {
-      // Browser blocked clipboard access — surface a fallback so the
-      // admin can still grab the text manually.
-      setErr('העתקה אוטומטית נחסמה ע״י הדפדפן — סמני ידנית את הטקסט בעורך.');
-    }
-  }
-
-  async function send() {
-    setBusy(true); setErr('');
-    try {
-      // Always send the current editor content — never re-render from
-      // the template id, even if a template was used to seed it. This
-      // is what makes "edit before sending" actually work.
-      await apiFetch(`${BASE_URL}/participants/${props.participantId}/messages/whatsapp`, {
-        method: 'POST',
-        body: JSON.stringify({ templateId: null, rawBody }),
-      });
-      setSent(true);
-      setTimeout(props.onClose, 800);
-    } catch (e) {
-      // apiFetch throws an ApiError plain object ({ status, message }),
-      // NOT an Error instance — so `e instanceof Error` was false and
-      // the real server message ("WhatsApp לא מחובר כרגע", "שירות
-      // WhatsApp לא מוגדר", etc.) was being swallowed by the generic
-      // fallback. Duck-type the message field so the operator sees
-      // exactly what the API said.
-      const msg = (typeof e === 'object' && e !== null && 'message' in e)
-        ? String((e as { message: unknown }).message)
-        : (e instanceof Error ? e.message : 'שליחה נכשלה');
-      setErr(msg || 'שליחה נכשלה');
-    } finally { setBusy(false); }
-  }
-
-  const input: React.CSSProperties = {
-    width: '100%', padding: '9px 12px', border: '1px solid #e2e8f0',
-    borderRadius: 8, fontSize: 14, background: '#fff', color: '#0f172a',
-    boxSizing: 'border-box', fontFamily: 'inherit',
-  };
-  const label: React.CSSProperties = {
-    display: 'block', fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 4,
-  };
-
-  return (
-    <div
-      // Modal is LOCKED: backdrop click no longer closes the composer.
-      // Tiny accidental clicks on the dim area, on dropdown overlays,
-      // on whitespace around the modal — none of these dismiss. Close
-      // happens only via X / ביטול / successful send. With dirty edits
-      // the close path goes through requestClose() which prompts.
-      style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1200, padding: 16 }}
-      role="dialog"
-      aria-modal="true"
-    >
-      <div style={{ background: '#fff', borderRadius: 14, padding: 22, width: '100%', maxWidth: 560, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-          <div style={{ fontSize: 17, fontWeight: 700 }}>💬 שליחת WhatsApp</div>
-          <button aria-label="סגור" onClick={requestClose} style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: 'pointer' }}>×</button>
-        </div>
-        <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>
-          נמען: <span dir="ltr" style={{ fontWeight: 600, color: '#0f172a' }}>{props.phoneNumber}</span>
-        </div>
-
-        <div style={{ display: 'grid', gap: 12 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <div>
-              <label style={label}>תוכנית</label>
-              <select style={input} value={selectedProductId} onChange={(e) => setSelectedProductId(e.target.value)}>
-                <option value="">— ללא —</option>
-                {products.map((p) => <option key={p.id} value={p.id}>{p.title}</option>)}
-              </select>
-            </div>
-            <div>
-              <label style={label}>תבנית (טוען לעורך)</label>
-              <select
-                style={input}
-                value={selectedTemplateId}
-                onChange={(e) => { void onPickTemplateFromDropdown(e.target.value); }}
-                disabled={!selectedProductId || templates.length === 0 || seedingTemplate}
-              >
-                <option value="">— בחרי תבנית לטעינה —</option>
-                {templates.map((t) => <option key={t.id} value={t.id}>{t.title}</option>)}
-              </select>
-            </div>
-          </div>
-
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 4 }}>
-              <label style={{ ...label, marginBottom: 0 }}>
-                טקסט ההודעה {seedingTemplate && <span style={{ color: '#64748b', fontWeight: 400 }}>(טוען תבנית...)</span>}
-              </label>
-              <div style={{ display: 'flex', gap: 6 }}>
-                <button
-                  type="button"
-                  onClick={onClear}
-                  disabled={!rawBody.trim() || seedingTemplate}
-                  style={{
-                    padding: '4px 10px', fontSize: 12, fontWeight: 600,
-                    background: '#fff', color: !rawBody.trim() ? '#cbd5e1' : '#475569',
-                    border: '1px solid #e2e8f0', borderRadius: 6,
-                    cursor: !rawBody.trim() ? 'not-allowed' : 'pointer',
-                  }}
-                >
-                  נקה
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { void onRestoreTemplate(); }}
-                  disabled={!selectedTemplateId || seedingTemplate}
-                  title={selectedTemplateId ? 'טוען מחדש את התבנית הנבחרת' : 'יש לבחור תבנית קודם'}
-                  style={{
-                    padding: '4px 10px', fontSize: 12, fontWeight: 600,
-                    background: '#fff', color: !selectedTemplateId ? '#cbd5e1' : '#1d4ed8',
-                    border: `1px solid ${!selectedTemplateId ? '#e2e8f0' : '#bfdbfe'}`, borderRadius: 6,
-                    cursor: !selectedTemplateId ? 'not-allowed' : 'pointer',
-                  }}
-                >
-                  שחזר תבנית טקסט
-                </button>
-              </div>
-            </div>
-            <WhatsAppEditor
-              value={rawBody}
-              onChange={setRawBody}
-              placeholder="כתבי הודעה... (משתנים נתמכים: {firstName}, {gameLink}, {tasksLink})"
-              minHeight={120}
-            />
-            <p style={{ fontSize: 11, color: '#64748b', margin: '6px 2px 0' }}>
-              ניתן לערוך את הטקסט גם אחרי בחירת תבנית — מה שכתוב בעורך הוא מה שנשלח.
-            </p>
-          </div>
-
-          {err && <div style={{ color: '#b91c1c', fontSize: 13 }}>{err}</div>}
-          {sent && <div style={{ color: '#15803d', fontSize: 13 }}>✓ נשלח</div>}
-        </div>
-
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center', marginTop: 16, flexWrap: 'wrap' }}>
-          {copiedFlash && <span style={{ fontSize: 12, color: '#15803d', fontWeight: 600 }}>הועתק ✓</span>}
-          <button onClick={requestClose} disabled={busy} style={{ padding: '8px 18px', background: '#f1f5f9', border: '1px solid #e2e8f0', color: '#374151', borderRadius: 8, fontSize: 13, cursor: 'pointer' }}>ביטול</button>
-          <button
-            type="button"
-            onClick={() => { void onCopy(); }}
-            disabled={!rawBody.trim()}
-            title="העתק את הטקסט בשמירת עיצוב WhatsApp"
-            style={{
-              padding: '8px 18px',
-              background: !rawBody.trim() ? '#f1f5f9' : '#fff',
-              color: !rawBody.trim() ? '#cbd5e1' : '#0f172a',
-              border: `1px solid ${!rawBody.trim() ? '#e2e8f0' : '#cbd5e1'}`,
-              borderRadius: 8, fontSize: 13, fontWeight: 600,
-              cursor: !rawBody.trim() ? 'not-allowed' : 'pointer',
-            }}
-          >
-            העתק
-          </button>
-          <button
-            onClick={send}
-            disabled={busy || sent || !rawBody.trim()}
-            style={{ padding: '8px 22px', background: busy || sent ? '#86efac' : '#16a34a', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: busy || sent || !rawBody.trim() ? 'not-allowed' : 'pointer' }}
-          >{busy ? 'שולח...' : sent ? 'נשלח ✓' : '💬 שלח עכשיו'}</button>
-        </div>
-
-        {/* In-app confirmation for actions that would discard manual edits.
-            Locked: no backdrop close, explicit X, no browser confirm. */}
-        {pending && (
-          <div
-            style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)', zIndex: 1300, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}
-          >
-            <div style={{ background: '#fff', borderRadius: 12, padding: 22, width: '100%', maxWidth: 380, boxShadow: '0 20px 60px rgba(0,0,0,0.25)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-                <div style={{ fontSize: 15, fontWeight: 700, color: '#0f172a' }}>
-                  {pending.kind === 'restore'
-                    ? 'לשחזר את הטקסט מהתבנית?'
-                    : pending.kind === 'pickTemplate'
-                      ? 'להחליף את הטקסט הקיים בתבנית חדשה?'
-                      : 'לסגור בלי לשלוח?'}
-                </div>
-                <button
-                  aria-label="סגור"
-                  onClick={() => setPending(null)}
-                  style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: 22, cursor: 'pointer', lineHeight: 1 }}
-                >×</button>
-              </div>
-              <p style={{ fontSize: 13, color: '#475569', margin: '0 0 16px', lineHeight: 1.5 }}>
-                {pending.kind === 'close'
-                  ? 'יש לך טקסט שנערך ועדיין לא נשלח. אם תסגרי כעת, העריכות יאבדו.'
-                  : 'העריכות הידניות שלך בעורך יוחלפו בטקסט שהתבנית מפיקה. הפעולה אינה הפיכה דרך כפתור "ביטול".'}
-              </p>
-              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-                <button
-                  type="button"
-                  onClick={() => setPending(null)}
-                  style={{ padding: '8px 16px', background: '#f1f5f9', border: '1px solid #e2e8f0', color: '#374151', borderRadius: 8, fontSize: 13, cursor: 'pointer' }}
-                >{pending.kind === 'close' ? 'המשך לערוך' : 'בטל'}</button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const action = pending;
-                    setPending(null);
-                    if (action?.kind === 'restore') void applyTemplate(selectedTemplateId);
-                    if (action?.kind === 'pickTemplate') void applyTemplate(action.templateId);
-                    if (action?.kind === 'close') props.onClose();
-                  }}
-                  style={{ padding: '8px 16px', background: '#dc2626', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
-                >{pending.kind === 'close' ? 'סגור ואבד שינויים' : 'החלף'}</button>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
     </div>
   );
 }

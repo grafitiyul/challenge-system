@@ -129,8 +129,11 @@ function statusPill(status: PrivateSched['status']): React.ReactElement {
 
 export interface ParticipantPrivateChatProps {
   participantId: string;
-  // When true the component takes its own scrolling container (used by
-  // the popup wrapper). When false the outer page handles scroll.
+  // When true the component fills 100% of its parent's height (the
+  // popup wrapper sets a fixed parent height). When false the
+  // component sets its own fixed height so it doesn't stretch the
+  // page indefinitely — the chat conversation area is the only
+  // scroll surface, the composer stays docked at the bottom.
   selfScroll?: boolean;
   // Reports dirty composer state up to the parent so the popup wrapper
   // can guard close. Optional — the embedded version doesn't need it.
@@ -158,6 +161,10 @@ export function ParticipantPrivateChat({
   const [loadErr, setLoadErr] = useState('');
   const [showCancelled, setShowCancelled] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  // Ref to the scrolling chat area. Used for "auto-scroll to bottom"
+  // on new messages — same UX WhatsApp gives, so the admin sees the
+  // newest reply without a manual scroll.
+  const chatScrollRef = useRef<HTMLDivElement | null>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -264,126 +271,77 @@ export function ParticipantPrivateChat({
     [scheduled, editingId],
   );
 
+  // ── Auto-scroll to bottom ─────────────────────────────────────────────
+  // Pin the chat area to its newest message after every load + every
+  // composer action that triggers a reload. Same UX WhatsApp gives.
+  useEffect(() => {
+    const el = chatScrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages, otherScheduled.length, loading]);
+
   // ── Layout ────────────────────────────────────────────────────────────
+  // The container is always a vertical flex stack with three regions:
+  //   1. pending-scheduled strip (only renders if there are pending rows)
+  //   2. chat conversation (flex:1, internal scroll, newest at bottom)
+  //   3. composer (flex-shrink:0, docked at the bottom)
+  //
+  // selfScroll=true → fill the parent (popup wrapper sets fixed height
+  //                    and provides its own border/radius)
+  // selfScroll=false → set our own fixed height + bordered card so the
+  //                    embedded tab version doesn't stretch the page
+  //                    endlessly
   const wrapperStyle: React.CSSProperties = selfScroll
-    ? { display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }
-    : { display: 'flex', flexDirection: 'column' };
-  const timelineStyle: React.CSSProperties = selfScroll
-    ? { flex: 1, overflowY: 'auto', padding: '12px 4px' }
-    : { padding: '12px 4px' };
+    ? {
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100%',
+        overflow: 'hidden',
+        background: '#fff',
+      }
+    : {
+        display: 'flex',
+        flexDirection: 'column',
+        height: '70vh',
+        minHeight: 480,
+        overflow: 'hidden',
+        background: '#fff',
+        border: '1px solid #e2e8f0',
+        borderRadius: 12,
+      };
 
   return (
     <div style={wrapperStyle}>
-      {/* ── Composer ───────────────────────────────────────────────── */}
-      <div
-        style={{
-          background: '#fff',
-          border: '1px solid #e2e8f0',
-          borderRadius: 12,
-          padding: 14,
-          marginBottom: 12,
-        }}
-      >
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
-          <button
-            type="button"
-            onClick={() => setMode('now')}
-            style={{
-              padding: '6px 12px', fontSize: 12, fontWeight: 600,
-              background: mode === 'now' ? '#16a34a' : '#fff',
-              color: mode === 'now' ? '#fff' : '#475569',
-              border: `1px solid ${mode === 'now' ? '#16a34a' : '#cbd5e1'}`,
-              borderRadius: 999, cursor: 'pointer',
-            }}
-          >שלח עכשיו</button>
-          <button
-            type="button"
-            onClick={() => setMode('schedule')}
-            style={{
-              padding: '6px 12px', fontSize: 12, fontWeight: 600,
-              background: mode === 'schedule' ? '#2563eb' : '#fff',
-              color: mode === 'schedule' ? '#fff' : '#475569',
-              border: `1px solid ${mode === 'schedule' ? '#2563eb' : '#cbd5e1'}`,
-              borderRadius: 999, cursor: 'pointer',
-            }}
-          >תזמן</button>
-          {mode === 'schedule' && (
-            <input
-              type="datetime-local"
-              value={scheduledAt}
-              onChange={(e) => setScheduledAt(e.target.value)}
-              style={{
-                padding: '6px 10px', fontSize: 13, direction: 'ltr',
-                border: '1px solid #cbd5e1', borderRadius: 8,
-                fontFamily: 'inherit',
-              }}
-            />
-          )}
-        </div>
-        <VariableButtonBar editorRef={editorHandleRef} />
-        <WhatsAppEditor
-          ref={editorHandleRef}
-          value={content}
-          onChange={setContent}
-          placeholder="הקלידי הודעה..."
-          minHeight={120}
-        />
-        {composerErr && (
-          <div style={{ color: '#dc2626', fontSize: 12, marginTop: 8 }}>{composerErr}</div>
-        )}
-        {composerOk && (
-          <div style={{ color: '#15803d', fontSize: 12, marginTop: 8 }}>{composerOk}</div>
-        )}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 10 }}>
-          <button
-            type="button"
-            onClick={() => { void send(); }}
-            disabled={composerBusy || !content.trim()}
-            style={{
-              padding: '8px 18px', fontSize: 13, fontWeight: 700,
-              background: composerBusy || !content.trim()
-                ? '#cbd5e1'
-                : (mode === 'now' ? '#16a34a' : '#2563eb'),
-              color: '#fff', border: 'none', borderRadius: 8,
-              cursor: composerBusy || !content.trim() ? 'not-allowed' : 'pointer',
-            }}
-          >
-            {composerBusy
-              ? '...'
-              : mode === 'now'
-                ? 'שלח עכשיו'
-                : 'תזמן הודעה'}
-          </button>
-        </div>
-      </div>
-
-      {/* ── Pending scheduled strip ─────────────────────────────────── */}
+      {/* ── 1. Pending scheduled strip ──────────────────────────────── */}
       {pendingScheduled.length > 0 && (
         <div
           style={{
             background: '#fefce8',
-            border: '1px solid #fde68a',
-            borderRadius: 12,
-            padding: 12,
-            marginBottom: 12,
+            borderBottom: '1px solid #fde68a',
+            padding: 10,
+            flexShrink: 0,
+            maxHeight: '32%',
+            overflowY: 'auto',
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-            <span style={{ fontSize: 16 }}>⏰</span>
-            <div style={{ fontSize: 13, fontWeight: 700, color: '#713f12' }}>
-              הודעות מתוזמנות ({pendingScheduled.length})
+            <span style={{ fontSize: 14 }}>⏰</span>
+            <div style={{ fontSize: 12, fontWeight: 700, color: '#713f12' }}>
+              {pendingScheduled.length === 1
+                ? '1 הודעה מתוזמנת'
+                : `${pendingScheduled.length} הודעות מתוזמנות`}
             </div>
           </div>
-          <div style={{ display: 'grid', gap: 8 }}>
+          <div style={{ display: 'grid', gap: 6 }}>
             {pendingScheduled.map((s) => (
               <div
                 key={s.id}
                 style={{
                   background: '#fff',
-                  borderRadius: 8,
-                  padding: '8px 10px',
+                  borderRadius: 6,
+                  padding: '6px 8px',
                   display: 'flex',
-                  gap: 10,
+                  gap: 8,
                   alignItems: 'flex-start',
                   border: '1px solid #fef3c7',
                 }}
@@ -391,34 +349,34 @@ export function ParticipantPrivateChat({
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div
                     style={{
-                      fontSize: 13, color: '#0f172a',
+                      fontSize: 12, color: '#0f172a',
                       whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                      maxHeight: 60, overflow: 'hidden',
+                      maxHeight: 38, overflow: 'hidden',
                     }}
                   >
                     {s.content}
                   </div>
-                  <div style={{ fontSize: 11, color: '#92400e', marginTop: 4, fontWeight: 600 }}>
+                  <div style={{ fontSize: 10, color: '#92400e', marginTop: 2, fontWeight: 600 }}>
                     מתוזמן ל־{formatScheduledTime(s.scheduledAt)}
                   </div>
                 </div>
-                <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
                   <button
                     type="button"
                     onClick={() => setEditingId(s.id)}
                     style={{
-                      padding: '4px 10px', fontSize: 11, fontWeight: 600,
+                      padding: '3px 8px', fontSize: 10, fontWeight: 600,
                       background: '#fff', color: '#1d4ed8',
-                      border: '1px solid #bfdbfe', borderRadius: 6, cursor: 'pointer',
+                      border: '1px solid #bfdbfe', borderRadius: 5, cursor: 'pointer',
                     }}
                   >ערוך</button>
                   <button
                     type="button"
                     onClick={() => { void cancelScheduled(s.id); }}
                     style={{
-                      padding: '4px 10px', fontSize: 11, fontWeight: 600,
+                      padding: '3px 8px', fontSize: 10, fontWeight: 600,
                       background: '#fff', color: '#b91c1c',
-                      border: '1px solid #fecaca', borderRadius: 6, cursor: 'pointer',
+                      border: '1px solid #fecaca', borderRadius: 5, cursor: 'pointer',
                     }}
                   >בטל</button>
                 </div>
@@ -428,8 +386,17 @@ export function ParticipantPrivateChat({
         </div>
       )}
 
-      {/* ── Timeline ───────────────────────────────────────────────── */}
-      <div style={timelineStyle}>
+      {/* ── 2. Chat conversation area ───────────────────────────────── */}
+      <div
+        ref={chatScrollRef}
+        style={{
+          flex: 1,
+          overflowY: 'auto',
+          padding: 12,
+          background: '#f8fafc',
+          minHeight: 0, // critical for flex+overflow in Firefox
+        }}
+      >
         {loading && (
           <div style={{ textAlign: 'center', color: '#94a3b8', fontSize: 13, padding: 20 }}>
             טוען שיחה...
@@ -440,14 +407,14 @@ export function ParticipantPrivateChat({
             {loadErr}
           </div>
         )}
-        {!loading && !loadErr && orderedMessages.length === 0 && pendingScheduled.length === 0 && (
+        {!loading && !loadErr && orderedMessages.length === 0 && (
           <div
             style={{
               textAlign: 'center', color: '#94a3b8', fontSize: 13,
-              padding: 30, background: '#f8fafc', borderRadius: 12,
+              padding: 30,
             }}
           >
-            אין עדיין הודעות בשיחה.
+            אין עדיין הודעות בשיחה. כתבי הודעה למטה כדי להתחיל.
           </div>
         )}
         {orderedMessages.map((m) => {
@@ -464,7 +431,7 @@ export function ParticipantPrivateChat({
               <div
                 style={{
                   maxWidth: '75%',
-                  background: isOut ? '#dbeafe' : '#f1f5f9',
+                  background: isOut ? '#dcfce7' : '#fff',
                   color: '#0f172a',
                   borderRadius: 12,
                   padding: '8px 12px',
@@ -472,6 +439,7 @@ export function ParticipantPrivateChat({
                   lineHeight: 1.4,
                   whiteSpace: 'pre-wrap',
                   wordBreak: 'break-word',
+                  boxShadow: '0 1px 1px rgba(0,0,0,0.05)',
                 }}
               >
                 {m.textContent ?? (
@@ -494,12 +462,12 @@ export function ParticipantPrivateChat({
           );
         })}
 
-        {/* Failed scheduled rows + (optionally) cancelled — shown after the
-            timeline so admin can see what went wrong without losing the
-            chat flow above. */}
+        {/* Failed scheduled rows + (optionally) cancelled — shown at
+            the end of the chat scroll so admin can see what went
+            wrong inline with the conversation flow. */}
         {otherScheduled.length > 0 && (
-          <div style={{ marginTop: 16 }}>
-            <div style={{ fontSize: 11, color: '#64748b', marginBottom: 6, fontWeight: 600 }}>
+          <div style={{ marginTop: 12 }}>
+            <div style={{ fontSize: 10, color: '#64748b', marginBottom: 4, fontWeight: 600, textAlign: 'center' }}>
               {showCancelled ? 'הודעות שלא נשלחו / בוטלו' : 'הודעות שנכשלו'}
             </div>
             {otherScheduled.map((s) => (
@@ -508,7 +476,7 @@ export function ParticipantPrivateChat({
                 style={{
                   background: s.status === 'failed' ? '#fef2f2' : '#f1f5f9',
                   border: `1px solid ${s.status === 'failed' ? '#fecaca' : '#e2e8f0'}`,
-                  borderRadius: 8, padding: '8px 10px', marginBottom: 6,
+                  borderRadius: 8, padding: '6px 10px', marginBottom: 6,
                   fontSize: 12, color: '#475569',
                 }}
               >
@@ -534,11 +502,95 @@ export function ParticipantPrivateChat({
             type="button"
             onClick={() => setShowCancelled((v) => !v)}
             style={{
-              fontSize: 11, color: '#64748b', background: 'transparent',
+              fontSize: 10, color: '#94a3b8', background: 'transparent',
               border: 'none', cursor: 'pointer',
             }}
           >
             {showCancelled ? 'הסתר מבוטלות' : 'הצג מבוטלות'}
+          </button>
+        </div>
+      </div>
+
+      {/* ── 3. Composer dock ────────────────────────────────────────── */}
+      <div
+        style={{
+          flexShrink: 0,
+          borderTop: '1px solid #e2e8f0',
+          background: '#fff',
+          padding: 10,
+        }}
+      >
+        {/* Mode toggle + (when scheduling) datetime picker — compact
+            single row above the editor. */}
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            onClick={() => setMode('now')}
+            style={{
+              padding: '4px 10px', fontSize: 11, fontWeight: 600,
+              background: mode === 'now' ? '#16a34a' : '#fff',
+              color: mode === 'now' ? '#fff' : '#475569',
+              border: `1px solid ${mode === 'now' ? '#16a34a' : '#cbd5e1'}`,
+              borderRadius: 999, cursor: 'pointer',
+            }}
+          >שלח עכשיו</button>
+          <button
+            type="button"
+            onClick={() => setMode('schedule')}
+            style={{
+              padding: '4px 10px', fontSize: 11, fontWeight: 600,
+              background: mode === 'schedule' ? '#2563eb' : '#fff',
+              color: mode === 'schedule' ? '#fff' : '#475569',
+              border: `1px solid ${mode === 'schedule' ? '#2563eb' : '#cbd5e1'}`,
+              borderRadius: 999, cursor: 'pointer',
+            }}
+          >תזמן</button>
+          {mode === 'schedule' && (
+            <input
+              type="datetime-local"
+              value={scheduledAt}
+              onChange={(e) => setScheduledAt(e.target.value)}
+              style={{
+                padding: '4px 8px', fontSize: 12, direction: 'ltr',
+                border: '1px solid #cbd5e1', borderRadius: 7,
+                fontFamily: 'inherit',
+              }}
+            />
+          )}
+          {composerOk && (
+            <span style={{ color: '#15803d', fontSize: 11, fontWeight: 600, marginInlineStart: 'auto' }}>{composerOk}</span>
+          )}
+        </div>
+        <VariableButtonBar editorRef={editorHandleRef} />
+        <WhatsAppEditor
+          ref={editorHandleRef}
+          value={content}
+          onChange={setContent}
+          placeholder="הקלידי הודעה..."
+          minHeight={70}
+        />
+        {composerErr && (
+          <div style={{ color: '#dc2626', fontSize: 12, marginTop: 6 }}>{composerErr}</div>
+        )}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
+          <button
+            type="button"
+            onClick={() => { void send(); }}
+            disabled={composerBusy || !content.trim()}
+            style={{
+              padding: '7px 16px', fontSize: 13, fontWeight: 700,
+              background: composerBusy || !content.trim()
+                ? '#cbd5e1'
+                : (mode === 'now' ? '#16a34a' : '#2563eb'),
+              color: '#fff', border: 'none', borderRadius: 8,
+              cursor: composerBusy || !content.trim() ? 'not-allowed' : 'pointer',
+            }}
+          >
+            {composerBusy
+              ? '...'
+              : mode === 'now'
+                ? 'שלח עכשיו'
+                : 'תזמן הודעה'}
           </button>
         </div>
       </div>

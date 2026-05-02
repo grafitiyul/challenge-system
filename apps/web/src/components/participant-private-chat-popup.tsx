@@ -80,10 +80,14 @@ export function ParticipantPrivateChatPopup(props: {
             }}
           >×</button>
         </div>
-        <div style={{ flex: 1, overflowY: 'auto', padding: 14 }}>
+        {/* The chat component owns its own internal scroll (chat area)
+            and dock layout — we just give it the remaining height of
+            the popup. No padding here so the conversation + composer
+            fill the full popup width. */}
+        <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
           <ParticipantPrivateChat
             participantId={props.participantId}
-            selfScroll={false}
+            selfScroll={true}
             onDirtyChange={setDirty}
           />
         </div>
