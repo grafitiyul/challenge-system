@@ -783,6 +783,24 @@ export class BaileysClient {
       // Don't auto-print QR to terminal; we render it from the persisted
       // qr field in the admin UI.
       printQRInTerminal: false,
+      // Required for production reliability of socket.sendMessage.
+      // When the recipient device hasn't seen our pre-key bundle yet
+      // (typical on first-send-to-a-new-recipient), WhatsApp asks
+      // Baileys to retransmit the message; Baileys looks up the
+      // original payload via this callback. Without it, the retry
+      // path silently stalls and the originating sendMessage()
+      // promise never resolves — that's the exact "send_timeout
+      // even though onWhatsApp succeeded" pattern we were hitting.
+      // Returning undefined tells Baileys we don't have a stored
+      // copy; it then drops the retry rather than waiting forever.
+      // We don't currently persist outbound payloads keyed by
+      // message id, so undefined is the only honest answer; a
+      // future improvement could look the row up in
+      // WhatsAppMessage by externalMessageId, but that's a separate
+      // change.
+      getMessage: async () => {
+        return undefined;
+      },
     });
     this.socket = socket;
     log.info({ socketId }, 'socket created');
