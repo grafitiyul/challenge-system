@@ -5176,6 +5176,38 @@ function describeTemplateTiming(t: CommTemplate): string {
   return `${t.offsetDays ?? '?'} ימים אחרי סיום בשעה ${t.timeOfDay ?? '?'}`;
 }
 
+// Two-line description optimized for the left-side schedule badge.
+// Top line is the timing TYPE (broad category — admin scans this);
+// bottom line is the SPECIFIC value (admin reads only when needed).
+// Splitting them lets the badge stay narrow without word-wrapping
+// while still surfacing both axes.
+function templateTimingBadge(t: CommTemplate): { label: string; detail: string } | null {
+  if (!t.timingType) return null;
+  if (t.timingType === 'exact') {
+    if (!t.exactAt) return { label: 'תאריך מדויק', detail: '— לא הוגדר —' };
+    const d = new Date(t.exactAt);
+    const date = d.toLocaleDateString('he-IL', { day: '2-digit', month: '2-digit', year: '2-digit' });
+    const time = d.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' });
+    return { label: 'תאריך מדויק', detail: `${date} · ${time}` };
+  }
+  if (t.timingType === 'day_of') {
+    return {
+      label: 'יום של המשחק',
+      detail: `יום ${t.dayOfNumber ?? '?'} · ${t.timeOfDay ?? '—'}`,
+    };
+  }
+  if (t.timingType === 'before_start') {
+    return {
+      label: 'לפני התחלה',
+      detail: `${t.offsetDays ?? '?'} ימים · ${t.timeOfDay ?? '—'}`,
+    };
+  }
+  return {
+    label: 'אחרי סיום',
+    detail: `${t.offsetDays ?? '?'} ימים · ${t.timeOfDay ?? '—'}`,
+  };
+}
+
 function ProductCommunicationTab({ programId }: { programId: string }) {
   const [rows, setRows] = useState<CommTemplate[] | null>(null);
   const [err, setErr] = useState('');
@@ -5234,6 +5266,7 @@ function ProductCommunicationTab({ programId }: { programId: string }) {
 
       {rows.map((t, i) => {
         const isDropTarget = dragIdx !== null && dropIdx === i && dragIdx !== i;
+        const tb = templateTimingBadge(t);
         return (
           <div
             key={t.id}
@@ -5259,47 +5292,88 @@ function ProductCommunicationTab({ programId }: { programId: string }) {
               opacity: dragIdx === i ? 0.5 : 1,
               borderTop: isDropTarget ? '3px solid #2563eb' : CARD.border,
               borderBottom: isDropTarget ? '3px solid #2563eb' : CARD.border,
+              // Split the card horizontally so the schedule badge can
+              // live on the LEFT (flex end in RTL) without word-wrap
+              // pressure from the body. align-items=stretch + the
+              // badge's flex-shrink:0 keep the badge at a fixed width
+              // even when the body text is long; min-width:0 on the
+              // body cell tells flex to ellipsis instead of overflow.
+              display: 'flex',
+              gap: 14,
+              alignItems: 'stretch',
             }}
           >
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6, flexWrap: 'wrap' as const }}>
-              {/* Drag handle hint — not interactive itself; the whole
-                  card is the drag source. Clearer affordance for "you
-                  can reorder these". */}
-              <span style={{ color: '#cbd5e1', fontSize: 14, cursor: 'grab', userSelect: 'none' }}>⋮⋮</span>
-              <span style={{
-                background: t.channel === 'email' ? '#eff6ff' : '#dcfce7',
-                color: t.channel === 'email' ? '#1d4ed8' : '#15803d',
-                padding: '2px 10px', borderRadius: 999, fontSize: 11, fontWeight: 700,
-              }}>
-                {t.channel === 'email' ? 'מייל' : 'וואטסאפ'}
-              </span>
-              {t.timingType && (
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6, flexWrap: 'wrap' as const }}>
+                {/* Drag handle hint — not interactive itself; the whole
+                    card is the drag source. Clearer affordance for "you
+                    can reorder these". */}
+                <span style={{ color: '#cbd5e1', fontSize: 14, cursor: 'grab', userSelect: 'none' }}>⋮⋮</span>
                 <span style={{
-                  background: '#fffbeb', color: '#92400e', border: '1px solid #fde68a',
+                  background: t.channel === 'email' ? '#eff6ff' : '#dcfce7',
+                  color: t.channel === 'email' ? '#1d4ed8' : '#15803d',
                   padding: '2px 10px', borderRadius: 999, fontSize: 11, fontWeight: 700,
                 }}>
-                  📅 מתוזמנת
+                  {t.channel === 'email' ? 'מייל' : 'וואטסאפ'}
                 </span>
-              )}
-              {t.category && (
-                <span style={{
-                  background: '#f1f5f9', color: '#475569',
-                  padding: '2px 10px', borderRadius: 999, fontSize: 11, fontWeight: 600,
-                }}>
-                  {t.category}
-                </span>
-              )}
-              <div style={{ fontSize: 14, fontWeight: 700 }}>{t.title}</div>
+                {/* "📅 מתוזמנת" pill removed — the dedicated left
+                    badge now carries the same signal more clearly.
+                    Category chip stays because it conveys orthogonal
+                    info (which message family this is). */}
+                {t.category && (
+                  <span style={{
+                    background: '#f1f5f9', color: '#475569',
+                    padding: '2px 10px', borderRadius: 999, fontSize: 11, fontWeight: 600,
+                  }}>
+                    {t.category}
+                  </span>
+                )}
+                <div style={{ fontSize: 14, fontWeight: 700 }}>{t.title}</div>
+              </div>
+              {t.subject && <div style={{ fontSize: 12, color: '#475569', marginBottom: 4 }}>נושא: {t.subject}</div>}
+              <div style={{ fontSize: 12, color: '#64748b', whiteSpace: 'pre-wrap' as const, maxHeight: 60, overflow: 'hidden' }}>
+                {t.body.slice(0, 200)}{t.body.length > 200 ? '...' : ''}
+              </div>
             </div>
-            {t.timingType && (
-              <div style={{ fontSize: 12, color: '#92400e', marginBottom: 4 }}>
-                ⏱ {describeTemplateTiming(t)}
+
+            {/* Left-side schedule badge. Only mounts when the template
+                actually has a schedule — non-scheduled templates show
+                no empty block. flex-shrink:0 so a long body never
+                pushes the badge off-screen; min-width caps the badge's
+                growth without a word-wrap risk on its short labels. */}
+            {tb && (
+              <div
+                aria-label={`תזמון: ${tb.label} ${tb.detail}`}
+                style={{
+                  flexShrink: 0,
+                  minWidth: 130,
+                  maxWidth: 180,
+                  background: '#fffbeb',
+                  border: '1px solid #fde68a',
+                  borderRadius: 10,
+                  padding: '8px 10px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 2,
+                  alignItems: 'flex-start',
+                  color: '#92400e',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 14 }}>📅</span>
+                  <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.02em' }}>{tb.label}</span>
+                </div>
+                <div
+                  dir="auto"
+                  style={{
+                    fontSize: 12, fontWeight: 600, color: '#78350f',
+                    lineHeight: 1.4, wordBreak: 'break-word',
+                  }}
+                >
+                  {tb.detail}
+                </div>
               </div>
             )}
-            {t.subject && <div style={{ fontSize: 12, color: '#475569', marginBottom: 4 }}>נושא: {t.subject}</div>}
-            <div style={{ fontSize: 12, color: '#64748b', whiteSpace: 'pre-wrap' as const, maxHeight: 60, overflow: 'hidden' }}>
-              {t.body.slice(0, 200)}{t.body.length > 200 ? '...' : ''}
-            </div>
           </div>
         );
       })}
