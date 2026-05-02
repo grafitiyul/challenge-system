@@ -9,7 +9,7 @@ import { VariableButtonBar, type VariableEditorHandle } from '@components/variab
 import { ChatMessage, ChatMessageList } from '@components/chat-messages';
 import { WhatsAppIcon } from '@components/icons/whatsapp-icon';
 import { ParticipantPrivateChatPopup } from '@components/participant-private-chat-popup';
-import { MessageComposer } from '@components/message-composer';
+import { MessageComposer, loadProgramTemplates } from '@components/message-composer';
 import { StrongModal } from '@components/strong-modal';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -2352,6 +2352,7 @@ export default function GroupDetailPage() {
           groupId={id}
           groupChatJid={groupChatLink?.whatsappChat?.externalChatId ?? null}
           groupChatName={groupChatLink ? chatDisplayName(groupChatLink.whatsappChat) : '(לא מקושר)'}
+          programId={group?.programId ?? null}
           onClose={() => setMsgModalOpen(false)}
           onSaved={() => setMsgModalOpen(false)}
         />
@@ -3331,6 +3332,7 @@ function GroupOneTimeMessageModal(props: {
   groupId: string;
   groupChatJid: string | null;
   groupChatName: string;
+  programId: string | null;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -3371,23 +3373,6 @@ function GroupOneTimeMessageModal(props: {
     setTimeout(() => props.onSaved(), 800);
   }
 
-  // Wrap MessageComposer to track dirty state for the StrongModal
-  // unsaved-changes confirm. Same approach the participant chat uses
-  // (DirtyAwareComposer): observe the textarea's input event and
-  // mirror "has trimmed text" up to the parent.
-  const wrapperRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    const el = wrapperRef.current;
-    if (!el) return;
-    const ta = el.querySelector('textarea');
-    if (!ta) return;
-    function handler() {
-      setDirty((ta as HTMLTextAreaElement).value.trim().length > 0);
-    }
-    ta.addEventListener('input', handler);
-    return () => ta.removeEventListener('input', handler);
-  }, []);
-
   return (
     <StrongModal
       title={`הודעה לקבוצה — ${props.groupChatName}`}
@@ -3417,10 +3402,7 @@ function GroupOneTimeMessageModal(props: {
             בלחיצה על &ldquo;תזמן הודעה&rdquo; היא תישמר ותישלח אוטומטית בזמן שתבחרי.
             הודעות מתוזמנות נראות בלשונית &ldquo;הודעות מתוזמנות&rdquo; ואפשר לערוך / לבטל אותן עד הזמן שנבחר.
           </p>
-          {/* Composer is wrapped so the input listener can mirror dirty
-              up to StrongModal — see useEffect above. */}
           <div
-            ref={wrapperRef}
             style={{
               border: '1px solid #e2e8f0',
               borderRadius: 12,
@@ -3428,9 +3410,15 @@ function GroupOneTimeMessageModal(props: {
               background: '#fff',
             }}
           >
+            {/* loadTemplates is wired to the group's program — the
+                template picker shows whatsapp templates configured on
+                that program. dirty state bubbles up via onDirtyChange
+                so StrongModal's unsaved-changes confirm gates close. */}
             <MessageComposer
               onSendNow={sendNow}
               onSchedule={schedule}
+              loadTemplates={props.programId ? loadProgramTemplates(props.programId) : undefined}
+              onDirtyChange={setDirty}
               placeholder="כתבי את ההודעה לקבוצה..."
             />
           </div>

@@ -28,7 +28,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiFetch, BASE_URL } from '@lib/api';
-import { MessageComposer, localInputToIso } from '@components/message-composer';
+import { MessageComposer, localInputToIso, loadParticipantTemplates } from '@components/message-composer';
 import {
   VariableInsertButton,
   type VariableEditorHandle,
@@ -140,41 +140,68 @@ export function ParticipantPrivateChat({
   const [loadErr, setLoadErr] = useState('');
   const [showCancelled, setShowCancelled] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  // Tracks whether the composer has typed-but-not-sent text. The
-  // popup wrapper reads this via onDirtyChange to gate its close
-  // confirm. Driven by an onChange-style callback the composer
-  // exposes; right now we approximate with a local mirror.
+  // Composer dirty state — bubbled up from MessageComposer's
+  // onDirtyChange so the popup wrapper can show the unsaved-changes
+  // confirm. The composer is the single owner of its text state; we
+  // just mirror the boolean.
   const [composerHasText, setComposerHasText] = useState(false);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
+  // Smart auto-scroll: if the user is near the bottom we pin to the
+  // newest message on every poll. If they've scrolled up, we leave
+  // them alone and surface a "↓ N הודעות חדשות" pill instead.
+  const isAtBottomRef = useRef(true);
+  const [unseenCount, setUnseenCount] = useState(0);
 
-  const reload = useCallback(async () => {
+  // Reload chat data. Two modes:
+  //   - silent=false (initial load + post-action) → toggles loading
+  //     state and surfaces errors. Used when admin clicks something.
+  //   - silent=true (poll tick) → never flips loading; swallows
+  //     transient errors so a flaky network doesn't blink the UI.
+  // Polling never resets composer state because the composer owns
+  // its own state separately.
+  const reload = useCallback(async (silent = false) => {
     try {
       const r = await apiFetch<ChatResponse>(
         `${BASE_URL}/participants/${participantId}/chat`,
         { cache: 'no-store' },
       );
-      setMessages(r.messages);
+      setMessages((prev) => {
+        // Detect new inbound to drive unseen-count when scrolled up.
+        if (silent && prev.length > 0) {
+          const prevIds = new Set(prev.map((m) => m.id));
+          const newCount = r.messages.filter((m) => !prevIds.has(m.id)).length;
+          if (newCount > 0 && !isAtBottomRef.current) {
+            setUnseenCount((c) => c + newCount);
+          }
+        }
+        return r.messages;
+      });
       setScheduled(r.scheduled);
-      setLoadErr('');
+      if (!silent) setLoadErr('');
     } catch (e) {
+      if (silent) return; // swallow on poll
       const m = e instanceof Error ? e.message :
         (typeof e === 'object' && e !== null && typeof (e as { message?: unknown }).message === 'string')
           ? (e as { message: string }).message : 'טעינה נכשלה';
       setLoadErr(m);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [participantId]);
 
   useEffect(() => { void reload(); }, [reload]);
 
-  // Bubble dirty state up. We can't directly observe the composer's
-  // text from out here (it's encapsulated), so instead the composer
-  // calls onDirtyChange via the wrapping component's send callbacks
-  // — the only state that visibly survives a partial type is "did
-  // the user start typing". We approximate via a thin onSendStarted
-  // hook that flips composerHasText to false when the send completes
-  // (and the wrapper resets the form).
+  // Background polling. 5s cadence — quiet enough to feel live without
+  // hammering the API. Cleared on unmount (popup close). The poll never
+  // touches the composer; MessageComposer owns its own text/mode/picker
+  // state, so refreshing chat data leaves what the admin is typing,
+  // which template they picked, and the schedule mode untouched.
+  useEffect(() => {
+    const t = setInterval(() => { void reload(true); }, 5000);
+    return () => clearInterval(t);
+  }, [reload]);
+
+  // Bubble dirty state up to the popup wrapper.
   useEffect(() => { onDirtyChange?.(composerHasText); }, [composerHasText, onDirtyChange]);
 
   // ── Composer callbacks ─────────────────────────────────────────────────
@@ -240,15 +267,39 @@ export function ParticipantPrivateChat({
     [scheduled, editingId],
   );
 
-  // ── Auto-scroll to bottom on every reload ──────────────────────────────
-  // Same UX WhatsApp gives — the admin sees the newest reply without
-  // a manual scroll. Triggered by `messages` (new inbound from a
-  // reload) and by `loading` flipping (initial load done).
+  // ── Smart auto-scroll ─────────────────────────────────────────────────
+  // Pin to bottom only when the user is already there. If they've
+  // scrolled up to read older history, leave them put and let the
+  // unseen-count pill below tell them new messages arrived.
+  // The "near bottom" threshold is generous (96px) so a small drift
+  // mid-read still keeps auto-scroll engaged.
   useEffect(() => {
     const el = chatScrollRef.current;
     if (!el) return;
-    el.scrollTop = el.scrollHeight;
+    if (isAtBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+      setUnseenCount(0);
+    }
   }, [messages, otherScheduled.length, loading]);
+
+  // Track the user's scroll position so the auto-scroll effect knows
+  // whether they're "at the bottom" for the next poll. Updated on
+  // every scroll event but only the boolean is stored — no rerender
+  // cost during scroll.
+  function handleChatScroll(e: React.UIEvent<HTMLDivElement>) {
+    const el = e.currentTarget;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    isAtBottomRef.current = distanceFromBottom < 96;
+    if (isAtBottomRef.current && unseenCount > 0) setUnseenCount(0);
+  }
+
+  function jumpToBottom() {
+    const el = chatScrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    isAtBottomRef.current = true;
+    setUnseenCount(0);
+  }
 
   return (
     <div
@@ -258,6 +309,7 @@ export function ParticipantPrivateChat({
         height: '100%',
         overflow: 'hidden',
         background: '#fff',
+        position: 'relative',
       }}
     >
       {/* ── 1. Pending scheduled strip ──────────────────────────────── */}
@@ -337,12 +389,14 @@ export function ParticipantPrivateChat({
       {/* ── 2. Chat conversation area ───────────────────────────────── */}
       <div
         ref={chatScrollRef}
+        onScroll={handleChatScroll}
         style={{
           flex: 1,
           overflowY: 'auto',
           padding: 12,
           background: '#f8fafc',
           minHeight: 0, // critical for flex+overflow in Firefox
+          position: 'relative',
         }}
       >
         {loading && (
@@ -456,11 +510,52 @@ export function ParticipantPrivateChat({
         </div>
       </div>
 
+      {/* ── Floating "new messages" pill ────────────────────────────── */}
+      {/* Surfaces only when polling brought in new messages while the
+          user is scrolled up. Click jumps to the bottom (resetting the
+          unseen counter); otherwise it disappears the moment the user
+          scrolls back into the bottom band themselves. */}
+      {unseenCount > 0 && (
+        <button
+          type="button"
+          onClick={jumpToBottom}
+          style={{
+            position: 'absolute',
+            insetInlineStart: '50%',
+            transform: 'translateX(-50%)',
+            // Stack just above the composer dock. The composer itself
+            // sets its own height; this offset tracks the typical
+            // collapsed dock so the pill never sits on top of it.
+            bottom: 132,
+            background: '#16a34a',
+            color: '#fff',
+            border: 'none',
+            borderRadius: 999,
+            padding: '6px 14px',
+            fontSize: 12,
+            fontWeight: 700,
+            cursor: 'pointer',
+            boxShadow: '0 6px 18px rgba(22,163,74,0.35)',
+            zIndex: 5,
+          }}
+        >
+          ↓ {unseenCount === 1 ? 'הודעה חדשה' : `${unseenCount} הודעות חדשות`}
+        </button>
+      )}
+
       {/* ── 3. Composer dock — shared component ─────────────────────── */}
-      <DirtyAwareComposer
+      {/* MessageComposer owns its own text/mode/template state. Polling
+          above doesn't touch it. The composer reports dirty (typed-but-
+          not-sent) up via onDirtyChange so the popup wrapper can guard
+          close. loadTemplates is wired to the participant-scoped
+          endpoint that returns templates from every program the
+          participant is currently active in. */}
+      <MessageComposer
         onSendNow={sendNow}
         onSchedule={scheduleNew}
-        onTypingChange={setComposerHasText}
+        loadTemplates={loadParticipantTemplates(participantId)}
+        onDirtyChange={setComposerHasText}
+        placeholder="הקלידי הודעה..."
       />
 
       {/* ── Edit modal for pending scheduled rows ───────────────────── */}
@@ -475,47 +570,6 @@ export function ParticipantPrivateChat({
           }}
         />
       )}
-    </div>
-  );
-}
-
-// Tiny wrapper that lets the parent observe whether the composer has
-// typed-but-not-sent text. MessageComposer doesn't expose its internal
-// text state directly (and shouldn't — encapsulation), so we wrap it
-// with a thin layer that intercepts onSendNow / onSchedule and clears
-// dirty after a successful send. Any keystroke in the textarea bumps
-// dirty=true via a one-time onChange handler attached at mount.
-//
-// Implementation note: the simplest way to know "is the text empty"
-// without piercing the composer's encapsulation is to inspect the
-// nearest <textarea> on input. The composer is the only textarea
-// inside this scope, so the approach is robust without a ref API.
-function DirtyAwareComposer(props: {
-  onSendNow: (text: string) => Promise<void>;
-  onSchedule: (text: string, iso: string) => Promise<void>;
-  onTypingChange: (hasText: boolean) => void;
-}) {
-  const wrapperRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    const el = wrapperRef.current;
-    if (!el) return;
-    const ta = el.querySelector('textarea');
-    if (!ta) return;
-    function handler() {
-      props.onTypingChange((ta as HTMLTextAreaElement).value.trim().length > 0);
-    }
-    ta.addEventListener('input', handler);
-    return () => ta.removeEventListener('input', handler);
-  }, [props]);
-
-  return (
-    <div ref={wrapperRef}>
-      <MessageComposer
-        onSendNow={props.onSendNow}
-        onSchedule={props.onSchedule}
-        placeholder="הקלידי הודעה..."
-      />
     </div>
   );
 }

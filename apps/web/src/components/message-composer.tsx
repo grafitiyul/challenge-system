@@ -6,110 +6,93 @@
 //   - group participant-row WA popup (same component)
 //   - group header "הודעה" button → GroupOneTimeMessageModal
 //
-// Rather than each surface owning a copy of the editor + variables +
-// mode toggle + send button, they all render <MessageComposer> with
-// per-surface onSendNow / onSchedule callbacks. The composer itself is
-// surface-agnostic — it doesn't know whether sending hits the private
-// DM endpoint or the group send endpoint, only that the parent gave
-// it functions to call.
+// Each surface passes its own onSendNow / onSchedule callbacks plus an
+// optional template loader. Composer itself is surface-agnostic.
 //
-// UX choices:
-//   - WhatsApp-style auto-grow textarea pinned at the bottom of the
-//     parent. Starts compact (one line) and grows up to maxRows; past
-//     that it scrolls internally.
+// UX:
+//   - WhatsAppEditor inside (bold/italic/strikethrough/bullets/emoji
+//     +preview toggle), so the composer keeps every editing tool the
+//     old send modal had. Auto-grows naturally with content because
+//     contenteditable expands as content fills.
 //   - Variables hidden behind a "+ משתנים" trigger (VariableInsertButton)
-//     — no more always-visible chip bar crowding the composer.
+//   - Template picker shown only when loadTemplates is provided.
+//     Loads on first open, cached for the rest of the popup lifetime.
 //   - Mode pills (שלח עכשיו / תזמן) + datetime picker on a single
-//     compact row above the textarea.
-//   - Send button label flips between "שלח עכשיו" and "תזמן הודעה".
+//     compact row above the editor.
 
 import { useEffect, useRef, useState } from 'react';
-import {
-  VariableInsertButton,
-  type VariableEditorHandle,
-} from './variable-button-bar';
+import { apiFetch } from '@lib/api';
+import WhatsAppEditor, { type WhatsAppEditorHandle } from './whatsapp-editor';
+import { VariableInsertButton } from './variable-button-bar';
 
-// ─── Date helpers (local-wallclock ↔ ISO UTC, Asia/Jerusalem) ──────────────
-// Same convention every admin form uses: the browser's datetime-local
-// input returns wall-clock for the admin's locale (Israel), so we just
-// round-trip via `new Date(local).toISOString()`. Display always uses
-// he-IL locale.
+// ─── Date helpers ──────────────────────────────────────────────────────────
 
 function localInputToIso(local: string): string {
   return new Date(local).toISOString();
 }
 
 function defaultScheduleSlot(): string {
-  // "in 1 hour" rounded up to the next 5 minutes — sensible default
-  // that's always in the future + matches the existing chat behavior.
   const d = new Date(Date.now() + 60 * 60_000);
   d.setMinutes(Math.ceil(d.getMinutes() / 5) * 5, 0, 0);
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-// ─── Auto-grow plain-text editor ─────────────────────────────────────────
-// We deliberately use a plain <textarea> rather than the WhatsApp
-// markdown editor here. Reasons:
-//   - WhatsApp-like input at the bottom of a chat is expected to be a
-//     simple growing textarea, not a styled editor.
-//   - The bridge sends raw text to WhatsApp — formatting via *bold* /
-//     _italic_ markers still works because that's WhatsApp protocol,
-//     not our HTML.
-//   - Auto-grow on a contenteditable is fiddly across browsers; on a
-//     textarea it's a one-line height-recompute on input.
-// The textarea exposes the same { insertAtCursor, focus } imperative
-// handle that VariableInsertButton expects.
+// ─── Template types ────────────────────────────────────────────────────────
 
-interface AutoGrowTextareaHandle extends VariableEditorHandle {}
-
-function useAutoGrowTextarea(
-  value: string,
-  maxRows: number,
-): {
-  ref: React.RefObject<HTMLTextAreaElement | null>;
-  recalc: () => void;
-} {
-  const ref = useRef<HTMLTextAreaElement | null>(null);
-  function recalc() {
-    const el = ref.current;
-    if (!el) return;
-    // Reset to auto first so the scrollHeight reflects content size,
-    // then clamp to maxRows × line-height. The line-height is read
-    // from computed style so theme changes don't desync this from the
-    // textarea's actual rendering.
-    el.style.height = 'auto';
-    const lineHeight = parseFloat(getComputedStyle(el).lineHeight) || 20;
-    const padding =
-      parseFloat(getComputedStyle(el).paddingTop) +
-      parseFloat(getComputedStyle(el).paddingBottom);
-    const max = lineHeight * maxRows + padding;
-    el.style.height = Math.min(el.scrollHeight, max) + 'px';
-    el.style.overflowY = el.scrollHeight > max ? 'auto' : 'hidden';
-  }
-  useEffect(() => { recalc(); }, [value]); // eslint-disable-line react-hooks/exhaustive-deps
-  return { ref, recalc };
+export interface TemplateGroup {
+  programId: string;
+  programName: string;
+  templates: Array<{ id: string; title: string; body: string }>;
 }
 
-// ─── Public API ───────────────────────────────────────────────────────────
+// Helpers exposed to the parent so it doesn't have to repeat the URL
+// shape. Each surface picks the appropriate one.
+export function loadParticipantTemplates(participantId: string): () => Promise<TemplateGroup[]> {
+  return () =>
+    apiFetch<TemplateGroup[]>(`/api-proxy/api/participants/${participantId}/whatsapp-templates`, {
+      cache: 'no-store',
+    });
+}
+export function loadProgramTemplates(programId: string): () => Promise<TemplateGroup[]> {
+  return async () => {
+    const rows = await apiFetch<Array<{ id: string; title: string; body: string }>>(
+      `/api-proxy/api/programs/${programId}/communication-templates?channel=whatsapp`,
+      { cache: 'no-store' },
+    );
+    return [
+      {
+        programId,
+        programName: '',
+        templates: rows,
+      },
+    ];
+  };
+}
+
+// ─── Public API ────────────────────────────────────────────────────────────
 
 export interface MessageComposerProps {
-  // Parent owns the actual API call; composer only reports the text
-  // (and, for schedule, the chosen UTC ISO time). Parent should
-  // throw on failure so the composer can surface the error.
   onSendNow: (text: string) => Promise<void>;
   onSchedule: (text: string, scheduledAtIso: string) => Promise<void>;
+  // Optional template loader. Composer fetches lazily when picker opens.
+  // Returns groups by program. If undefined, picker isn't rendered.
+  loadTemplates?: () => Promise<TemplateGroup[]>;
   placeholder?: string;
-  // Some surfaces (group header) hide the schedule pill if the parent
-  // explicitly opts out. Default: schedule visible.
   allowSchedule?: boolean;
+  // Reports whether the editor currently holds typed-but-not-sent text.
+  // Optional — surfaces that need to gate close on dirty composer state
+  // (popup wrappers) listen via this; standalone usage ignores it.
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
 export function MessageComposer({
   onSendNow,
   onSchedule,
+  loadTemplates,
   placeholder = 'הקלידי הודעה...',
   allowSchedule = true,
+  onDirtyChange,
 }: MessageComposerProps) {
   const [content, setContent] = useState('');
   const [mode, setMode] = useState<'now' | 'schedule'>('now');
@@ -118,54 +101,62 @@ export function MessageComposer({
   const [err, setErr] = useState('');
   const [ok, setOk] = useState('');
 
-  // Auto-grow up to ~6 rows; past that the textarea scrolls internally.
-  // Six rows is enough to read most outbound DMs at a glance without
-  // pushing the chat history out of view.
-  const { ref: textareaRef, recalc } = useAutoGrowTextarea(content, 6);
+  // Editor handle — used by both VariableInsertButton and the template
+  // picker so token / template insertion lands at the caret.
+  const editorHandleRef = useRef<WhatsAppEditorHandle | null>(null);
 
-  // Imperative handle for VariableInsertButton.insertAtCursor.
-  // Uses the textarea's selectionStart/End so the token replaces the
-  // current selection (or just inserts at the caret if there isn't one).
-  const handleRef = useRef<AutoGrowTextareaHandle>({
-    insertAtCursor(token: string) {
-      const el = textareaRef.current;
-      if (!el) return;
-      const start = el.selectionStart ?? content.length;
-      const end = el.selectionEnd ?? content.length;
-      const next = content.slice(0, start) + token + content.slice(end);
-      setContent(next);
-      // Restore caret after the inserted token on the next tick — by
-      // then React has flushed the new value into the DOM.
-      requestAnimationFrame(() => {
-        if (!el) return;
-        const pos = start + token.length;
-        el.focus();
-        el.setSelectionRange(pos, pos);
-        recalc();
-      });
-    },
-    focus() { textareaRef.current?.focus(); },
-  });
-  // Keep the ref's closure in sync with the latest `content` so a click
-  // mid-edit inserts at the right place.
+  // Bubble dirty state up. Only flips when the editor has trimmed
+  // content; clears as soon as a successful send empties it.
   useEffect(() => {
-    handleRef.current.insertAtCursor = (token: string) => {
-      const el = textareaRef.current;
-      if (!el) return;
-      const start = el.selectionStart ?? content.length;
-      const end = el.selectionEnd ?? content.length;
-      const next = content.slice(0, start) + token + content.slice(end);
-      setContent(next);
-      requestAnimationFrame(() => {
-        if (!el) return;
-        const pos = start + token.length;
-        el.focus();
-        el.setSelectionRange(pos, pos);
-        recalc();
-      });
-    };
-  }, [content, recalc, textareaRef]);
+    onDirtyChange?.(content.trim().length > 0);
+  }, [content, onDirtyChange]);
 
+  // ── Template picker state ──────────────────────────────────────────────
+  const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
+  const [templateGroups, setTemplateGroups] = useState<TemplateGroup[] | null>(null);
+  const [templateLoading, setTemplateLoading] = useState(false);
+  const [templateLoadErr, setTemplateLoadErr] = useState('');
+  // When user picks a template while composer has existing text, gate
+  // the swap behind a confirm so they don't lose work.
+  const [pendingTemplate, setPendingTemplate] = useState<{ title: string; body: string } | null>(null);
+
+  // Load templates on first picker open. Cached for the rest of the
+  // composer's lifetime — the same templates list rarely changes mid-
+  // conversation, and re-fetching on every open feels janky.
+  async function openTemplatePicker() {
+    setTemplatePickerOpen((v) => !v);
+    if (templateGroups !== null || !loadTemplates) return;
+    setTemplateLoading(true);
+    setTemplateLoadErr('');
+    try {
+      const groups = await loadTemplates();
+      setTemplateGroups(groups);
+    } catch (e) {
+      const m = e instanceof Error ? e.message :
+        (typeof e === 'object' && e !== null && typeof (e as { message?: unknown }).message === 'string')
+          ? (e as { message: string }).message : 'טעינת תבניות נכשלה';
+      setTemplateLoadErr(m);
+    } finally {
+      setTemplateLoading(false);
+    }
+  }
+
+  function pickTemplate(body: string, title: string) {
+    setTemplatePickerOpen(false);
+    if (content.trim().length > 0) {
+      setPendingTemplate({ title, body });
+      return;
+    }
+    setContent(body);
+  }
+
+  function confirmReplaceWithTemplate() {
+    if (!pendingTemplate) return;
+    setContent(pendingTemplate.body);
+    setPendingTemplate(null);
+  }
+
+  // ── Send ─────────────────────────────────────────────────────────────
   async function send() {
     const text = content.trim();
     if (!text) { setErr('תוכן ההודעה הוא שדה חובה'); return; }
@@ -192,8 +183,6 @@ export function MessageComposer({
     }
   }
 
-  // Clear the success flash after a couple of seconds — it's a
-  // confirmation, not a permanent state.
   useEffect(() => {
     if (!ok) return;
     const t = setTimeout(() => setOk(''), 2400);
@@ -214,8 +203,8 @@ export function MessageComposer({
         padding: 10,
       }}
     >
-      {/* Mode + (when scheduling) datetime picker. Schedule pill +
-          datetime are hidden in surfaces that opt out (allowSchedule=false). */}
+      {/* Mode + datetime picker + template trigger + variables trigger
+          all on one compact row above the editor. */}
       <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
         {allowSchedule && (
           <>
@@ -255,53 +244,128 @@ export function MessageComposer({
             )}
           </>
         )}
-        <VariableInsertButton editorRef={handleRef} />
+
+        {/* Template picker — only rendered when a loader is provided.
+            The dropdown floats above the editor; click outside or
+            re-click the trigger to close. */}
+        {loadTemplates && (
+          <div style={{ position: 'relative' }}>
+            <button
+              type="button"
+              onClick={() => { void openTemplatePicker(); }}
+              style={{
+                padding: '4px 10px', fontSize: 11, fontWeight: 600,
+                background: templatePickerOpen ? '#dbeafe' : '#fff',
+                color: templatePickerOpen ? '#1d4ed8' : '#475569',
+                border: `1px solid ${templatePickerOpen ? '#bfdbfe' : '#cbd5e1'}`,
+                borderRadius: 999, cursor: 'pointer',
+              }}
+              aria-expanded={templatePickerOpen}
+            >📋 בחר נוסח</button>
+            {templatePickerOpen && (
+              <div
+                style={{
+                  position: 'absolute',
+                  top: 'calc(100% + 6px)',
+                  insetInlineStart: 0,
+                  background: '#fff',
+                  border: '1px solid #e2e8f0',
+                  borderRadius: 10,
+                  boxShadow: '0 10px 30px rgba(0,0,0,0.12)',
+                  minWidth: 320,
+                  maxWidth: 'min(420px, 85vw)',
+                  maxHeight: 320,
+                  overflowY: 'auto',
+                  zIndex: 1500,
+                }}
+              >
+                {templateLoading && (
+                  <div style={{ padding: 14, textAlign: 'center', color: '#94a3b8', fontSize: 12 }}>טוען תבניות...</div>
+                )}
+                {templateLoadErr && !templateLoading && (
+                  <div style={{ padding: 14, color: '#b91c1c', fontSize: 12 }}>{templateLoadErr}</div>
+                )}
+                {!templateLoading && !templateLoadErr && (templateGroups ?? []).every((g) => g.templates.length === 0) && (
+                  <div style={{ padding: 14, textAlign: 'center', color: '#94a3b8', fontSize: 12 }}>
+                    אין תבניות זמינות
+                  </div>
+                )}
+                {!templateLoading && !templateLoadErr && (templateGroups ?? []).map((g) => (
+                  g.templates.length === 0 ? null : (
+                    <div key={g.programId}>
+                      {g.programName && (
+                        <div style={{
+                          padding: '6px 12px', fontSize: 10, fontWeight: 700,
+                          color: '#94a3b8', textTransform: 'uppercase',
+                          letterSpacing: '0.05em', background: '#f8fafc',
+                          borderBottom: '1px solid #f1f5f9',
+                        }}>
+                          {g.programName}
+                        </div>
+                      )}
+                      {g.templates.map((t) => (
+                        <button
+                          key={t.id}
+                          type="button"
+                          onClick={() => pickTemplate(t.body, t.title)}
+                          style={{
+                            display: 'block', width: '100%', textAlign: 'right',
+                            padding: '10px 12px',
+                            background: 'none', border: 'none',
+                            borderBottom: '1px solid #f1f5f9',
+                            cursor: 'pointer', fontSize: 13,
+                          }}
+                          onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#f8fafc'; }}
+                          onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'none'; }}
+                        >
+                          <div style={{ fontWeight: 600, color: '#0f172a', marginBottom: 2 }}>{t.title}</div>
+                          <div style={{
+                            color: '#64748b', fontSize: 12,
+                            overflow: 'hidden', textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap', direction: 'rtl',
+                          }}>{t.body}</div>
+                        </button>
+                      ))}
+                    </div>
+                  )
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        <VariableInsertButton editorRef={editorHandleRef} />
+
         {ok && (
           <span style={{ color: '#15803d', fontSize: 11, fontWeight: 600, marginInlineStart: 'auto' }}>{ok}</span>
         )}
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}>
-        <textarea
-          ref={textareaRef}
-          value={content}
-          onChange={(e) => setContent(e.target.value)}
-          onKeyDown={(e) => {
-            // Enter sends; Shift+Enter inserts a newline. Matches the
-            // input convention WhatsApp Web uses.
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              if (!sendDisabled) void send();
-            }
-          }}
-          placeholder={placeholder}
-          rows={1}
-          style={{
-            flex: 1,
-            resize: 'none',
-            minHeight: 38,
-            padding: '8px 12px',
-            border: '1px solid #cbd5e1',
-            borderRadius: 18,
-            fontSize: 14,
-            lineHeight: '20px',
-            fontFamily: 'inherit',
-            background: '#fff',
-            color: '#0f172a',
-            outline: 'none',
-            boxSizing: 'border-box',
-            // Vertical scrollbar appears only when content exceeds maxRows.
-            overflowY: 'hidden',
-          }}
-        />
+      {/* WhatsAppEditor: bold/italic/strikethrough/bullets/emoji + WA
+          preview toggle + auto-growing contenteditable. minHeight kept
+          tight (60px) so the chat conversation above stays the focal
+          area; the editor expands naturally as the admin types. */}
+      <WhatsAppEditor
+        ref={editorHandleRef}
+        value={content}
+        onChange={setContent}
+        placeholder={placeholder}
+        minHeight={60}
+      />
+
+      {err && (
+        <div style={{ color: '#dc2626', fontSize: 12, marginTop: 6 }}>{err}</div>
+      )}
+
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
         <button
           type="button"
           onClick={() => { void send(); }}
           disabled={sendDisabled}
           style={{
-            padding: '0 14px', height: 38, fontSize: 13, fontWeight: 700,
+            padding: '7px 18px', fontSize: 13, fontWeight: 700,
             background: sendBg,
-            color: '#fff', border: 'none', borderRadius: 18,
+            color: '#fff', border: 'none', borderRadius: 999,
             cursor: sendDisabled ? 'not-allowed' : 'pointer',
             whiteSpace: 'nowrap',
           }}
@@ -313,14 +377,41 @@ export function MessageComposer({
               : 'תזמן הודעה'}
         </button>
       </div>
-      {err && (
-        <div style={{ color: '#dc2626', fontSize: 12, marginTop: 6 }}>{err}</div>
+
+      {/* Replace-with-template confirm. Locked overlay, no backdrop
+          close — same convention as the rest of the strong modals. */}
+      {pendingTemplate && (
+        <div
+          style={{
+            position: 'fixed', inset: 0,
+            background: 'rgba(15,23,42,0.55)',
+            zIndex: 1400,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: 16,
+          }}
+        >
+          <div style={{ background: '#fff', borderRadius: 12, padding: 22, maxWidth: 380, width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', marginBottom: 8 }}>
+              להחליף את הטקסט הקיים?
+            </div>
+            <p style={{ fontSize: 13, color: '#475569', lineHeight: 1.6, margin: '0 0 14px' }}>
+              יש טקסט שכבר נכתב. החלפה לתבנית &ldquo;{pendingTemplate.title}&rdquo; תדרוס אותו.
+            </p>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setPendingTemplate(null)}
+                style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 8, padding: '7px 14px', fontSize: 13, cursor: 'pointer' }}
+              >ביטול</button>
+              <button
+                onClick={confirmReplaceWithTemplate}
+                style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 8, padding: '7px 16px', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
+              >החלף</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
 }
 
-// Re-export the date helper because GroupOneTimeMessageModal computes
-// its own ISO conversion for the schedule callback. Saves duplicating
-// the trivial wall-clock helper.
 export { localInputToIso };

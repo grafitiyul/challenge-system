@@ -203,6 +203,56 @@ export class ParticipantsService {
     return { ...rest, paymentsCount: _count?.payments ?? 0 };
   }
 
+  // Returns active whatsapp CommunicationTemplate rows for every program
+  // this participant is currently active in. Used by the unified chat
+  // composer's template picker so a single dropdown surfaces every
+  // template available to her, labeled by program. Returns one row per
+  // program — empty templates[] for programs that have no whatsapp
+  // templates configured (still lists the program so the admin sees
+  // the structure).
+  async listWhatsappTemplatesForParticipant(participantId: string): Promise<Array<{
+    programId: string;
+    programName: string;
+    templates: Array<{ id: string; title: string; body: string }>;
+  }>> {
+    // Resolve programs from active group memberships only — leaving a
+    // group ends template access. dedupe by programId because a
+    // participant may have multiple memberships in the same program.
+    const memberships = await this.prisma.participantGroup.findMany({
+      where: { participantId, isActive: true },
+      select: {
+        group: { select: { programId: true, program: { select: { id: true, name: true } } } },
+      },
+    });
+    const programs = new Map<string, { id: string; name: string }>();
+    for (const m of memberships) {
+      const p = m.group?.program;
+      if (p && !programs.has(p.id)) programs.set(p.id, { id: p.id, name: p.name });
+    }
+    if (programs.size === 0) return [];
+
+    const programIds = Array.from(programs.keys());
+    const templates = await this.prisma.communicationTemplate.findMany({
+      where: {
+        programId: { in: programIds },
+        channel: 'whatsapp',
+        isActive: true,
+      },
+      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+      select: { id: true, title: true, body: true, programId: true },
+    });
+
+    // Group by program. Preserves iteration order from `programs` so
+    // the picker shows programs consistently across calls.
+    return Array.from(programs.values()).map((p) => ({
+      programId: p.id,
+      programName: p.name,
+      templates: templates
+        .filter((t) => t.programId === p.id)
+        .map((t) => ({ id: t.id, title: t.title, body: t.body })),
+    }));
+  }
+
   async findByGroup(groupId: string, includeMock = false) {
     const memberships = await this.prisma.participantGroup.findMany({
       where: {

@@ -45,6 +45,16 @@ export class ParticipantsController {
     return this.participantsService.findById(id);
   }
 
+  // Returns active CommunicationTemplate rows (channel='whatsapp') across
+  // every program this participant is currently active in. Used by the
+  // unified chat composer's template picker so a single dropdown can
+  // pick from any program the participant is in. Grouped by program so
+  // the picker can label each option with its program name.
+  @Get(':id/whatsapp-templates')
+  whatsappTemplates(@Param('id') id: string) {
+    return this.participantsService.listWhatsappTemplatesForParticipant(id);
+  }
+
   @Post()
   create(@Body() dto: CreateParticipantDto) {
     return this.participantsService.create(dto);
