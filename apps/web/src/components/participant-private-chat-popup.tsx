@@ -87,7 +87,6 @@ export function ParticipantPrivateChatPopup(props: {
         <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
           <ParticipantPrivateChat
             participantId={props.participantId}
-            selfScroll={true}
             onDirtyChange={setDirty}
           />
         </div>

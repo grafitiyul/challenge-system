@@ -7,7 +7,6 @@ import { useSearchParams } from 'next/navigation';
 import { BASE_URL, apiFetch } from '@lib/api';
 import { AdminProjectsTab } from '@components/admin-projects';
 import { PaymentsTab } from '@components/payments-tab';
-import { ParticipantPrivateChat } from '@components/participant-private-chat';
 import { ParticipantPrivateChatPopup } from '@components/participant-private-chat-popup';
 import { WhatsAppIcon } from '@components/icons/whatsapp-icon';
 import {
@@ -83,9 +82,13 @@ interface Submission {
   answers: SubmissionAnswer[];
 }
 
-type Tab = 'questionnaires' | 'forms' | 'goals' | 'projects' | 'collected' | 'communication' | 'reports' | 'payments' | 'history' | 'profile';
+// 'communication' was the old "צ׳אט" tab. Removed in favor of the
+// header WhatsApp button which opens the unified chat popup. Kept
+// out of Tab here so any old ?tab=communication URL falls back to
+// the default (questionnaires) at validation time.
+type Tab = 'questionnaires' | 'forms' | 'goals' | 'projects' | 'collected' | 'reports' | 'payments' | 'history' | 'profile';
 
-const VALID_TABS: Tab[] = ['questionnaires', 'forms', 'goals', 'projects', 'collected', 'communication', 'reports', 'payments', 'history', 'profile'];
+const VALID_TABS: Tab[] = ['questionnaires', 'forms', 'goals', 'projects', 'collected', 'reports', 'payments', 'history', 'profile'];
 
 interface FormSubmission {
   id: string;
@@ -825,7 +828,6 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
     { key: 'goals',          label: 'מטרות והתקדמות' },
     { key: 'projects',       label: 'פרויקטים' },
     { key: 'collected',      label: 'מידע שנאסף' },
-    { key: 'communication',  label: 'צ׳אט' },
     { key: 'reports',        label: 'דיווחים שוטפים' },
     { key: 'payments',       label: 'תשלומים וחשבונות' },
     { key: 'profile',        label: 'פרופיל' },
@@ -1242,9 +1244,6 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
         )}
         {activeTab === 'collected' && (
           <CollectedInfoTab participant={participant} />
-        )}
-        {activeTab === 'communication' && (
-          <ParticipantPrivateChat participantId={id} />
         )}
         {activeTab === 'reports' && (
           <PlaceholderTab icon="📅" title="דיווחים שוטפים" subtitle="כאן יוצגו נתוני דיווח יומי, הרגלים ועמידה ביעדים — בקרוב" />

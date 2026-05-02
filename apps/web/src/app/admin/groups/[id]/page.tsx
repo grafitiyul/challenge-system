@@ -9,6 +9,8 @@ import { VariableButtonBar, type VariableEditorHandle } from '@components/variab
 import { ChatMessage, ChatMessageList } from '@components/chat-messages';
 import { WhatsAppIcon } from '@components/icons/whatsapp-icon';
 import { ParticipantPrivateChatPopup } from '@components/participant-private-chat-popup';
+import { MessageComposer } from '@components/message-composer';
+import { StrongModal } from '@components/strong-modal';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -319,7 +321,14 @@ export default function GroupDetailPage() {
   // Tab
   const [tab, setTab] = useState<Tab>('participants');
 
-  // Chat tab
+  // Chat tab — selectedChatLinkId picks WHICH linked group_chat to
+  // display when the group has multiple WhatsApp groups linked. Falls
+  // back to the first group_chat link when null. Multi-chat support
+  // is intentional: a single group can be tied to several WhatsApp
+  // groups (different timezones, replacement chat after migration,
+  // dual instructor channels, etc.) and the admin needs to switch
+  // between them inside this tab without leaving the page.
+  const [selectedChatLinkId, setSelectedChatLinkId] = useState<string | null>(null);
   const [chatDetail, setChatDetail] = useState<ChatDetail | null>(null);
   const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState(false);
@@ -475,15 +484,25 @@ export default function GroupDetailPage() {
 
   useEffect(() => {
     if (tab !== 'communication') return;
-    const groupChatLink = links.find((l) => l.linkType === 'group_chat');
-    if (!groupChatLink) return;
+    // All group-type links available for switching. We don't include
+    // private participant chats here — they have their own popup
+    // surface from the participants list.
+    const groupChatLinks = links.filter((l) => l.linkType === 'group_chat');
+    if (groupChatLinks.length === 0) return;
+    // Default the selection if none is set, or if the saved one is
+    // no longer in the list (e.g. admin deleted a link).
+    const activeLink =
+      groupChatLinks.find((l) => l.id === selectedChatLinkId) ?? groupChatLinks[0];
+    if (activeLink.id !== selectedChatLinkId) {
+      setSelectedChatLinkId(activeLink.id);
+    }
     setChatLoading(true);
     setChatError(false);
-    apiFetch<ChatDetail>(`${BASE_URL}/wassenger/chats/${groupChatLink.whatsappChatId}`)
+    apiFetch<ChatDetail>(`${BASE_URL}/wassenger/chats/${activeLink.whatsappChatId}`)
       .then((data) => setChatDetail(data))
       .catch(() => setChatError(true))
       .finally(() => setChatLoading(false));
-  }, [tab, links]);
+  }, [tab, links, selectedChatLinkId]);
 
   useEffect(() => {
     if (tab === 'communication' && chatDetail && chatBottomRef.current) {
@@ -1680,11 +1699,54 @@ export default function GroupDetailPage() {
       )}
 
       {/* ══════════════════════════════════════════════════════════════════════
-          TAB: COMMUNICATION (#2) — WhatsApp chat thread
+          TAB: COMMUNICATION (#2) — WhatsApp chat thread (multi-chat aware)
       ══════════════════════════════════════════════════════════════════════ */}
-      {tab === 'communication' && (
+      {tab === 'communication' && (() => {
+        const groupChatLinks = links.filter((l) => l.linkType === 'group_chat');
+        const activeLink = groupChatLinks.find((l) => l.id === selectedChatLinkId) ?? groupChatLinks[0] ?? null;
+        return (
         <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, overflow: 'hidden' }}>
-          {!groupChatLink ? (
+          {/* Chat switcher — only rendered when multiple group chats are
+              linked. Each pill switches the active link, which the
+              chat-detail effect picks up to refetch. There's no DB or
+              API limit on linked-chat count; we cap the visible row
+              with horizontal scroll if it ever overflows. */}
+          {groupChatLinks.length > 1 && (
+            <div
+              style={{
+                display: 'flex', gap: 6, padding: '10px 12px',
+                borderBottom: '1px solid #e2e8f0',
+                background: '#f8fafc',
+                overflowX: 'auto',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {groupChatLinks.map((l) => {
+                const active = l.id === activeLink?.id;
+                return (
+                  <button
+                    key={l.id}
+                    type="button"
+                    onClick={() => setSelectedChatLinkId(l.id)}
+                    style={{
+                      padding: '6px 12px',
+                      fontSize: 12,
+                      fontWeight: 600,
+                      borderRadius: 999,
+                      border: `1px solid ${active ? '#2563eb' : '#cbd5e1'}`,
+                      background: active ? '#eff6ff' : '#fff',
+                      color: active ? '#1d4ed8' : '#475569',
+                      cursor: 'pointer',
+                      flexShrink: 0,
+                    }}
+                  >
+                    👥 {chatDisplayName(l.whatsappChat)}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {!activeLink ? (
             <div style={{ padding: 32, textAlign: 'center', color: '#94a3b8' }}>
               <div style={{ fontSize: 32, marginBottom: 12 }}>💬</div>
               <p style={{ fontSize: 15, fontWeight: 600, color: '#374151', marginBottom: 8 }}>אין קבוצת WhatsApp מקושרת</p>
@@ -1717,7 +1779,7 @@ export default function GroupDetailPage() {
                   </div>
                   <div style={{ fontSize: 12, color: '#94a3b8' }}>{chatDetail.messages.length} הודעות</div>
                 </div>
-                <Link href={`/admin/chats/${groupChatLink.whatsappChatId}`}
+                <Link href={`/admin/chats/${activeLink.whatsappChatId}`}
                   style={{ marginRight: 'auto', fontSize: 12, color: '#2563eb', padding: '5px 12px', border: '1px solid #bfdbfe', borderRadius: 6, textDecoration: 'none' }}>
                   פתח מלא ↗
                 </Link>
@@ -1732,7 +1794,8 @@ export default function GroupDetailPage() {
             </div>
           ) : null}
         </div>
-      )}
+        );
+      })()}
 
       {/* ══════════════════════════════════════════════════════════════════════
           TAB: ביצועים ודירוגים — leaderboard / key stats
@@ -2282,139 +2345,16 @@ export default function GroupDetailPage() {
       )}
 
       {/* ══════════════════════════════════════════════════════════════════════
-          MODAL — GROUP MESSAGE COMPOSER (WhatsAppEditor)
+          MODAL — GROUP MESSAGE (one-time send-or-schedule)
       ══════════════════════════════════════════════════════════════════════ */}
       {msgModalOpen && (
-        <Modal onClose={requestMsgClose} disableBackdropClose showCloseButton>
-          <h3 style={S.modalTitle}>הודעה לקבוצה</h3>
-          {groupChatLink ? (
-            <p style={{ fontSize: 13, color: '#6b7280', margin: '0 0 16px' }}>
-              שולחת ל: <strong>{chatDisplayName(groupChatLink.whatsappChat)}</strong>
-            </p>
-          ) : (
-            <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '10px 14px', marginBottom: 16, fontSize: 13, color: '#dc2626' }}>
-              לא קושרה קבוצת וואטסאפ. לחצי &ldquo;קשרי צ׳אט&rdquo; ובחרי קישור מסוג &ldquo;קבוצת וואטסאפ&rdquo;.
-            </div>
-          )}
-
-          {/* Template picker trigger */}
-          {templates.length > 0 && (
-            <div style={{ marginBottom: 12 }}>
-              <button
-                type="button"
-                onClick={() => setTemplatePickerOpen((v) => !v)}
-                style={{ background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: 7, padding: '6px 14px', fontSize: 13, color: '#0369a1', cursor: 'pointer', fontWeight: 500 }}
-              >
-                📋 בחר נוסח {templatePickerOpen ? '▲' : '▼'}
-              </button>
-              {templatePickerOpen && (
-                <div style={{ marginTop: 8, border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden', background: '#fff' }}>
-                  {templates.map((t) => (
-                    <button
-                      key={t.id}
-                      type="button"
-                      onClick={() => {
-                        setTemplatePickerOpen(false);
-                        if (msgText.trim()) {
-                          setTemplateConfirm({ content: t.content });
-                        } else {
-                          setMsgText(t.content);
-                        }
-                      }}
-                      style={{
-                        display: 'block', width: '100%', textAlign: 'right' as const,
-                        padding: '10px 14px', background: 'none', border: 'none',
-                        borderBottom: '1px solid #f1f5f9', cursor: 'pointer',
-                        fontSize: 13,
-                      }}
-                      onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#f8fafc'; }}
-                      onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'none'; }}
-                    >
-                      <div style={{ fontWeight: 600, color: '#0f172a', marginBottom: 2 }}>{t.name}</div>
-                      <div style={{ color: '#64748b', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.content}</div>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          <WhatsAppEditor
-            value={msgText}
-            onChange={setMsgText}
-            placeholder="הקלידי את תוכן ההודעה..."
-            minHeight={120}
-          />
-
-          {msgError && <p style={{ color: '#ef4444', fontSize: 13, margin: '8px 0 0' }}>{msgError}</p>}
-          {msgSuccess && <p style={{ color: '#16a34a', fontSize: 13, margin: '8px 0 0', fontWeight: 600 }}>ההודעה נשלחה!</p>}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 16 }}>
-            <button onClick={requestMsgClose} style={S.btnSecondary}>ביטול</button>
-            <button
-              onClick={sendGroupMessage}
-              disabled={msgSending || !groupChatLink || !msgText.trim()}
-              style={{ ...S.btnPrimary, ...(msgSending || !groupChatLink || !msgText.trim() ? S.btnDisabled : {}) }}
-            >
-              {msgSending ? 'שולח...' : 'שלח'}
-            </button>
-          </div>
-        </Modal>
-      )}
-
-      {/* ── Close-with-unsaved-edits confirmation ──
-          Only path for closing the composer when msgText is non-empty.
-          The Modal has disableBackdropClose so accidental clicks are
-          already blocked; this gate kicks in for explicit X / ביטול. */}
-      {msgCloseConfirm && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 1200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-          <div style={{ background: '#fff', borderRadius: 12, padding: 24, maxWidth: 360, width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
-            <p style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', margin: '0 0 6px' }}>
-              לסגור בלי לשלוח?
-            </p>
-            <p style={{ fontSize: 13, color: '#475569', margin: '0 0 20px', lineHeight: 1.5 }}>
-              יש טקסט שנערך ולא נשלח. אם תסגרי כעת — הוא יאבד.
-            </p>
-            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-              <button
-                onClick={() => setMsgCloseConfirm(false)}
-                style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 7, padding: '9px 18px', fontSize: 13, cursor: 'pointer' }}
-              >
-                המשך לערוך
-              </button>
-              <button
-                onClick={() => { setMsgCloseConfirm(false); setMsgModalOpen(false); }}
-                style={{ background: '#dc2626', color: '#fff', border: 'none', borderRadius: 7, padding: '9px 18px', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
-              >
-                סגור ואבד שינויים
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── Template overwrite confirmation ── */}
-      {templateConfirm && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-          <div style={{ background: '#fff', borderRadius: 12, padding: 24, maxWidth: 320, width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
-            <p style={{ fontSize: 15, color: '#0f172a', margin: '0 0 20px', lineHeight: 1.5 }}>
-              יש טקסט קיים. האם להחליף אותו בנוסח שנבחר?
-            </p>
-            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-              <button
-                onClick={() => setTemplateConfirm(null)}
-                style={{ background: '#f1f5f9', color: '#374151', border: '1px solid #e2e8f0', borderRadius: 7, padding: '9px 18px', fontSize: 13, cursor: 'pointer' }}
-              >
-                בטל
-              </button>
-              <button
-                onClick={() => { setMsgText(templateConfirm.content); setTemplateConfirm(null); }}
-                style={{ background: '#2563eb', color: '#fff', border: 'none', borderRadius: 7, padding: '9px 18px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
-              >
-                החלף
-              </button>
-            </div>
-          </div>
-        </div>
+        <GroupOneTimeMessageModal
+          groupId={id}
+          groupChatJid={groupChatLink?.whatsappChat?.externalChatId ?? null}
+          groupChatName={groupChatLink ? chatDisplayName(groupChatLink.whatsappChat) : '(לא מקושר)'}
+          onClose={() => setMsgModalOpen(false)}
+          onSaved={() => setMsgModalOpen(false)}
+        />
       )}
 
       {/* ══════════════════════════════════════════════════════════════════════
@@ -3372,6 +3312,131 @@ function GroupScheduledMessagesTab({ groupId, hasProgram }: { groupId: string; h
         />
       )}
     </div>
+  );
+}
+
+// One-time send-or-schedule modal opened from the group header's
+// WhatsApp/הודעה button. Uses the same MessageComposer the
+// participant private-chat popup uses (single composer rule), but
+// wires send/schedule to group-level endpoints:
+//   - שלח עכשיו → POST /admin/whatsapp/send (existing bridge proxy)
+//   - תזמן       → POST /groups/:id/scheduled-messages (existing
+//                 GroupScheduledMessage table; no parallel system)
+//
+// The schedule call defaults category=מותאם אישית and auto-builds
+// internalName from the picked datetime so admin doesn't have to
+// fill the schedule-tab editor's full form for an ad-hoc one-time
+// send. enabled=true so the cron worker picks it up immediately.
+function GroupOneTimeMessageModal(props: {
+  groupId: string;
+  groupChatJid: string | null;
+  groupChatName: string;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [dirty, setDirty] = useState(false);
+
+  async function sendNow(text: string): Promise<void> {
+    if (!props.groupChatJid) {
+      throw new Error('לא קושרה קבוצת וואטסאפ — קשרי קבוצה לפני שליחה');
+    }
+    await apiFetch(`${BASE_URL}/admin/whatsapp/send`, {
+      method: 'POST',
+      body: JSON.stringify({
+        phone: props.groupChatJid,
+        message: text,
+      }),
+    });
+    // Slight delay before closing so the admin sees the "נשלח ✓"
+    // flash from the composer's success banner.
+    setTimeout(() => props.onSaved(), 800);
+  }
+
+  async function schedule(text: string, scheduledAtIso: string): Promise<void> {
+    const when = new Date(scheduledAtIso);
+    const human = when.toLocaleString('he-IL', {
+      day: '2-digit', month: '2-digit', year: '2-digit',
+      hour: '2-digit', minute: '2-digit',
+    });
+    await apiFetch(`${BASE_URL}/groups/${props.groupId}/scheduled-messages`, {
+      method: 'POST',
+      body: JSON.stringify({
+        category: 'מותאם אישית',
+        internalName: `הודעה חד-פעמית · ${human}`,
+        content: text,
+        scheduledAt: scheduledAtIso,
+        enabled: true,
+      }),
+    });
+    setTimeout(() => props.onSaved(), 800);
+  }
+
+  // Wrap MessageComposer to track dirty state for the StrongModal
+  // unsaved-changes confirm. Same approach the participant chat uses
+  // (DirtyAwareComposer): observe the textarea's input event and
+  // mirror "has trimmed text" up to the parent.
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = wrapperRef.current;
+    if (!el) return;
+    const ta = el.querySelector('textarea');
+    if (!ta) return;
+    function handler() {
+      setDirty((ta as HTMLTextAreaElement).value.trim().length > 0);
+    }
+    ta.addEventListener('input', handler);
+    return () => ta.removeEventListener('input', handler);
+  }, []);
+
+  return (
+    <StrongModal
+      title={`הודעה לקבוצה — ${props.groupChatName}`}
+      isDirty={dirty}
+      onClose={props.onClose}
+      maxWidth={560}
+    >
+      {() => (
+        <>
+          {!props.groupChatJid && (
+            <div
+              style={{
+                background: '#fef2f2',
+                border: '1px solid #fecaca',
+                borderRadius: 8,
+                padding: '10px 14px',
+                marginBottom: 14,
+                fontSize: 13,
+                color: '#dc2626',
+              }}
+            >
+              לא קושרה קבוצת וואטסאפ. לחצי &ldquo;קשרי צ׳אט&rdquo; ובחרי קישור מסוג &ldquo;קבוצת וואטסאפ&rdquo; לפני שליחה.
+            </div>
+          )}
+          <p style={{ fontSize: 13, color: '#475569', margin: '0 0 14px', lineHeight: 1.5 }}>
+            כתבי הודעה אחת. בלחיצה על &ldquo;שלח עכשיו&rdquo; ההודעה תשלח לקבוצה כעת.
+            בלחיצה על &ldquo;תזמן הודעה&rdquo; היא תישמר ותישלח אוטומטית בזמן שתבחרי.
+            הודעות מתוזמנות נראות בלשונית &ldquo;הודעות מתוזמנות&rdquo; ואפשר לערוך / לבטל אותן עד הזמן שנבחר.
+          </p>
+          {/* Composer is wrapped so the input listener can mirror dirty
+              up to StrongModal — see useEffect above. */}
+          <div
+            ref={wrapperRef}
+            style={{
+              border: '1px solid #e2e8f0',
+              borderRadius: 12,
+              overflow: 'hidden',
+              background: '#fff',
+            }}
+          >
+            <MessageComposer
+              onSendNow={sendNow}
+              onSchedule={schedule}
+              placeholder="כתבי את ההודעה לקבוצה..."
+            />
+          </div>
+        </>
+      )}
+    </StrongModal>
   );
 }
 

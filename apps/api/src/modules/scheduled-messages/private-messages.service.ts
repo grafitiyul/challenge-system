@@ -186,6 +186,21 @@ export class PrivateScheduledMessagesService {
   // through the participant's private chat) and merges in the pending
   // scheduled rows. Sent rows are NOT included on this side — they
   // already appear via WhatsAppMessage with direction='outgoing'.
+  //
+  // Resolving "which chats belong to this participant" combines two
+  // sources:
+  //   1. Direct GroupChatLink rows of type='private_participant_chat'
+  //      where participantId matches. This is the explicit, admin-
+  //      created link — strongest signal, never wrong.
+  //   2. Phone-shape match against WhatsAppChat.phoneNumber. Catches
+  //      chats that were ingested from Baileys but never linked
+  //      explicitly (the common case for "the chat just works on
+  //      the bridge but no one clicked link-chat yet").
+  // Union of the two; dedupe by chat id. This also fixes the case
+  // where the participant DOES have a private_participant_chat link
+  // but the phone-pattern would have matched a different chat first
+  // (or none) — explicit link always wins, then phone fallback fills
+  // in the gaps.
   async chatTimeline(participantId: string) {
     const p = await this.prisma.participant.findUnique({
       where: { id: participantId },
@@ -193,12 +208,23 @@ export class PrivateScheduledMessagesService {
     });
     if (!p) throw new NotFoundException('המשתתפת לא נמצאה');
 
+    const chatIdSet = new Set<string>();
+
+    // Source 1: explicit GroupChatLink rows.
+    const links = await this.prisma.groupChatLink.findMany({
+      where: {
+        participantId,
+        linkType: 'private_participant_chat',
+      },
+      select: { whatsappChatId: true },
+    });
+    for (const l of links) chatIdSet.add(l.whatsappChatId);
+
+    // Source 2: phone-shape match. Three patterns covering both raw
+    // and digits-only phone formats stored across the legacy /
+    // Baileys ingest paths.
     const phone = (p.phoneNumber ?? '').replace(/\D/g, '');
-    let messages: Awaited<ReturnType<typeof this.prisma.whatsAppMessage.findMany>> = [];
     if (phone) {
-      // Resolve the participant's private WA chats by phone number. We
-      // try both the digits-only normalization and the raw phoneNumber
-      // because legacy chats may have either shape stored.
       const chats = await this.prisma.whatsAppChat.findMany({
         where: {
           type: 'private',
@@ -210,16 +236,18 @@ export class PrivateScheduledMessagesService {
         },
         select: { id: true },
       });
-      const chatIds = chats.map((c) => c.id);
-      if (chatIds.length > 0) {
-        messages = await this.prisma.whatsAppMessage.findMany({
-          where: { chatId: { in: chatIds } },
-          orderBy: { timestampFromSource: 'asc' },
-          // Cap the timeline so we don't blast the wire with a 5-year
-          // backlog. Newest-first slice; UI presents oldest at top.
-          take: 500,
-        });
-      }
+      for (const c of chats) chatIdSet.add(c.id);
+    }
+
+    let messages: Awaited<ReturnType<typeof this.prisma.whatsAppMessage.findMany>> = [];
+    if (chatIdSet.size > 0) {
+      messages = await this.prisma.whatsAppMessage.findMany({
+        where: { chatId: { in: Array.from(chatIdSet) } },
+        orderBy: { timestampFromSource: 'asc' },
+        // Cap the timeline so we don't blast the wire with a 5-year
+        // backlog. Newest-first slice; UI presents oldest at top.
+        take: 500,
+      });
     }
 
     const scheduled = await this.prisma.privateScheduledMessage.findMany({

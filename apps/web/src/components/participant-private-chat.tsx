@@ -1,26 +1,38 @@
 'use client';
 
-// Reusable private-chat surface for a single participant. Used in two
-// places, both reading/writing the SAME PrivateScheduledMessage rows
-// (single source of truth keyed on participantId):
-//   1. Participant profile → "צ׳אט" tab (full-page embed)
-//   2. Group page → participant row WA button → locked popup wrapper
+// Reusable private-chat surface for a single participant.
 //
-// Edits/cancels propagate automatically because both surfaces hit the
-// same /participants/:id/scheduled-messages endpoints. There is no
-// per-screen storage and no per-group duplication.
+// Used in two surfaces, both rendering this component INSIDE a
+// fixed-height popup chrome (ParticipantPrivateChatPopup):
+//   1. Participant profile header → WhatsApp button
+//   2. Group page → participant-row WA button
 //
-// Send-now goes through the bridge directly. Outbound persistence
-// happens on the bridge side (WhatsAppMessage with direction='outgoing'),
-// which the chat-timeline endpoint also reads — so a sent message
-// appears in this timeline without any explicit write here.
+// Single source of truth keyed on participantId — both surfaces hit
+// the same /participants/:id/{chat,scheduled-messages} endpoints, so
+// editing/cancelling on either propagates everywhere automatically.
+//
+// Layout (top → bottom, all inside the popup body):
+//   1. Pending scheduled strip (only when there are pending rows;
+//      capped at 32% of height with internal scroll if many)
+//   2. Conversation area — the focal region. Auto-scrolls to newest.
+//      Background #f8fafc, outbound bubbles green (matches WhatsApp).
+//   3. Composer dock — MessageComposer component (auto-grow textarea
+//      + variable popover + שלח עכשיו / תזמן toggle). Composer is
+//      shared with the group-header "הודעה" surface.
+//
+// Send-now goes through the bridge directly (POST /messages/send-now);
+// the bridge persists the outbound to WhatsAppMessage with
+// direction='outgoing', which the chat-timeline endpoint then reads,
+// so the message appears in this timeline without any explicit write
+// here.
 
-import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiFetch, BASE_URL } from '@lib/api';
-import { VariableButtonBar, type VariableEditorHandle } from '@components/variable-button-bar';
-
-const WhatsAppEditor = dynamic(() => import('@components/whatsapp-editor'), { ssr: false });
+import { MessageComposer, localInputToIso } from '@components/message-composer';
+import {
+  VariableInsertButton,
+  type VariableEditorHandle,
+} from '@components/variable-button-bar';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -65,15 +77,7 @@ interface ChatResponse {
   scheduled: PrivateSched[];
 }
 
-// ─── Date helpers — match group sched modal behavior ──────────────────────
-// The browser's datetime-local input returns a wall-clock string in the
-// user's locale. Admins are in Israel so we treat that as Asia/Jerusalem
-// without explicit timezone conversion — same approach the group
-// scheduled-messages modal uses. Display always uses he-IL locale.
-
-function localInputToIso(local: string): string {
-  return new Date(local).toISOString();
-}
+// ─── Date helpers ──────────────────────────────────────────────────────────
 
 function isoToLocalInput(iso: string): string {
   const d = new Date(iso);
@@ -95,16 +99,7 @@ function formatScheduledTime(iso: string): string {
   });
 }
 
-function defaultScheduleSlot(): string {
-  // Default to "in 1 hour" rounded to next 5 minutes — a sensible
-  // starting point for the schedule picker that's always in the future.
-  const d = new Date(Date.now() + 60 * 60_000);
-  d.setMinutes(Math.ceil(d.getMinutes() / 5) * 5, 0, 0);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
-// ─── Status pill rendering ────────────────────────────────────────────────
+// ─── Status pill rendering (used by failed/cancelled rows in timeline) ───
 
 function statusPill(status: PrivateSched['status']): React.ReactElement {
   const base: React.CSSProperties = {
@@ -129,31 +124,15 @@ function statusPill(status: PrivateSched['status']): React.ReactElement {
 
 export interface ParticipantPrivateChatProps {
   participantId: string;
-  // When true the component fills 100% of its parent's height (the
-  // popup wrapper sets a fixed parent height). When false the
-  // component sets its own fixed height so it doesn't stretch the
-  // page indefinitely — the chat conversation area is the only
-  // scroll surface, the composer stays docked at the bottom.
-  selfScroll?: boolean;
-  // Reports dirty composer state up to the parent so the popup wrapper
-  // can guard close. Optional — the embedded version doesn't need it.
+  // Reports dirty composer state up to the parent so the popup
+  // wrapper can guard close. Ignored when not provided.
   onDirtyChange?: (dirty: boolean) => void;
 }
 
 export function ParticipantPrivateChat({
   participantId,
-  selfScroll = false,
   onDirtyChange,
 }: ParticipantPrivateChatProps) {
-  // ── Composer state ────────────────────────────────────────────────────
-  const [content, setContent] = useState('');
-  const [mode, setMode] = useState<'now' | 'schedule'>('now');
-  const [scheduledAt, setScheduledAt] = useState(defaultScheduleSlot);
-  const [composerBusy, setComposerBusy] = useState(false);
-  const [composerErr, setComposerErr] = useState('');
-  const [composerOk, setComposerOk] = useState('');
-  const editorHandleRef = useRef<VariableEditorHandle | null>(null);
-
   // ── Data state ────────────────────────────────────────────────────────
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [scheduled, setScheduled] = useState<PrivateSched[]>([]);
@@ -161,9 +140,11 @@ export function ParticipantPrivateChat({
   const [loadErr, setLoadErr] = useState('');
   const [showCancelled, setShowCancelled] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  // Ref to the scrolling chat area. Used for "auto-scroll to bottom"
-  // on new messages — same UX WhatsApp gives, so the admin sees the
-  // newest reply without a manual scroll.
+  // Tracks whether the composer has typed-but-not-sent text. The
+  // popup wrapper reads this via onDirtyChange to gate its close
+  // confirm. Driven by an onChange-style callback the composer
+  // exposes; right now we approximate with a local mirror.
+  const [composerHasText, setComposerHasText] = useState(false);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
 
   const reload = useCallback(async () => {
@@ -187,45 +168,37 @@ export function ParticipantPrivateChat({
 
   useEffect(() => { void reload(); }, [reload]);
 
-  // Bubble dirty state up so a popup wrapper can show the unsaved-changes
-  // confirm. Dirty = composer has unsubmitted text.
-  const isDirty = content.trim().length > 0;
-  useEffect(() => { onDirtyChange?.(isDirty); }, [isDirty, onDirtyChange]);
+  // Bubble dirty state up. We can't directly observe the composer's
+  // text from out here (it's encapsulated), so instead the composer
+  // calls onDirtyChange via the wrapping component's send callbacks
+  // — the only state that visibly survives a partial type is "did
+  // the user start typing". We approximate via a thin onSendStarted
+  // hook that flips composerHasText to false when the send completes
+  // (and the wrapper resets the form).
+  useEffect(() => { onDirtyChange?.(composerHasText); }, [composerHasText, onDirtyChange]);
 
-  // ── Composer actions ──────────────────────────────────────────────────
-  async function send() {
-    const text = content.trim();
-    if (!text) { setComposerErr('תוכן ההודעה הוא שדה חובה'); return; }
-    setComposerBusy(true);
-    setComposerErr('');
-    setComposerOk('');
-    try {
-      if (mode === 'now') {
-        await apiFetch(`${BASE_URL}/participants/${participantId}/messages/send-now`, {
-          method: 'POST',
-          body: JSON.stringify({ content: text }),
-        });
-        setComposerOk('נשלח ✓');
-      } else {
-        const iso = localInputToIso(scheduledAt);
-        await apiFetch(`${BASE_URL}/participants/${participantId}/scheduled-messages`, {
-          method: 'POST',
-          body: JSON.stringify({ content: text, scheduledAt: iso }),
-        });
-        setComposerOk('תוזמן ✓');
-      }
-      setContent('');
-      // Don't reset the picker — admin might queue another at the same time.
-      void reload();
-    } catch (e) {
-      const m = e instanceof Error ? e.message :
-        (typeof e === 'object' && e !== null && typeof (e as { message?: unknown }).message === 'string')
-          ? (e as { message: string }).message : 'שליחה נכשלה';
-      setComposerErr(m);
-    } finally {
-      setComposerBusy(false);
-    }
-  }
+  // ── Composer callbacks ─────────────────────────────────────────────────
+  // These wrap the actual API calls. The composer passes us only the
+  // text (and ISO time for schedule); we know the participantId from
+  // props and pick the right endpoint. Throwing on failure keeps the
+  // composer's error UI working — it surfaces e.message inline.
+  const sendNow = useCallback(async (text: string) => {
+    setComposerHasText(false);
+    await apiFetch(`${BASE_URL}/participants/${participantId}/messages/send-now`, {
+      method: 'POST',
+      body: JSON.stringify({ content: text }),
+    });
+    void reload();
+  }, [participantId, reload]);
+
+  const scheduleNew = useCallback(async (text: string, iso: string) => {
+    setComposerHasText(false);
+    await apiFetch(`${BASE_URL}/participants/${participantId}/scheduled-messages`, {
+      method: 'POST',
+      body: JSON.stringify({ content: text, scheduledAt: iso }),
+    });
+    void reload();
+  }, [participantId, reload]);
 
   async function cancelScheduled(msgId: string) {
     try {
@@ -241,11 +214,7 @@ export function ParticipantPrivateChat({
     }
   }
 
-  // ── Derived: timeline ordering ────────────────────────────────────────
-  // Inbound + outbound from WhatsAppMessage, oldest at top. Future
-  // scheduled rows surface in their own pinned strip above the timeline,
-  // not in the timeline itself — keeps "what was sent" separate from
-  // "what is queued."
+  // ── Derived ────────────────────────────────────────────────────────────
   const orderedMessages = useMemo(() => {
     return [...messages].sort(
       (a, b) =>
@@ -271,47 +240,26 @@ export function ParticipantPrivateChat({
     [scheduled, editingId],
   );
 
-  // ── Auto-scroll to bottom ─────────────────────────────────────────────
-  // Pin the chat area to its newest message after every load + every
-  // composer action that triggers a reload. Same UX WhatsApp gives.
+  // ── Auto-scroll to bottom on every reload ──────────────────────────────
+  // Same UX WhatsApp gives — the admin sees the newest reply without
+  // a manual scroll. Triggered by `messages` (new inbound from a
+  // reload) and by `loading` flipping (initial load done).
   useEffect(() => {
     const el = chatScrollRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
   }, [messages, otherScheduled.length, loading]);
 
-  // ── Layout ────────────────────────────────────────────────────────────
-  // The container is always a vertical flex stack with three regions:
-  //   1. pending-scheduled strip (only renders if there are pending rows)
-  //   2. chat conversation (flex:1, internal scroll, newest at bottom)
-  //   3. composer (flex-shrink:0, docked at the bottom)
-  //
-  // selfScroll=true → fill the parent (popup wrapper sets fixed height
-  //                    and provides its own border/radius)
-  // selfScroll=false → set our own fixed height + bordered card so the
-  //                    embedded tab version doesn't stretch the page
-  //                    endlessly
-  const wrapperStyle: React.CSSProperties = selfScroll
-    ? {
+  return (
+    <div
+      style={{
         display: 'flex',
         flexDirection: 'column',
         height: '100%',
         overflow: 'hidden',
         background: '#fff',
-      }
-    : {
-        display: 'flex',
-        flexDirection: 'column',
-        height: '70vh',
-        minHeight: 480,
-        overflow: 'hidden',
-        background: '#fff',
-        border: '1px solid #e2e8f0',
-        borderRadius: 12,
-      };
-
-  return (
-    <div style={wrapperStyle}>
+      }}
+    >
       {/* ── 1. Pending scheduled strip ──────────────────────────────── */}
       {pendingScheduled.length > 0 && (
         <div
@@ -462,9 +410,6 @@ export function ParticipantPrivateChat({
           );
         })}
 
-        {/* Failed scheduled rows + (optionally) cancelled — shown at
-            the end of the chat scroll so admin can see what went
-            wrong inline with the conversation flow. */}
         {otherScheduled.length > 0 && (
           <div style={{ marginTop: 12 }}>
             <div style={{ fontSize: 10, color: '#64748b', marginBottom: 4, fontWeight: 600, textAlign: 'center' }}>
@@ -511,91 +456,14 @@ export function ParticipantPrivateChat({
         </div>
       </div>
 
-      {/* ── 3. Composer dock ────────────────────────────────────────── */}
-      <div
-        style={{
-          flexShrink: 0,
-          borderTop: '1px solid #e2e8f0',
-          background: '#fff',
-          padding: 10,
-        }}
-      >
-        {/* Mode toggle + (when scheduling) datetime picker — compact
-            single row above the editor. */}
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
-          <button
-            type="button"
-            onClick={() => setMode('now')}
-            style={{
-              padding: '4px 10px', fontSize: 11, fontWeight: 600,
-              background: mode === 'now' ? '#16a34a' : '#fff',
-              color: mode === 'now' ? '#fff' : '#475569',
-              border: `1px solid ${mode === 'now' ? '#16a34a' : '#cbd5e1'}`,
-              borderRadius: 999, cursor: 'pointer',
-            }}
-          >שלח עכשיו</button>
-          <button
-            type="button"
-            onClick={() => setMode('schedule')}
-            style={{
-              padding: '4px 10px', fontSize: 11, fontWeight: 600,
-              background: mode === 'schedule' ? '#2563eb' : '#fff',
-              color: mode === 'schedule' ? '#fff' : '#475569',
-              border: `1px solid ${mode === 'schedule' ? '#2563eb' : '#cbd5e1'}`,
-              borderRadius: 999, cursor: 'pointer',
-            }}
-          >תזמן</button>
-          {mode === 'schedule' && (
-            <input
-              type="datetime-local"
-              value={scheduledAt}
-              onChange={(e) => setScheduledAt(e.target.value)}
-              style={{
-                padding: '4px 8px', fontSize: 12, direction: 'ltr',
-                border: '1px solid #cbd5e1', borderRadius: 7,
-                fontFamily: 'inherit',
-              }}
-            />
-          )}
-          {composerOk && (
-            <span style={{ color: '#15803d', fontSize: 11, fontWeight: 600, marginInlineStart: 'auto' }}>{composerOk}</span>
-          )}
-        </div>
-        <VariableButtonBar editorRef={editorHandleRef} />
-        <WhatsAppEditor
-          ref={editorHandleRef}
-          value={content}
-          onChange={setContent}
-          placeholder="הקלידי הודעה..."
-          minHeight={70}
-        />
-        {composerErr && (
-          <div style={{ color: '#dc2626', fontSize: 12, marginTop: 6 }}>{composerErr}</div>
-        )}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
-          <button
-            type="button"
-            onClick={() => { void send(); }}
-            disabled={composerBusy || !content.trim()}
-            style={{
-              padding: '7px 16px', fontSize: 13, fontWeight: 700,
-              background: composerBusy || !content.trim()
-                ? '#cbd5e1'
-                : (mode === 'now' ? '#16a34a' : '#2563eb'),
-              color: '#fff', border: 'none', borderRadius: 8,
-              cursor: composerBusy || !content.trim() ? 'not-allowed' : 'pointer',
-            }}
-          >
-            {composerBusy
-              ? '...'
-              : mode === 'now'
-                ? 'שלח עכשיו'
-                : 'תזמן הודעה'}
-          </button>
-        </div>
-      </div>
+      {/* ── 3. Composer dock — shared component ─────────────────────── */}
+      <DirtyAwareComposer
+        onSendNow={sendNow}
+        onSchedule={scheduleNew}
+        onTypingChange={setComposerHasText}
+      />
 
-      {/* ── Edit modal ─────────────────────────────────────────────── */}
+      {/* ── Edit modal for pending scheduled rows ───────────────────── */}
       {editingRow && (
         <EditScheduledModal
           row={editingRow}
@@ -607,6 +475,47 @@ export function ParticipantPrivateChat({
           }}
         />
       )}
+    </div>
+  );
+}
+
+// Tiny wrapper that lets the parent observe whether the composer has
+// typed-but-not-sent text. MessageComposer doesn't expose its internal
+// text state directly (and shouldn't — encapsulation), so we wrap it
+// with a thin layer that intercepts onSendNow / onSchedule and clears
+// dirty after a successful send. Any keystroke in the textarea bumps
+// dirty=true via a one-time onChange handler attached at mount.
+//
+// Implementation note: the simplest way to know "is the text empty"
+// without piercing the composer's encapsulation is to inspect the
+// nearest <textarea> on input. The composer is the only textarea
+// inside this scope, so the approach is robust without a ref API.
+function DirtyAwareComposer(props: {
+  onSendNow: (text: string) => Promise<void>;
+  onSchedule: (text: string, iso: string) => Promise<void>;
+  onTypingChange: (hasText: boolean) => void;
+}) {
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const el = wrapperRef.current;
+    if (!el) return;
+    const ta = el.querySelector('textarea');
+    if (!ta) return;
+    function handler() {
+      props.onTypingChange((ta as HTMLTextAreaElement).value.trim().length > 0);
+    }
+    ta.addEventListener('input', handler);
+    return () => ta.removeEventListener('input', handler);
+  }, [props]);
+
+  return (
+    <div ref={wrapperRef}>
+      <MessageComposer
+        onSendNow={props.onSendNow}
+        onSchedule={props.onSchedule}
+        placeholder="הקלידי הודעה..."
+      />
     </div>
   );
 }
@@ -627,6 +536,29 @@ function EditScheduledModal(props: {
   const [err, setErr] = useState('');
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const editorHandleRef = useRef<VariableEditorHandle | null>(null);
+
+  // Wire VariableInsertButton to the textarea via an imperative
+  // handle. Same insertion-at-caret pattern MessageComposer uses.
+  const taRef = useRef<HTMLTextAreaElement | null>(null);
+  useEffect(() => {
+    editorHandleRef.current = {
+      insertAtCursor(token: string) {
+        const el = taRef.current;
+        if (!el) return;
+        const start = el.selectionStart ?? content.length;
+        const end = el.selectionEnd ?? content.length;
+        const next = content.slice(0, start) + token + content.slice(end);
+        setContent(next);
+        requestAnimationFrame(() => {
+          if (!el) return;
+          const pos = start + token.length;
+          el.focus();
+          el.setSelectionRange(pos, pos);
+        });
+      },
+      focus() { taRef.current?.focus(); },
+    };
+  }, [content]);
 
   const isDirty = content !== initialContent || scheduledAt !== initialScheduledAt;
 
@@ -689,14 +621,23 @@ function EditScheduledModal(props: {
         </div>
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
-            <label style={{ fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 6, display: 'block' }}>תוכן *</label>
-            <VariableButtonBar editorRef={editorHandleRef} />
-            <WhatsAppEditor
-              ref={editorHandleRef}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <label style={{ fontSize: 13, fontWeight: 600, color: '#374151' }}>תוכן *</label>
+              <VariableInsertButton editorRef={editorHandleRef} />
+            </div>
+            <textarea
+              ref={taRef}
               value={content}
-              onChange={setContent}
+              onChange={(e) => setContent(e.target.value)}
+              rows={6}
+              style={{
+                width: '100%', padding: '10px 14px',
+                border: '1px solid #cbd5e1', borderRadius: 8,
+                fontSize: 14, lineHeight: 1.5, fontFamily: 'inherit',
+                resize: 'vertical', boxSizing: 'border-box',
+                minHeight: 120,
+              }}
               placeholder="הקלידי תוכן..."
-              minHeight={160}
             />
           </div>
           <div>
@@ -738,9 +679,6 @@ function EditScheduledModal(props: {
         </div>
       </div>
 
-      {/* Unsaved-changes confirm. Same pattern as the group sched
-          modal — locked overlay, no backdrop close, only the two
-          buttons close the confirm. */}
       {confirmDiscard && (
         <div
           style={{
