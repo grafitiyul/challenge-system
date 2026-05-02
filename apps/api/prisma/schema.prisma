@@ -141,7 +141,7 @@ model Program {
   // behavior so existing programs are unaffected.
   catchUpAllowedWeekdays Int[]    @default([])
 
-  catchUpSessions        CatchUpSession[]
+  catchUpSessions CatchUpSession[]
 
   @@map("programs")
 }
@@ -288,7 +288,7 @@ model Group {
   // skips every row in this group regardless of per-message flags.
   // Defaults false so a freshly-created group never sends until the
   // admin explicitly opts in.
-  scheduledMessagesEnabled Boolean @default(false)
+  scheduledMessagesEnabled Boolean                 @default(false)
   scheduledMessages        GroupScheduledMessage[]
 
   // Game engine
@@ -405,6 +405,13 @@ model Participant {
   // Phase 7 — participant-portal "פרטים אישיים" profile data.
   profileValues ParticipantProfileValue[]
   uploadedFiles ParticipantUploadedFile[]
+
+  // Private scheduled WhatsApp messages — admin-composed DMs that
+  // wait for a future scheduledAt and are sent by the cron worker.
+  // Single source of truth across surfaces (participant chat tab +
+  // group-list WA popup): the row belongs to the participant, never
+  // to a group context.
+  privateScheduledMessages PrivateScheduledMessage[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -673,28 +680,28 @@ model ParticipantFact {
 // =============================================================================
 
 model WhatsAppChat {
-  id             String            @id @default(cuid())
-  externalChatId String            @unique
+  id                String            @id @default(cuid())
+  externalChatId    String            @unique
   // "group" | "private"
-  type           String            @default("private")
-  name           String?
-  phoneNumber    String?
+  type              String            @default("private")
+  name              String?
+  phoneNumber       String?
   // WhatsApp profile / group picture URL captured from Baileys at
   // chat first-create. Null when WhatsApp didn't return one (group
   // has no picture set, contact has restrictive privacy, transient
   // network failure). Frontend uses it to render the avatar circle
   // and falls back to an initial-letter bubble when null.
   profilePictureUrl String?
-  lastMessageAt  DateTime?
-  messages       WhatsAppMessage[]
-  groupLinks     GroupChatLink[]
+  lastMessageAt     DateTime?
+  messages          WhatsAppMessage[]
+  groupLinks        GroupChatLink[]
   // Source provider for this chat. "wassenger" for legacy rows;
   // "baileys" for new Baileys-bridge rows. Coexists during the
   // direct-replacement cutover and lets reports stay queryable
   // afterward.
-  provider       String            @default("wassenger")
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
+  provider          String            @default("wassenger")
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
 
   @@map("whatsapp_chats")
 }
@@ -1199,13 +1206,13 @@ model GameAction {
   // The same shape is mirrored on Program.catchUpAllowedWeekdays /
   // Program.catchUpAvailableDates for the completion-mode (מצב השלמה)
   // surface, evaluated through the same shared helper.
-  allowedWeekdays    Int[]    @default([])
-  extraAllowedDates  String[] @default([])
+  allowedWeekdays   Int[]    @default([])
+  extraAllowedDates String[] @default([])
 
-  isActive                Boolean  @default(true)
-  sortOrder               Int      @default(0)
-  createdAt               DateTime @default(now())
-  updatedAt               DateTime @updatedAt
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   logs        UserActionLog[]
   // Phase 3.2: reusable context definitions attached to this action.
@@ -1659,54 +1666,54 @@ model QuestionnaireExternalLink {
 // silently — admin uses the explicit "apply to groups" flow.
 
 model GroupScheduledMessage {
-  id              String   @id @default(cuid())
-  groupId         String
-  group           Group    @relation(fields: [groupId], references: [id])
+  id               String                 @id @default(cuid())
+  groupId          String
+  group            Group                  @relation(fields: [groupId], references: [id])
   // Optional — populated when this row was cloned from a template.
   // Nullable because admins can also create group-only schedules.
   // ON DELETE SET NULL via Prisma — template removal must not orphan
   // group rows that the admin already approved + scheduled.
   sourceTemplateId String?
-  sourceTemplate  CommunicationTemplate? @relation(fields: [sourceTemplateId], references: [id])
+  sourceTemplate   CommunicationTemplate? @relation(fields: [sourceTemplateId], references: [id])
 
   // Snapshot fields — copied at clone/create time and NEVER touched by
   // template edits. This is the load-bearing "edits don't propagate"
   // guarantee from the spec. An explicit "apply changes to selected
   // groups" admin action creates fresh rows; it does not mutate
   // existing ones.
-  category        String
-  internalName    String
-  content         String   @db.Text
+  category     String
+  internalName String
+  content      String   @db.Text
   // Resolved absolute send time in UTC. Computed once at create/clone.
-  scheduledAt     DateTime @db.Timestamptz
+  scheduledAt  DateTime @db.Timestamptz
   // V1 only supports group_whatsapp_chat. Stored as a string so V2
   // (per-participant) doesn't need a migration.
-  targetType      String   @default("group_whatsapp_chat")
+  targetType   String   @default("group_whatsapp_chat")
 
   // One-click pause without changing status. enabled=false makes the
   // cron skip this row even when status='pending'. Combines with
   // Group.scheduledMessagesEnabled (master) and status as the three
   // gates that must ALL pass for a send.
-  enabled         Boolean  @default(false)
+  enabled Boolean @default(false)
 
   // Lifecycle — see header comment above the model.
-  status          String   @default("draft")
+  status String @default("draft")
 
   // Retry/backoff state. nextRetryAt is set after each failed attempt
   // to delay the next pickup; null means "ready immediately".
   // Schedule: 1m / 5m / 15m → after 3 failed attempts → status='failed'.
-  attemptCount    Int      @default(0)
-  lastAttemptAt   DateTime? @db.Timestamptz
-  nextRetryAt     DateTime? @db.Timestamptz
+  attemptCount  Int       @default(0)
+  lastAttemptAt DateTime? @db.Timestamptz
+  nextRetryAt   DateTime? @db.Timestamptz
 
   // Idempotency / claim columns — see worker design + duplicate-send
   // prevention notes. claimedAt < now() - 5 min implicitly releases
   // a claim from a worker that died mid-send.
-  claimedAt       DateTime? @db.Timestamptz
-  claimedBy       String?
+  claimedAt DateTime? @db.Timestamptz
+  claimedBy String?
 
-  sentAt          DateTime? @db.Timestamptz
-  failureReason   String?
+  sentAt        DateTime? @db.Timestamptz
+  failureReason String?
 
   // ── Sync tracking for the apply-to-groups flow ─────────────────────────
   // Both timestamps are set at row creation (auto-create-from-template
@@ -1718,8 +1725,8 @@ model GroupScheduledMessage {
   contentSyncedAt     DateTime? @db.Timestamptz
   scheduledAtSyncedAt DateTime? @db.Timestamptz
 
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // Critical: prevents the same template from being cloned twice into
   // the same group at the same resolved time. Catches inheritance
@@ -1729,6 +1736,60 @@ model GroupScheduledMessage {
   @@index([status, scheduledAt])
   @@index([groupId, status])
   @@map("group_scheduled_messages")
+}
+
+// Private scheduled WhatsApp messages — single source of truth for
+// admin-composed DMs that wait for a future scheduledAt and are sent
+// by a dedicated cron worker that mirrors GroupScheduledMessage's
+// claim/retry lifecycle. The row is keyed on participantId only —
+// never groupId — so editing/cancelling propagates to every surface
+// that displays it (participant profile chat tab + group-list WA
+// popup). "Send now" does NOT create a row here; it goes straight
+// through the bridge and lands in WhatsAppMessage with direction='outgoing'.
+model PrivateScheduledMessage {
+  id            String      @id @default(cuid())
+  participantId String
+  participant   Participant @relation(fields: [participantId], references: [id])
+
+  // Snapshot fields. content + scheduledAt are editable while status='pending';
+  // phoneSnapshot is captured at create time so a later phone change on the
+  // participant doesn't silently retarget an already-scheduled message.
+  content       String   @db.Text
+  scheduledAt   DateTime @db.Timestamptz
+  phoneSnapshot String
+
+  // Lifecycle: pending → sending (claimed) → sent | failed | cancelled.
+  // 'cancelled' is set by an admin via /cancel; the worker treats it as terminal.
+  status  String  @default("pending")
+  // Optional pause flag — defaults true for private (scheduling already
+  // implies "yes, send"). Reserved for future "pause individual" UX.
+  enabled Boolean @default(true)
+
+  // Retry/backoff state — same shape + values as GroupScheduledMessage.
+  attemptCount  Int       @default(0)
+  lastAttemptAt DateTime? @db.Timestamptz
+  nextRetryAt   DateTime? @db.Timestamptz
+
+  // Atomic claim — same shape + values as GroupScheduledMessage.
+  // claimedAt < now() - 5 min implicitly releases a claim from a worker
+  // that died mid-send.
+  claimedAt DateTime? @db.Timestamptz
+  claimedBy String?
+
+  // Outcome
+  sentAt            DateTime? @db.Timestamptz
+  externalMessageId String? // captured from bridge response on success
+  failureReason     String?
+  cancelledAt       DateTime? @db.Timestamptz
+  cancelledBy       String? // admin id
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Cron's primary access path.
+  @@index([status, scheduledAt])
+  @@index([participantId, status])
+  @@map("private_scheduled_messages")
 }
 
 // =============================================================================
@@ -2088,15 +2149,15 @@ model ProgramWaitlistEntry {
 // Program-scoped email/whatsapp templates with product-level variables.
 // Single unified model for all admin → participant messaging templates.
 model CommunicationTemplate {
-  id        String   @id @default(cuid())
+  id        String  @id @default(cuid())
   programId String
-  program   Program  @relation(fields: [programId], references: [id])
+  program   Program @relation(fields: [programId], references: [id])
   // "email" | "whatsapp"
   channel   String
   title     String // admin-facing name, e.g. "ברוכה הבאה אחרי תשלום"
   subject   String? // email only; ignored for whatsapp
   body      String
-  isActive  Boolean  @default(true)
+  isActive  Boolean @default(true)
 
   // ── Scheduling defaults (channel='whatsapp' only) ─────────────────────────
   // When timingType is set, this template is ALSO usable as a scheduled-

@@ -8,6 +8,8 @@ import { BASE_URL, apiFetch } from '@lib/api';
 import dynamic from 'next/dynamic';
 import { AdminProjectsTab } from '@components/admin-projects';
 import { PaymentsTab } from '@components/payments-tab';
+import { ParticipantPrivateChat } from '@components/participant-private-chat';
+import { WhatsAppIcon } from '@components/icons/whatsapp-icon';
 
 // Shared composer used by the group-side "send message" modal. Reused here
 // so the participant WhatsApp compose experience matches exactly — same
@@ -794,7 +796,7 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
     { key: 'goals',          label: 'מטרות והתקדמות' },
     { key: 'projects',       label: 'פרויקטים' },
     { key: 'collected',      label: 'מידע שנאסף' },
-    { key: 'communication',  label: 'תקשורת' },
+    { key: 'communication',  label: 'צ׳אט' },
     { key: 'reports',        label: 'דיווחים שוטפים' },
     { key: 'payments',       label: 'תשלומים וחשבונות' },
     { key: 'profile',        label: 'פרופיל' },
@@ -1065,11 +1067,10 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
                 fontSize: 16, cursor: 'pointer', flexShrink: 0,
               }}
             >
-              {/* Brand-neutral chat-bubble glyph. Kept as SVG so it scales
-                  cleanly inside the circular button. */}
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
-              </svg>
+              {/* Recognizable WhatsApp glyph — same icon used everywhere
+                  in admin UI for WhatsApp actions (group header, group
+                  participant list, chat tab). */}
+              <WhatsAppIcon size={18} color="#fff" />
             </button>
             <button
               onClick={openPickModal}
@@ -1180,7 +1181,7 @@ export default function ParticipantProfilePage({ params }: { params: Promise<{ i
           <CollectedInfoTab participant={participant} />
         )}
         {activeTab === 'communication' && (
-          <PlaceholderTab icon="💬" title="תקשורת" subtitle="היסטוריית שיחות WhatsApp, הודעות שנשלחו ותגובות — בקרוב" />
+          <ParticipantPrivateChat participantId={id} />
         )}
         {activeTab === 'reports' && (
           <PlaceholderTab icon="📅" title="דיווחים שוטפים" subtitle="כאן יוצגו נתוני דיווח יומי, הרגלים ועמידה ביעדים — בקרוב" />

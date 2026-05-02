@@ -2,28 +2,19 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../prisma/prisma.service';
 import { WhatsappBridgeService } from '../whatsapp-bridge/whatsapp-bridge.service';
-
-// Tick cadence: every minute. Per-tick batch size keeps the work
-// bounded so a backlog doesn't starve the API. Pacing inside a tick
-// (small inter-send delay) protects WhatsApp from a burst that could
-// trip rate limits or look like spam.
-const TICK_BATCH_SIZE = 5;
-const SEND_PACING_MS = 1500;
-
-// Retry schedule. attemptCount tracks how many sends we've already
-// tried; the backoff-delay table picks the next nextRetryAt offset.
-// After MAX_ATTEMPTS the row is moved to terminal 'failed'.
-const MAX_ATTEMPTS = 3;
-const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000];
-
-// Stale-claim TTL — if a worker dies mid-send, the row's claim is
-// auto-released after this window so the next tick can retry.
-const CLAIM_TTL_MS = 5 * 60_000;
+import {
+  CLAIM_TTL_MS,
+  MAX_ATTEMPTS,
+  RETRY_DELAYS_MS,
+  SEND_PACING_MS,
+  TICK_BATCH_SIZE,
+  makeWorkerId,
+} from './scheduled-messages-shared';
 
 // Stable identifier for THIS worker process. Useful for log-grep and
 // for the success-write WHERE clause that double-checks "the row I
 // claimed is still mine" before flipping status='sent'.
-const WORKER_ID = `${process.pid}-${Date.now()}`;
+const WORKER_ID = makeWorkerId();
 
 @Injectable()
 export class ScheduledMessagesWorker {

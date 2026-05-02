@@ -7,6 +7,8 @@ import { BASE_URL, apiFetch } from '@lib/api';
 import WhatsAppEditor from '@components/whatsapp-editor';
 import { VariableButtonBar, type VariableEditorHandle } from '@components/variable-button-bar';
 import { ChatMessage, ChatMessageList } from '@components/chat-messages';
+import { WhatsAppIcon } from '@components/icons/whatsapp-icon';
+import { ParticipantPrivateChatPopup } from '@components/participant-private-chat-popup';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -299,6 +301,20 @@ export default function GroupDetailPage() {
   const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set());
   const [bulkMoveOpen, setBulkMoveOpen] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
+
+  // Per-participant private-chat popup. Stores the participant id +
+  // display name of the row that's currently open. Closed when null.
+  // Reads/writes the same PrivateScheduledMessage rows the participant
+  // profile chat tab does — single source of truth keyed on
+  // participantId.
+  const [chatPopup, setChatPopup] = useState<
+    { participantId: string; participantName: string } | null
+  >(null);
+  // Per-participant pending-scheduled-message counts, used to render a
+  // small clock badge on each row when there's at least one upcoming
+  // private DM. Loaded from a single batched endpoint so adding a
+  // participant doesn't fan out into N round trips.
+  const [scheduledCounts, setScheduledCounts] = useState<Record<string, number>>({});
 
   // Tab
   const [tab, setTab] = useState<Tab>('participants');
@@ -938,6 +954,34 @@ export default function GroupDetailPage() {
   // ─── Derived ──────────────────────────────────────────────────────────────
 
   const participants = group?.participantGroups ?? [];
+
+  // Per-row scheduled-DM count badge. Refetches whenever the list of
+  // participant ids in this group changes OR after the popup closes
+  // (so editing/cancelling inside the popup updates the badge here too,
+  // since the popup is reading the same PrivateScheduledMessage rows
+  // by participantId — single source of truth).
+  const participantIdsKey = participants.map((pg) => pg.participantId).sort().join(',');
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!id || participantIdsKey === '') {
+        setScheduledCounts({});
+        return;
+      }
+      try {
+        const counts = await apiFetch<Record<string, number>>(
+          `${BASE_URL}/groups/${id}/participant-scheduled-counts?participantIds=${encodeURIComponent(participantIdsKey)}`,
+          { cache: 'no-store' },
+        );
+        if (!cancelled) setScheduledCounts(counts);
+      } catch {
+        // Badge is decorative — silent failure is fine, the row just
+        // doesn't show a clock indicator.
+        if (!cancelled) setScheduledCounts({});
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [id, participantIdsKey, chatPopup]);
   const inGroupIds = new Set(participants.map((pg) => pg.participantId));
   const linkedChatIds = new Set(links.map((l) => l.whatsappChatId));
   const pickableChats = availableChats.filter((c) => !linkedChatIds.has(c.id));
@@ -1056,7 +1100,8 @@ export default function GroupDetailPage() {
                 fontSize: 13, fontWeight: 600, cursor: groupChatLink ? 'pointer' : 'not-allowed',
               }}
             >
-              💬 הודעה
+              <WhatsAppIcon size={16} color="#fff" />
+              הודעה
             </button>
 
             {/* Secondary: link chat */}
@@ -1117,7 +1162,7 @@ export default function GroupDetailPage() {
           ['questionnaires', 'שאלונים'],
           ['tasks', 'משימות'],
           ['scheduled', 'הודעות מתוזמנות'],
-          ['communication', 'תקשורת'],
+          ['communication', 'צ׳אטים'],
         ] as const).map(([key, label]) => (
           <button
             key={key}
@@ -1469,19 +1514,56 @@ export default function GroupDetailPage() {
 
                       {/* Actions */}
                       <div style={{ display: 'flex', gap: 6, flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                        {/* Personal chat button */}
-                        {privateChat ? (
-                          <Link href={`/admin/chats/${privateChat.whatsappChatId}`}
-                            style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #bbf7d0', color: '#16a34a', fontSize: 12, fontWeight: 500, textDecoration: 'none', background: '#f0fdf4', display: 'flex', alignItems: 'center', gap: 4 }}>
-                            💬 צ׳אט
-                          </Link>
-                        ) : (
-                          <a href={`https://wa.me/${p.phoneNumber.replace(/\D/g, '')}`} target="_blank" rel="noopener noreferrer"
-                            style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #d1fae5', color: '#059669', fontSize: 12, fontWeight: 500, textDecoration: 'none', background: '#f0fdf4', display: 'flex', alignItems: 'center', gap: 4 }}
-                            title="פתח בוואטסאפ">
-                            WA
-                          </a>
-                        )}
+                        {/* Unified WhatsApp action — opens the locked
+                            private-chat popup whether or not the
+                            participant has a linked WA chat yet. The
+                            popup itself fetches inbound + outbound
+                            from WhatsAppMessage by phone, so the same
+                            UX works in both cases. The clock badge
+                            surfaces upcoming PrivateScheduledMessage
+                            rows for this participant — same row data
+                            the popup will show, fetched in one batched
+                            call from /participant-scheduled-counts. */}
+                        {(() => {
+                          const pendingCount = scheduledCounts[p.id] ?? 0;
+                          return (
+                            <button
+                              type="button"
+                              onClick={() => setChatPopup({ participantId: p.id, participantName: displayName(p) })}
+                              title={privateChat ? 'פתח צ׳אט פרטי' : 'פתח שיחה / שלח הודעה'}
+                              style={{
+                                padding: '5px 10px', borderRadius: 6,
+                                border: '1px solid #bbf7d0',
+                                color: '#16a34a', background: '#f0fdf4',
+                                fontSize: 12, fontWeight: 500,
+                                cursor: 'pointer',
+                                display: 'flex', alignItems: 'center', gap: 6,
+                                position: 'relative',
+                              }}
+                            >
+                              <WhatsAppIcon size={14} color="#16a34a" />
+                              <span>צ׳אט</span>
+                              {pendingCount > 0 && (
+                                <span
+                                  title={`${pendingCount} הודעות מתוזמנות`}
+                                  style={{
+                                    background: '#f59e0b',
+                                    color: '#fff',
+                                    fontSize: 10,
+                                    fontWeight: 700,
+                                    borderRadius: 999,
+                                    padding: '1px 6px',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: 3,
+                                  }}
+                                >
+                                  ⏰ {pendingCount}
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })()}
 
                         {/* Access link */}
                         {hasToken ? (
@@ -2659,6 +2741,22 @@ export default function GroupDetailPage() {
           </Modal>
         );
       })()}
+
+      {/* Per-participant private-chat popup. Opened from the WA button
+          on each participant row. Locked: no backdrop close, X +
+          unsaved-changes guard. The popup reads/writes the same
+          PrivateScheduledMessage rows the participant profile chat tab
+          does (single source of truth keyed on participantId), so any
+          edit/cancel made here propagates everywhere automatically.
+          The chatPopup state is a dependency of the scheduled-counts
+          useEffect, so closing the popup re-fetches the badges. */}
+      {chatPopup && (
+        <ParticipantPrivateChatPopup
+          participantId={chatPopup.participantId}
+          participantName={chatPopup.participantName}
+          onClose={() => setChatPopup(null)}
+        />
+      )}
     </div>
   );
 }
