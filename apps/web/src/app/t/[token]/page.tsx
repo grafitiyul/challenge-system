@@ -1,10 +1,72 @@
 'use client';
 
-import { use, useCallback, useEffect, useRef, useState } from 'react';
+import { use, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 // REFRESH_INTERVAL_MS: background refresh cadence while portal is open
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 import { BASE_URL, apiFetch } from '@lib/api';
 import { ProfileTab, useProfileSnapshot } from './profile-tab';
+
+// ─── Auto-grow textarea ───────────────────────────────────────────────
+// Used for participant text-input fields (text-type context dimensions
+// + action-level extraText prompt). Replaces the prior single-line
+// <input type="text"> which couldn't fit a multi-line note. Resizes
+// height = scrollHeight on every input event, clamped between
+// minRows and maxRows of line-height. Past maxRows the textarea
+// scrolls internally — keeps mobile sheets from growing endlessly.
+//
+// onKeyDown is intentionally NOT intercepted: Enter inserts a
+// newline (default textarea behavior). The submit button is the only
+// commit path, matching the user's explicit "Allow Enter/new lines"
+// requirement.
+interface AutoGrowTextareaProps {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  maxLength?: number;
+  style?: React.CSSProperties;
+  minRows?: number;
+  maxRows?: number;
+  ariaLabel?: string;
+}
+function AutoGrowTextarea({
+  value, onChange, placeholder, maxLength, style,
+  minRows = 2, maxRows = 8, ariaLabel,
+}: AutoGrowTextareaProps) {
+  const ref = useRef<HTMLTextAreaElement | null>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    // Reset to auto so scrollHeight reflects the current content
+    // size, then clamp by line-height × maxRows + padding.
+    el.style.height = 'auto';
+    const cs = getComputedStyle(el);
+    const lineHeight = parseFloat(cs.lineHeight) || 22;
+    const padding = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+    const max = lineHeight * maxRows + padding;
+    const next = Math.min(el.scrollHeight, max);
+    el.style.height = next + 'px';
+    el.style.overflowY = el.scrollHeight > max ? 'auto' : 'hidden';
+  }, [value, maxRows]);
+  return (
+    <textarea
+      ref={ref}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      maxLength={maxLength}
+      rows={minRows}
+      aria-label={ariaLabel}
+      style={{
+        ...style,
+        resize: 'none',
+        overflow: 'hidden',
+        // Match the line-height we use in the layout calculation so
+        // height = scrollHeight produces a tight rendering.
+        lineHeight: '22px',
+      }}
+    />
+  );
+}
 
 // ─── Sound helper — plays built-in static audio files ────────────────────────
 // Files live in /public/sounds/. Played via HTMLAudioElement so they work
@@ -3367,15 +3429,20 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                       dir="ltr"
                     />
                   ) : (
-                    <input
-                      type="text"
-                      style={s.contextInput}
-                      value={current}
-                      onChange={(e) =>
-                        setContextDraft((prev) => ({ ...prev, [d.key]: e.target.value }))
+                    /* Text-type context dimension. Auto-grow textarea so
+                       multi-line notes are comfortable to write on mobile.
+                       maxLength bumped from 120 → 500 to match the
+                       backend's existing 500-char extraText cap; the
+                       extra room covers most genuine longer entries. */
+                    <AutoGrowTextarea
+                      value={typeof current === 'string' ? current : ''}
+                      onChange={(v) =>
+                        setContextDraft((prev) => ({ ...prev, [d.key]: v }))
                       }
-                      maxLength={120}
-                      placeholder="הקלידי טקסט קצר..."
+                      maxLength={500}
+                      placeholder="הקלידי טקסט..."
+                      style={s.contextInput}
+                      ariaLabel={d.label ?? d.key}
                     />
                   )}
                 </div>
@@ -3392,13 +3459,18 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                     <span style={s.contextRequired}> *</span>
                   )}
                 </label>
-                <input
-                  type="text"
-                  style={s.contextInput}
+                {/* Action-level extraText prompt. Auto-grow textarea
+                    so the participant can write a multi-line note
+                    when she has more to say than fits on a line.
+                    maxLength bumped from 120 → 500 to match the
+                    backend's slice(0, 500) cap. */}
+                <AutoGrowTextarea
                   value={extraTextDraft}
-                  onChange={(e) => setExtraTextDraft(e.target.value)}
-                  maxLength={120}
-                  placeholder="הקלידי טקסט קצר..."
+                  onChange={setExtraTextDraft}
+                  maxLength={500}
+                  placeholder="הקלידי תשובה..."
+                  style={s.contextInput}
+                  ariaLabel={activeAction.participantTextPrompt?.trim() ?? 'טקסט'}
                 />
               </div>
             )}
