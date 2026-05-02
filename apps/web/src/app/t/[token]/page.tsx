@@ -1391,7 +1391,15 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
   }
 
   const refreshAnalytics = useCallback(
-    (silent = false, r: AnalyticsRange = range, g: BreakdownGroupBy = groupBy) => {
+    // Same override pattern range/groupBy already use: caller can pass
+    // an explicit value to bypass the closure's stale state. Critical
+    // for the scope toggle — at click time the React state hasn't
+    // updated yet, so reading `analyticsScope` from the closure would
+    // re-fetch with the OLD scope. Passing opt.key as `s` fixes that.
+    (silent = false,
+     r: AnalyticsRange = range,
+     g: BreakdownGroupBy = groupBy,
+     s: 'current' | 'all' = analyticsScope) => {
       if (!silent) setAnalyticsLoading(true);
       // Phase 6.14: insights is fetched INDEPENDENTLY of the core analytics
       // bundle. A failure in insights must not tear down the whole screen —
@@ -1411,11 +1419,11 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
       // doesn't make sense — different programs have different actions).
       Promise.all([
         apiFetch<AnalyticsSummary>(
-          `${BASE_URL}/public/participant/${token}/analytics/summary?scope=${analyticsScope}`,
+          `${BASE_URL}/public/participant/${token}/analytics/summary?scope=${s}`,
           { cache: 'no-store' },
         ),
         apiFetch<AnalyticsTrendPoint[]>(
-          `${BASE_URL}/public/participant/${token}/analytics/trend?${buildTrendQuery(r)}&scope=${analyticsScope}`,
+          `${BASE_URL}/public/participant/${token}/analytics/trend?${buildTrendQuery(r)}&scope=${s}`,
           { cache: 'no-store' },
         ),
         apiFetch<AnalyticsBreakdownEntry[]>(
@@ -2463,7 +2471,19 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
                           key={opt.key}
                           role="tab"
                           aria-selected={active}
-                          onClick={() => setAnalyticsScopePersisted(opt.key)}
+                          onClick={() => {
+                            // State change AND immediate refetch with the
+                            // override scope. State alone wouldn't refetch
+                            // (refreshAnalytics is a useCallback, not a
+                            // useEffect — the 5-min interval would pick it
+                            // up later, not on click). Passing opt.key as
+                            // the override sidesteps the stale-closure
+                            // problem: state hasn't updated yet at click
+                            // time, but we know what the user just picked.
+                            if (active) return;
+                            setAnalyticsScopePersisted(opt.key);
+                            refreshAnalytics(false, range, groupBy, opt.key);
+                          }}
                           style={{
                             flex: 1,
                             padding: '8px 12px',
