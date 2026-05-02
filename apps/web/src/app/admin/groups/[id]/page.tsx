@@ -1555,43 +1555,65 @@ export default function GroupDetailPage() {
                         </div>
                       </div>
 
-                      {/* Streak block — pulled from leaderboard data
-                          (participantRanks). Renders absolute numbers
-                          with the new spec copy: "רצף במשחק" plus a
-                          second line for "הרצף שלך" only when the
-                          personal streak differs. No plus signs, no
-                          deltas. Mode badge sits to the right.
-                          Fallback: if the leaderboard hasn't loaded
-                          yet (or this participant isn't in it for any
-                          reason) the block is hidden — admin still
-                          sees the row, just without streak info. */}
+                      {/* Streak + mode block — pulled from leaderboard
+                          data (participantRanks). Always renders the
+                          mode prominently so admin can see at a glance
+                          whether this participant is on a fresh slate
+                          or carrying continuity from prior games —
+                          even when the streak numbers happen to match
+                          (e.g. continue mode + prior streak broken
+                          before the current game started).
+                          Fallback: when leaderboard hasn't loaded yet
+                          we hide the block; admin still sees the row,
+                          just without streak info. */}
                       {(() => {
                         const rank = participantRanks.find((r) => r.participantId === p.id);
                         if (!rank) return null;
-                        const showPersonal = rank.personalStreak !== rank.currentStreak;
+                        const personalDiffers = rank.personalStreak !== rank.currentStreak;
+                        const isFresh = rank.streakMode === 'fresh';
+                        const isContinue = rank.streakMode === 'continue';
+                        const isOverride = rank.streakMode === 'override';
+
+                        // Mode badge styling — bumped from the prior
+                        // 10px pill to a 12px chip with stronger color
+                        // separation. Fresh is now also colored (was
+                        // grey) so each mode reads as a distinct state
+                        // rather than fresh-as-absent.
+                        const badgeStyle: React.CSSProperties = {
+                          fontSize: 12, fontWeight: 700,
+                          padding: '4px 10px', borderRadius: 999,
+                          whiteSpace: 'nowrap', display: 'inline-flex',
+                          alignItems: 'center', gap: 4,
+                          ...(isFresh    ? { background: '#f1f5f9', color: '#475569', border: '1px solid #e2e8f0' } :
+                             isContinue ? { background: '#dbeafe', color: '#1d4ed8', border: '1px solid #bfdbfe' } :
+                                          { background: '#fef3c7', color: '#92400e', border: '1px solid #fde68a' }),
+                        };
+
                         return (
-                          <div style={{ minWidth: 130, fontSize: 12, color: '#475569', flexShrink: 0 }}>
+                          <div style={{ minWidth: 200, fontSize: 12, color: '#475569', flexShrink: 0 }}>
                             <div style={{ fontWeight: 600, color: '#0f172a' }}>
                               🔥 רצף במשחק: <strong>{rank.currentStreak}</strong> ימים
                             </div>
-                            {showPersonal && (
+                            {/* Second line: when personal streak is
+                                bigger than the game streak, surface
+                                the bigger number. Otherwise — in
+                                continue mode — surface a plain-text
+                                continuity indicator so the row never
+                                looks identical to a fresh row. */}
+                            {personalDiffers ? (
                               <div style={{ marginTop: 2 }}>
                                 הרצף שלך: <strong>{rank.personalStreak}</strong> ימים
                               </div>
-                            )}
-                            <div style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
-                              <span
-                                style={{
-                                  fontSize: 10, fontWeight: 700, padding: '1px 7px',
-                                  borderRadius: 999, whiteSpace: 'nowrap',
-                                  ...(rank.streakMode === 'fresh' ? { background: '#f1f5f9', color: '#475569' } :
-                                     rank.streakMode === 'continue' ? { background: '#dbeafe', color: '#1d4ed8' } :
-                                     { background: '#fef3c7', color: '#92400e' }),
-                                }}
-                              >
-                                {rank.streakMode === 'fresh' ? 'התחלה חדשה' :
-                                 rank.streakMode === 'continue' ? 'המשך' :
-                                 `עריכה ידנית${rank.streakStartOverride !== null ? ` · ${rank.streakStartOverride}` : ''}`}
+                            ) : isContinue ? (
+                              <div style={{ marginTop: 2, color: '#1d4ed8', fontStyle: 'italic' }}>
+                                ממשיכה מההיסטוריה הקודמת
+                              </div>
+                            ) : null}
+                            <div style={{ marginTop: 6 }}>
+                              <span style={badgeStyle}>
+                                {isFresh    ? '🆕 התחלה חדשה' :
+                                 isContinue ? '🔁 ממשיכה מההיסטוריה הקודמת' :
+                                              `✏️ עריכה ידנית${rank.streakStartOverride !== null ? ` · ${rank.streakStartOverride} ימים` : ''}`}
                               </span>
                             </div>
                           </div>

@@ -2407,6 +2407,52 @@ export default function ParticipantPortal({ params }: { params: Promise<{ token:
             {analyticsError && <p style={s.tabError}>{analyticsError}</p>}
             {analyticsSummary && (
               <>
+                {/* ── Continuity banner — appears in continue/override
+                    mode regardless of whether streak numbers match.
+                    "continue" represents continuity OF EXPERIENCE
+                    (history exposed below, lifetime points visible),
+                    not continuity of streak — so the participant
+                    never sees this surface look identical to fresh
+                    even if her prior streak broke before this game. */}
+                {analyticsSummary.streakMode === 'continue' && (
+                  <div
+                    style={{
+                      background: '#eff6ff',
+                      border: '1px solid #bfdbfe',
+                      borderRadius: 10,
+                      padding: '8px 12px',
+                      marginBottom: 12,
+                      fontSize: 13,
+                      color: '#1d4ed8',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                    }}
+                  >
+                    <span style={{ fontSize: 16 }}>🔁</span>
+                    <span>ממשיכה מההיסטוריה הקודמת שלך — הניקוד והרצף הנוכחיים מתחילים מ-0, ההיסטוריה זמינה למטה.</span>
+                  </div>
+                )}
+                {analyticsSummary.streakMode === 'override' && (
+                  <div
+                    style={{
+                      background: '#fffbeb',
+                      border: '1px solid #fde68a',
+                      borderRadius: 10,
+                      padding: '8px 12px',
+                      marginBottom: 12,
+                      fontSize: 13,
+                      color: '#92400e',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                    }}
+                  >
+                    <span style={{ fontSize: 16 }}>✏️</span>
+                    <span>הרצף שלך עודכן ידנית.</span>
+                  </div>
+                )}
+
                 {/* ── Summary strip — mode-aware ────────────────────────
                     fresh  : show only game streak ("רצף במשחק") +
                              nothing about the participant's lifetime
